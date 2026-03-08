@@ -1,0 +1,28 @@
+{
+    "name": "mileto-gerador-de-video",
+    "private": true,
+    "type": "module",
+    "workspaces": [
+        "apps/client",
+        "apps/server"
+    ],
+    "scripts": {
+        "lint": "eslint .",
+        "format": "prettier --write .",
+        "dev:client": "npm run dev --workspace=apps/client",
+        "dev:server": "npm run dev --workspace=apps/server",
+        "clean": "powershell -ExecutionPolicy Bypass -File scripts/clean.ps1",
+        "size:report": "node scripts/size-report.mjs"
+    },
+    "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "eslint": "^9.17.0",
+        "eslint-plugin-react": "^7.37.5",
+        "eslint-plugin-react-hooks": "^5.0.0",
+        "eslint-plugin-react-refresh": "^0.4.16",
+        "globals": "^15.14.0",
+        "prettier": "^3.8.1",
+        "typescript": "^5.9.3",
+        "typescript-eslint": "^8.18.0"
+    }
+}

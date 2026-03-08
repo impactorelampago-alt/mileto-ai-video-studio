@@ -1,0 +1,80 @@
+appId: com.mileto.geradordevideo
+productName: Mileto Gerador de Video
+directories:
+    output: release/${version}
+    buildResources: build
+
+electronVersion: '30.0.0'
+
+# Maximum Compression (ASAR is required for performance and security)
+compression: maximum
+asar: true
+asarUnpack:
+    - 'build/*.ico'
+
+# EXCLUSIONS - The heart of size optimization!
+# We don't want the installer swallowing raw development data, caches, or heavy raw MP4s.
+files:
+    - 'dist/**/*'
+    - 'electron/**/*'
+    - 'build/*.ico'
+    - '!node_modules/**/README.md'
+    - '!node_modules/**/*.map'
+    - '!node_modules/**/*.md'
+    - '!node_modules/**/*.ts'
+    - '!node_modules/**/*.d.ts'
+    - '!node_modules/**/docs/**/*'
+    - '!node_modules/**/tests/**/*'
+    - '!node_modules/**/__tests__/**/*'
+    - '!node_modules/**/examples/**/*'
+    # Omit OS specific binaries that don't match target
+    - '!node_modules/**/binding.gyp'
+    - '!node_modules/**/*.cc'
+    - '!node_modules/**/*.cpp'
+
+extraResources:
+    - from: '../server/dist/bundle.js'
+      to: 'server/bundle.js'
+    # Do not bundle the massive user uploads folder or temp FFmpeg processing foldersourcesPath/bin)
+    # Bundled FFmpeg Binaries (available at process.resourcesPath/bin)
+    - from: 'resources/bin'
+      to: 'bin'
+      filter:
+          - '**/*'
+
+    # Backend Server (available at process.resourcesPath/server)
+    # We include only the compiled JS, built-in assets, and mandatory dependencies
+    - from: '../server'
+      to: 'server'
+      filter:
+          - 'dist/**/*'
+          - 'data/transition_library.json'
+          - 'public/transitions/**/*'
+          - 'public/narrations/default-narration.mp3'
+          - 'package.json'
+          - 'node_modules/**/*'
+          - '!uploads/**/*'
+          - '!temp/**/*'
+          - '!frame_cache/**/*'
+          - '!videos/**/*'
+          - '!narrations/**/*'
+          - '!music/**/*' # Per user request, upload only
+          - '!src/**/*' # No source code in EXE
+          - '!tsconfing.json'
+          - '!.env' # Built-in env should be handled by Electron spawn env
+
+win:
+    icon: icon.ico
+    target:
+        - target: nsis
+          arch:
+              - x64
+
+nsis:
+    oneClick: false
+    allowToChangeInstallationDirectory: true
+    deleteAppDataOnUninstall: false
+    installerIcon: installer.ico
+    uninstallerIcon: icon.ico
+    uninstallDisplayName: Mileto Gerador de Video
+    artifactName: Mileto-Gerador-de-Video-Instalador-V1.0.7.${ext}
