@@ -1,0 +1,423 @@
+@import 'tailwindcss';
+@config "../tailwind.config.js";
+
+@layer base {
+    :root {
+        /* Light Mode - Cyber/Electric Light */
+        --background: 0 0% 100%; /* White */
+        --foreground: 222.2 84% 4.9%; /* Slate 950 */
+
+        --card: 0 0% 100%;
+        --card-foreground: 222.2 84% 4.9%;
+
+        --popover: 0 0% 100%;
+        --popover-foreground: 222.2 84% 4.9%;
+
+        /* Primary Gradient-ish Base: Teal/Green */
+        /* Using a vibrant green as the base primary in light mode */
+        --primary: 151 80% 40%;
+        --primary-foreground: 210 40% 98%;
+
+        --secondary: 210 40% 96.1%;
+        --secondary-foreground: 222.2 47.4% 11.2%;
+
+        --muted: 210 40% 96.1%;
+        --muted-foreground: 215.4 16.3% 46.9%;
+
+        --accent: 210 40% 96.1%;
+        --accent-foreground: 222.2 47.4% 11.2%;
+
+        --destructive: 0 84.2% 60.2%;
+        --destructive-foreground: 210 40% 98%;
+
+        --border: 214.3 31.8% 91.4%;
+        --input: 214.3 31.8% 91.4%;
+        --ring: 151 80% 40%; /* Matches Primary */
+
+        --brand-dark: 210 40% 98%;
+        --brand-card: 0 0% 100%;
+        --brand-card-hover: 210 40% 96.1%;
+        --brand-accent: 151 100% 35%;
+        --brand-lime: 83 76% 35%;
+        --brand-muted: 215.4 16.3% 46.9%;
+        --brand-border: 214.3 31.8% 91.4%;
+
+        --radius: 0.75rem;
+    }
+
+    .dark {
+        /* Dark Mode - Premium Dash Palette */
+        --background: 204 29% 5%; /* #0a0f12 - Deep Dark background */
+        --foreground: 210 40% 98%; /* White text */
+
+        --card: 207 18% 10%; /* #151a1e - Cards slightly lighter */
+        --card-foreground: 210 40% 98%;
+
+        --popover: 207 18% 10%;
+        --popover-foreground: 210 40% 98%;
+
+        /* Electric Green accents */
+        --primary: 151 100% 45.1%; /* #00E676 Neon Green */
+        --primary-foreground: 204 29% 5%; /* Dark text on neon */
+
+        --secondary: 217.2 32.6% 17.5%;
+        --secondary-foreground: 210 40% 98%;
+
+        --muted: 217.2 32.6% 17.5%;
+        --muted-foreground: 215 20.2% 65.1%;
+
+        --accent: 83 76% 55%; /* #A3E635 Lime */
+        --accent-foreground: 204 29% 5%; /* Dark text on neon */
+
+        --destructive: 0 62.8% 30.6%;
+        --destructive-foreground: 210 40% 98%;
+
+        --border: 0 0% 100% / 0.05; /* Glass subtle border */
+        --input: 217.2 32.6% 17.5%;
+        --ring: 151 100% 45.1%; /* Neon Green ring on focus */
+
+        --brand-dark: 204 29% 5%;
+        --brand-card: 207 18% 10%;
+        --brand-card-hover: 206 17% 14%;
+        --brand-accent: 151 100% 45.1%;
+        --brand-lime: 83 76% 55%;
+        --brand-muted: 210 5% 58%;
+        --brand-border: 217.2 32.6% 17.5%;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    body {
+        @apply bg-background text-foreground;
+    }
+}
+
+/* Custom Gradient Text Utility */
+.text-gradient {
+    @apply bg-gradient-to-r from-teal-400 to-lime-400 bg-clip-text text-transparent;
+}
+
+/* Gradient Border Helper */
+.border-gradient {
+    /* Helper for gradient borders if needed */
+    position: relative;
+    background:
+        linear-gradient(var(--background), var(--background)) padding-box,
+        linear-gradient(to right, #2dd4bf, #a3e635) border-box;
+    border: 2px solid transparent;
+    border-radius: var(--radius);
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.scrollbar-hide::-webkit-scrollbar {
+    display: none;
+}
+
+/* Hide scrollbar for IE, Edge and Firefox */
+.scrollbar-hide {
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
+}
+
+/* Custom Slim Scrollbar for UI Panels */
+.custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.2); /* slate-400 with 20% opacity */
+    border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.4);
+}
+.custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.2) transparent;
+}
+
+/* Custom Title Overlay Animations */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes popIn {
+    0% {
+        transform: scale(0.5);
+        opacity: 0;
+    }
+    70% {
+        transform: scale(1.1);
+        opacity: 1;
+    }
+    100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(-50px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.anim-title-fade {
+    animation: fadeIn 0.4s ease-out forwards;
+}
+
+.anim-title-pop {
+    animation: popIn 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+.anim-title-slide {
+    animation: slideIn 0.4s ease-out forwards;
+}
+
+/* Exit Animations */
+@keyframes fadeOut {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+@keyframes popOut {
+    0% { transform: scale(1); opacity: 1; }
+    30% { transform: scale(1.1); opacity: 1; }
+    100% { transform: scale(0.5); opacity: 0; }
+}
+
+@keyframes slideOut {
+    from { transform: translateX(0); opacity: 1; }
+    to { transform: translateX(-50px); opacity: 0; }
+}
+
+.anim-title-fade-out {
+    animation: fadeOut 0.4s ease-in forwards;
+}
+
+.anim-title-pop-out {
+    animation: popOut 0.5s cubic-bezier(0.32, 0, 0.67, 0) forwards;
+}
+
+.anim-title-slide-out {
+    animation: slideOut 0.4s ease-in forwards;
+}
+
+/* CTA Cursors Animation */
+@keyframes doubleClickMouse {
+    0% {
+        transform: translate(30px, 30px);
+        opacity: 0;
+    }
+    20% {
+        transform: translate(30px, 30px);
+        opacity: 1;
+    }
+    40% {
+        transform: translate(0, 0) scale(1);
+        opacity: 1;
+    }
+    45% {
+        transform: translate(0, 0) scale(0.85);
+        opacity: 1;
+    } /* Click 1 */
+    50% {
+        transform: translate(0, 0) scale(1);
+        opacity: 1;
+    }
+    55% {
+        transform: translate(0, 0) scale(0.85);
+        opacity: 1;
+    } /* Click 2 */
+    60% {
+        transform: translate(0, 0) scale(1);
+        opacity: 1;
+    }
+    90% {
+        transform: translate(0, 0) scale(1);
+        opacity: 1;
+    }
+    100% {
+        transform: translate(0, 0) scale(1);
+        opacity: 0;
+    } /* Fade out */
+}
+
+@keyframes doubleClickTap {
+    0% {
+        transform: translateY(40px);
+        opacity: 0;
+    }
+    20% {
+        transform: translateY(40px);
+        opacity: 1;
+    }
+    40% {
+        transform: translateY(0) scale(1);
+        opacity: 1;
+    }
+    45% {
+        transform: translateY(0) scale(0.9);
+        opacity: 1;
+    } /* Tap 1 */
+    50% {
+        transform: translateY(0) scale(1);
+        opacity: 1;
+    }
+    55% {
+        transform: translateY(0) scale(0.9);
+        opacity: 1;
+    } /* Tap 2 */
+    60% {
+        transform: translateY(0) scale(1);
+        opacity: 1;
+    }
+    90% {
+        transform: translateY(0) scale(1);
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(0) scale(1);
+        opacity: 0;
+    }
+}
+
+.anim-cta-mouse {
+    animation: doubleClickMouse 2.5s ease-out forwards;
+}
+
+.anim-cta-tap {
+    animation: doubleClickTap 2.5s ease-out forwards;
+}
+
+/* Premium Styles */
+@keyframes spin-slow {
+    from {
+        transform: translate(-50%, -50%) rotate(0deg);
+    }
+    to {
+        transform: translate(-50%, -50%) rotate(360deg);
+    }
+}
+
+.premium-01-box {
+    position: relative;
+    border-radius: 1rem;
+    overflow: hidden;
+    padding: 2px; /* Espessura da borda neon */
+    z-index: 1;
+    background-color: transparent;
+}
+
+.premium-01-box::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 250%;
+    height: 700%;
+    background: conic-gradient(
+        from 0deg,
+        transparent 0%,
+        transparent 85%,  /* Makes the tail much shorter, illuminating less of the border */
+        var(--primary-color) 100%
+    );
+    animation: spin-slow 3s linear infinite;
+    transform-origin: center;
+    z-index: -2;
+}
+
+.premium-01-inner {
+    position: relative;
+    background: rgba(0, 0, 0, 0.6); /* Transparente, 60% opacidade preta */
+    backdrop-filter: blur(4px);
+    border-radius: calc(1rem - 2px);
+    z-index: -1;
+    width: 100%;
+    height: 100%;
+}
+
+/* Location Title Animations */
+@keyframes locEntrance {
+    0% {
+        opacity: 0;
+        transform: translateX(-30px);
+    }
+    100% {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@keyframes locPinBounce {
+    0%, 100% {
+        transform: translateY(0);
+    }
+    30% {
+        transform: translateY(-8px);
+    }
+    50% {
+        transform: translateY(0);
+    }
+    70% {
+        transform: translateY(-4px);
+    }
+}
+
+@keyframes locLineGrow {
+    0% {
+        transform: scaleX(0);
+    }
+    100% {
+        transform: scaleX(1);
+    }
+}
+
+@keyframes locTagEntrance {
+    0% {
+        opacity: 0;
+        transform: translateY(10px) rotate(3deg);
+    }
+    60% {
+        opacity: 1;
+        transform: translateY(-2px) rotate(-1deg);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0) rotate(0deg);
+    }
+}
+
+.anim-loc-entrance {
+    animation: locEntrance 0.5s ease-out forwards;
+}
+
+.anim-loc-pin-bounce {
+    animation: locPinBounce 1.2s ease-in-out 0.4s infinite;
+}
+
+.anim-loc-line-grow {
+    animation: locLineGrow 0.6s ease-out 0.3s forwards;
+    transform: scaleX(0);
+}
+
+.anim-loc-tag-entrance {
+    animation: locTagEntrance 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+}
+

@@ -1,0 +1,22 @@
+**/.git
+**/.gitignore
+**/node_modules/
+**/dist/
+**/build/
+**/out/
+**/tmp/
+**/temp/
+**/.turbo/
+**/.vite/
+**/.cache/
+**/*.log
+
+# Artefatos Pesados
+apps/server/uploads/
+apps/server/temp/
+apps/client/dist/
+
+# Env e configs secretas
+.env*
+Dockerfile
+.dockerignore
