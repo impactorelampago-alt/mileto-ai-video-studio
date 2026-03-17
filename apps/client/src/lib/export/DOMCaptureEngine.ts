@@ -104,7 +104,7 @@ export class DOMCaptureEngine {
 
             // If it's a relative path starting with /, prepend the correct backend API URL if not available
             if (masterAudioUrl.startsWith('/')) {
-                const API_BASE = ((window as any).API_BASE_URL || 'http://localhost:3301') || 'http://localhost:3000';
+                const API_BASE = (window as any).API_BASE_URL || 'http://localhost:3301';
                 // Remove trailing slash from base if present
                 const cleanBase = API_BASE.replace(/\/$/, '');
                 fetchUrl = `${cleanBase}${masterAudioUrl}`;

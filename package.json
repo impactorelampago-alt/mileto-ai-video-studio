@@ -12,6 +12,7 @@
         "dev:client": "npm run dev --workspace=apps/client",
         "dev:server": "npm run dev --workspace=apps/server",
         "clean": "powershell -ExecutionPolicy Bypass -File scripts/clean.ps1",
+        "postinstall": "node scripts/setup-ffmpeg.js",
         "size:report": "node scripts/size-report.mjs"
     },
     "devDependencies": {
@@ -20,6 +21,8 @@
         "eslint-plugin-react": "^7.37.5",
         "eslint-plugin-react-hooks": "^5.0.0",
         "eslint-plugin-react-refresh": "^0.4.16",
+        "ffmpeg-static": "^5.2.0",
+        "ffprobe-static": "^3.1.0",
         "globals": "^15.14.0",
         "prettier": "^3.8.1",
         "typescript": "^5.9.3",

@@ -77,52 +77,10 @@ import * as audioController from '../controllers/audioController';
 // Audio Mix Routes
 router.post('/audio/mix', audioController.mixAudio);
 
-// Mock verification for now, real implementation would actually call the APIs
-router.post('/test-gemini', async (req, res) => {
-    const { apiKey } = req.body;
-    if (!apiKey) return res.status(400).json({ ok: false, message: 'API Key missing' });
-
-    // TODO: integrated real test
-    // For now, simple length check mock
-    if (apiKey.length < 10) return res.status(401).json({ ok: false, message: 'Invalid Gemini Key format' });
-
-    res.json({ ok: true, message: 'Gemini API Connected' });
-});
-
-import OpenAI from 'openai';
-
-router.post('/test-openai', async (req, res) => {
-    const { apiKey } = req.body;
-    if (!apiKey || apiKey.length < 10) return res.status(401).json({ ok: false, message: 'Invalid OpenAI Key format' });
-
-    try {
-        const cleanKey = apiKey.trim();
-        const openai = new OpenAI({ apiKey: cleanKey });
-        // Simples chamada de listagem de modelos para validar a chave (gratuito)
-        await openai.models.list();
-        res.json({ ok: true, message: 'OpenAI API Connected' });
-    } catch (e: any) {
-        res.status(401).json({ ok: false, message: e.message || 'Incorrect API Key' });
-    }
-});
-
-import { testApiKey } from '../services/fishAudio';
-
-router.post('/test-fishaudio', async (req, res) => {
-    const { apiKey } = req.body;
-    if (!apiKey) return res.status(400).json({ ok: false, message: 'API Key missing' });
-
-    try {
-        const isValid = await testApiKey(apiKey);
-        if (isValid) {
-            res.json({ ok: true, message: 'Fish Audio API Connected' });
-        } else {
-            res.status(401).json({ ok: false, message: 'Invalid Fish Audio Key or Connection Failed' });
-        }
-    } catch (e: any) {
-        res.status(500).json({ ok: false, message: e.message });
-    }
-});
+// ... Mock verification for now, real implementation would actually call the APIs
+router.post('/test-gemini', aiController.testGemini);
+router.post('/test-openai', aiController.testOpenAI);
+router.post('/test-fishaudio', ttsController.testFishAudio);
 
 // Proxy route to bypass CORS for external media (e.g. Canvas Tainted sources)
 router.get('/proxy', async (req, res) => {

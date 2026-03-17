@@ -1,113 +1,34 @@
 import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
-import path from 'path';
-import fs from 'fs';
+import { config } from './config';
+import loaders from './loaders';
 
-dotenv.config();
+async function startServer() {
+    const app = express();
 
-// Base path for persistent data (critical for installed version)
-const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
-console.log(`[Server] Base Data Path: ${BASE_DATA_PATH}`);
-
-// Ensure directories exist in the persistent path
-const persistentDirs = [
-    'narrations',
-    'voice_samples',
-    'frame_cache',
-    'videos',
-    'uploads',
-    'music',
-    'data',
-    'public/mixes',
-    'public/transitions',
-];
-persistentDirs.forEach((dir) => {
-    const dirPath = path.join(BASE_DATA_PATH, dir);
-    if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
-    }
-});
-
-// Prevent server crashes from unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('[Server] Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-process.on('uncaughtException', (err) => {
-    console.error('[Server] Uncaught Exception:', err.message);
-});
-import { requestInterceptor, serverLogger } from './utils/logger';
-
-const app = express();
-app.use(requestInterceptor);
-
-const PORT = process.env.PORT || 3301;
-
-// CORS Configuration — allow all origins (Electron uses file:// which can't be whitelisted)
-app.use(
-    cors({
-        origin: true,
-        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'X-Runway-Token', 'X-Replicate-Token'],
-        credentials: true,
-    })
-);
-
-// Global Debug Log Routes
-app.get('/api/debug/logs', (_req, res) => {
-    res.json({ ok: true, logs: serverLogger.getLogs() });
-});
-app.post('/api/debug/logs/clear', (_req, res) => {
-    serverLogger.clearLogs();
-    res.json({ ok: true });
-});
-
-app.use(express.json({ limit: '50mb' }));
-
-// Static Routes pointing to persistent data
-app.use('/data', express.static(path.join(BASE_DATA_PATH, 'data')));
-app.use('/music', express.static(path.join(BASE_DATA_PATH, 'music')));
-app.use('/uploads', express.static(path.join(BASE_DATA_PATH, 'uploads')));
-app.use('/narrations', express.static(path.join(BASE_DATA_PATH, 'narrations')));
-app.use('/videos', express.static(path.join(BASE_DATA_PATH, 'videos')));
-app.use('/mixes', express.static(path.join(BASE_DATA_PATH, 'public', 'mixes')));
-app.use('/transitions', express.static(path.join(BASE_DATA_PATH, 'public', 'transitions')));
-app.use(express.static(path.join(__dirname, '../public'))); // Correct for bundled dist/index.js
-
-// Basic Routes
-app.get('/', (_req, res) => {
-    res.send('Mileto Video Generator API');
-});
-
-// Health Check
-app.get('/health', (_req, res) => {
-    res.json({ ok: true, status: 'online', timestamp: new Date().toISOString() });
-});
-
-// Debug endpoint - exposes runtime paths
-app.get('/debug', (_req, res) => {
-    res.json({
-        BASE_DATA_PATH,
-        __dirname,
-        USER_DATA_PATH: process.env.USER_DATA_PATH,
-        narrations: path.join(BASE_DATA_PATH, 'narrations'),
+    // Prevent server crashes from unhandled promise rejections
+    process.on('unhandledRejection', (reason, promise) => {
+        console.error('[Server] Unhandled Rejection at:', promise, 'reason:', reason);
     });
-});
 
-import apiRoutes from './routes/api';
+    process.on('uncaughtException', (err) => {
+        console.error('[Server] Uncaught Exception:', err.message);
+    });
 
-app.use('/api', apiRoutes);
+    // Initialize all components
+    await loaders(app);
 
-// Global Error Handler for JSON responses
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error('[Server] Global Request Error:', err);
-    const status = err.status || 500;
-    const msg = err.message || 'Internal Server Error';
-    res.status(status).json({ ok: false, message: msg });
-});
+    app.listen(config.port, () => {
+        console.log(`
+        🚀 Server running on http://localhost:${config.port}
+        🏥 Health check: http://localhost:${config.port}/health
+        🛠️ Environment: ${config.env}
+        📂 Storage: ${config.baseDataPath}
+        `);
+    });
+}
 
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`Health check available at http://localhost:${PORT}/health`);
+// Start the engine
+startServer().catch((err) => {
+    console.error('[Server] Fatal error during startup:', err);
+    process.exit(1);
 });

@@ -1,6 +1,7 @@
-import { Request, Response } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
-import { generateNarration } from '../services/fishAudio';
+import { generateNarration, testApiKey } from '../services/fishAudio';
+import { BadRequestError } from '../utils/errors';
 
 export const previewVoice = async (req: Request, res: Response) => {
     try {
@@ -38,18 +39,13 @@ export const createNarration = async (req: Request, res: Response) => {
 
 import { createModel } from '../services/fishAudio';
 
-export const cloneVoice = async (req: Request, res: Response) => {
+export const cloneVoice = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const apiKey = req.body.apiKey;
         const voiceName = req.body.voiceName || 'Cloned Voice';
 
-        if (!apiKey) {
-            return res.status(400).json({ ok: false, message: 'Fish Audio API Key is required.' });
-        }
-
-        if (!req.file) {
-            return res.status(400).json({ ok: false, message: 'No audio file uploaded.' });
-        }
+        if (!apiKey) throw new BadRequestError('Fish Audio API Key is required.');
+        if (!req.file) throw new BadRequestError('No audio file uploaded.');
 
         let fileBuffer: Buffer;
         if (req.file.buffer) {
@@ -57,7 +53,7 @@ export const cloneVoice = async (req: Request, res: Response) => {
         } else if (req.file.path) {
             fileBuffer = fs.readFileSync(req.file.path);
         } else {
-            return res.status(400).json({ ok: false, message: 'File payload is empty.' });
+            throw new BadRequestError('File payload is empty.');
         }
 
         const fileName = req.file.originalname || 'audio.mp3';
@@ -79,8 +75,17 @@ export const cloneVoice = async (req: Request, res: Response) => {
             modelId: modelData._id,
             modelTitle: modelData.title,
         });
-    } catch (error: any) {
-        console.error('[TTS] Voice Clone error:', error);
-        res.status(500).json({ ok: false, message: error.message || 'Error cloning voice' });
+    } catch (error) {
+        next(error);
     }
+};
+
+export const testFishAudio = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { apiKey } = req.body;
+        if (!apiKey) throw new BadRequestError('API Key missing');
+        const isValid = await testApiKey(apiKey);
+        if (!isValid) throw new BadRequestError('Invalid Fish Audio Key or Connection Failed');
+        res.json({ ok: true, message: 'Fish Audio API Connected' });
+    } catch (e) { next(e); }
 };

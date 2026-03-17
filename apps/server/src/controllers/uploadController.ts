@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { config } from '../config';
+
 
 export const uploadImage = async (req: Request, res: Response) => {
     try {
@@ -13,9 +15,8 @@ export const uploadImage = async (req: Request, res: Response) => {
         const newFileName = `${uuidv4()}${ext}`;
 
         // Define target directory structure
-        // apps/server/data/projects/<projectId>/uploads/images/
-        const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
-        const projectDir = path.join(BASE_DATA_PATH, 'data/projects', projectId, 'uploads/images');
+        // config.paths.data/projects/<projectId>/uploads/images/
+        const projectDir = path.join(config.paths.data, 'projects', projectId, 'uploads/images');
 
         if (!fs.existsSync(projectDir)) {
             fs.mkdirSync(projectDir, { recursive: true });

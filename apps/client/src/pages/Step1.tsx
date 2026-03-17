@@ -18,12 +18,11 @@ export const Step1 = () => {
 
     const isTitleValid = !!adData.title?.trim();
     const isTextValid = !!adData.narrationText?.trim();
-    const isAudioReady = adData.isNarrationGenerated || !!adData.narrationAudioUrl;
-    const canProceed = isTextValid && isAudioReady;
+    const canProceed = true;
 
     const handleNext = async () => {
-        if (!canProceed) {
-            toast.error('Preencha os campos obrigatórios e gere a narração.');
+        if (!adData.narrationAudioUrl && !adData.musicAudioUrl) {
+            navigate('/step/2');
             return;
         }
 

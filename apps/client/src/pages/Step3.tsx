@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
-import { Play, Sparkles, AlertCircle, CheckCircle2, Type } from 'lucide-react';
+import { Play, Sparkles, AlertCircle, CheckCircle2, Type, Mic, Volume2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import { VideoSequencePreview } from '../components/VideoSequencePreview';
@@ -11,10 +11,47 @@ export const Step3 = () => {
     const { adData, updateAdData, apiKeys, mediaTakes, setMediaTakes, captionStyle } = useWizard();
     const navigate = useNavigate();
     const [isGenerating, setIsGenerating] = useState(false);
+    const [selectedSourceId, setSelectedSourceId] = useState<string>('');
+
+    // Pre-calculate available audio sources
+    const availableSources: { id: string; label: string; url: string; icon: any }[] = [];
+    
+    if (adData.masterAudioUrl || adData.narrationAudioUrl) {
+        availableSources.push({
+            id: 'master',
+            label: 'Narração da IA',
+            url: adData.masterAudioUrl || adData.narrationAudioUrl || '',
+            icon: Mic
+        });
+    }
+    
+    const firstVideoWithAudio = mediaTakes.find((take) => take.type === 'video' && !take.muteOriginalAudio);
+    if (firstVideoWithAudio) {
+        availableSources.push({
+            id: 'video',
+            label: 'Áudio do Vídeo',
+            url: firstVideoWithAudio.url,
+            icon: Volume2
+        });
+    }
+
+    useEffect(() => {
+        if (!selectedSourceId && availableSources.length > 0) {
+            setSelectedSourceId(availableSources[0].id);
+        }
+    }, [availableSources, selectedSourceId]);
 
     const handleGenerateCaptions = async () => {
-        if (!adData.masterAudioUrl && !adData.narrationAudioUrl) {
-            toast.error('Nenhum áudio encontrado. Volte ao Step 1 e gere a narração.');
+        const selectedSource = availableSources.find(s => s.id === selectedSourceId);
+        let audioToTranscribe = selectedSource?.url;
+
+        // fallback if none selected but available
+        if (!audioToTranscribe && availableSources.length > 0) {
+            audioToTranscribe = availableSources[0].url;
+        }
+
+        if (!audioToTranscribe) {
+            toast.error('Nenhum áudio ou vídeo selecionado/encontrado para gerar legendas.');
             return;
         }
 
@@ -27,10 +64,6 @@ export const Step3 = () => {
         const toastId = toast.loading('Analisando áudio e sincronizando palavras...');
 
         try {
-            // Pick the best available audio for transcription:
-            // Preferably narration-only (cleaner for STT), fallback to master if needed
-            const audioToTranscribe = adData.narrationAudioUrl || adData.masterAudioUrl;
-
             const response = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/stt/generate-captions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -128,10 +161,40 @@ export const Step3 = () => {
                                 Criação de Legendas
                             </h3>
                             <p className="text-sm text-brand-muted leading-relaxed">
-                                O sistema escutará sua narração e marcará os tempos exatos para criar legendas
-                                automáticas perfeitamente alinhadas com o vídeo.
+                                Escolha a fonte de áudio. O sistema extrairá o som e marcará os tempos exatos para criar legendas automáticas perfeitamente alinhadas.
                             </p>
                         </div>
+
+                        {availableSources.length > 0 && (
+                            <div className="mb-6 space-y-3">
+                                <p className="text-xs font-bold text-brand-muted uppercase tracking-wider">Qual áudio vamos transcrever?</p>
+                                <div className="space-y-2">
+                                    {availableSources.map((source) => (
+                                        <label 
+                                            key={source.id} 
+                                            className={cn(
+                                                "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all",
+                                                selectedSourceId === source.id 
+                                                    ? "bg-brand-accent/10 border-brand-accent/50 text-brand-accent shadow-[0_0_15px_rgba(0,230,118,0.1)] ring-1 ring-brand-accent/20" 
+                                                    : "bg-brand-dark border-white/5 text-brand-muted hover:bg-white/5 hover:border-white/10 hover:text-foreground"
+                                            )}
+                                        >
+                                            <input 
+                                                type="radio" 
+                                                name="audioSource" 
+                                                value={source.id} 
+                                                checked={selectedSourceId === source.id}
+                                                onChange={() => setSelectedSourceId(source.id)} 
+                                                className="hidden"
+                                            />
+                                            <source.icon className={cn("w-4 h-4 shrink-0 focus:outline-none", selectedSourceId === source.id ? "text-brand-accent" : "opacity-60")} />
+                                            <span className="text-[13px] font-bold tracking-wide truncate">{source.label}</span>
+                                            {selectedSourceId === source.id && <CheckCircle2 className="w-4 h-4 ml-auto shrink-0 animate-in fade-in zoom-in duration-200" />}
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
 
                         <button
                             onClick={handleGenerateCaptions}

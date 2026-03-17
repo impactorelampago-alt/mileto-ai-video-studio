@@ -3,8 +3,9 @@ import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 
-const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
-const UPLOADS_DIR = path.join(BASE_DATA_PATH, 'uploads');
+import { config } from '../config';
+
+const UPLOADS_DIR = config.paths.uploads;
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const storage = multer.diskStorage({

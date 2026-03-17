@@ -170,7 +170,7 @@ export const ExportModal = ({
             const safeName = (fileName.trim() || 'MeuVideo_Mileto').replace(/[\\/:*?"<>|]/g, '_');
             const fullOutputPath = path.join(outputFolder, `${safeName}.mp4`);
 
-            const API_BASE = ((window as any).API_BASE_URL || 'http://localhost:3301') || 'http://localhost:3000';
+            const API_BASE = (window as any).API_BASE_URL || 'http://localhost:3301';
             let finalPath: string;
 
             if (isHybridMode) {
@@ -196,6 +196,7 @@ export const ExportModal = ({
                         end: t.trim.end,
                         speed: t.speedPresetId && t.speedPresetId !== 'normal' ? t.speedPresetId : 1.0,
                         objectFit: t.objectFit || 'cover',
+                        muteOriginalAudio: !!t.muteOriginalAudio,
                     })),
                     transitionPath: transitionPath,
                     audioPath: generatedAudioPath,

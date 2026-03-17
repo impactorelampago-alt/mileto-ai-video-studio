@@ -1,0 +1,21 @@
+﻿src/App.tsx(3,28): error TS2307: Cannot find module './layouts/HomeLayout' or its corresponding type declarations.
+src/App.tsx(10,36): error TS2307: Cannot find module './pages/HomePage' or its corresponding type declarations.
+src/components/timeline/TimelineEditor.tsx(211,33): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/components/timeline/TimelineEditor.tsx(288,25): error TS2353: Object literal may only specify known properties, and 'speed' does not exist in type 'AudioTrackConfig'.
+src/components/timeline/TimelineEditor.tsx(288,43): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/components/timeline/TimelineEditor.tsx(298,25): error TS2353: Object literal may only specify known properties, and 'speed' does not exist in type 'AudioTrackConfig'.
+src/components/timeline/TimelineEditor.tsx(298,42): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/components/timeline/TimelineEditor.tsx(346,41): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/components/timeline/TimelineEditor.tsx(436,37): error TS2339: Property 'speed' does not exist on type 'TimelineTrack | { speed: number; id: string; label: string; type: "audio"; enabled: boolean; volume: number; muted: boolean; solo: boolean; clips: AudioClip[]; }'.
+  Property 'speed' does not exist on type 'TimelineTrack'.
+src/components/timeline/TimelineEditor.tsx(802,49): error TS2353: Object literal may only specify known properties, and 'speed' does not exist in type 'AudioTrackConfig'.
+src/components/timeline/TimelineEditor.tsx(802,67): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/components/timeline/TimelineEditor.tsx(812,49): error TS2353: Object literal may only specify known properties, and 'speed' does not exist in type 'AudioTrackConfig'.
+src/components/timeline/TimelineEditor.tsx(812,66): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/components/timeline/TrackLane.tsx(59,93): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/components/timeline/TrackLane.tsx(77,41): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/components/timeline/TrackLane.tsx(80,93): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/components/timeline/TrackLane.tsx(170,42): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/context/WizardContext.tsx(3,35): error TS2307: Cannot find module '../hooks/useProjects' or its corresponding type declarations.
+src/hooks/useAudioEngine.ts(180,37): error TS2339: Property 'speed' does not exist on type 'TimelineTrack'.
+src/layouts/MainLayout.tsx(7,30): error TS2307: Cannot find module '../components/UpdateButton' or its corresponding type declarations.

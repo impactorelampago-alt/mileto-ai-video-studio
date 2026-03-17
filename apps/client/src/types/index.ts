@@ -72,7 +72,6 @@ export interface CustomVoice {
 export interface AudioTrackConfig {
     enabled: boolean;
     volume: number; // 0 to 2 (200%)
-    speed?: number; // Pitch/Tempo multiplier (e.g., 0.5 to 2.0)
     offsetSec: number; // Start playing at global time X
     trimStart: number; // Skip first X seconds of source
     trimEnd?: number; // Stop playing source at X seconds (if undefined, play to end)
@@ -80,6 +79,7 @@ export interface AudioTrackConfig {
     fadeOutSec: number;
     url?: string | null; // For background music
     trackId?: string | null; // For background music ID reference
+    speed?: number; // Optional speed property
 }
 
 export interface AudioConfig {
@@ -105,10 +105,10 @@ export interface TimelineTrack {
     type: 'audio';
     enabled: boolean;
     volume: number; // 0 to 1
-    speed?: number; // Pitch/Tempo multiplier (0.5 to 2.0). Default 1.0.
     muted: boolean;
     solo: boolean;
     clips: AudioClip[];
+    speed?: number;
 }
 
 export interface AudioTimeline {

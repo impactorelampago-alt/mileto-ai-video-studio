@@ -301,8 +301,20 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 }
 
                 // Sync true audio time for exact subtitle matching
-                if (audioMasterRef.current) {
+                if (masterAudioUrl && audioMasterRef.current) {
                     setAudioTime(audioMasterRef.current.currentTime);
+                } else if (!masterAudioUrl) {
+                    // Fallback to timeline global time if no master audio exists
+                    let accumulated = 0;
+                    if (takes.length > 0) {
+                        for (let i = 0; i < currentTakeIndex; i++) {
+                            accumulated += takes[i].trim.end - takes[i].trim.start;
+                        }
+                        const vid = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+                        const now = vid && currentTake ? vid.currentTime : 0;
+                        const start = currentTake ? currentTake.trim.start : 0;
+                        setAudioTime(accumulated + Math.max(0, now - start));
+                    }
                 }
 
                 // --- VIDEO SEQUENCE MODE ---
@@ -687,7 +699,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 // Sync audio master position for UI dependencies (captions)
                 if (audioMasterRef.current) audioMasterRef.current.currentTime = targetGlobalTime;
 
-                const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
+                const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3301';
                 const getProxiedUrl = (rawUrl: string) => {
                     if (rawUrl.startsWith('http') && !rawUrl.includes('localhost') && !rawUrl.includes('127.0.0.1')) {
                         const cleanBase = API_BASE.endsWith('/api') ? API_BASE : `${API_BASE}/api`;
@@ -1120,9 +1132,13 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                 style={{ bottom: `${captionStyle?.verticalPosition ?? 15}%` }}
                             >
                                 {(() => {
+                                    const captionTime = masterAudioUrl 
+                                        ? audioTime 
+                                        : (currentTake ? currentTake.trim.start + currentTimeInTake : 0);
+
                                     const activeSegment = captions.segments.find(
                                         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                                        (s: any) => audioTime >= s.start && audioTime <= s.end
+                                        (s: any) => captionTime >= s.start && captionTime <= s.end
                                     );
                                     if (!activeSegment || !activeSegment.words) return null;
 
@@ -1144,7 +1160,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                                 // Extend the "active" window slightly if it's the last word or there's a tiny gap
                                                 const nextStart =
                                                     activeSegment.words[index + 1]?.start || activeSegment.end;
-                                                const isActive = audioTime >= w.start && audioTime < nextStart;
+                                                const isActive = captionTime >= w.start && captionTime < nextStart;
 
                                                 return (
                                                     <span

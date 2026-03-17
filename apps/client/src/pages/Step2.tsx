@@ -742,7 +742,6 @@ export const Step2 = () => {
                 <div className="fixed bottom-0 right-0 left-0 bg-background/80 backdrop-blur-md border-t border-border p-4 z-20 flex justify-end">
                     <button
                         onClick={() => navigate('/step/3')}
-                        disabled={mediaTakes.length === 0}
                         className="px-8 py-2.5 bg-primary hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed text-primary-foreground font-bold rounded-lg text-sm transition-all flex items-center gap-2 shadow-lg shadow-green-900/10"
                     >
                         Próximo: Estilo

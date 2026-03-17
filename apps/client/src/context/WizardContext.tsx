@@ -26,8 +26,6 @@ interface WizardContextType {
     loadMusicLibrary: () => Promise<void>;
 
     projectId: string;
-    saveProject: () => Promise<void>;
-    loadProject: () => Promise<void>;
     loadDraft: (draft: DraftProject) => void;
     startNewProject: () => string;
 
@@ -199,7 +197,8 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             format: adData.format,
             thumbnail,
             adData,
-            mediaTakes,
+            // Mapeia os takes para remover a propriedade `file` original (que é um HTML5 File não-serializável)
+            mediaTakes: mediaTakes.map(({ file: _file, ...rest }) => rest),
             captionStyle,
             selectedMusicId,
         };
@@ -220,60 +219,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         };
     }, [autoSaveViaIPC]);
 
-    // ── Persistence (legacy server-based, kept for dev fallback) ──────────
-    const saveProject = React.useCallback(async () => {
-        try {
-            const payload = {
-                adData,
-                mediaTakes,
-                captionStyle,
-                selectedMusicId,
-                updatedAt: new Date().toISOString(),
-            };
-            const res = await fetch(
-                `${(window as any).API_BASE_URL || 'http://localhost:3301'}/api/projects/${projectId}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ data: payload }),
-                }
-            );
-            const json = await res.json();
-            if (!json.ok) throw new Error(json.message);
-            console.log('Project saved:', json.message);
-        } catch (err) {
-            console.error('Failed to save project:', err);
-        }
-    }, [adData, mediaTakes, captionStyle, selectedMusicId, projectId]);
-
-    const loadProject = React.useCallback(async () => {
-        try {
-            const res = await fetch(
-                `${(window as any).API_BASE_URL || 'http://localhost:3301'}/api/projects/${projectId}`
-            );
-            if (res.status === 404) return; // New project, keep defaults
-
-            const json = await res.json();
-            if (json.ok && json.data) {
-                const {
-                    adData: loadedAd,
-                    mediaTakes: loadedTakes,
-                    captionStyle: loadedStyle,
-                    selectedMusicId: loadedMusic,
-                    updatedAt,
-                } = json.data;
-
-                if (loadedAd) setAdData((prev) => ({ ...prev, ...loadedAd }));
-                if (loadedTakes) setMediaTakes(loadedTakes);
-                if (loadedStyle) setCaptionStyle(loadedStyle);
-                if (loadedMusic) setSelectedMusicIdState(loadedMusic);
-
-                console.log('Project loaded, updated at:', updatedAt);
-            }
-        } catch (err) {
-            console.error('Failed to load project:', err);
-        }
-    }, [projectId]);
+    // ── Legacy Persistence removed to avoid overriding IPC states ──────────
 
     // ── Load a saved draft into wizard state ──────────────────────────────
     const loadDraft = React.useCallback((draft: DraftProject) => {
@@ -300,13 +246,14 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         return newId;
     }, []);
 
-    // Load on mount
-    useEffect(() => {
-        loadProject();
-    }, [loadProject]);
+    // ── Removed legacy mount loader. App now relies on HomePage's loadDraft ──────────
 
     const setApiKey = React.useCallback((key: keyof ApiKeys, value: string) => {
-        setApiKeys((prev) => ({ ...prev, [key]: value }));
+        setApiKeys((prev) => {
+            const updated = { ...prev, [key]: value };
+            localStorage.setItem('mileto_api_keys', JSON.stringify(updated));
+            return updated;
+        });
     }, []);
 
     const updateAdData = React.useCallback((data: Partial<AdData>) => {
@@ -381,8 +328,6 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             setSelectedMusicId,
             loadMusicLibrary,
             projectId,
-            saveProject,
-            loadProject,
             loadDraft,
             startNewProject,
             customVoices,
@@ -406,8 +351,6 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             setSelectedMusicId,
             loadMusicLibrary,
             projectId,
-            saveProject,
-            loadProject,
             loadDraft,
             startNewProject,
             customVoices,

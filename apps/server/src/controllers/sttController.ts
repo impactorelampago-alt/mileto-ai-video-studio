@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import OpenAI from 'openai';
 import fs from 'fs';
 import path from 'path';
+import ffmpeg from 'fluent-ffmpeg';
+import crypto from 'crypto';
 
 export const generateCaptions = async (req: Request, res: Response) => {
     try {
@@ -217,17 +219,47 @@ export const generateCaptions = async (req: Request, res: Response) => {
             return res.json({ ok: true, segments: defaultSegments });
         }
 
+        let audioToUpload = filePath;
+        let isTempFile = false;
+
+        const ext = path.extname(filePath).toLowerCase();
+        // Extract audio from potential video files to keep the API payload small and fast
+        if (['.mp4', '.mkv', '.mov', '.avi', '.webm'].includes(ext)) {
+            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
+            const TEMP_DIR = path.join(BASE_DATA_PATH, 'temp');
+            if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+            
+            audioToUpload = path.join(TEMP_DIR, `temp-stt-audio-${crypto.randomUUID()}.mp3`);
+            isTempFile = true;
+            
+            console.log('[STT] Extracting audio from video:', filePath);
+            
+            await new Promise<void>((resolve, reject) => {
+                ffmpeg(filePath)
+                    .noVideo()
+                    .audioCodec('libmp3lame')
+                    .audioBitrate('64k') // Low bitrate for faster extraction and small STT payload
+                    .save(audioToUpload)
+                    .on('end', () => resolve())
+                    .on('error', (err) => reject(err));
+            });
+        }
+
         // Call OpenAI Whisper API with timestamp_granularities=["word"]
         const cleanKey = apiKey.trim();
         const openai = new OpenAI({ apiKey: cleanKey });
 
         const transcription = await openai.audio.transcriptions.create({
-            file: fs.createReadStream(filePath),
+            file: fs.createReadStream(audioToUpload),
             model: 'whisper-1',
             response_format: 'verbose_json',
             timestamp_granularities: ['word'],
             language: 'pt', // Forçando PT-BR
         });
+
+        if (isTempFile && fs.existsSync(audioToUpload)) {
+            fs.unlinkSync(audioToUpload);
+        }
 
         const words = transcription.words;
         if (!words || words.length === 0) {
