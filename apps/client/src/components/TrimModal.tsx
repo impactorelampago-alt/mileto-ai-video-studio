@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Play, Check, RotateCcw, Trash2, Scissors, Split, Undo2, Zap, GripVertical } from 'lucide-react';
+import { X, Play, Check, RotateCcw, Trash2, Scissors, Split, Undo2, GripVertical } from 'lucide-react';
 import { MediaTake } from '../types';
 import { cn, generateId } from '../lib/utils';
-import { SPEED_PRESETS, SpeedPresetType } from '../lib/speedRemapping';
+import { SpeedPresetType } from '../lib/speedRemapping';
 
 interface TrimModalProps {
     take: MediaTake;
@@ -26,8 +26,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
     const [currentTime, setCurrentTime] = useState(take.trim.start);
     const [duration, setDuration] = useState(take.originalDurationSeconds || 0);
 
-    const [activeTab, setActiveTab] = useState<'trim' | 'speed'>('trim');
-    const [localSpeedPreset, setLocalSpeedPreset] = useState<SpeedPresetType>(take.speedPresetId || 'normal');
+    const [localSpeedPreset] = useState<SpeedPresetType>(take.speedPresetId || 'normal');
 
     // Init with the SINGLE trim from the take
     const [segments, setSegments] = useState<LocalSegment[]>([
@@ -405,36 +404,6 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
 
                     {/* Controls Container */}
                     <div className="flex flex-col p-4 gap-4">
-                        {/* Tabs */}
-                        <div className="flex items-center gap-6 border-b border-border px-2">
-                            <button
-                                onClick={() => setActiveTab('trim')}
-                                className={cn(
-                                    'pb-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-2',
-                                    activeTab === 'trim'
-                                        ? 'border-primary text-foreground'
-                                        : 'border-transparent text-muted-foreground hover:text-foreground'
-                                )}
-                            >
-                                <Scissors className="w-4 h-4" />
-                                Cortes
-                            </button>
-                            <button
-                                onClick={() => setActiveTab('speed')}
-                                className={cn(
-                                    'pb-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-2',
-                                    activeTab === 'speed'
-                                        ? 'border-primary text-foreground'
-                                        : 'border-transparent text-muted-foreground hover:text-foreground'
-                                )}
-                            >
-                                <Zap className="w-4 h-4" />
-                                Velocidade Cinematográfica
-                            </button>
-                        </div>
-
-                        {activeTab === 'trim' ? (
-                            <>
                                 {/* Tools */}
                                 <div className="min-h-[60px] flex items-center justify-center">
                                     <div className="flex items-center justify-center gap-6">
@@ -580,46 +549,6 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                         </div>
                                     </div>
                                 </div>
-                            </>
-                        ) : (
-                            <div className="py-4 px-2">
-                                <div className="mb-4">
-                                    <h4 className="text-sm font-semibold text-foreground mb-1">
-                                        Efeitos Fixos (Time Remapping)
-                                    </h4>
-                                    <p className="text-xs text-muted-foreground">
-                                        Esses efeitos alteram a velocidade da reprodução visual, mas{' '}
-                                        <strong>NÃO</strong> alteram o tempo total do corte na timeline.
-                                    </p>
-                                </div>
-                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                                    {SPEED_PRESETS.map((preset) => (
-                                        <button
-                                            key={preset.id}
-                                            onClick={() => setLocalSpeedPreset(preset.id)}
-                                            className={cn(
-                                                'flex flex-col text-left p-3 rounded-xl border transition-all relative overflow-hidden group',
-                                                localSpeedPreset === preset.id
-                                                    ? 'bg-primary/20 border-primary ring-1 ring-primary'
-                                                    : 'bg-card border-border hover:border-primary/50 hover:bg-muted'
-                                            )}
-                                        >
-                                            <span className="text-sm font-bold text-foreground relative z-10">
-                                                {preset.title}
-                                            </span>
-                                            <span className="text-[10px] text-muted-foreground mt-1 relative z-10 group-hover:text-foreground/80 transition-colors">
-                                                {preset.description}
-                                            </span>
-                                            {localSpeedPreset === preset.id && (
-                                                <div className="absolute top-2 right-2 z-10">
-                                                    <Check className="w-4 h-4 text-primary" />
-                                                </div>
-                                            )}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
                     </div>
                 </div>
 

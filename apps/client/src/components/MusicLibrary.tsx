@@ -168,7 +168,8 @@ export const MusicLibrary: React.FC = () => {
             stopTimeTracking();
         }
 
-        const audio = new Audio(`${API}${track.publicUrl}`);
+        const audioSrc = track.publicUrl.startsWith('http') ? track.publicUrl : `${API}${track.publicUrl}`;
+        const audio = new Audio(audioSrc);
         audioRef.current = audio;
         audio.onended = () => {
             setPlayingId(null);
@@ -348,6 +349,80 @@ export const MusicLibrary: React.FC = () => {
                     <p className="text-[11px] text-brand-muted uppercase tracking-wider font-semibold mt-1">
                         MP3, WAV ou OGG (máx 30MB)
                     </p>
+                    <button
+                        onClick={() => {
+                            setMusicLibrary([
+                                {
+                                    id: 'default-1',
+                                    originalName: 'Corporate Lofi (Open Repo).mp3',
+                                    displayName: 'Corporate Lofi (Open Repo)',
+                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+                                    filePath: '',
+                                    durationSec: 135,
+                                    createdAt: new Date().toISOString()
+                                },
+                                {
+                                    id: 'default-2',
+                                    originalName: 'Epic Cinematic (Open Repo).mp3',
+                                    displayName: 'Epic Cinematic (Open Repo)',
+                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+                                    filePath: '',
+                                    durationSec: 140,
+                                    createdAt: new Date().toISOString()
+                                },
+                                {
+                                    id: 'default-3',
+                                    originalName: 'Upbeat Tech (Open Repo).mp3',
+                                    displayName: 'Upbeat Tech (Open Repo)',
+                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
+                                    filePath: '',
+                                    durationSec: 156,
+                                    createdAt: new Date().toISOString()
+                                },
+                                {
+                                    id: 'default-4',
+                                    originalName: 'Energetic Vlog (Open Repo).mp3',
+                                    displayName: 'Energetic Vlog (Open Repo)',
+                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
+                                    filePath: '',
+                                    durationSec: 161,
+                                    createdAt: new Date().toISOString()
+                                },
+                                {
+                                    id: 'default-5',
+                                    originalName: 'Dark Synthwave (Open Repo).mp3',
+                                    displayName: 'Dark Synthwave (Open Repo)',
+                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3',
+                                    filePath: '',
+                                    durationSec: 130,
+                                    createdAt: new Date().toISOString()
+                                },
+                                {
+                                    id: 'default-6',
+                                    originalName: 'Lo-Fi Chill (Open Repo).mp3',
+                                    displayName: 'Lo-Fi Chill (Open Repo)',
+                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3',
+                                    filePath: '',
+                                    durationSec: 172,
+                                    createdAt: new Date().toISOString()
+                                },
+                                {
+                                    id: 'default-7',
+                                    originalName: 'Stomp & Clap (Open Repo).mp3',
+                                    displayName: 'Stomp & Clap (Open Repo)',
+                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3',
+                                    filePath: '',
+                                    durationSec: 110,
+                                    createdAt: new Date().toISOString()
+                                }
+                            ]);
+                            toast.success('Músicas padrão carregadas!');
+                        }}
+                        className="mt-6 px-4 py-2.5 border border-brand-accent/30 text-brand-accent bg-brand-accent/5 rounded-xl hover:bg-brand-accent/20 transition-all font-bold text-xs flex items-center justify-center mx-auto"
+                    >
+                        <Music className="w-4 h-4 mr-2" />
+                        Carregar Biblioteca Gratuita
+                    </button>
                 </div>
             )}
 

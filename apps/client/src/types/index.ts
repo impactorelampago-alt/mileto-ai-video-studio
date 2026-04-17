@@ -149,6 +149,7 @@ export interface TitleHook {
     animationId?: string; // Defines entrance/exit animation (e.g., 'pop', 'slide', 'fade', 'none')
     fontFamily?: string; // Título fonte (e.g. 'Inter', 'Anton')
     hasSound?: boolean; // Toggles the transition sound effect on/off
+    imageUrl?: string; // URL for uploaded title images
 }
 
 export interface AdData {
@@ -171,6 +172,7 @@ export interface AdData {
     transitionMuted?: boolean;
     transitionPath?: string; // Caminho em disco para injetar via Backend Híbrido
     dynamicTitles?: TitleHook[];
+    customOverlayUrl?: string; // Imagem customizada de logo/título no Step4
 }
 
 export interface CaptionStyle {

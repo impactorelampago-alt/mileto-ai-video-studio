@@ -3,10 +3,10 @@ import { cn } from '../lib/utils';
 import { Check } from 'lucide-react';
 
 const STEPS = [
-    { id: 1, label: 'Informações', path: '/step/1' },
-    { id: 2, label: 'Takes & Cortes', path: '/step/2' },
-    { id: 3, label: 'Estilo', path: '/step/3' },
-    { id: 4, label: 'Títulos & Export', path: '/step/4' },
+    { id: 1, label: 'Informações', path: '/wizard/step/1' },
+    { id: 2, label: 'Takes & Cortes', path: '/wizard/step/2' },
+    { id: 3, label: 'Estilo', path: '/wizard/step/3' },
+    { id: 4, label: 'Títulos & Export', path: '/wizard/step/4' },
 ];
 
 export const StepHeader = () => {
@@ -14,7 +14,10 @@ export const StepHeader = () => {
     const navigate = useNavigate();
     const currentPath = location.pathname;
 
-    // Extract step number from path (e.g. /step/2 -> 2)
+    // Only render on wizard/step pages
+    if (!currentPath.includes('/wizard/step/')) return null;
+
+    // Extract step number from path (e.g. /wizard/step/2 -> 2)
     const currentStepMatch = currentPath.match(/step\/(\d+)/);
     const currentStep = currentStepMatch ? parseInt(currentStepMatch[1]) : 1;
 

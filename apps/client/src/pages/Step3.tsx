@@ -70,7 +70,7 @@ export const Step3 = () => {
         if (!adData.captions?.segments || adData.captions.segments.length === 0) {
             toast.warning('Você não gerou as legendas. O vídeo sairá sem texto.');
         }
-        navigate('/step/4');
+        navigate('/wizard/step/4');
     };
 
     return (

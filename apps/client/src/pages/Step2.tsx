@@ -16,7 +16,6 @@ import {
     AlertTriangle,
     Clock,
     GripVertical,
-    Zap,
     Video,
     Image as ImageIcon,
     Sparkles,
@@ -247,21 +246,7 @@ export const Step2 = () => {
         }
     };
 
-    const [isSpeedMenuOpen, setIsSpeedMenuOpen] = useState(false);
 
-    const handleBatchSpeed = (presetId: SpeedPresetType) => {
-        const preset = SPEED_PRESETS.find((p) => p.id === presetId);
-        if (!preset) return;
-
-        setMediaTakes((prev) =>
-            prev.map((t) => ({
-                ...t,
-                speedPresetId: presetId,
-            }))
-        );
-        toast.success(`Efeito de velocidade "${preset.title}" aplicado em todos os takes!`);
-        setIsSpeedMenuOpen(false);
-    };
 
     return (
         <ErrorBoundary>
@@ -403,7 +388,6 @@ export const Step2 = () => {
                                 </button>
 
                                 <div className="flex items-center gap-3">
-                                    {/* Botão Zoom (Em Breve) */}
                                     <button
                                         disabled
                                         className="p-2 bg-emerald-500/5 text-emerald-500 rounded-lg border border-emerald-500/10 transition-colors opacity-50 cursor-not-allowed"
@@ -411,49 +395,6 @@ export const Step2 = () => {
                                     >
                                         <ZoomIn className="w-4 h-4" />
                                     </button>
-                                    {/* Batch Speed Button */}
-                                    <div className="relative">
-                                        <button
-                                            onClick={() => setIsSpeedMenuOpen(!isSpeedMenuOpen)}
-                                            disabled={mediaTakes.length === 0}
-                                            className="p-2 bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 rounded-lg border border-yellow-500/20 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                            title="Aplicar curva de velocidade em todos"
-                                        >
-                                            <Zap className="w-4 h-4" />
-                                        </button>
-
-                                        {isSpeedMenuOpen && (
-                                            <>
-                                                <div
-                                                    className="fixed inset-0 z-40"
-                                                    onClick={() => setIsSpeedMenuOpen(false)}
-                                                />
-                                                <div className="absolute top-full right-0 mt-2 w-[240px] bg-brand-card border border-black/10 dark:border-white/10 rounded-xl shadow-2xl z-50 p-2 text-left">
-                                                    <div className="mb-2 px-2 border-b border-black/5 dark:border-white/5 pb-2">
-                                                        <span className="text-[10px] font-bold text-brand-muted uppercase tracking-widest">
-                                                            Aplicar em todos
-                                                        </span>
-                                                    </div>
-                                                    <div className="flex flex-col gap-1">
-                                                        {SPEED_PRESETS.map((preset) => (
-                                                            <button
-                                                                key={preset.id}
-                                                                onClick={() => handleBatchSpeed(preset.id)}
-                                                                className="flex flex-col items-start px-3 py-2 hover:bg-black/5 dark:bg-white/5 rounded-md transition-colors text-left"
-                                                            >
-                                                                <span className="text-sm font-semibold text-foreground">
-                                                                    {preset.title}
-                                                                </span>
-                                                                <span className="text-[10px] text-brand-muted/70 uppercase tracking-wider font-bold mt-1">
-                                                                    {preset.description}
-                                                                </span>
-                                                            </button>
-                                                        ))}
-                                                    </div>
-                                                </div>
-                                            </>
-                                        )}
-                                    </div>
 
                                     <button
                                         onClick={() => {
@@ -470,12 +411,23 @@ export const Step2 = () => {
                                     </button>
 
                                     <button
+                                        disabled
+                                        className="px-3 py-2 bg-black/5 dark:bg-white/5 text-brand-muted rounded-lg border border-black/5 dark:border-white/5 transition-all shadow-sm opacity-50 cursor-not-allowed flex items-center gap-2 text-xs font-bold uppercase tracking-wider"
+                                        title="Corte Manual (Edição individual de cortes)"
+                                    >
+                                        <Scissors className="w-4 h-4" />
+                                        Corte Manual
+                                    </button>
+
+                                    <button
                                         onClick={() => {
-                                            // Compute effective audio duration from audioConfig (edited in step 1)
+                                            // Compute effective audio duration from audioConfig (edited in step 1).
+                                            // The final master audio mix uses duration=first (narration), so the video
+                                            // should match the narration length — not the (usually much longer) music track.
                                             const audioConfig = adData.audioConfig;
                                             let effectiveAudioDuration = 0;
 
-                                            // Narration extent: offset + (trimEnd - trimStart)
+                                            // Narration extent: offset + (trimEnd - trimStart) — this drives the video length
                                             if (audioConfig?.narration?.enabled !== false) {
                                                 const narr = audioConfig?.narration;
                                                 const rawNarrDur = narrationDuration || 0;
@@ -483,15 +435,17 @@ export const Step2 = () => {
                                                 const narrEnd = narr?.trimEnd || rawNarrDur;
                                                 const narrOffset = narr?.offsetSec || 0;
                                                 if (narrEnd > narrStart) {
-                                                    effectiveAudioDuration = Math.max(
-                                                        effectiveAudioDuration,
-                                                        narrOffset + (narrEnd - narrStart)
-                                                    );
+                                                    effectiveAudioDuration = narrOffset + (narrEnd - narrStart);
                                                 }
                                             }
 
-                                            // Music extent: offset + (trimEnd - trimStart)
-                                            if (audioConfig?.background?.enabled !== false) {
+                                            // Fallback: raw narration duration
+                                            if (effectiveAudioDuration === 0) {
+                                                effectiveAudioDuration = narrationDuration || 0;
+                                            }
+
+                                            // Last-resort fallback (music only, no narration): use music extent
+                                            if (effectiveAudioDuration === 0 && audioConfig?.background?.enabled !== false) {
                                                 const bg = audioConfig?.background;
                                                 const selectedMusic = musicLibrary.find(
                                                     (m) => m.id === selectedMusicId
@@ -501,16 +455,8 @@ export const Step2 = () => {
                                                 const musicEnd = bg?.trimEnd || rawMusicDur;
                                                 const musicOffset = bg?.offsetSec || 0;
                                                 if (musicEnd > musicStart) {
-                                                    effectiveAudioDuration = Math.max(
-                                                        effectiveAudioDuration,
-                                                        musicOffset + (musicEnd - musicStart)
-                                                    );
+                                                    effectiveAudioDuration = musicOffset + (musicEnd - musicStart);
                                                 }
-                                            }
-
-                                            // Fallback: raw narration duration
-                                            if (effectiveAudioDuration === 0) {
-                                                effectiveAudioDuration = narrationDuration || 0;
                                             }
 
                                             if (mediaTakes.length === 0 || effectiveAudioDuration === 0) {
@@ -579,27 +525,56 @@ export const Step2 = () => {
                                                         start: 0,
                                                         end: Number(assignedDuration.toFixed(1)),
                                                     },
+                                                    speedPresetId: 'normal' as const, // Remove speed effects for automatic mode
                                                 };
                                             });
 
-                                            setMediaTakes(newTakes);
-
                                             // Se sobrou muito tempo realocável, significa que todos os vídeos somados são menores que a narração
                                             if (remainingAudioTime > 0.5) {
-                                                toast.warning(
-                                                    `Cortes ajustados, mas seus vídeos são curtos demais para preencher toda a narração!`
+                                                // Lógica de LOOP para vídeos curtos: Duplicar takes até atingir effectiveAudioDuration
+                                                const newTakesArr = [...newTakes];
+                                                let loopIdx = 0;
+                                                let timeToFill = remainingAudioTime;
+                                                const maxTakesToDuplicate = 800;
+                                                
+                                                while (timeToFill > 0.5 && newTakesArr.length < maxTakesToDuplicate && mediaTakes.length > 0) {
+                                                    const baseTake = mediaTakes[loopIdx % mediaTakes.length];
+                                                    const idealTakeDur = baseTake.type === 'video' && baseTake.originalDurationSeconds > 0 
+                                                                    ? baseTake.originalDurationSeconds 
+                                                                    : timeToFill;
+                                                    
+                                                    const durationForThisLoop = Math.min(idealTakeDur, timeToFill);
+                                                    
+                                                    newTakesArr.push({
+                                                        ...baseTake,
+                                                        id: `${baseTake.id}-loop-${Date.now()}-${loopIdx}`,
+                                                        trim: {
+                                                            start: 0,
+                                                            end: Number(durationForThisLoop.toFixed(1))
+                                                        },
+                                                        speedPresetId: 'normal' as const, // Remove speed effects for automatic mode
+                                                    });
+                                                    
+                                                    timeToFill -= durationForThisLoop;
+                                                    loopIdx++;
+                                                }
+                                                setMediaTakes(newTakesArr);
+                                                toast.success(
+                                                    `Cortes em Loop: takes foram duplicados para preencher toda a narração de ${effectiveAudioDuration.toFixed(1)}s ✓`
                                                 );
                                             } else {
+                                                setMediaTakes(newTakes);
                                                 toast.success(
-                                                    `Cortes automáticos ajustados para totalizar ${effectiveAudioDuration.toFixed(1)}s ✓`
+                                                    `Cortes Automáticos ajustados para totalizar ${effectiveAudioDuration.toFixed(1)}s ✓`
                                                 );
                                             }
                                         }}
                                         disabled={mediaTakes.length === 0}
-                                        className="p-2 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 rounded-lg border border-blue-500/20 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                                        title="Dividir tempo do áudio igualmente entre os takes (Smart Cut)"
+                                        className="px-3 py-2 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 rounded-lg border border-blue-500/20 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-xs font-bold uppercase tracking-wider"
+                                        title="Dividir e preencher tempo do áudio inteligentemente (Corte Automático)"
                                     >
-                                        <Scissors className="w-4 h-4" />
+                                        <Wand2 className="w-4 h-4" />
+                                        Corte Automático
                                     </button>
 
                                     <span className="text-[10px] uppercase tracking-wider font-bold text-brand-muted ml-2">
@@ -741,7 +716,7 @@ export const Step2 = () => {
                 {/* Footer Navigation */}
                 <div className="fixed bottom-0 right-0 left-0 bg-background/80 backdrop-blur-md border-t border-border p-4 z-20 flex justify-end">
                     <button
-                        onClick={() => navigate('/step/3')}
+                        onClick={() => navigate('/wizard/step/3')}
                         disabled={mediaTakes.length === 0}
                         className="px-8 py-2.5 bg-primary hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed text-primary-foreground font-bold rounded-lg text-sm transition-all flex items-center gap-2 shadow-lg shadow-green-900/10"
                     >

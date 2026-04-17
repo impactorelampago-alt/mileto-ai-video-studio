@@ -1205,6 +1205,17 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                 return null;
                             });
                         })()}
+                        {/* Custom Image/Logo Overlay */}
+                        {adData.customOverlayUrl && (
+                            <div className="absolute inset-x-0 top-[5%] flex justify-center pointer-events-none z-50">
+                                <img
+                                    src={adData.customOverlayUrl}
+                                    alt="Overlay Img"
+                                    className="max-w-[70%] max-h-[15vh] object-contain drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]"
+                                    crossOrigin="anonymous" 
+                                />
+                            </div>
+                        )}
                     </div>
 
                     {/* Big Play Button Overlay */}

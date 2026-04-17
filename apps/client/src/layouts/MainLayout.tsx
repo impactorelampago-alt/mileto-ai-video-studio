@@ -1,72 +1,129 @@
 import { useState } from 'react';
-import { Outlet } from 'react-router-dom';
-import { Settings } from 'lucide-react';
+import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Settings, Home, User, RefreshCw, Cpu } from 'lucide-react';
 import { ApiConfigModal } from '../components/ApiConfigModal';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { StepHeader } from '../components/StepHeader';
 import logoImg from '../../public/logo.png';
+import { cn } from '../lib/utils';
 
 export const MainLayout = () => {
     const [isApiModalOpen, setIsApiModalOpen] = useState(false);
+    const navigate = useNavigate();
+    const location = useLocation();
 
     return (
-        <div className="min-h-screen bg-background text-foreground font-sans flex flex-col transition-colors duration-300">
+        <div className="flex h-screen bg-background text-foreground font-sans overflow-hidden transition-colors duration-300">
             <ApiConfigModal isOpen={isApiModalOpen} onClose={() => setIsApiModalOpen(false)} />
 
-            {/* Top Navigation Bar / Header - Premium Desktop Feel */}
-            <header className="border-b border-border bg-card/60 backdrop-blur-md sticky top-0 z-40">
-                <div className="max-w-[1600px] mx-auto px-6 h-[72px] flex items-center justify-between">
-                    {/* Logo Lockup - Clean Symbol Style */}
-                    <div className="flex items-center gap-3.5 group cursor-default">
-                        <div className="relative flex items-center justify-center">
-                            {/* Logo Glow Effect */}
-                            <div className="absolute inset-x-0 inset-y-0 rounded-full bg-brand-lime/20 blur-xl group-hover:bg-brand-accent/30 transition-all duration-700 opacity-0 group-hover:opacity-100"></div>
-
-                            {/* Official Logo Image */}
-                            <img
-                                src={logoImg}
-                                alt="Mileto AI Logo"
-                                className="w-16 h-16 object-contain transform group-hover:scale-110 transition-transform duration-500 drop-shadow-[0_0_12px_rgba(0,230,118,0.3)] relative z-10"
-                            />
-                        </div>
-
-                        <div className="flex flex-col justify-center">
-                            <h1 className="text-xl font-black text-foreground tracking-widest uppercase leading-none drop-shadow-sm">
-                                Mileto{' '}
-                                <span className="text-transparent bg-clip-text bg-linear-to-r from-brand-lime to-brand-accent">
-                                    AI
+            {/* Sidebar Lateral - Visível apenas na Home */}
+            {location.pathname === '/' && (
+                <aside className="w-[260px] flex-shrink-0 bg-[#0a0f12] border-r border-border/50 flex flex-col justify-between py-6 z-40 relative transition-all">
+                    
+                    {/* Parte Superior */}
+                    <div className="flex flex-col gap-10 px-6">
+                        {/* Logo Lockup */}
+                        <div
+                            onClick={() => navigate('/')}
+                            className="flex items-center gap-3 cursor-pointer group"
+                        >
+                            <div className="relative flex items-center justify-center">
+                                <div className="absolute inset-0 rounded-full bg-brand-lime/20 blur-xl group-hover:bg-brand-accent/30 transition-all duration-700 opacity-0 group-hover:opacity-100"></div>
+                                <img
+                                    src={logoImg}
+                                    alt="Mileto AI Logo"
+                                    className="w-10 h-10 object-contain drop-shadow-[0_0_8px_rgba(0,230,118,0.3)] relative z-10"
+                                />
+                            </div>
+                            <div className="flex flex-col justify-center">
+                                <h1 className="text-base font-black text-foreground tracking-widest uppercase leading-none drop-shadow-sm">
+                                    Mileto{' '}
+                                    <span className="text-transparent bg-clip-text bg-linear-to-r from-brand-lime to-brand-accent">
+                                        AI
+                                    </span>
+                                </h1>
+                                <span className="text-[8px] text-brand-muted uppercase tracking-[0.2em] font-bold mt-0.5 ml-[2px]">
+                                    Video Studio
                                 </span>
-                            </h1>
-                            <span className="text-[9px] text-brand-muted uppercase tracking-[0.25em] font-bold mt-0.5 ml-[2px]">
-                                Video Studio
-                            </span>
+                            </div>
                         </div>
+
+                        {/* Perfil do Usuário */}
+                        <div className="flex flex-col items-center gap-3">
+                            <div className="relative">
+                                <div className="w-16 h-16 rounded-full border border-brand-lime/40 bg-brand-lime/5 flex items-center justify-center">
+                                    <User className="w-7 h-7 text-brand-muted" />
+                                </div>
+                                <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-brand-lime rounded-full border-2 border-[#0a0f12]"></div>
+                            </div>
+                            <div className="text-center">
+                                <h2 className="text-sm font-bold text-foreground">Usuário</h2>
+                                <p className="text-[10px] text-brand-muted uppercase tracking-wider font-semibold">Plano Gratuito</p>
+                            </div>
+                        </div>
+
+                        {/* Menu de Navegação */}
+                        <nav className="flex flex-col gap-2 mt-4">
+                            <button
+                                onClick={() => navigate('/')}
+                                className={cn(
+                                    "flex items-center gap-3 px-4 py-3 rounded-xl transition-all",
+                                    location.pathname === '/' || location.pathname.startsWith('/wizard')
+                                        ? "bg-brand-lime/10 text-brand-lime border border-brand-lime/20"
+                                        : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                                )}
+                            >
+                                <Home className="w-5 h-5" />
+                                <span className="text-sm font-bold">Início</span>
+                            </button>
+                        </nav>
                     </div>
 
-                    {/* Window Controls / Actions */}
-                    <div className="flex items-center gap-4">
-                        <ThemeToggle />
-                        <button
-                            onClick={() => setIsApiModalOpen(true)}
-                            className="p-2.5 hover:bg-black/5 dark:bg-white/5 hover:text-foreground rounded-xl transition-all text-muted-foreground border border-transparent hover:border-black/10 dark:border-white/10"
-                            title="Configurações do Motor"
+                    {/* Parte Inferior (Rodapé da Sidebar) */}
+                    <div className="px-6 flex flex-col gap-4 border-t border-white/5 pt-6 mt-6">
+                        <div className="flex items-center justify-between text-muted-foreground hover:text-foreground cursor-pointer transition-colors">
+                            <span className="text-xs font-semibold">Tema</span>
+                            <ThemeToggle />
+                        </div>
+                        
+                        <button 
+                            onClick={() => window.open('https://github.com/impactorelampago-alt/mileto-ai-video-studio/releases', '_blank')}
+                            className="flex items-center gap-3 text-muted-foreground hover:text-foreground transition-colors group"
                         >
-                            <Settings className="w-5 h-5" />
+                            <RefreshCw className="w-4 h-4 group-hover:rotate-180 transition-transform duration-500" />
+                            <span className="text-xs font-semibold">Verificar Atualizações</span>
+                        </button>
+
+                        <button 
+                            onClick={() => setIsApiModalOpen(true)}
+                            className="flex items-center gap-3 text-muted-foreground hover:text-foreground transition-colors group mt-2"
+                        >
+                            <div className="px-2 py-1 bg-white/5 border border-white/10 rounded flex items-center gap-1 group-hover:border-brand-lime/40 transition-colors">
+                                <Cpu className="w-3 h-3" />
+                                <span className="text-[10px] font-bold">API</span>
+                            </div>
+                            <span className="text-xs font-semibold">Configurações</span>
                         </button>
                     </div>
+                </aside>
+            )}
+
+            {/* Conteúdo Principal (Direita) */}
+            <div className="flex-1 flex flex-col min-w-0 h-screen relative bg-background">
+                {/* Horizontal Stepper */}
+                <div className="shrink-0 border-b border-border bg-card/40 backdrop-blur-sm z-30">
+                    <StepHeader />
                 </div>
-            </header>
 
-            {/* Horizontal Stepper */}
-            <StepHeader />
-
-            <main className="flex-1 w-full bg-background relative transition-colors duration-300">
-                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,var(--tw-gradient-stops))] from-primary/5 via-background to-background pointer-events-none opacity-40"></div>
-
-                <div className="w-full max-w-[1600px] mx-auto p-6 z-10 relative">
-                    <Outlet />
-                </div>
-            </main>
+                {/* Área de Scroll com Background */}
+                <main className="flex-1 overflow-y-auto relative w-full flex flex-col">
+                    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,var(--tw-gradient-stops))] from-primary/5 via-background to-background pointer-events-none opacity-40"></div>
+                    
+                    <div className="w-full max-w-[1400px] mx-auto p-6 md:p-10 relative flex-1 flex flex-col">
+                        <Outlet />
+                    </div>
+                </main>
+            </div>
         </div>
     );
 };

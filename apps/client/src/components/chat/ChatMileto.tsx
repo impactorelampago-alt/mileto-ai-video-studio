@@ -95,7 +95,7 @@ export const ChatMileto: React.FC = () => {
     // ─── Initialize button position ──────────────────────────────────────────
     useEffect(() => {
         if (btnPos.x === -1) {
-            setBtnPos({ x: window.innerWidth - 80, y: window.innerHeight - 80 });
+            setBtnPos({ x: window.innerWidth - 80, y: window.innerHeight - 160 });
         }
     }, []);
 

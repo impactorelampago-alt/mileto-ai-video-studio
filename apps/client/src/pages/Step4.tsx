@@ -13,6 +13,9 @@ import {
     Play,
     Bug,
     MapPin,
+    Image as ImageIcon,
+    Trash2,
+    Upload,
 } from 'lucide-react';
 import { useWizard, SHOW_DEBUG_FEATURES } from '../context/WizardContext';
 import { VideoSequencePreview, VideoSequencePreviewRef } from '../components/VideoSequencePreview';
@@ -32,6 +35,8 @@ export const Step4 = () => {
     const [isCtaOpen, setIsCtaOpen] = useState(false);
     const [isPremiumOpen, setIsPremiumOpen] = useState(false); // New state
     const [isLocationOpen, setIsLocationOpen] = useState(false);
+    const [isCustomImgOpen, setIsCustomImgOpen] = useState(false);
+    const [isUploadingImage, setIsUploadingImage] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
     const previewRef = useRef<VideoSequencePreviewRef>(null);
 
@@ -123,6 +128,9 @@ export const Step4 = () => {
         { id: 'gradient-glow', name: 'Brilho Gradiente' },
         { id: 'framed-box', name: 'Caixa Emoldurada' },
         { id: 'minimal-underline', name: 'Minimalista' },
+        { id: 'neon-cyber', name: 'Cyberpunk Neon' },
+        { id: 'glassmorphism', name: 'Vidro Fosco (Glass)' },
+        { id: 'cinema-wide', name: 'Cinema Wide' },
         { id: 'default', name: 'Padrão' },
     ];
 
@@ -130,9 +138,13 @@ export const Step4 = () => {
         { id: 'cta-search', name: 'Barra de Busca' },
         { id: 'cta-tap', name: 'Botão de Clique' },
         { id: 'cta-whatsapp', name: 'Balão WhatsApp' },
+        { id: 'cta-shop', name: 'Sacola (Comprar)' },
+        { id: 'cta-minimal', name: 'Seta Minimalista' },
     ];
 
-    const PREMIUM_MODELS: { id: string; name: string }[] = [];
+    const PREMIUM_MODELS = [
+        { id: 'premium-01', name: 'Lançamento Pro' }
+    ];
 
     const LOCATION_MODELS = [
         { id: 'loc-pin-viagem', name: 'Pin de Viagem' },
@@ -197,6 +209,52 @@ export const Step4 = () => {
                     >
                         <Sparkles className="w-4 h-4" />
                         Criar Título
+                    </button>
+
+                    <button
+                        onClick={() => {
+                            // Create file input for image upload
+                            const input = document.createElement('input');
+                            input.type = 'file';
+                            input.accept = 'image/*';
+                            input.onchange = async (e) => {
+                                const file = (e.target as HTMLInputElement).files?.[0];
+                                if (!file) return;
+
+                                // Validate file size (max 5MB)
+                                if (file.size > 5 * 1024 * 1024) {
+                                    toast.error('Imagem muito grande! Máximo 5MB.');
+                                    return;
+                                }
+
+                                // Create title with uploaded image
+                                const imageUrl = URL.createObjectURL(file);
+                                const newTitle: TitleHook = {
+                                    id: `upload-${Date.now()}`,
+                                    text: file.name.replace(/\.[^/.]+$/, ''), // Remove extension
+                                    styleId: 'image-overlay', // Custom style for uploaded images
+                                    startSec: 0,
+                                    durationSec: 3,
+                                    isActive: true,
+                                    hasSound: false,
+                                    posY: 50,
+                                    scale: 1,
+                                    primaryColor: '#ffffff',
+                                    secondaryColor: '#000000',
+                                    animationId: 'fade',
+                                    fontFamily: 'Inter',
+                                    imageUrl: imageUrl, // Store the blob URL
+                                };
+                                updateAdData({ dynamicTitles: [...titles, newTitle] });
+                                setSelectedTitleId(newTitle.id);
+                                toast.success('Imagem de título carregada!');
+                            };
+                            input.click();
+                        }}
+                        className="w-full py-3 border-2 border-dashed border-blue-500/30 hover:border-blue-500/60 hover:bg-blue-500/5 text-blue-400 font-bold rounded-2xl text-[12px] uppercase tracking-wider transition-all flex items-center justify-center gap-2"
+                    >
+                        <Upload className="w-4 h-4" />
+                        Upload de Imagem
                     </button>
 
                     <div className="space-y-2 mt-1">
@@ -998,6 +1056,85 @@ export const Step4 = () => {
                                         </button>
                                     );
                                 })}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Accordion: Upload Imagem Personalizada */}
+                    <div className="mb-6 mt-4">
+                        <div
+                            className="flex items-center justify-between bg-brand-dark p-4 rounded-t-2xl border border-black/5 dark:border-white/5 shadow-sm cursor-pointer hover:bg-black/5 dark:bg-white/5 transition-colors group"
+                            onClick={() => setIsCustomImgOpen(!isCustomImgOpen)}
+                        >
+                            <div className="flex items-center gap-3">
+                                {isCustomImgOpen ? (
+                                    <ChevronUp className="w-5 h-5 text-blue-400" />
+                                ) : (
+                                    <ChevronDown className="w-5 h-5 text-blue-400" />
+                                )}
+                                <ImageIcon className="w-4 h-4 text-blue-400" />
+                                <h4 className="font-bold uppercase tracking-wider text-blue-400 text-[13px] drop-shadow-[0_0_5px_rgba(96,165,250,0.3)]">
+                                    Imagem Personalizada (Logo/Selo)
+                                </h4>
+                            </div>
+                        </div>
+
+                        {isCustomImgOpen && (
+                            <div className="bg-brand-dark/40 p-5 border border-t-0 border-black/5 dark:border-white/5 rounded-b-2xl animate-in slide-in-from-top-2 duration-200 space-y-4">
+                                {adData.customOverlayUrl ? (
+                                    <div className="flex items-center justify-between bg-background border border-black/10 dark:border-white/10 rounded-xl p-3">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-12 h-12 bg-black/5 dark:bg-white/5 rounded-lg flex items-center justify-center overflow-hidden">
+                                                <img src={adData.customOverlayUrl} alt="Custom Overlay" className="max-w-full max-h-full object-contain" />
+                                            </div>
+                                            <div>
+                                                <p className="text-sm font-bold text-foreground">Imagem Carregada</p>
+                                                <p className="text-xs text-brand-muted">A imagem será mantida fixa durante o vídeo.</p>
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={() => updateAdData({ customOverlayUrl: undefined })}
+                                            className="p-2 text-brand-muted hover:text-red-500 bg-black/5 hover:bg-red-500/10 rounded-lg transition-colors"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <label className={cn(
+                                        "flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-xl cursor-pointer transition-colors",
+                                        isUploadingImage ? "opacity-50 border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5" : "border-blue-400/30 hover:border-blue-400 hover:bg-blue-400/5 bg-background"
+                                    )}>
+                                        <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                                            {isUploadingImage ? (
+                                                <div className="animate-spin w-6 h-6 border-2 border-blue-400/30 border-t-blue-400 rounded-full mb-2" />
+                                            ) : (
+                                                <ImageIcon className="w-8 h-8 text-blue-400/70 mb-2" />
+                                            )}
+                                            <p className="font-bold text-sm text-foreground">
+                                                {isUploadingImage ? 'Enviando...' : 'Clique para enviar imagem'}
+                                            </p>
+                                            <p className="text-xs text-brand-muted mt-1 uppercase tracking-wider font-semibold">PNG SEM FUNDO RECOMENDADO</p>
+                                        </div>
+                                        <input 
+                                            type="file" 
+                                            className="hidden" 
+                                            accept="image/png, image/jpeg, image/webp" 
+                                            disabled={isUploadingImage}
+                                            onChange={async (e) => {
+                                                const file = e.target.files?.[0];
+                                                if (!file) return;
+                                                setIsUploadingImage(true);
+                                                try {
+                                                    const tmpUrl = URL.createObjectURL(file);
+                                                    updateAdData({ customOverlayUrl: tmpUrl });
+                                                    // Num cenário ideal, faríamos o upload pro S3/Servidor aqui igual fazemos com música
+                                                } finally {
+                                                    setIsUploadingImage(false);
+                                                }
+                                            }}
+                                        />
+                                    </label>
+                                )}
                             </div>
                         )}
                     </div>

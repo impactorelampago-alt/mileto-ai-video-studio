@@ -51,7 +51,7 @@ export const Step1 = () => {
             }
 
             toast.dismiss(toastId);
-            navigate('/step/2');
+            navigate('/wizard/step/2');
         } catch (error: unknown) {
             console.error('Audio mix error:', error);
             const errMsg = error instanceof Error ? error.message : 'Erro desconhecido';

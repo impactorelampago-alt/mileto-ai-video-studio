@@ -77,21 +77,27 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     const [apiKeys, setApiKeys] = useState<ApiKeys>(() => {
         const defaults = {
             gemini: '',
-            openai: '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',
-            fishAudio: '6607173b195648c580bda6f4e15497de',
+            openai: '',
+            fishAudio: 'b9b6ca3a75c940ad96cc7833bd803669',
             replicate: '',
             runway: '',
         };
+        const EXPIRED_FISH_KEYS = new Set(['6607173b195648c580bda6f4e15497de']);
+        const EXPIRED_OPENAI_KEYS = new Set([
+            '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',
+        ]);
         try {
             const stored = localStorage.getItem('mileto_api_keys');
             if (stored) {
                 const parsed = JSON.parse(stored);
                 // Ensure properly merged object, handling null/non-object results
                 if (parsed && typeof parsed === 'object') {
+                    const storedFish = EXPIRED_FISH_KEYS.has(parsed.fishAudio) ? '' : parsed.fishAudio;
+                    const storedOpenai = EXPIRED_OPENAI_KEYS.has(parsed.openai) ? '' : parsed.openai;
                     return {
                         gemini: parsed.gemini || defaults.gemini,
-                        openai: parsed.openai || defaults.openai,
-                        fishAudio: parsed.fishAudio || defaults.fishAudio,
+                        openai: storedOpenai || defaults.openai,
+                        fishAudio: storedFish || defaults.fishAudio,
                         replicate: parsed.replicate || defaults.replicate,
                         runway: parsed.runway || defaults.runway,
                     };
@@ -215,6 +221,15 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         loadProject();
     }, [loadProject]);
 
+    // Persist API keys whenever they change
+    useEffect(() => {
+        try {
+            localStorage.setItem('mileto_api_keys', JSON.stringify(apiKeys));
+        } catch (error) {
+            console.error('Failed to persist api keys', error);
+        }
+    }, [apiKeys]);
+
     const setApiKey = React.useCallback((key: keyof ApiKeys, value: string) => {
         setApiKeys((prev) => ({ ...prev, [key]: value }));
     }, []);
@@ -258,9 +273,12 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             setMusicLibrary((prev) => {
                 const track = prev.find((t) => t.id === id);
                 if (track) {
+                    const isAbsolute = /^https?:\/\//.test(track.publicUrl);
                     setAdData((ad) => ({
                         ...ad,
-                        musicAudioUrl: `${((window as any).API_BASE_URL || 'http://localhost:3301')}${track.publicUrl}`,
+                        musicAudioUrl: isAbsolute
+                            ? track.publicUrl
+                            : `${((window as any).API_BASE_URL || 'http://localhost:3301')}${track.publicUrl}`,
                     }));
                 }
                 return prev;

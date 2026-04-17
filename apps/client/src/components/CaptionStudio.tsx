@@ -62,10 +62,67 @@ export const CaptionStudio: React.FC = () => {
             <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
                 {/* Style Controls Section */}
                 <div className="space-y-4">
-                    <h4 className="text-sm font-medium text-muted-foreground flex items-center gap-2 uppercase tracking-wider">
+                    <h4 className="text-sm font-medium text-muted-foreground flex items-center gap-2 uppercase tracking-wider mb-4">
                         <PaintBucket className="w-4 h-4" />
                         Aparência
                     </h4>
+
+                    {/* Presets Rápidos */}
+                    <div className="mb-6 bg-black/10 dark:bg-white/5 p-3 rounded-xl border border-black/5 dark:border-white/5">
+                        <label className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block mb-2">
+                            Presets Rápidos
+                        </label>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                            <button 
+                                onClick={() => updateStyle({ activeColor: '#FFFF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Anton', fontSize: 42 })} 
+                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-yellow-400 transition-colors font-bold text-yellow-400 bg-background shadow-sm"
+                            >
+                                AMARELO IMPACTO
+                            </button>
+                            <button 
+                                onClick={() => updateStyle({ activeColor: '#E50914', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Bebas Neue', fontSize: 46 })} 
+                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-red-500 transition-colors font-bold text-red-500 bg-background tracking-widest shadow-sm"
+                            >
+                                ESTILO FLIX
+                            </button>
+                            <button 
+                                onClick={() => updateStyle({ activeColor: '#00D1FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 3, fontFamily: 'Inter', fontSize: 38 })} 
+                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-cyan-400 transition-colors font-bold text-cyan-400 bg-background shadow-sm"
+                            >
+                                CYAN CLEAN
+                            </button>
+                            <button 
+                                onClick={() => updateStyle({ activeColor: '#FFD700', baseColor: '#F5F5F5', strokeColor: '#1A1A1A', strokeWidth: 6, fontFamily: 'Playfair Display', fontSize: 50 })} 
+                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-yellow-600 transition-colors font-serif font-black text-yellow-500 bg-background shadow-sm"
+                            >
+                                CINEMATIC GOLD
+                            </button>
+                            <button 
+                                onClick={() => updateStyle({ activeColor: '#FF00FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Impact', fontSize: 44 })} 
+                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-fuchsia-500 transition-colors font-bold text-fuchsia-500 bg-background shadow-sm"
+                            >
+                                CYBERPUNK
+                            </button>
+                            <button 
+                                onClick={() => updateStyle({ activeColor: '#00FF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 4, fontFamily: 'Montserrat', fontSize: 36 })} 
+                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-green-500 transition-colors font-bold text-green-500 bg-background shadow-sm"
+                            >
+                                HACKER MATRIX
+                            </button>
+                            <button 
+                                onClick={() => updateStyle({ activeColor: '#FFFFFF', baseColor: '#A0A0A0', strokeColor: '#000000', strokeWidth: 2, fontFamily: 'Roboto', fontSize: 32 })} 
+                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-white transition-colors font-semibold text-white bg-background shadow-sm"
+                            >
+                                MINIMALISTA
+                            </button>
+                            <button 
+                                onClick={() => updateStyle({ activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Comic Sans MS', fontSize: 40 })} 
+                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-orange-500 transition-colors font-bold text-orange-500 bg-background shadow-sm mt-0"
+                            >
+                                YOUTUBER KIDS
+                            </button>
+                        </div>
+                    </div>
 
                     {/* Font Family */}
                     <div className="space-y-2">
@@ -79,10 +136,14 @@ export const CaptionStudio: React.FC = () => {
                             className="w-full bg-input/50 hover:bg-input border border-border/50 rounded-lg px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary transition-all cursor-pointer"
                         >
                             <option value="Poppins">Poppins</option>
+                            <option value="Roboto">Roboto</option>
+                            <option value="Inter">Inter</option>
                             <option value="Impact">Impact</option>
                             <option value="Montserrat">Montserrat</option>
                             <option value="Anton">Anton</option>
                             <option value="Bebas Neue">Bebas Neue</option>
+                            <option value="Playfair Display">Playfair Display</option>
+                            <option value="Comic Sans MS">Comic Sans MS</option>
                         </select>
                     </div>
 

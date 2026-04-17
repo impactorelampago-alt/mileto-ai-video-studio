@@ -9,7 +9,7 @@ interface Props {
     isHybridMode?: boolean;
 }
 
-import { Search, MapPin, Navigation, Globe } from 'lucide-react';
+import { Search, MapPin, Navigation, Globe, ShoppingBag, ArrowRight } from 'lucide-react';
 
 export const DynamicTitleRenderer: React.FC<Props> = ({ title, className, timeElapsed = 0, isHybridMode = false }) => {
     const text = title.text || '';
@@ -223,6 +223,45 @@ export const DynamicTitleRenderer: React.FC<Props> = ({ title, className, timeEl
                     </div>
                 </div>
             );
+
+        case 'cta-shop':
+            return (
+                <div className={cn('relative flex items-center justify-center', className)}>
+                    <div
+                        className="flex items-center gap-4 px-8 py-4 shadow-[0_10px_30px_rgba(0,0,0,0.5)] rounded-2xl relative overflow-hidden"
+                        style={{ backgroundColor: primary, border: `2px solid ${secondary}40` }}
+                    >
+                        <ShoppingBag className="w-8 h-8 shrink-0" style={{ color: secondary }} strokeWidth={2} />
+                        <span
+                            className="text-3xl font-black uppercase tracking-tight"
+                            style={{ color: secondary, fontFamily: title.fontFamily || 'Montserrat' }}
+                        >
+                            {text}
+                        </span>
+                    </div>
+                </div>
+            );
+
+        case 'cta-minimal':
+            return (
+                <div className={cn('relative flex items-center justify-center', className)}>
+                    <div
+                        className="flex items-center gap-4 px-6 py-3 rounded-full shadow-lg"
+                        style={{ backgroundColor: `${primary}E6`, backdropFilter: 'blur(8px)' }}
+                    >
+                        <span
+                            className="text-2xl font-bold tracking-widest uppercase"
+                            style={{ color: secondary, fontFamily: title.fontFamily || 'Anton' }}
+                        >
+                            {text}
+                        </span>
+                        <div className="bg-white/20 p-2 rounded-full">
+                            <ArrowRight className="w-5 h-5 shrink-0" style={{ color: secondary }} strokeWidth={3} />
+                        </div>
+                    </div>
+                </div>
+            );
+
         case 'neo-pop':
             return (
                 <div className={cn('relative drop-shadow-lg', className)}>
@@ -307,6 +346,48 @@ export const DynamicTitleRenderer: React.FC<Props> = ({ title, className, timeEl
                         className="h-3 w-[110%] -mt-4 shadow-lg z-0 -skew-x-15 mix-blend-screen"
                         style={{ backgroundColor: primary }}
                     />
+                </div>
+            );
+            
+        case 'neon-cyber':
+            return (
+                <div className={cn('relative flex flex-col items-center', className)}>
+                    <h2
+                        className="text-4xl md:text-5xl font-black tracking-tighter uppercase text-center z-10"
+                        style={{
+                            color: secondary,
+                            fontFamily: title.fontFamily || 'Press Start 2P, Impact',
+                            textShadow: `0 0 10px ${primary}, 0 0 20px ${primary}, 0 0 40px ${primary}`
+                        }}
+                    >
+                        {text}
+                    </h2>
+                </div>
+            );
+
+        case 'glassmorphism':
+            return (
+                <div className={cn('relative p-6 rounded-3xl border border-white/20 shadow-2xl', className)}
+                     style={{ backgroundColor: `${primary}40`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' }}>
+                    <h2
+                        className="text-3xl md:text-4xl font-semibold tracking-wide text-center"
+                        style={{ color: secondary, fontFamily: title.fontFamily || 'Inter' }}
+                    >
+                        {text}
+                    </h2>
+                </div>
+            );
+
+        case 'cinema-wide':
+            return (
+                <div className={cn('relative w-full flex justify-center py-2', className)}
+                     style={{ backgroundColor: primary }}>
+                    <h2
+                        className="text-2xl md:text-3xl font-medium tracking-[0.3em] uppercase text-center"
+                        style={{ color: secondary, fontFamily: title.fontFamily || 'Helvetica' }}
+                    >
+                        {text}
+                    </h2>
                 </div>
             );
 
@@ -396,6 +477,34 @@ export const DynamicTitleRenderer: React.FC<Props> = ({ title, className, timeEl
                             </h2>
                         </div>
                     </div>
+                </div>
+            );
+
+        case 'image-overlay':
+            return (
+                <div className={cn('relative', className)}>
+                    {(title as any).imageUrl && (
+                        <img
+                            src={(title as any).imageUrl}
+                            alt={text}
+                            className="max-w-full max-h-32 object-contain rounded-lg shadow-lg"
+                            style={{
+                                filter: `drop-shadow(0 0 10px ${primary}40)`,
+                            }}
+                        />
+                    )}
+                    {text && (
+                        <h2
+                            className="text-2xl md:text-3xl font-bold tracking-wide uppercase text-center mt-2 drop-shadow-lg"
+                            style={{
+                                color: secondary,
+                                fontFamily: title.fontFamily || 'Inter',
+                                textShadow: `2px 2px 0px ${primary}80`,
+                            }}
+                        >
+                            {text}
+                        </h2>
+                    )}
                 </div>
             );
 

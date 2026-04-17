@@ -1,18 +1,18 @@
 {
     "name": "client",
     "private": true,
-    "version": "1.0.7",
+    "version": "1.0.8",
     "description": "Mileto App Desktop",
     "author": "User",
     "type": "module",
-    "main": "electron/main.js",
+    "main": "electron-main/main.cjs",
     "scripts": {
         "dev": "vite",
         "build": "tsc -b && vite build",
         "make": "cd ../server && npm run build:bundle && cd ../client && vite build && electron-builder build --win",
         "lint": "eslint .",
         "preview": "vite preview",
-        "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\""
+        "electron:dev": "concurrently \"vite --port 5173 --strictPort\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\""
     },
     "dependencies": {
         "@dnd-kit/core": "^6.3.1",
