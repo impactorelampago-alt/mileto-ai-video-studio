@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# FFmpeg binaries bundled into the installer (too large for GitHub > 100MB limit)
+resources/bin/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

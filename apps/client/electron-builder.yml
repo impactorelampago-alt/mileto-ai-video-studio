@@ -36,6 +36,12 @@ files:
     - '!node_modules/**/*.cpp'
 
 extraResources:
+    - from: 'resources/bin/ffmpeg.exe'
+      to: 'bin/ffmpeg.exe'
+
+    - from: 'resources/bin/ffprobe.exe'
+      to: 'bin/ffprobe.exe'
+
     - from: '../server/dist/bundle.js'
       to: 'server/bundle.js'
 
