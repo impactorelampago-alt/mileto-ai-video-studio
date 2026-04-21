@@ -1,10 +1,10 @@
 import { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID as uuidv4 } from 'crypto';
 import ffmpeg from 'fluent-ffmpeg';
 
-const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const transitionsDir = path.join(BASE_DATA_PATH, 'public/transitions');
 
 // Ensure directory exists

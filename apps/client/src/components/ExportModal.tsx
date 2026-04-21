@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, X, CheckCircle2, XCircle, Film, FolderOpen } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -54,6 +54,39 @@ export const ExportModal = ({
     // Refs for cancellation
     const cancelledRef = useRef(false);
     const startTimeRef = useRef(0);
+
+    // Auto-detected target resolution (min of source videos to avoid upscale)
+    const [targetDims, setTargetDims] = useState({ w: 1080, h: 1920 });
+
+    useEffect(() => {
+        let cancelled = false;
+        const probeVideoDims = (url: string): Promise<{ w: number; h: number } | null> =>
+            new Promise((resolve) => {
+                const v = document.createElement('video');
+                v.preload = 'metadata';
+                v.muted = true;
+                v.onloadedmetadata = () => resolve({ w: v.videoWidth, h: v.videoHeight });
+                v.onerror = () => resolve(null);
+                v.src = url;
+            });
+
+        (async () => {
+            const videoTakes = mediaTakes.filter((t) => t.type === 'video');
+            if (videoTakes.length === 0) return;
+            const dims = await Promise.all(
+                videoTakes.map((t) => probeVideoDims(t.fileUrl || t.url))
+            );
+            const valid = dims.filter((d): d is { w: number; h: number } => d !== null && d.w > 0 && d.h > 0);
+            if (!valid.length || cancelled) return;
+            const minW = Math.max(2, Math.floor(Math.min(...valid.map((d) => d.w)) / 2) * 2);
+            const minH = Math.max(2, Math.floor(Math.min(...valid.map((d) => d.h)) / 2) * 2);
+            setTargetDims({ w: minW, h: minH });
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [mediaTakes]);
 
     // Calculate total duration from all takes
     let totalDuration = mediaTakes.reduce((acc, take) => acc + (take.trim.end - take.trim.start), 0);
@@ -117,7 +150,7 @@ export const ExportModal = ({
 
         try {
             // Se estiver em modo híbrido, avisa o CaptureEngine para filmar com Transparencia (Alpha WebM)
-            const engine = new DOMCaptureEngine(1080, 1920, fps, isHybridMode);
+            const engine = new DOMCaptureEngine(targetDims.w, targetDims.h, fps, isHybridMode);
             await engine.start();
 
             setStatusText(isHybridMode ? 'Extraindo Títulos e Legendas (Overlay)...' : 'Renderizando frames...');
@@ -132,7 +165,7 @@ export const ExportModal = ({
                 }
 
                 const time = i / fps;
-                const canvas = await previewRef.current!.extractFrameSync(time, isHybridMode);
+                const canvas = await previewRef.current!.extractFrameSync(time, isHybridMode, targetDims.w, targetDims.h);
                 if (canvas) {
                     await engine.captureFrame(canvas);
                 }
@@ -407,7 +440,7 @@ export const ExportModal = ({
                                 <span>
                                     RES:{' '}
                                     <strong className="text-brand-lime drop-shadow-[0_0_5px_rgba(163,230,53,0.5)]">
-                                        1080×1920
+                                        {targetDims.w}×{targetDims.h}
                                     </strong>
                                 </span>
                             </div>

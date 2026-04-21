@@ -1,13 +1,13 @@
 import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID as uuidv4 } from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
-const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 
 const MUSIC_DIR = path.join(BASE_DATA_PATH, 'music');
 const LIBRARY_JSON = path.join(BASE_DATA_PATH, 'data/music_library.json');

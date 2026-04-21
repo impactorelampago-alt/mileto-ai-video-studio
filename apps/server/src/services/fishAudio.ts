@@ -23,7 +23,11 @@ export const getAudioDuration = (filePath: string): Promise<number> => {
 export const generateNarration = async (voiceId: string, text: string, apiKey: string) => {
     if (!apiKey) throw new Error('Fish Audio API Key is required');
 
-    const hash = crypto.createHash('md5').update(`${voiceId}-${text}`).digest('hex');
+    // Process text for API call first (do not append extra dots to avoid repetition)
+    const finalPayloadText = text.trim();
+
+    // Generate hash from processed text to ensure consistency
+    const hash = crypto.createHash('md5').update(`${voiceId}-${finalPayloadText}`).digest('hex');
     const fileName = `narration-${hash}.mp3`;
     let filePath = path.join(NARRATION_DIR, fileName);
 
@@ -66,7 +70,7 @@ export const generateNarration = async (voiceId: string, text: string, apiKey: s
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                text,
+                text: finalPayloadText,
                 reference_id: voiceId, // Fish Audio uses reference_id or voice_id depending on docs, usually reference_id for cloned/presets
                 format: 'mp3',
                 mp3_bitrate: 128,

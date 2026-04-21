@@ -6,6 +6,12 @@ directories:
 
 electronVersion: '30.0.0'
 
+publish:
+    - provider: github
+      owner: impactorelampago-alt
+      repo: mileto-ai-video-studio
+      releaseType: release
+
 # Maximum Compression (ASAR is required for performance and security)
 compression: maximum
 asar: true
@@ -68,4 +74,4 @@ nsis:
     installerIcon: '../../icone/Logo-Mileto-AI-Video-.ico'
     uninstallerIcon: '../../icone/Logo-Mileto-AI-Video-.ico'
     uninstallDisplayName: Mileto Gerador de Video
-    artifactName: Mileto-Gerador-de-Video-Instalador-V1.0.7.${ext}
+    artifactName: Mileto-Gerador-de-Video-Instalador-V${version}.${ext}

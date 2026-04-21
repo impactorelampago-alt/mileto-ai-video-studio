@@ -3,7 +3,7 @@ import Replicate from 'replicate';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID as uuidv4 } from 'crypto';
 
 // --- Replicate Integration ---
 
@@ -45,7 +45,7 @@ export const generateReplicateImage = async (req: Request, res: Response) => {
 
         const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
         const fileName = `img-${uuidv4()}.png`;
-        const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+        const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
         const projectDir = path.join(BASE_DATA_PATH, 'data/projects', projectId, 'ai/images');
 
         if (!fs.existsSync(projectDir)) {
@@ -137,7 +137,7 @@ export const generateRunwayVideo = async (req: Request, res: Response) => {
 
         // Debug Log
         try {
-            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
             const logPath = path.join(BASE_DATA_PATH, 'runway_debug.log');
             const logEntry = `[${new Date().toISOString()}] Payload: ${JSON.stringify(payload)}\n`;
             fs.appendFileSync(logPath, logEntry);
@@ -170,7 +170,7 @@ export const generateRunwayVideo = async (req: Request, res: Response) => {
 
         // Debug Log Error
         try {
-            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
             const logPath = path.join(BASE_DATA_PATH, 'runway_debug.log');
             const logEntry = `[${new Date().toISOString()}] ERROR (${errStatus}): ${JSON.stringify(errData || axiosErr.message)}\n`;
             fs.appendFileSync(logPath, logEntry);
@@ -228,7 +228,7 @@ export const generateRunwayImageToVideo = async (req: Request, res: Response) =>
                     localPath = urlObj.pathname;
                 }
                 // Map /data/... to the actual filesystem path
-                const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+                const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
                 const filePath = path.join(BASE_DATA_PATH, localPath);
 
                 if (fs.existsSync(filePath)) {
@@ -260,7 +260,7 @@ export const generateRunwayImageToVideo = async (req: Request, res: Response) =>
 
         // Debug Log
         try {
-            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
             const logPath = path.join(BASE_DATA_PATH, 'runway_debug.log');
             const logEntry = `[${new Date().toISOString()}] Img2Vid Payload: ${JSON.stringify(payload)}\n`;
             fs.appendFileSync(logPath, logEntry);
@@ -292,7 +292,7 @@ export const generateRunwayImageToVideo = async (req: Request, res: Response) =>
         console.error('Runway Img2Vid Error:', JSON.stringify(errData || axiosErr.message));
 
         try {
-            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
             const logPath = path.join(BASE_DATA_PATH, 'runway_debug.log');
             const logEntry = `[${new Date().toISOString()}] ERROR (${errStatus}): ${JSON.stringify(errData || axiosErr.message)}\n`;
             fs.appendFileSync(logPath, logEntry);
@@ -343,7 +343,7 @@ export const getRunwayJobStatus = async (req: Request, res: Response) => {
             const videoResponse = await axios.get(videoUrl, { responseType: 'arraybuffer' });
             const fileName = `vid-${uuidv4()}.mp4`;
             const pId = String(projectId);
-            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
             const projectDir = path.join(BASE_DATA_PATH, 'data/projects', pId, 'ai/videos');
 
             if (!fs.existsSync(projectDir)) {

@@ -1,6 +1,7 @@
 {
     "name": "mileto-server",
     "version": "1.0.0",
+    "type": "commonjs",
     "main": "dist/index.js",
     "scripts": {
         "start": "node dist/index.js",

@@ -20,6 +20,8 @@ apps/server/voice_samples/
 apps/server/data/
 apps/server/public/mixes/
 apps/server/public/transitions/
+apps/server/src/public/
+apps/client/stats.json
 *.log
 *.exe
 *.msi

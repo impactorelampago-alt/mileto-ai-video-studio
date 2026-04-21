@@ -29,7 +29,7 @@ export const generateCaptions = async (req: Request, res: Response) => {
         if (filePath.startsWith('/')) {
             // Probably a relative URL like /narrations/xxx or /uploads/xxx
             const basename = path.basename(filePath);
-            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
             if (audioUrl.includes('narrations/')) {
                 filePath = path.join(BASE_DATA_PATH, 'narrations', basename);
             } else if (audioUrl.includes('uploads/')) {

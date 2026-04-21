@@ -1,0 +1,4 @@
+provider: github
+owner: impactorelampago-alt
+repo: mileto-ai-video-studio
+updaterCacheDirName: mileto-updater

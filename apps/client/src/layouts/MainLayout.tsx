@@ -1,16 +1,89 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Settings, Home, User, RefreshCw, Cpu } from 'lucide-react';
+import { Home, User, RefreshCw, Cpu } from 'lucide-react';
+import { toast } from 'sonner';
 import { ApiConfigModal } from '../components/ApiConfigModal';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { StepHeader } from '../components/StepHeader';
 import logoImg from '../../public/logo.png';
 import { cn } from '../lib/utils';
+import { updater, UpdateStatus } from '../lib/updater';
 
 export const MainLayout = () => {
     const [isApiModalOpen, setIsApiModalOpen] = useState(false);
+    const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
     const navigate = useNavigate();
     const location = useLocation();
+    const progressToastId = useRef<string | number | null>(null);
+
+    useEffect(() => {
+        const off = updater.onStatus((s: UpdateStatus) => {
+            if (s.type === 'progress') {
+                const pct = Math.max(0, Math.min(100, Math.round(s.percent)));
+                const msg = `Baixando atualização... ${pct}%`;
+                if (progressToastId.current == null) {
+                    progressToastId.current = toast.loading(msg);
+                } else {
+                    toast.loading(msg, { id: progressToastId.current });
+                }
+            } else if (s.type === 'downloaded') {
+                if (progressToastId.current != null) {
+                    toast.dismiss(progressToastId.current);
+                    progressToastId.current = null;
+                }
+                toast.success(`Versão ${s.version} baixada. Reiniciando para instalar...`, { duration: 2500 });
+                setTimeout(() => void updater.install(), 2000);
+            } else if (s.type === 'error') {
+                if (progressToastId.current != null) {
+                    toast.dismiss(progressToastId.current);
+                    progressToastId.current = null;
+                }
+                toast.error(`Erro na atualização: ${s.message}`);
+                setIsCheckingUpdate(false);
+            }
+        });
+        return off;
+    }, []);
+
+    const handleCheckUpdates = async () => {
+        if (isCheckingUpdate) return;
+
+        if (!updater.isAvailable()) {
+            window.open('https://github.com/impactorelampago-alt/mileto-ai-video-studio/releases', '_blank');
+            return;
+        }
+
+        setIsCheckingUpdate(true);
+        const checkToastId = toast.loading('Verificando atualizações...');
+
+        try {
+            const res = await updater.check();
+            toast.dismiss(checkToastId);
+
+            if (!res.ok) {
+                toast.error(res.message || 'Falha ao verificar atualizações');
+                setIsCheckingUpdate(false);
+                return;
+            }
+
+            if (!res.updateInfo || res.updateInfo.version === res.currentVersion) {
+                toast.success(`Você já está na versão mais recente (${res.currentVersion}).`);
+                setIsCheckingUpdate(false);
+                return;
+            }
+
+            toast.info(`Nova versão ${res.updateInfo.version} disponível. Baixando...`);
+            const dl = await updater.download();
+            if (!dl.ok) {
+                toast.error(dl.message || 'Falha ao baixar atualização');
+                setIsCheckingUpdate(false);
+            }
+        } catch (err: unknown) {
+            toast.dismiss(checkToastId);
+            toast.error(err instanceof Error ? err.message : 'Erro desconhecido');
+            setIsCheckingUpdate(false);
+        }
+    };
 
     return (
         <div className="flex h-screen bg-background text-foreground font-sans overflow-hidden transition-colors duration-300">
@@ -86,12 +159,18 @@ export const MainLayout = () => {
                             <ThemeToggle />
                         </div>
                         
-                        <button 
-                            onClick={() => window.open('https://github.com/impactorelampago-alt/mileto-ai-video-studio/releases', '_blank')}
-                            className="flex items-center gap-3 text-muted-foreground hover:text-foreground transition-colors group"
+                        <button
+                            onClick={handleCheckUpdates}
+                            disabled={isCheckingUpdate}
+                            className="flex items-center gap-3 text-muted-foreground hover:text-foreground transition-colors group disabled:opacity-60 disabled:cursor-wait"
                         >
-                            <RefreshCw className="w-4 h-4 group-hover:rotate-180 transition-transform duration-500" />
-                            <span className="text-xs font-semibold">Verificar Atualizações</span>
+                            <RefreshCw className={cn(
+                                'w-4 h-4 transition-transform duration-500',
+                                isCheckingUpdate ? 'animate-spin' : 'group-hover:rotate-180'
+                            )} />
+                            <span className="text-xs font-semibold">
+                                {isCheckingUpdate ? 'Verificando...' : 'Verificar Atualizações'}
+                            </span>
                         </button>
 
                         <button 

@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getVideoMetadata, extractFrames, muxVideoAudio } from '../services/ffmpeg';
+import { getVideoMetadata, extractFrames, muxVideoAudio, getVideoEncoderArgs } from '../services/ffmpeg';
 import path from 'path';
 import { spawn } from 'child_process';
 import fs from 'fs';
@@ -48,14 +48,7 @@ export const uploadVideo = async (req: Request, res: Response) => {
                         originalPath,
                         '-vf',
                         'scale=720:-2', // 720p width, maintain aspect ratio
-                        '-c:v',
-                        'libx264',
-                        '-preset',
-                        'veryfast',
-                        '-crf',
-                        '26', // Lower quality for preview is fine
-                        '-pix_fmt',
-                        'yuv420p',
+                        ...getVideoEncoderArgs({ quality: 26, speed: 'veryfast' }),
                         '-movflags',
                         '+faststart',
                         '-c:a',

@@ -10,7 +10,12 @@ import { toast } from 'sonner';
 
 export interface VideoSequencePreviewRef {
     seekToTime: (globalTime: number) => void;
-    extractFrameSync: (globalTime: number, isAlphaExport?: boolean) => Promise<HTMLCanvasElement | null>;
+    extractFrameSync: (
+        globalTime: number,
+        isAlphaExport?: boolean,
+        targetW?: number,
+        targetH?: number
+    ) => Promise<HTMLCanvasElement | null>;
 }
 
 export interface VideoSequencePreviewProps {
@@ -574,7 +579,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     pendingSeekTimeRef.current = null;
                 }
             },
-            extractFrameSync: async (globalTime: number, isAlphaExport = false): Promise<HTMLCanvasElement | null> => {
+            extractFrameSync: async (
+                globalTime: number,
+                isAlphaExport = false,
+                targetWArg?: number,
+                targetHArg?: number
+            ): Promise<HTMLCanvasElement | null> => {
                 if (totalDuration <= 0 || takes.length === 0) return null;
 
                 // Em modo freeze/gravação ignoramos o watchdog de play
@@ -690,8 +700,21 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                 }, 1000);
                             });
 
-                            // Aguarda a GPU decodificar o frame.
-                            await new Promise((r) => setTimeout(r, 80));
+                            // Aguarda a GPU decodificar o frame — usa requestVideoFrameCallback se disponível
+                            // (event-based, ~1 frame de latência) com fallback de 20ms.
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            const vidAny = vid as any;
+                            if (typeof vidAny.requestVideoFrameCallback === 'function') {
+                                await new Promise<void>((resolve) => {
+                                    let done = false;
+                                    vidAny.requestVideoFrameCallback(() => {
+                                        if (!done) { done = true; resolve(); }
+                                    });
+                                    setTimeout(() => { if (!done) { done = true; resolve(); } }, 100);
+                                });
+                            } else {
+                                await new Promise((r) => setTimeout(r, 20));
+                            }
                         } else {
                             vid.currentTime = targetLocalTime;
                         }
@@ -701,8 +724,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 // Short breath for React to re-render overlays (captions/titles) with new audioTime
                 await new Promise((r) => setTimeout(r, 10));
 
-                const TARGET_W = 1080;
-                const TARGET_H = 1920;
+                // Use auto-detected target resolution from caller (matches output) — fallback 1080×1920
+                const TARGET_W = targetWArg && targetWArg > 0 ? targetWArg : 1080;
+                const TARGET_H = targetHArg && targetHArg > 0 ? targetHArg : 1920;
                 const canvas = document.createElement('canvas');
                 canvas.width = TARGET_W;
                 canvas.height = TARGET_H;

@@ -1,7 +1,7 @@
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import fs from 'fs';
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '../../');
 const FRAMES_DIR = path.join(BASE_DATA_PATH, 'frame_cache'); // Reusing the naming convention from index.ts
@@ -25,6 +25,106 @@ if (probePath && fs.existsSync(probePath)) {
 [FRAMES_DIR, VIDEOS_DIR, TEMP_DIR].forEach((dir) => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
+
+// ─── Hardware-accelerated encoder detection ──────────────────────────────────
+type HwEncoder = 'h264_nvenc' | 'h264_qsv' | 'h264_amf' | 'libx264';
+let CACHED_ENCODER: HwEncoder | null = null;
+
+const resolveFfmpegExe = (): string => (ffPath && fs.existsSync(ffPath) ? ffPath : 'ffmpeg');
+
+const testEncoder = (enc: string): boolean => {
+    try {
+        execFileSync(
+            resolveFfmpegExe(),
+            [
+                '-hide_banner', '-loglevel', 'error',
+                '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=0.1',
+                '-c:v', enc, '-f', 'null', '-',
+            ],
+            { timeout: 10000, stdio: 'pipe' }
+        );
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+const detectBestEncoder = (): HwEncoder => {
+    if (CACHED_ENCODER) return CACHED_ENCODER;
+    if (process.env.DISABLE_GPU_ENCODE === '1') {
+        console.log('[FFmpeg] GPU encode desabilitado via DISABLE_GPU_ENCODE=1 → libx264');
+        CACHED_ENCODER = 'libx264';
+        return CACHED_ENCODER;
+    }
+    let listed = '';
+    try {
+        listed = execFileSync(resolveFfmpegExe(), ['-hide_banner', '-encoders'], {
+            encoding: 'utf8', timeout: 5000,
+        });
+    } catch (err) {
+        console.warn('[FFmpeg] Falha ao listar encoders, usando libx264:', err);
+        CACHED_ENCODER = 'libx264';
+        return CACHED_ENCODER;
+    }
+    const candidates: HwEncoder[] = ['h264_nvenc', 'h264_qsv', 'h264_amf'];
+    for (const enc of candidates) {
+        if (listed.includes(enc) && testEncoder(enc)) {
+            console.log(`[FFmpeg] ✅ Encoder de hardware ativo: ${enc}`);
+            CACHED_ENCODER = enc;
+            return enc;
+        }
+    }
+    console.log('[FFmpeg] Nenhum encoder GPU disponível → libx264 (CPU)');
+    CACHED_ENCODER = 'libx264';
+    return 'libx264';
+};
+
+// Pre-detect once on module load so the first export call doesn't pay the cost
+detectBestEncoder();
+
+export interface EncoderArgsOpts {
+    quality?: number;
+    speed?: 'ultrafast' | 'veryfast' | 'fast';
+}
+
+export const getVideoEncoderArgs = (opts: EncoderArgsOpts = {}): string[] => {
+    const enc = detectBestEncoder();
+    const q = opts.quality ?? 20;
+    const speed = opts.speed ?? 'fast';
+    if (enc === 'h264_nvenc') {
+        const nvPreset = speed === 'ultrafast' ? 'p1' : speed === 'veryfast' ? 'p2' : 'p4';
+        return [
+            '-c:v', 'h264_nvenc',
+            '-preset', nvPreset,
+            '-rc', 'vbr',
+            '-cq', String(q),
+            '-b:v', '0',
+            '-pix_fmt', 'yuv420p',
+        ];
+    }
+    if (enc === 'h264_qsv') {
+        const qsvPreset = speed === 'ultrafast' ? 'veryfast' : speed;
+        return [
+            '-c:v', 'h264_qsv',
+            '-preset', qsvPreset,
+            '-global_quality', String(q),
+            '-look_ahead', '0',
+            '-pix_fmt', 'nv12',
+        ];
+    }
+    if (enc === 'h264_amf') {
+        const amfQuality = speed === 'fast' ? 'balanced' : 'speed';
+        return [
+            '-c:v', 'h264_amf',
+            '-quality', amfQuality,
+            '-rc', 'cqp',
+            '-qp_i', String(q),
+            '-qp_p', String(q),
+            '-pix_fmt', 'yuv420p',
+        ];
+    }
+    return ['-c:v', 'libx264', '-preset', speed, '-crf', String(q), '-pix_fmt', 'yuv420p'];
+};
 
 export interface VideoMetadata {
     duration: number;
@@ -122,15 +222,7 @@ export const muxVideoAudio = (videoPath: string, audioPath: string, outputPath: 
 
         cmd.input(audioPath)
             .outputOptions([
-                // Default re-encode
-                '-c:v',
-                'libx264',
-                '-preset',
-                'fast',
-                '-crf',
-                '20',
-                '-pix_fmt',
-                'yuv420p',
+                ...getVideoEncoderArgs({ quality: 20, speed: 'fast' }),
                 // Audio
                 '-c:a',
                 'aac',
@@ -199,11 +291,37 @@ export interface HybridParams {
     duration?: number; // Optional flag to hard-truncate the rendered output (e.g. 5s tests)
 }
 
-export const buildHybridVideo = (params: HybridParams): Promise<string> => {
+export const buildHybridVideo = async (params: HybridParams): Promise<string> => {
+    // ─── Auto-detect optimal target resolution from source takes ───
+    // Use the smallest source dimensions to avoid expensive upscaling.
+    // Fall back to 1080×1920 if no video takes are available.
+    let TARGET_W = 1080;
+    let TARGET_H = 1920;
+    const videoTakes = params.takes.filter((t) => t.type === 'video');
+    if (videoTakes.length > 0) {
+        let minW = Infinity;
+        let minH = Infinity;
+        for (const t of videoTakes) {
+            try {
+                const meta = await getVideoMetadata(t.file_path);
+                if (meta.width && meta.height) {
+                    if (meta.width < minW) minW = meta.width;
+                    if (meta.height < minH) minH = meta.height;
+                }
+            } catch (err) {
+                console.warn(`[FFmpeg Hybrid] ffprobe falhou em ${t.file_path}:`, err);
+            }
+        }
+        if (Number.isFinite(minW) && Number.isFinite(minH)) {
+            // Round to even (h264/yuv420p requirement)
+            TARGET_W = Math.max(2, Math.floor(minW / 2) * 2);
+            TARGET_H = Math.max(2, Math.floor(minH / 2) * 2);
+            console.log(`[FFmpeg Hybrid] Resolução automática: ${TARGET_W}×${TARGET_H} (menor source)`);
+        }
+    }
+
     return new Promise((resolve, reject) => {
         const { takes, transitionPath, audioPath, overlayPath, outputPath, duration } = params;
-        const TARGET_W = 1080;
-        const TARGET_H = 1920;
 
         let actualOverlayInput = overlayPath;
         let tempOverlayDir = '';
@@ -218,10 +336,14 @@ export const buildHybridVideo = (params: HybridParams): Promise<string> => {
                 return reject(new Error('Falha catastrófica: Os frames nativos sumiram antes do Muxing.'));
             }
 
-            const framesNoDisco = fs.readdirSync(tempOverlayDir).filter((f: string) => f.endsWith('.png')).length;
+            const framesNoDisco = fs.readdirSync(tempOverlayDir).filter(
+                (f: string) => f.endsWith('.webp') || f.endsWith('.png')
+            ).length;
             console.log(`[FFmpeg Hybrid] Montando vídeo Híbrido com ${framesNoDisco} títulos Alpha em Disco.`);
 
-            actualOverlayInput = path.join(tempOverlayDir, '%d.png');
+            // Detect frame extension (webp preferred, png fallback for legacy sessions)
+            const hasWebp = fs.readdirSync(tempOverlayDir).some((f: string) => f.endsWith('.webp'));
+            actualOverlayInput = path.join(tempOverlayDir, hasWebp ? '%d.webp' : '%d.png');
         }
 
         // ─── BUILD FFMPEG ARGS DIRECTLY (bypass fluent-ffmpeg) ───
@@ -357,8 +479,8 @@ export const buildHybridVideo = (params: HybridParams): Promise<string> => {
             }
         }
 
-        // Overlay do Título Transparente
-        filterGraph += `[${overlayIdx}:v]colorchannelmixer=aa=1.0[alphaT];`;
+        // Overlay do Título Transparente — escalar pro tamanho do output (overlay é capturado em 1080×1920 pelo cliente)
+        filterGraph += `[${overlayIdx}:v]scale=${TARGET_W}:${TARGET_H},colorchannelmixer=aa=1.0[alphaT];`;
         filterGraph += `${currentBase}[alphaT]overlay=eof_action=pass,fps=30[finalVideo]`;
 
         console.log('══════════════════════════════════════════════');
@@ -370,10 +492,7 @@ export const buildHybridVideo = (params: HybridParams): Promise<string> => {
         args.push('-filter_complex', filterGraph);
         args.push('-map', '[finalVideo]');
         args.push('-map', `${audioIdx}:a`);
-        args.push('-c:v', 'libx264');
-        args.push('-preset', 'fast');
-        args.push('-crf', '18');
-        args.push('-pix_fmt', 'yuv420p');
+        args.push(...getVideoEncoderArgs({ quality: 18, speed: 'fast' }));
         args.push('-c:a', 'aac');
         args.push('-b:a', '192k');
         args.push('-shortest');

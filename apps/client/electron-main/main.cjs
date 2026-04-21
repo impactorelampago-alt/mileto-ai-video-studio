@@ -7,6 +7,30 @@ const { spawn } = require('child_process');
 const os = require('os');
 
 let serverProcess = null;
+let mainWindowRef = null;
+let autoUpdater = null;
+
+function sendUpdateStatus(payload) {
+    if (mainWindowRef && !mainWindowRef.isDestroyed()) {
+        mainWindowRef.webContents.send('update:status', payload);
+    }
+}
+
+function initAutoUpdater() {
+    if (autoUpdater) return autoUpdater;
+    autoUpdater = require('electron-updater').autoUpdater;
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
+    autoUpdater.logger = { info: console.log, warn: console.warn, error: console.error, debug: () => {} };
+
+    autoUpdater.on('checking-for-update', () => sendUpdateStatus({ type: 'checking' }));
+    autoUpdater.on('update-available', (info) => sendUpdateStatus({ type: 'available', version: info.version }));
+    autoUpdater.on('update-not-available', (info) => sendUpdateStatus({ type: 'not-available', version: info.version }));
+    autoUpdater.on('download-progress', (p) => sendUpdateStatus({ type: 'progress', percent: p.percent, transferred: p.transferred, total: p.total, bytesPerSecond: p.bytesPerSecond }));
+    autoUpdater.on('update-downloaded', (info) => sendUpdateStatus({ type: 'downloaded', version: info.version }));
+    autoUpdater.on('error', (err) => sendUpdateStatus({ type: 'error', message: (err && err.message) || String(err) }));
+    return autoUpdater;
+}
 
 function startServer() {
     const isDev = process.env.NODE_ENV === 'development';
@@ -34,9 +58,14 @@ function startServer() {
 
     const nodeExecutable = process.execPath;
 
-    const args = isDev ? ['--loader', 'ts-node/esm', serverEntry] : [serverEntry];
+    const args = isDev ? ['--require', 'ts-node/register', serverEntry] : [serverEntry];
+
+    const serverCwd = isDev
+        ? path.join(appPath, '../server')
+        : path.join(process.resourcesPath, 'server');
 
     serverProcess = spawn(nodeExecutable, args, {
+        cwd: serverCwd,
         env: {
             ...process.env,
             ELECTRON_RUN_AS_NODE: '1',
@@ -91,6 +120,8 @@ function createWindow() {
         },
     });
 
+    mainWindowRef = mainWindow;
+
     if (isDev) {
         mainWindow.loadURL('http://localhost:5173');
     } else {
@@ -99,6 +130,44 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+    // ─── Auto-updater IPC ────────────────────────────────────────────────
+    ipcMain.handle('update:check', async () => {
+        try {
+            const updater = initAutoUpdater();
+            if (isDev) {
+                const devCfg = path.join(__dirname, '..', 'dev-app-update.yml');
+                if (fs.existsSync(devCfg)) {
+                    updater.updateConfigPath = devCfg;
+                    updater.forceDevUpdateConfig = true;
+                }
+            }
+            const result = await updater.checkForUpdates();
+            return {
+                ok: true,
+                currentVersion: app.getVersion(),
+                updateInfo: result && result.updateInfo ? { version: result.updateInfo.version, releaseDate: result.updateInfo.releaseDate } : null,
+            };
+        } catch (err) {
+            return { ok: false, message: err.message || String(err) };
+        }
+    });
+
+    ipcMain.handle('update:download', async () => {
+        try {
+            await initAutoUpdater().downloadUpdate();
+            return { ok: true };
+        } catch (err) {
+            return { ok: false, message: err.message || String(err) };
+        }
+    });
+
+    ipcMain.handle('update:install', () => {
+        setImmediate(() => initAutoUpdater().quitAndInstall(false, true));
+        return { ok: true };
+    });
+
+    ipcMain.handle('update:get-current-version', () => app.getVersion());
+
     ipcMain.handle('export-init', (event, options = {}) => {
         const sessionId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
         const tempDir = app.getPath('temp');
