@@ -1,7 +1,21 @@
-import React, { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
 import type { AdData, MediaTake, CaptionStyle, ApiKeys, MusicTrack, CustomVoice } from '../types';
 
 export const SHOW_DEBUG_FEATURES = false;
+
+const ACTIVE_DRAFT_STORAGE_KEY = 'mileto_active_draft_id';
+
+const generateDraftId = (): string => {
+    try {
+        // Disponível em navegadores modernos/Electron
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+    } catch {
+        // fallthrough
+    }
+    return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+};
 
 interface WizardContextType {
     apiKeys: ApiKeys;
@@ -25,8 +39,11 @@ interface WizardContextType {
     loadMusicLibrary: () => Promise<void>;
 
     projectId: string;
-    saveProject: () => Promise<void>;
+    saveProject: (_opts?: { exported?: boolean }) => Promise<void>;
     loadProject: () => Promise<void>;
+    startNewDraft: () => string;
+    loadDraft: (_id: string) => Promise<boolean>;
+    hasDraftContent: () => boolean;
 
     customVoices: CustomVoice[];
     addCustomVoice: (voice: CustomVoice) => void;
@@ -128,7 +145,22 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     const [captionStyle, setCaptionStyle] = useState<CaptionStyle | null>(defaultCaptionStyle);
     const [musicLibrary, setMusicLibrary] = useState<MusicTrack[]>([]);
     const [selectedMusicId, setSelectedMusicIdState] = useState<string | null>(null); // Start with no music selected
-    const [projectId] = useState('default');
+    const [projectId, setProjectId] = useState<string>(() => {
+        // Sobrevive ao refresh do Electron: se havia um rascunho ativo, reuso o id.
+        try {
+            const stored = localStorage.getItem(ACTIVE_DRAFT_STORAGE_KEY);
+            if (stored) return stored;
+        } catch {
+            // ignore
+        }
+        const fresh = generateDraftId();
+        try {
+            localStorage.setItem(ACTIVE_DRAFT_STORAGE_KEY, fresh);
+        } catch {
+            // ignore
+        }
+        return fresh;
+    });
 
     // Custom Voices (Persisted in LocalStorage)
     const [customVoices, setCustomVoices] = useState<CustomVoice[]>(() => {
@@ -167,59 +199,130 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     };
 
     // ── Persistence ────────────────────────────────────────────────
-    const saveProject = React.useCallback(async () => {
+    // Refs espelham o estado mais recente — evita closures stale quando
+    // saveProject é chamado fora de React (ex.: no unmount do wizard).
+    const stateRef = useRef({ projectId, adData, mediaTakes, captionStyle, selectedMusicId });
+    useEffect(() => {
+        stateRef.current = { projectId, adData, mediaTakes, captionStyle, selectedMusicId };
+    });
+
+    const hasDraftContent = React.useCallback(() => {
+        const s = stateRef.current;
+        return (
+            !!s.adData.title?.trim() ||
+            !!s.adData.narrationText?.trim() ||
+            s.mediaTakes.length > 0 ||
+            (s.adData.captions?.segments?.length ?? 0) > 0 ||
+            (s.adData.dynamicTitles?.length ?? 0) > 0
+        );
+    }, []);
+
+    const saveProject = React.useCallback(async (opts?: { exported?: boolean }) => {
+        const s = stateRef.current;
+        const exported = !!opts?.exported;
+        // Não criar rascunhos vazios (só salva se houver conteúdo OU se for export).
+        if (!exported && !hasDraftContent()) return;
+
+        const title =
+            s.adData.title?.trim() ||
+            s.adData.narrationText?.trim().slice(0, 60) ||
+            'Rascunho sem título';
+
         try {
             const payload = {
-                adData,
-                mediaTakes,
-                captionStyle,
-                selectedMusicId,
+                adData: s.adData,
+                mediaTakes: s.mediaTakes,
+                captionStyle: s.captionStyle,
+                selectedMusicId: s.selectedMusicId,
                 updatedAt: new Date().toISOString(),
+                exported,
+                title,
             };
-            const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/projects/${projectId}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ data: payload }),
-            });
+            const res = await fetch(
+                `${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/projects/${s.projectId}`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data: payload }),
+                }
+            );
             const json = await res.json();
             if (!json.ok) throw new Error(json.message);
-            console.log('Project saved:', json.message);
+            console.log(`[Draft] Salvo (${exported ? 'exportado' : 'rascunho'}):`, s.projectId);
         } catch (err) {
             console.error('Failed to save project:', err);
         }
-    }, [adData, mediaTakes, captionStyle, selectedMusicId, projectId]);
+    }, [hasDraftContent]);
+
+    const applyLoadedDraft = React.useCallback((data: {
+        adData?: Partial<AdData>;
+        mediaTakes?: MediaTake[];
+        captionStyle?: CaptionStyle | null;
+        selectedMusicId?: string | null;
+    }) => {
+        if (data.adData) setAdData({ ...defaultAdData, ...data.adData });
+        setMediaTakes(Array.isArray(data.mediaTakes) ? data.mediaTakes : []);
+        if (data.captionStyle) setCaptionStyle(data.captionStyle);
+        setSelectedMusicIdState(data.selectedMusicId ?? null);
+    }, []);
 
     const loadProject = React.useCallback(async () => {
         try {
             const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/projects/${projectId}`);
-            if (res.status === 404) return; // New project, keep defaults
+            if (res.status === 404) return;
 
             const json = await res.json();
             if (json.ok && json.data) {
-                const {
-                    adData: loadedAd,
-                    mediaTakes: loadedTakes,
-                    captionStyle: loadedStyle,
-                    selectedMusicId: loadedMusic,
-                    updatedAt,
-                } = json.data;
-
-                if (loadedAd) setAdData((prev) => ({ ...prev, ...loadedAd }));
-                if (loadedTakes) setMediaTakes(loadedTakes);
-                if (loadedStyle) setCaptionStyle(loadedStyle);
-                if (loadedMusic) setSelectedMusicIdState(loadedMusic);
-
-                console.log('Project loaded, updated at:', updatedAt);
+                applyLoadedDraft(json.data);
+                console.log('Project loaded, updated at:', json.data.updatedAt);
             }
         } catch (err) {
             console.error('Failed to load project:', err);
         }
-    }, [projectId]);
+    }, [projectId, applyLoadedDraft]);
 
-    // Load on mount
+    const loadDraft = React.useCallback(async (id: string): Promise<boolean> => {
+        try {
+            const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/projects/${id}`);
+            if (!res.ok) return false;
+            const json = await res.json();
+            if (!json.ok || !json.data) return false;
+
+            setProjectId(id);
+            try {
+                localStorage.setItem(ACTIVE_DRAFT_STORAGE_KEY, id);
+            } catch {
+                // ignore
+            }
+            applyLoadedDraft(json.data);
+            return true;
+        } catch (err) {
+            console.error('Failed to load draft:', err);
+            return false;
+        }
+    }, [applyLoadedDraft]);
+
+    const startNewDraft = React.useCallback((): string => {
+        const newId = generateDraftId();
+        setProjectId(newId);
+        try {
+            localStorage.setItem(ACTIVE_DRAFT_STORAGE_KEY, newId);
+        } catch {
+            // ignore
+        }
+        setAdData(defaultAdData);
+        setMediaTakes([]);
+        setCaptionStyle(defaultCaptionStyle);
+        setSelectedMusicIdState(null);
+        return newId;
+    }, [defaultCaptionStyle]);
+
+    // Tenta recuperar o rascunho ativo no mount (sobrevive a refresh do Electron).
+    // Se não existir no servidor (404), mantém os defaults — é um projeto novo.
     useEffect(() => {
         loadProject();
-    }, [loadProject]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Persist API keys whenever they change
     useEffect(() => {
@@ -308,6 +411,9 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             projectId,
             saveProject,
             loadProject,
+            startNewDraft,
+            loadDraft,
+            hasDraftContent,
             customVoices,
             addCustomVoice,
             removeCustomVoice,
@@ -331,6 +437,9 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             projectId,
             saveProject,
             loadProject,
+            startNewDraft,
+            loadDraft,
+            hasDraftContent,
             customVoices,
             addCustomVoice,
             removeCustomVoice,

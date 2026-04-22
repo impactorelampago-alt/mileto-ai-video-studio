@@ -30,8 +30,10 @@ router.get('/chat/sessions/:sessionId/messages', chatController.getMessages);
 router.post('/chat/message', chatController.sendMessage);
 
 // Project Persistence
+router.get('/projects', projectController.listProjects);
 router.get('/projects/:projectId', projectController.getProjectData);
 router.post('/projects/:projectId', projectController.saveProjectData);
+router.delete('/projects/:projectId', projectController.deleteProject);
 
 // AI Generation Routes
 router.post('/integrations/replicate/test', aiController.testReplicate);

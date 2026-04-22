@@ -2,6 +2,47 @@ import { Request, Response } from 'express';
 import OpenAI from 'openai';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
+
+// Static-route prefix → diretório físico no USER_DATA_PATH (espelha index.ts).
+// Fonte única da verdade para resolver URLs relativas servidas pelo Express.
+const STATIC_ROUTE_MAP: Record<string, string> = {
+    '/narrations/': 'narrations',
+    '/uploads/': 'uploads',
+    '/videos/': 'videos',
+    '/mixes/': 'public/mixes',
+    '/music/': 'music',
+    '/transitions/': 'public/transitions',
+    '/data/': 'data',
+};
+
+const resolveLocalAudioPath = (audioUrl: string): string | null => {
+    const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
+
+    // Caminho absoluto cru (raro, mas tolerante)
+    if (path.isAbsolute(audioUrl) && fs.existsSync(audioUrl)) return audioUrl;
+
+    let pathname = audioUrl;
+    try {
+        if (/^https?:\/\//i.test(audioUrl)) {
+            pathname = new URL(audioUrl).pathname;
+        }
+    } catch {
+        // Deixa pathname = audioUrl e segue o fluxo
+    }
+
+    if (!pathname.startsWith('/')) pathname = '/' + pathname;
+
+    for (const [prefix, dir] of Object.entries(STATIC_ROUTE_MAP)) {
+        if (pathname.startsWith(prefix)) {
+            // Preserva subpastas (ex.: /mixes/cache/xxx.mp3) em vez de só o basename.
+            const rel = pathname.slice(prefix.length);
+            return path.join(BASE_DATA_PATH, dir, rel);
+        }
+    }
+
+    return null;
+};
 
 export const generateCaptions = async (req: Request, res: Response) => {
     try {
@@ -13,37 +54,14 @@ export const generateCaptions = async (req: Request, res: Response) => {
 
         console.log('[STT] Iniciando transcrição via Whisper para:', audioUrl);
 
-        // Resolve absolute file path on server
-        let filePath = audioUrl;
+        const filePath = resolveLocalAudioPath(audioUrl);
 
-        try {
-            // Se for uma URL completa, extrai apenas o pathname
-            if (audioUrl.startsWith('http')) {
-                const parsedUrl = new URL(audioUrl);
-                filePath = parsedUrl.pathname;
-            }
-        } catch (e) {
-            // ignore
-        }
-
-        if (filePath.startsWith('/')) {
-            // Probably a relative URL like /narrations/xxx or /uploads/xxx
-            const basename = path.basename(filePath);
-            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
-            if (audioUrl.includes('narrations/')) {
-                filePath = path.join(BASE_DATA_PATH, 'narrations', basename);
-            } else if (audioUrl.includes('uploads/')) {
-                filePath = path.join(BASE_DATA_PATH, 'uploads', basename);
-            } else if (audioUrl.includes('videos/')) {
-                filePath = path.join(BASE_DATA_PATH, 'videos', basename);
-            } else if (audioUrl.includes('mixes/')) {
-                filePath = path.join(BASE_DATA_PATH, 'public/mixes', basename); // Wait, earlier I saw public/mixes, let's keep it safe
-            }
-        }
-
-        if (!fs.existsSync(filePath)) {
-            console.error('[STT] Arquivo de áudio não encontrado localmente:', filePath);
-            return res.status(404).json({ ok: false, message: 'Áudio não encontrado no servidor.' });
+        if (!filePath || !fs.existsSync(filePath)) {
+            console.error('[STT] Arquivo de áudio não encontrado localmente:', filePath, 'originalUrl:', audioUrl);
+            return res.status(404).json({
+                ok: false,
+                message: `Áudio não encontrado no servidor: ${filePath || audioUrl}. Gere a narração novamente antes de criar legendas.`,
+            });
         }
 
         // Bypass Whisper API explicitly for the default narration test track
@@ -221,16 +239,33 @@ export const generateCaptions = async (req: Request, res: Response) => {
         const cleanKey = apiKey.trim();
         const openai = new OpenAI({ apiKey: cleanKey });
 
-        const transcription = await openai.audio.transcriptions.create({
-            file: fs.createReadStream(filePath),
-            model: 'whisper-1',
-            response_format: 'verbose_json',
-            timestamp_granularities: ['word'],
-            language: 'pt', // Forçando PT-BR
-        });
+        let transcription;
+        try {
+            transcription = await openai.audio.transcriptions.create({
+                file: fs.createReadStream(filePath),
+                model: 'whisper-1',
+                response_format: 'verbose_json',
+                timestamp_granularities: ['word'],
+                language: 'pt', // Forçando PT-BR
+            });
+        } catch (err: unknown) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const e = err as any;
+            const status = e?.status || e?.response?.status;
+            const apiMsg = e?.error?.message || e?.response?.data?.error?.message || e?.message || 'Erro desconhecido';
+            console.error('[STT] Whisper rejeitou a requisição:', status, apiMsg);
+            const userMsg =
+                status === 401
+                    ? 'Chave da OpenAI inválida. Confirme a chave em Configurações.'
+                    : status === 429
+                      ? 'Limite de requisições/cota da OpenAI excedido. Tente novamente em alguns minutos.'
+                      : `Whisper falhou: ${apiMsg}`;
+            return res.status(502).json({ ok: false, message: userMsg });
+        }
 
         const words = transcription.words;
         if (!words || words.length === 0) {
+            console.warn('[STT] Whisper retornou sem palavras — áudio silencioso ou muito curto?');
             return res.status(200).json({ ok: true, segments: [] });
         }
 

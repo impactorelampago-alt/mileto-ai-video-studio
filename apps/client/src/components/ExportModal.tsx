@@ -26,7 +26,7 @@ export const ExportModal = ({
     isHybridMode = false,
     transitionPath,
 }: ExportModalProps) => {
-    const { adData } = useWizard();
+    const { adData, saveProject } = useWizard();
     // Config state
     const [fileName, setFileName] = useState('MeuVideo_Mileto');
     const [fps, setFps] = useState(30);
@@ -236,6 +236,10 @@ export const ExportModal = ({
                     finalPath: fullOutputPath,
                     duration: totalDuration,
                     format: adData.format,
+                    // Envia a resolução usada na captura do overlay p/ o FFmpeg não
+                    // re-probar e acabar re-escalando com aspect ratio diferente.
+                    targetW: targetDims.w,
+                    targetH: targetDims.h,
                 };
 
                 console.log('══════════════════════════════════════════════');
@@ -276,6 +280,8 @@ export const ExportModal = ({
                 setPhase('done');
                 setProgress(100);
                 setStatusText('Exportação concluída!');
+                // Grava o projeto como rascunho "exportado" pra aparecer em Rascunhos Recentes.
+                void saveProject({ exported: true });
             } else {
                 // User cancelled save dialog
                 setPhase('config');
@@ -296,6 +302,7 @@ export const ExportModal = ({
         transitionPath,
         fileName,
         outputFolder,
+        saveProject,
     ]);
 
     // Prevent accidental close during export

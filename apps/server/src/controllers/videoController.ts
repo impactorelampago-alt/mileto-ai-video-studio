@@ -164,7 +164,7 @@ import { buildHybridVideo } from '../services/ffmpeg';
 
 export const exportHybrid = async (req: Request, res: Response) => {
     try {
-        const { takes, transitionPath, audioPath, finalPath, duration } = req.body;
+        const { takes, transitionPath, audioPath, finalPath, duration, targetW, targetH } = req.body;
         let { overlayPath } = req.body;
 
         console.log('--- [HYBRID EXPORT INITIATED] ---');
@@ -234,6 +234,8 @@ export const exportHybrid = async (req: Request, res: Response) => {
             overlayPath,
             outputPath: finalPath,
             duration,
+            targetW,
+            targetH,
         });
 
         res.json({ ok: true, message: 'Exportação Híbrida concluída puramente por Hardware.' });

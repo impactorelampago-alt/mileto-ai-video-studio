@@ -289,34 +289,44 @@ export interface HybridParams {
     overlayPath: string; // The UI Titles rendered via webm with Alpha Channel
     outputPath: string;
     duration?: number; // Optional flag to hard-truncate the rendered output (e.g. 5s tests)
+    targetW?: number; // Resolução-alvo fornecida pelo cliente (mesma usada para capturar o overlay)
+    targetH?: number;
 }
 
 export const buildHybridVideo = async (params: HybridParams): Promise<string> => {
-    // ─── Auto-detect optimal target resolution from source takes ───
-    // Use the smallest source dimensions to avoid expensive upscaling.
-    // Fall back to 1080×1920 if no video takes are available.
+    // ─── Resolução-alvo: usar a que o cliente já usou para capturar o overlay,
+    // senão cair para detecção via ffprobe. Divergência entre client/server causa
+    // distorção ("esticamento") das legendas porque o overlay era re-escalado
+    // com aspect ratio diferente.
     let TARGET_W = 1080;
     let TARGET_H = 1920;
-    const videoTakes = params.takes.filter((t) => t.type === 'video');
-    if (videoTakes.length > 0) {
-        let minW = Infinity;
-        let minH = Infinity;
-        for (const t of videoTakes) {
-            try {
-                const meta = await getVideoMetadata(t.file_path);
-                if (meta.width && meta.height) {
-                    if (meta.width < minW) minW = meta.width;
-                    if (meta.height < minH) minH = meta.height;
+
+    if (params.targetW && params.targetH && params.targetW > 0 && params.targetH > 0) {
+        TARGET_W = Math.max(2, Math.floor(params.targetW / 2) * 2);
+        TARGET_H = Math.max(2, Math.floor(params.targetH / 2) * 2);
+        console.log(`[FFmpeg Hybrid] Resolução alinhada ao cliente: ${TARGET_W}×${TARGET_H}`);
+    } else {
+        const videoTakes = params.takes.filter((t) => t.type === 'video');
+        if (videoTakes.length > 0) {
+            let minW = Infinity;
+            let minH = Infinity;
+            for (const t of videoTakes) {
+                try {
+                    const meta = await getVideoMetadata(t.file_path);
+                    if (meta.width && meta.height) {
+                        if (meta.width < minW) minW = meta.width;
+                        if (meta.height < minH) minH = meta.height;
+                    }
+                } catch (err) {
+                    console.warn(`[FFmpeg Hybrid] ffprobe falhou em ${t.file_path}:`, err);
                 }
-            } catch (err) {
-                console.warn(`[FFmpeg Hybrid] ffprobe falhou em ${t.file_path}:`, err);
             }
-        }
-        if (Number.isFinite(minW) && Number.isFinite(minH)) {
-            // Round to even (h264/yuv420p requirement)
-            TARGET_W = Math.max(2, Math.floor(minW / 2) * 2);
-            TARGET_H = Math.max(2, Math.floor(minH / 2) * 2);
-            console.log(`[FFmpeg Hybrid] Resolução automática: ${TARGET_W}×${TARGET_H} (menor source)`);
+            if (Number.isFinite(minW) && Number.isFinite(minH)) {
+                // Round to even (h264/yuv420p requirement)
+                TARGET_W = Math.max(2, Math.floor(minW / 2) * 2);
+                TARGET_H = Math.max(2, Math.floor(minH / 2) * 2);
+                console.log(`[FFmpeg Hybrid] Resolução automática: ${TARGET_W}×${TARGET_H} (menor source)`);
+            }
         }
     }
 
@@ -479,8 +489,10 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             }
         }
 
-        // Overlay do Título Transparente — escalar pro tamanho do output (overlay é capturado em 1080×1920 pelo cliente)
-        filterGraph += `[${overlayIdx}:v]scale=${TARGET_W}:${TARGET_H},colorchannelmixer=aa=1.0[alphaT];`;
+        // Overlay do Título Transparente — preserva o aspect ratio do PNG capturado.
+        // Se o overlay foi gravado no mesmo TARGET, o scale é no-op. Caso contrário,
+        // encaixa (decrease) e preenche com transparente, evitando deformação das legendas.
+        filterGraph += `[${overlayIdx}:v]scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=decrease,pad=${TARGET_W}:${TARGET_H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,colorchannelmixer=aa=1.0[alphaT];`;
         filterGraph += `${currentBase}[alphaT]overlay=eof_action=pass,fps=30[finalVideo]`;
 
         console.log('══════════════════════════════════════════════');

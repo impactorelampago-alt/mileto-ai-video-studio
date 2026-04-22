@@ -8,6 +8,7 @@ import { StepHeader } from '../components/StepHeader';
 import logoImg from '../../public/logo.png';
 import { cn } from '../lib/utils';
 import { updater, UpdateStatus } from '../lib/updater';
+import { useWizard } from '../context/WizardContext';
 
 export const MainLayout = () => {
     const [isApiModalOpen, setIsApiModalOpen] = useState(false);
@@ -15,6 +16,31 @@ export const MainLayout = () => {
     const navigate = useNavigate();
     const location = useLocation();
     const progressToastId = useRef<string | number | null>(null);
+    const { saveProject } = useWizard();
+    const prevPathRef = useRef<string>(location.pathname);
+
+    // Auto-save do rascunho quando o usuário sai de qualquer /wizard/step/*.
+    // Isso cobre tanto o clique no logo quanto navegação via StepHeader e back do browser.
+    useEffect(() => {
+        const prev = prevPathRef.current;
+        const curr = location.pathname;
+        const leavingWizard = prev.startsWith('/wizard/step/') && !curr.startsWith('/wizard/step/');
+        if (leavingWizard) {
+            // saveProject internamente só grava se houver conteúdo — vazio não vira rascunho.
+            void saveProject();
+        }
+        prevPathRef.current = curr;
+    }, [location.pathname, saveProject]);
+
+    // Também salva no fechamento da janela (Electron quit / refresh).
+    useEffect(() => {
+        const onBeforeUnload = () => {
+            // Fire-and-forget: em beforeunload não podemos aguardar async.
+            void saveProject();
+        };
+        window.addEventListener('beforeunload', onBeforeUnload);
+        return () => window.removeEventListener('beforeunload', onBeforeUnload);
+    }, [saveProject]);
 
     useEffect(() => {
         const off = updater.onStatus((s: UpdateStatus) => {
@@ -189,6 +215,35 @@ export const MainLayout = () => {
 
             {/* Conteúdo Principal (Direita) */}
             <div className="flex-1 flex flex-col min-w-0 h-screen relative bg-background">
+                {/* Topbar com logo → volta pra Home. Só aparece fora da Home (que já tem logo na sidebar).
+                    Fica numa faixa própria acima do stepper pra não sobrepor nenhum step. */}
+                {location.pathname !== '/' && (
+                    <div className="shrink-0 border-b border-border/50 bg-background/80 backdrop-blur-sm z-40 px-4 py-2 flex items-center">
+                        <button
+                            type="button"
+                            onClick={() => navigate('/')}
+                            title="Voltar para o início"
+                            aria-label="Voltar para o início"
+                            className="flex items-center gap-2 px-2 py-1 rounded-xl hover:bg-white/5 transition-all group"
+                        >
+                            <div className="relative flex items-center justify-center">
+                                <div className="absolute inset-0 rounded-full bg-brand-lime/20 blur-lg opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                                <img
+                                    src={logoImg}
+                                    alt="Mileto AI"
+                                    className="w-7 h-7 object-contain drop-shadow-[0_0_6px_rgba(0,230,118,0.3)] relative z-10"
+                                />
+                            </div>
+                            <span className="text-[11px] font-black uppercase tracking-widest text-foreground/80 group-hover:text-foreground leading-none">
+                                Mileto{' '}
+                                <span className="text-transparent bg-clip-text bg-linear-to-r from-brand-lime to-brand-accent">
+                                    AI
+                                </span>
+                            </span>
+                        </button>
+                    </div>
+                )}
+
                 {/* Horizontal Stepper */}
                 <div className="shrink-0 border-b border-border bg-card/40 backdrop-blur-sm z-30">
                     <StepHeader />
