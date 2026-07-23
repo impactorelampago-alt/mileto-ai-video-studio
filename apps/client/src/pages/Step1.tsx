@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import { VoiceSelector } from '../components/VoiceSelector';
@@ -6,7 +6,7 @@ import { VoiceSettingsPanel } from '../components/VoiceSettingsPanel';
 import type { TtsProvider } from '../types';
 import { cn } from '../lib/utils';
 import { localAuthHeaders } from '../lib/serverAuth';
-import { ArrowRight, Wand2, Loader2, Music2, Check, Pencil } from 'lucide-react';
+import { ArrowRight, Wand2, Loader2, Music2, Check, Pencil, Mic, Square } from 'lucide-react';
 import { TimelineEditor } from '../components/timeline/TimelineEditor';
 import { toast } from 'sonner';
 import { AudioPlayer } from '../components/AudioPlayer';
@@ -18,6 +18,14 @@ export const Step1 = () => {
     const [isGenerating, setIsGenerating] = useState(false);
     const [isMixing, setIsMixing] = useState(false);
     const [isAudioEditorOpen, setIsAudioEditorOpen] = useState(false);
+
+    // Gravar a própria voz (alternativa à narração por IA).
+    const [isRecording, setIsRecording] = useState(false);
+    const [recordingTime, setRecordingTime] = useState(0);
+    const [isUploadingRec, setIsUploadingRec] = useState(false);
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const audioChunksRef = useRef<Blob[]>([]);
+    const recTimerRef = useRef<number | null>(null);
 
     const isTitleValid = !!adData.title?.trim();
     const isTextValid = !!adData.narrationText?.trim();
@@ -113,6 +121,66 @@ export const Step1 = () => {
             }
         } finally {
             setIsGenerating(false);
+        }
+    };
+
+    // ─── Gravar a própria voz ────────────────────────────────────────────────
+    const uploadRecording = async (blob: Blob) => {
+        setIsUploadingRec(true);
+        const toastId = toast.loading('Salvando sua gravação...');
+        try {
+            const apiBase = (window as any).API_BASE_URL || 'http://localhost:3301';
+            const fd = new FormData();
+            fd.append('audio', blob, 'gravacao.webm');
+            const response = await fetch(`${apiBase}/api/tts/upload-recording`, {
+                method: 'POST',
+                headers: await localAuthHeaders(),
+                body: fd,
+            });
+            const data = await response.json();
+            if (!data.ok) throw new Error(data.message);
+            updateAdData({
+                isNarrationGenerated: true,
+                narrationAudioUrl: `${apiBase}${data.url}`,
+                narrationDuration: data.duration,
+            });
+            toast.success('Sua gravação virou a narração! 🎙️', { id: toastId });
+        } catch (error: unknown) {
+            const msg = error instanceof Error ? error.message : 'Erro desconhecido';
+            toast.error('Erro ao salvar a gravação: ' + msg, { id: toastId });
+        } finally {
+            setIsUploadingRec(false);
+        }
+    };
+
+    const startRecording = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const mr = new MediaRecorder(stream);
+            mediaRecorderRef.current = mr;
+            audioChunksRef.current = [];
+            mr.ondataavailable = (e) => {
+                if (e.data.size > 0) audioChunksRef.current.push(e.data);
+            };
+            mr.onstop = () => {
+                stream.getTracks().forEach((t) => t.stop()); // libera o microfone
+                const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+                void uploadRecording(blob);
+            };
+            mr.start();
+            setIsRecording(true);
+            setRecordingTime(0);
+            recTimerRef.current = window.setInterval(() => setRecordingTime((t) => t + 1), 1000);
+        } catch {
+            toast.error('Não foi possível acessar o microfone. Verifique a permissão.');
+        }
+    };
+
+    const stopRecording = () => {
+        if (mediaRecorderRef.current && isRecording) {
+            mediaRecorderRef.current.stop();
+            setIsRecording(false);
+            if (recTimerRef.current) window.clearInterval(recTimerRef.current);
         }
     };
 
@@ -237,6 +305,36 @@ export const Step1 = () => {
                                           ? 'Escolha uma voz ao lado para liberar.'
                                           : 'Pronto para gerar a locução.'}
                                 </p>
+
+                                {/* Alternativa: gravar a própria voz, para quem não quer IA */}
+                                <div className="flex items-center gap-2 text-[10px] text-brand-muted/60 uppercase tracking-widest font-semibold">
+                                    <div className="flex-1 h-px bg-black/5 dark:bg-white/5" />
+                                    ou
+                                    <div className="flex-1 h-px bg-black/5 dark:bg-white/5" />
+                                </div>
+                                <button
+                                    onClick={isRecording ? stopRecording : startRecording}
+                                    disabled={isUploadingRec || isGenerating}
+                                    className={cn(
+                                        'w-full px-6 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all border',
+                                        isRecording
+                                            ? 'bg-red-500/15 border-red-500/40 text-red-400 animate-pulse'
+                                            : 'bg-background border-black/5 dark:border-white/5 text-brand-muted hover:text-foreground hover:border-brand-accent/30 disabled:opacity-50'
+                                    )}
+                                >
+                                    {isUploadingRec ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : isRecording ? (
+                                        <Square className="w-4 h-4 fill-current" />
+                                    ) : (
+                                        <Mic className="w-4 h-4" />
+                                    )}
+                                    {isUploadingRec
+                                        ? 'Salvando gravação…'
+                                        : isRecording
+                                          ? `Parar gravação (${recordingTime}s)`
+                                          : 'Gravar minha própria voz'}
+                                </button>
                             </div>
                         ) : (
                             <div className="space-y-3">

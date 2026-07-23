@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
     MessageSquare,
@@ -18,10 +19,22 @@ import {
     FolderOpen,
     GripVertical,
     Brain,
+    Copy,
+    Check,
+    Wand2,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import * as chatApi from '../../lib/chatApi';
+import { useWizard } from '../../context/WizardContext';
 import { ChatFolder, ChatSession, ChatMessage } from '../../types';
+
+/** Extrai o ROTEIRO de uma resposta do assistente: o bloco entre as linhas "---"
+ * (onde a IA coloca o roteiro final). Sem os marcadores, usa a mensagem inteira. */
+const extractScript = (content: string): string => {
+    const parts = content.split(/^\s*---\s*$/m);
+    if (parts.length >= 3 && parts[1].trim()) return parts[1].trim();
+    return content.trim();
+};
 
 // ─── Níveis Mileto (o que o usuário vê) ──────────────────────────────────────
 
@@ -89,6 +102,30 @@ export const ChatMileto: React.FC = () => {
     const [reasoning, setReasoning] = useState<ReasoningLevel>('equilibrado');
     // O app manda o tier; o gateway resolve o modelo real e injeta a persona.
     const selectedModel = tierToGateway(selectedTier);
+
+    const navigate = useNavigate();
+    const { updateAdData } = useWizard();
+    const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+
+    // Copia a resposta inteira para a área de transferência.
+    const handleCopyMessage = useCallback((msg: ChatMessage) => {
+        navigator.clipboard.writeText(msg.content).then(() => {
+            setCopiedMsgId(msg.id);
+            setTimeout(() => setCopiedMsgId((cur) => (cur === msg.id ? null : cur)), 1500);
+        });
+    }, []);
+
+    // Aplica o ROTEIRO da resposta direto na narração e leva o usuário pra lá.
+    const handleUseAsScript = useCallback(
+        (msg: ChatMessage) => {
+            const script = extractScript(msg.content);
+            updateAdData({ narrationText: script, isNarrationGenerated: false });
+            setIsOpen(false);
+            navigate('/wizard/step/1');
+            toast.success('Roteiro aplicado na narração! ✨');
+        },
+        [navigate, updateAdData]
+    );
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editingText, setEditingText] = useState('');
@@ -723,13 +760,44 @@ export const ChatMileto: React.FC = () => {
                                 )}
                                 <div
                                     className={cn(
-                                        'max-w-[80%] px-4 py-3 text-[13px] leading-relaxed whitespace-pre-wrap',
+                                        'max-w-[80%] px-4 py-3 text-[13px] leading-relaxed flex flex-col',
                                         msg.role === 'user'
                                             ? 'bg-brand-accent/10 text-foreground border border-brand-accent/30 rounded-2xl rounded-br-sm shadow-[0_4px_20px_rgba(0,230,118,0.05)]'
                                             : 'bg-brand-card/50 text-foreground/90 border border-black/5 dark:border-white/5 rounded-2xl rounded-bl-sm shadow-xl'
                                     )}
                                 >
-                                    {msg.content}
+                                    <div className="whitespace-pre-wrap">{msg.content}</div>
+
+                                    {/* Ações da resposta: copiar tudo, ou mandar o roteiro direto pra narração */}
+                                    {msg.role === 'assistant' &&
+                                        !!msg.content &&
+                                        !msg.content.startsWith('⚠️') &&
+                                        !msg.content.startsWith('❌') && (
+                                            <div className="flex items-center gap-2 mt-2.5 pt-2 border-t border-black/5 dark:border-white/5">
+                                                <button
+                                                    onClick={() => handleCopyMessage(msg)}
+                                                    className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand-muted hover:text-foreground transition-colors"
+                                                    title="Copiar resposta"
+                                                >
+                                                    {copiedMsgId === msg.id ? (
+                                                        <>
+                                                            <Check className="w-3 h-3 text-brand-accent" /> Copiado
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Copy className="w-3 h-3" /> Copiar
+                                                        </>
+                                                    )}
+                                                </button>
+                                                <button
+                                                    onClick={() => handleUseAsScript(msg)}
+                                                    className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand-accent hover:text-brand-lime transition-colors"
+                                                    title="Usar este roteiro na narração"
+                                                >
+                                                    <Wand2 className="w-3 h-3" /> Usar no roteiro
+                                                </button>
+                                            </div>
+                                        )}
                                 </div>
                                 {msg.role === 'user' && (
                                     <div className="w-8 h-8 rounded-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 flex items-center justify-center shrink-0 mt-0.5">
@@ -819,23 +887,30 @@ export const ChatMileto: React.FC = () => {
                                 <ChevronDown className="w-3 h-3 text-brand-accent absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                             </div>
 
-                            {/* Nível de raciocínio — só no Ultra */}
+                            {/* Nível de raciocínio — só no Ultra (usa modelo de raciocínio de verdade).
+                                Segmentado estilo Claude: as opções ficam visíveis, uma destacada. */}
                             {selectedTier === 'ultra' && (
-                                <div className="relative animate-in fade-in slide-in-from-left-1 duration-200">
-                                    <select
-                                        value={reasoning}
-                                        onChange={(e) => setReasoning(e.target.value as ReasoningLevel)}
-                                        className="appearance-none text-[11px] font-semibold bg-brand-dark/60 text-brand-muted border border-black/10 dark:border-white/10 rounded-lg pl-6 pr-7 py-1.5 outline-none hover:border-brand-accent/40 cursor-pointer transition-colors"
-                                        title="Nível de raciocínio do Mileto Ultra"
-                                    >
+                                <div
+                                    className="flex items-center gap-1 animate-in fade-in slide-in-from-left-1 duration-200"
+                                    title="Raciocínio do Mileto Ultra — mais fundo pensa melhor, porém mais devagar"
+                                >
+                                    <Brain className="w-3 h-3 text-brand-muted shrink-0" />
+                                    <div className="flex items-center gap-0.5 bg-brand-dark/60 border border-black/10 dark:border-white/10 rounded-lg p-0.5">
                                         {REASONING_LEVELS.map((r) => (
-                                            <option key={r.id} value={r.id}>
+                                            <button
+                                                key={r.id}
+                                                onClick={() => setReasoning(r.id)}
+                                                className={cn(
+                                                    'text-[10px] font-bold px-2 py-1 rounded-md transition-colors',
+                                                    reasoning === r.id
+                                                        ? 'bg-brand-accent/20 text-brand-accent'
+                                                        : 'text-brand-muted hover:text-foreground'
+                                                )}
+                                            >
                                                 {r.name}
-                                            </option>
+                                            </button>
                                         ))}
-                                    </select>
-                                    <Brain className="w-3 h-3 text-brand-muted absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-                                    <ChevronDown className="w-3 h-3 text-brand-muted absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                                    </div>
                                 </div>
                             )}
 

@@ -19,6 +19,9 @@ const PROVIDER_COST = {
  * Refine com os precos oficiais quando quiser separar input/output.
  */
 const MODEL_COST = {
+    'gpt-5': 8.0,
+    'gpt-5-mini': 1.6,
+    'gpt-5-nano': 0.4,
     'gpt-4.1-nano': 0.4,
     'gpt-4.1-mini': 1.6,
     'gpt-4.1': 8.0,

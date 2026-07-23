@@ -1,11 +1,54 @@
 import { Request, Response } from 'express';
 import fs from 'fs';
-import { createModel } from '../services/fishAudio';
+import path from 'path';
+import { randomUUID } from 'crypto';
+import ffmpeg from 'fluent-ffmpeg';
+import { createModel, getAudioDuration } from '../services/fishAudio';
 import { listVoices as listElevenLabsVoices } from '../services/elevenlabs';
 import { getProviderLabel, isTtsProvider } from '../services/ttsProviders';
 import { TtsProvider, VoiceSettings, isFishModel } from '../services/ttsTypes';
 import { synthesizeViaGateway } from '../services/gatewayNarration';
 import { bearerFrom, GatewayHttpError } from '../services/gatewayClient';
+
+const NARRATION_DIR = path.join(process.env.USER_DATA_PATH || path.join(__dirname, '..', '..'), 'narrations');
+
+/**
+ * POST /api/tts/upload-recording — a pessoa gravou a própria voz (não quer IA).
+ * Recebe o áudio gravado, converte para mp3 em narrations/ e devolve url+duração.
+ * NÃO passa pelo gateway nem cobra crédito: é a voz do próprio usuário.
+ */
+export const uploadNarrationRecording = async (req: Request, res: Response) => {
+    try {
+        if (!req.file) return res.status(400).json({ ok: false, message: 'Nenhum áudio enviado.' });
+        if (!fs.existsSync(NARRATION_DIR)) fs.mkdirSync(NARRATION_DIR, { recursive: true });
+
+        const src = req.file.path; // uploads/<uuid>.webm (multer)
+        const outName = `narration-rec-${randomUUID()}.mp3`;
+        const outPath = path.join(NARRATION_DIR, outName);
+
+        await new Promise<void>((resolve, reject) => {
+            ffmpeg(src)
+                .audioCodec('libmp3lame')
+                .audioBitrate('128k')
+                .save(outPath)
+                .on('end', () => resolve())
+                .on('error', (err) => reject(err));
+        });
+
+        try {
+            fs.unlinkSync(src);
+        } catch {
+            /* temp já removido */
+        }
+
+        const duration = await getAudioDuration(outPath);
+        res.json({ ok: true, url: `/narrations/${outName}`, duration });
+    } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : 'Erro ao salvar a gravação';
+        console.error('[TTS] upload-recording:', msg);
+        res.status(500).json({ ok: false, message: msg });
+    }
+};
 
 /**
  * O provedor vem do cliente porque cada voz salva sabe a qual serviço pertence.

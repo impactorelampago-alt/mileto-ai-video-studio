@@ -72,13 +72,18 @@ export const TIERS = [
 /** Catálogo sugerido (os mesmos IDs que o app já usa). Aceita ID custom também. */
 export const MODEL_CATALOG = {
     openai: [
+        // Modelos de RACIOCÍNIO (gpt-5*, o*): respeitam o nível Rápido/Equilibrado/Profundo.
+        { id: 'gpt-5', name: 'GPT-5 (raciocínio)' },
+        { id: 'gpt-5-mini', name: 'GPT-5 Mini (raciocínio)' },
+        { id: 'gpt-5-nano', name: 'GPT-5 Nano (raciocínio)' },
+        { id: 'o4-mini', name: 'o4-mini (raciocínio)' },
+        { id: 'o3-mini', name: 'o3-mini (raciocínio)' },
+        // Modelos rápidos (sem raciocínio): o nível é ignorado.
         { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano' },
         { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini' },
         { id: 'gpt-4.1', name: 'GPT-4.1' },
         { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
         { id: 'gpt-4o', name: 'GPT-4o' },
-        { id: 'o4-mini', name: 'o4-mini' },
-        { id: 'o3-mini', name: 'o3-mini' },
     ],
     gemini: [
         { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
@@ -87,11 +92,12 @@ export const MODEL_CATALOG = {
     ],
 };
 
-// Padrão sensato: Lite barato, Ultra o melhor.
+// Padrão sensato: Lite/Plus RÁPIDOS (sem raciocínio); Ultra = gpt-5 (RACIOCÍNIO),
+// para o seletor Rápido/Equilibrado/Profundo do app realmente mudar o comportamento.
 const TIER_DEFAULTS = {
     lite: { provider: 'openai', model: 'gpt-4.1-nano' },
     plus: { provider: 'openai', model: 'gpt-4.1-mini' },
-    ultra: { provider: 'openai', model: 'gpt-4.1' },
+    ultra: { provider: 'openai', model: 'gpt-5' },
 };
 
 export const getTiers = async () => {

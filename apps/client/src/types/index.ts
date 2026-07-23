@@ -82,12 +82,17 @@ export type FishModel = 's2.1-pro-free' | 's2-pro' | 's1';
 
 export const FISH_MODELS: { id: FishModel; label: string; note: string; tags: boolean }[] = [
     {
-        id: 's2.1-pro-free',
-        label: 'S2.1 Pro · grátis',
-        note: 'Sem custo e sem limite de caracteres. Sem SLA, e o áudio pode ser usado para treinar os modelos deles.',
+        id: 's2-pro',
+        label: 'S2 Pro · recomendado',
+        note: 'Melhor qualidade de voz, com SLA. É o padrão do Mileto para narração profissional.',
         tags: true,
     },
-    { id: 's2-pro', label: 'S2 Pro · pago', note: 'Mesmo modelo, consumindo seu crédito de API.', tags: true },
+    {
+        id: 's2.1-pro-free',
+        label: 'S2.1 Pro · econômico',
+        note: 'Mais barato, sem SLA — o áudio pode ser usado para treinar os modelos do fornecedor.',
+        tags: true,
+    },
     { id: 's1', label: 'S1 · legado', note: 'Modelo antigo. Não entende tags de emoção.', tags: false },
 ];
 
@@ -96,7 +101,8 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
     volume: 0,
     stability: 0.4, // preset "Conversational" da ElevenLabs
     similarityBoost: 0.75,
-    fishModel: 's2.1-pro-free',
+    // Pro por padrão: a voz é melhor. É o que o cliente enxerga como "Mileto".
+    fishModel: 's2-pro',
 };
 
 export type VideoFormat = '9:16' | '16:9' | '4:5' | '1:1';

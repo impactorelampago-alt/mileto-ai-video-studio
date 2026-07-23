@@ -32,7 +32,8 @@ export interface VoiceSettings {
  */
 export type FishModel = 's2.1-pro-free' | 's2-pro' | 's1';
 
-export const DEFAULT_FISH_MODEL: FishModel = 's2.1-pro-free';
+// Pro por padrão: melhor qualidade de voz. Era o grátis; trocado a pedido do founder.
+export const DEFAULT_FISH_MODEL: FishModel = 's2-pro';
 
 export const isFishModel = (v: unknown): v is FishModel =>
     v === 's2.1-pro-free' || v === 's2-pro' || v === 's1';

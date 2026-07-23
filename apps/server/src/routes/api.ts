@@ -54,6 +54,8 @@ router.post('/tts/preview-voice', ttsController.previewVoice);
 router.post('/tts/generate-narration', ttsController.createNarration);
 router.post('/tts/clone-voice', upload.single('audio'), ttsController.cloneVoice);
 router.post('/tts/list-voices', ttsController.listProviderVoices);
+// Gravação da própria voz do usuário (alternativa à narração por IA).
+router.post('/tts/upload-recording', upload.single('audio'), ttsController.uploadNarrationRecording);
 
 import * as sttController from '../controllers/sttController';
 // STT Routes
