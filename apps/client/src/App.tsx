@@ -60,9 +60,11 @@ function App() {
                         </Route>
                     </Routes>
                 </Suspense>
+                {/* Chat flutuante: fora das ROTAS (aparece em todas), mas DENTRO do
+                    HashRouter — ele usa useNavigate() para aplicar o roteiro e ir ao Step 1. */}
+                <ChatMileto />
             </HashRouter>
             {SHOW_DEBUG_FEATURES && <DebugPanel />}
-            <ChatMileto />
         </DebugProvider>
     );
 }
