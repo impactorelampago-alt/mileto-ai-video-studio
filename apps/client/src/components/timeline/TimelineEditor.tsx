@@ -269,15 +269,6 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
             const narrClip = narrTrack?.clips[0];
             const bgmClip = bgmTrack?.clips[0];
 
-            // DEBUG: Trace autosave payload
-            console.log('Autosaving timeline:', timeline);
-            console.log('Saving audioConfig:', {
-                bgmVol: bgmTrack?.volume ?? 1,
-                bgmClipVol: bgmClip?.volume ?? 1,
-                narrTrackVol: narrTrack?.volume,
-                calcBgm: (bgmTrack?.volume ?? 1) * (bgmClip?.volume ?? 1),
-            });
-
             updateAdData({
                 audioTimeline: timeline,
                 audioConfig: {

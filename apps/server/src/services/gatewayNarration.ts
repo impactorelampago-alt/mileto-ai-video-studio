@@ -56,8 +56,15 @@ export const synthesizeViaGateway = async (
     let filePath = path.join(NARRATION_DIR, fileName);
 
     // Narração-padrão de demonstração: não gasta crédito nem chama o gateway.
-    const normalizedText = text.toLowerCase().replace(/[\s\W_]+/g, '');
-    const isDefault = normalizedText.includes('atençãoatenção') && normalizedText.includes('óticavivaz');
+    // Normaliza REMOVENDO ACENTOS (NFD): sem isso `\W` comia o ç/ã/ó e os termos
+    // comparados (que tinham acento) nunca casavam — o atalho não disparava e a
+    // narração-padrão ia pro gateway cobrando crédito a cada render.
+    const normalizedText = text
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, '');
+    const isDefault = normalizedText.includes('atencaoatencao') && normalizedText.includes('oticavivaz');
     if (isDefault && !prosody && voiceId === '3cd37df623144626b4c9d12e22dbe898') {
         const defaultFilePath = path.join(NARRATION_DIR, 'default-narration.mp3');
         if (!fs.existsSync(defaultFilePath)) {

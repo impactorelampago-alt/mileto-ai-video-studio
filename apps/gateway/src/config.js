@@ -6,13 +6,20 @@ const required = (name) => {
     return v;
 };
 
+// RESELL_MULTIPLIER pode vir com vírgula ('1,5') ou vazio — nunca deixe virar NaN,
+// senão a primeira cobrança quebra o saldo da org para NaN permanentemente.
+const rawMultiplier = Number(process.env.RESELL_MULTIPLIER || 1.5);
+const safeMultiplier = Number.isFinite(rawMultiplier) && rawMultiplier > 0 ? rawMultiplier : 1.5;
+
 export const config = {
     port: Number(process.env.PORT || 4000),
     databaseUrl: required('DATABASE_URL'),
     tokenSecret: required('TOKEN_SECRET'),
     admin: {
         email: process.env.ADMIN_EMAIL || 'admin@mileto.local',
-        password: process.env.ADMIN_PASSWORD || 'admin',
+        // Obrigatória: sem default 'admin'. Um deploy que esqueça a variável cria o
+        // dono da plataforma com senha trivial — controle total nas mãos de qualquer um.
+        password: required('ADMIN_PASSWORD'),
     },
     // Primeiro cliente real, criado pelo seed (opcional).
     seedOwner: {
@@ -27,7 +34,7 @@ export const config = {
         openai: process.env.OPENAI_KEY || '',
         gemini: process.env.GEMINI_KEY || '',
     },
-    resellMultiplier: Number(process.env.RESELL_MULTIPLIER || 1.5),
+    resellMultiplier: safeMultiplier,
 };
 
 /** Sem chave configurada, o gateway opera em modo demo (não gasta dinheiro). */

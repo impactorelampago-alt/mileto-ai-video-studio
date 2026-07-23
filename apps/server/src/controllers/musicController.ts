@@ -2,10 +2,12 @@ import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { randomUUID as uuidv4 } from 'crypto';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+// Binário do ffprobe: o Electron injeta o caminho empacotado; senão, PATH do sistema.
+const FFPROBE_BIN = process.env.FFPROBE_PATH || 'ffprobe';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 
@@ -44,10 +46,18 @@ function writeLibrary(tracks: MusicTrack[]): void {
 
 async function getAudioDuration(filePath: string): Promise<number> {
     try {
-        const { stdout } = await execAsync(
-            `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`
-        );
-        const dur = parseFloat(stdout.trim());
+        // execFile NÃO usa shell: o filePath vira um argumento literal, então um nome
+        // como `x.mp3"; rm -rf ~` não pode injetar comando (era um RCE via upload).
+        const { stdout } = await execFileAsync(FFPROBE_BIN, [
+            '-v',
+            'error',
+            '-show_entries',
+            'format=duration',
+            '-of',
+            'default=noprint_wrappers=1:nokey=1',
+            filePath,
+        ]);
+        const dur = parseFloat(String(stdout).trim());
         return isNaN(dur) ? 0 : dur;
     } catch {
         return 0;

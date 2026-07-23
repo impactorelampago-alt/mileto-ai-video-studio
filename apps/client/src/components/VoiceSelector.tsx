@@ -46,7 +46,8 @@ export const VoiceSelector = () => {
     const apiBase = (window as unknown as { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
 
     const selectVoice = (id: string, provider: TtsProvider) =>
-        updateAdData({ selectedVoiceId: id, selectedVoiceProvider: provider });
+        // Trocar a voz também invalida o áudio já gerado (foi feito com outra voz).
+        updateAdData({ selectedVoiceId: id, selectedVoiceProvider: provider, isNarrationGenerated: false });
 
     const resetAddForm = () => {
         setNewVoiceName('');

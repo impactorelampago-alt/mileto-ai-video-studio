@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import axios from 'axios';
+import { safeResolve, isSafeRemoteUrl } from '../utils/safePath';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const AUDIO_MIXES_DIR = path.join(BASE_DATA_PATH, 'public/mixes');
@@ -24,7 +25,8 @@ export const mixAudio = async (req: Request, res: Response) => {
         const narrationVol = audioConfig?.narration?.enabled ? (audioConfig.narration.volume ?? 1) : 0;
         const musicVol = audioConfig?.background?.enabled ? (audioConfig.background.volume ?? 0.2) : 0;
 
-        // Resolving ffmpeg input: local file for our hosted audio, or the URL itself for external sources (ffmpeg can read https directly)
+        // Resolve o input do ffmpeg com CONTAINMENT (nada de `../../etc/passwd`) e
+        // bloqueia SSRF (URL externa tem que ser http(s) para host público).
         const LOCAL_HOSTS = ['localhost', '127.0.0.1'];
         const resolveAudioInput = (url: string): string => {
             if (!url) return '';
@@ -32,13 +34,14 @@ export const mixAudio = async (req: Request, res: Response) => {
             try {
                 parsed = new URL(url);
             } catch {
-                // Relative path like /narrations/xxx.mp3
-                return path.join(BASE_DATA_PATH, url);
+                // Caminho relativo tipo /narrations/xxx.mp3 → sob BASE_DATA_PATH, sem escapar.
+                return safeResolve(BASE_DATA_PATH, url.replace(/^\/+/, ''));
             }
             if (LOCAL_HOSTS.includes(parsed.hostname)) {
-                return path.join(BASE_DATA_PATH, parsed.pathname);
+                return safeResolve(BASE_DATA_PATH, parsed.pathname.replace(/^\/+/, ''));
             }
-            // External URL (e.g. https://cdn.pixabay.com/...) — pass directly to ffmpeg
+            // Externa (ex.: https://cdn.pixabay.com/...): só se for host público válido.
+            if (!isSafeRemoteUrl(url)) throw new Error('URL de áudio não permitida.');
             return url;
         };
 
@@ -79,27 +82,42 @@ export const mixAudio = async (req: Request, res: Response) => {
             }
 
             try {
-                // Download com Axios disfarçado de Navegador (Bypass 403 Pixabay)
+                // Download com Axios disfarçado de Navegador (Bypass 403 Pixabay).
+                // timeout evita pendurar a requisição para sempre num socket mudo.
                 const response = await axios({
                     url: inputPath,
                     method: 'GET',
                     responseType: 'stream',
+                    timeout: 20000,
+                    maxContentLength: 60 * 1024 * 1024,
                     headers: {
                         'User-Agent': FAKE_USER_AGENT,
-                        'Referer': 'https://pixabay.com/'
-                    }
+                        Referer: 'https://pixabay.com/',
+                    },
                 });
 
                 const writer = fs.createWriteStream(cachedFilePath);
-                response.data.pipe(writer);
-
                 await new Promise<void>((resolve, reject) => {
-                    writer.on('finish', resolve);
+                    // Erro NO MEIO do stream de origem também precisa rejeitar (antes só o
+                    // 'error' do writer rejeitava → download truncado virava cache eterno).
+                    response.data.on('error', reject);
                     writer.on('error', reject);
+                    writer.on('finish', resolve);
+                    response.data.pipe(writer);
                 });
 
+                // Arquivo vazio/zero-byte não deve contar como cache válido.
+                if (!fs.existsSync(cachedFilePath) || fs.statSync(cachedFilePath).size === 0) {
+                    throw new Error('Arquivo de áudio remoto vazio.');
+                }
                 return cachedFilePath;
             } catch (err: any) {
+                // Remove o parcial para não "cachear" um download quebrado.
+                try {
+                    if (fs.existsSync(cachedFilePath)) fs.unlinkSync(cachedFilePath);
+                } catch {
+                    /* ignore */
+                }
                 console.error(`[Audio Mix] Falha ao baixar ${type}:`, err.message);
                 throw new Error(`Pixabay ou servidor remoto negou acesso a URL de áudio (${err.message})`);
             }

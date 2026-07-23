@@ -4,7 +4,10 @@ directories:
     output: release/${version}
     buildResources: build
 
-electronVersion: '30.0.0'
+# electronVersion NÃO é fixado de propósito: fixar sobrepõe a auto-detecção e
+# empacota um runtime diferente do que o app roda em dev (o devDep é electron 40).
+# Isso gerava bugs que só apareciam na build do usuário final. Deixe derivar do
+# pacote instalado, mantendo dev e produção no mesmo runtime.
 
 publish:
     - provider: github

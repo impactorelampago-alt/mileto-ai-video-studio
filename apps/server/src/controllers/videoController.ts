@@ -1,8 +1,16 @@
 import { Request, Response } from 'express';
 import { getVideoMetadata, extractFrames, muxVideoAudio, getVideoEncoderArgs } from '../services/ffmpeg';
 import path from 'path';
+import os from 'os';
 import { spawn } from 'child_process';
 import fs from 'fs';
+import { isWithinRoots } from '../utils/safePath';
+
+// O export escreve no temp do SO (via IPC do Electron) e no dir de dados. Limitar a
+// GRAVAÇÃO a essas raízes impede que um caller aponte a saída do ffmpeg para um
+// arquivo sensível existente e o sobrescreva (clobber).
+const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
+const WRITE_ROOTS = [os.tmpdir(), BASE_DATA_PATH];
 
 export const uploadVideo = async (req: Request, res: Response) => {
     try {
@@ -121,6 +129,9 @@ export const muxFinalExport = async (req: Request, res: Response) => {
         if (!videoPath || !audioPath || !outputPath) {
             return res.status(400).json({ ok: false, message: 'Missing paths for muxing' });
         }
+        if (!isWithinRoots(outputPath, WRITE_ROOTS)) {
+            return res.status(400).json({ ok: false, message: 'Caminho de saída não permitido.' });
+        }
 
         // Verify files exist before muxing
         const fsCheck = await import('fs');
@@ -190,6 +201,9 @@ export const exportHybrid = async (req: Request, res: Response) => {
 
         if (!takes || takes.length === 0 || !finalPath) {
             return res.status(400).json({ ok: false, message: 'Parametros Insuficientes (takes, finalPath)' });
+        }
+        if (!isWithinRoots(finalPath, WRITE_ROOTS)) {
+            return res.status(400).json({ ok: false, message: 'Caminho de saída não permitido.' });
         }
 
         const fsCheck = await import('fs');

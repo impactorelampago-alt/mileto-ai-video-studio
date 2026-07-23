@@ -89,6 +89,19 @@ function startServer() {
     serverProcess.on('close', (code) => {
         console.log(`[Server] Process exited with code ${code}`);
     });
+
+    // Sem este handler, uma falha ao spawnar (bundle ausente, execPath ruim, EACCES)
+    // emite 'error' → vira uncaughtException → o app trava no boot sem explicação.
+    serverProcess.on('error', (err) => {
+        console.error('[Server] Falha ao iniciar o processo do servidor:', err.message);
+        if (mainWindowRef && !mainWindowRef.isDestroyed()) {
+            dialog.showErrorBox(
+                'Erro ao iniciar o Mileto',
+                'Não foi possível iniciar o servidor interno. Reinstale o aplicativo ou reinicie o computador.\n\n' +
+                    err.message
+            );
+        }
+    });
 }
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -139,8 +152,9 @@ function readAuthToken() {
         if (!fs.existsSync(f)) return null;
         const buf = fs.readFileSync(f);
         if (buf.length === 0) return null;
-        if (safeStorage.isEncryptionAvailable()) return safeStorage.decryptString(buf);
-        return buf.toString('utf8');
+        // O arquivo é SEMPRE cifrado (nunca gravamos texto puro). Se a decifragem
+        // falhar (chave mudou, arquivo de outra máquina), devolve null → re-login.
+        return safeStorage.decryptString(buf);
     } catch (err) {
         console.error('[auth] Falha ao ler token:', err.message);
         return null;
@@ -153,10 +167,13 @@ function writeAuthToken(token) {
         if (fs.existsSync(f)) fs.unlinkSync(f);
         return true;
     }
-    const data = safeStorage.isEncryptionAvailable()
-        ? safeStorage.encryptString(String(token))
-        : Buffer.from(String(token), 'utf8');
-    fs.writeFileSync(f, data);
+    // NUNCA grava o token em texto puro. Sem cifragem disponível (raro; safeStorage
+    // usa DPAPI no Windows), não persiste — o renderer cai para sessionStorage, que
+    // some ao fechar. Um bearer de 30 dias em claro no disco seria pior.
+    if (!safeStorage.isEncryptionAvailable()) {
+        throw new Error('Criptografia (safeStorage) indisponível; sessão não será salva em texto puro.');
+    }
+    fs.writeFileSync(f, safeStorage.encryptString(String(token)));
     return true;
 }
 

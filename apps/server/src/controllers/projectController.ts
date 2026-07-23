@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
+import { safeResolve, isSafeSegment } from '../utils/safePath';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const PROJECTS_DIR = path.join(BASE_DATA_PATH, 'data/projects');
@@ -90,14 +91,9 @@ export const listProjects = async (_req: Request, res: Response) => {
 export const deleteProject = async (req: Request, res: Response) => {
     try {
         const { projectId } = req.params;
-        if (!projectId) return res.status(400).json({ ok: false, message: 'projectId ausente' });
+        if (!isSafeSegment(projectId)) return res.status(400).json({ ok: false, message: 'projectId inválido' });
 
-        // Proteção contra path traversal
-        if (projectId.includes('..') || projectId.includes('/') || projectId.includes('\\')) {
-            return res.status(400).json({ ok: false, message: 'projectId inválido' });
-        }
-
-        const projectPath = path.join(PROJECTS_DIR, projectId);
+        const projectPath = safeResolve(PROJECTS_DIR, projectId);
         if (fs.existsSync(projectPath)) {
             fs.rmSync(projectPath, { recursive: true, force: true });
         }
@@ -113,7 +109,8 @@ export const getProjectData = async (req: Request, res: Response) => {
     try {
         const { projectId } = req.params;
         const pId = projectId || 'default';
-        const projectPath = path.join(PROJECTS_DIR, pId);
+        if (!isSafeSegment(pId)) return res.status(400).json({ ok: false, message: 'projectId inválido' });
+        const projectPath = safeResolve(PROJECTS_DIR, pId);
         const dataPath = path.join(projectPath, 'ad-data.json');
 
         if (!fs.existsSync(dataPath)) {
@@ -135,13 +132,14 @@ export const saveProjectData = async (req: Request, res: Response) => {
     try {
         const { projectId } = req.params;
         const pId = projectId || 'default';
+        if (!isSafeSegment(pId)) return res.status(400).json({ ok: false, message: 'projectId inválido' });
         const { data } = req.body;
 
         if (!data) {
             return res.status(400).json({ ok: false, message: 'No data provided' });
         }
 
-        const projectPath = path.join(PROJECTS_DIR, pId);
+        const projectPath = safeResolve(PROJECTS_DIR, pId);
         if (!fs.existsSync(projectPath)) {
             fs.mkdirSync(projectPath, { recursive: true });
         }

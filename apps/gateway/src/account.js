@@ -42,25 +42,45 @@ export const listTeam = async (req, res) => {
 export const addMember = async (req, res) => {
     const { email, name, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ ok: false, message: 'Informe email e senha do membro.' });
-
-    const org = (await query('SELECT plan, max_seats FROM organizations WHERE id = $1', [req.user.orgId])).rows[0];
-    const seatsUsed = Number(
-        (await query('SELECT COUNT(*) AS c FROM users WHERE org_id = $1', [req.user.orgId])).rows[0].c
-    );
-    if (seatsUsed >= (org.max_seats || PLAN_SEATS[org.plan] || 1)) {
-        return res.status(403).json({ ok: false, message: 'Limite de membros do seu plano atingido.' });
-    }
-
     const cleanEmail = String(email).toLowerCase().trim();
-    if ((await query('SELECT 1 FROM users WHERE email = $1', [cleanEmail])).rows[0]) {
-        return res.status(409).json({ ok: false, message: 'Já existe usuário com esse email.' });
-    }
 
-    await query(
-        `INSERT INTO users (org_id, email, password_hash, name, role) VALUES ($1,$2,$3,$4,'member')`,
-        [req.user.orgId, cleanEmail, hashPassword(password), name || null]
-    );
-    res.json({ ok: true });
+    // Transação com a org TRAVADA: contar assentos e inserir precisam ser atômicos,
+    // senão dois POST simultâneos passam ambos na checagem e estouram o max_seats.
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const org = (
+            await client.query('SELECT plan, max_seats FROM organizations WHERE id = $1 FOR UPDATE', [req.user.orgId])
+        ).rows[0];
+        if (!org) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ ok: false, message: 'Organização não encontrada.' });
+        }
+        const seatsUsed = Number(
+            (await client.query('SELECT COUNT(*) AS c FROM users WHERE org_id = $1', [req.user.orgId])).rows[0].c
+        );
+        if (seatsUsed >= (org.max_seats || PLAN_SEATS[org.plan] || 1)) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ ok: false, message: 'Limite de membros do seu plano atingido.' });
+        }
+        if ((await client.query('SELECT 1 FROM users WHERE email = $1', [cleanEmail])).rows[0]) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ ok: false, message: 'Já existe usuário com esse email.' });
+        }
+        await client.query(
+            `INSERT INTO users (org_id, email, password_hash, name, role) VALUES ($1,$2,$3,$4,'member')`,
+            [req.user.orgId, cleanEmail, hashPassword(password), name || null]
+        );
+        await client.query('COMMIT');
+        res.json({ ok: true });
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        // Violação da UNIQUE de email vira 409 amigável em vez de 500.
+        if (e.code === '23505') return res.status(409).json({ ok: false, message: 'Já existe usuário com esse email.' });
+        throw e;
+    } finally {
+        client.release();
+    }
 };
 
 /** DELETE /account/team/:userId — owner remove um membro (não a si mesmo, não outro owner). */

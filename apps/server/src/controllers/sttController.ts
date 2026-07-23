@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { bearerFrom, gatewayStt, GatewayHttpError } from '../services/gatewayClient';
+import { safeResolve } from '../utils/safePath';
 
 // Static-route prefix → diretório físico no USER_DATA_PATH (espelha index.ts).
 // Fonte única da verdade para resolver URLs relativas servidas pelo Express.
@@ -19,25 +20,26 @@ const STATIC_ROUTE_MAP: Record<string, string> = {
 const resolveLocalAudioPath = (audioUrl: string): string | null => {
     const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 
-    // Caminho absoluto cru (raro, mas tolerante)
-    if (path.isAbsolute(audioUrl) && fs.existsSync(audioUrl)) return audioUrl;
-
-    let pathname = audioUrl;
+    // SEM atalho de caminho absoluto: aceitar `/etc/passwd` ou `C:\...\id_rsa` aqui
+    // permitiria transcrever (e exfiltrar via gateway) qualquer arquivo do disco.
+    let pathname = String(audioUrl || '');
     try {
-        if (/^https?:\/\//i.test(audioUrl)) {
-            pathname = new URL(audioUrl).pathname;
-        }
+        if (/^https?:\/\//i.test(pathname)) pathname = new URL(pathname).pathname;
     } catch {
-        // Deixa pathname = audioUrl e segue o fluxo
+        return null;
     }
 
     if (!pathname.startsWith('/')) pathname = '/' + pathname;
 
     for (const [prefix, dir] of Object.entries(STATIC_ROUTE_MAP)) {
         if (pathname.startsWith(prefix)) {
-            // Preserva subpastas (ex.: /mixes/cache/xxx.mp3) em vez de só o basename.
-            const rel = pathname.slice(prefix.length);
-            return path.join(BASE_DATA_PATH, dir, rel);
+            const rel = pathname.slice(prefix.length).replace(/^\/+/, '');
+            try {
+                // safeResolve garante que `/narrations/../../../...` não escape do dir de dados.
+                return safeResolve(BASE_DATA_PATH, dir, rel);
+            } catch {
+                return null;
+            }
         }
     }
 

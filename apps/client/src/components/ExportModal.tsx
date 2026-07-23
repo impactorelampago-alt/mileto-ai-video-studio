@@ -88,8 +88,11 @@ export const ExportModal = ({
         };
     }, [mediaTakes]);
 
-    // Calculate total duration from all takes
-    let totalDuration = mediaTakes.reduce((acc, take) => acc + (take.trim.end - take.trim.start), 0);
+    // Duração do export = MAIOR entre a soma dos clipes e a duração do áudio. Sem
+    // isso, um b-roll curto (20s) sob uma narração+CTA de 28s cortava silenciosamente
+    // os últimos 8s de áudio, título e legendas. O preview já segura o último frame.
+    const takesDuration = mediaTakes.reduce((acc, take) => acc + (take.trim.end - take.trim.start), 0);
+    let totalDuration = Math.max(takesDuration, adData.narrationDuration || 0);
 
     // Override length if user clicked "Testar Motor Rápido (5s)"
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -303,6 +306,10 @@ export const ExportModal = ({
         fileName,
         outputFolder,
         saveProject,
+        // Sem estas, handleExport fecha sobre valores obsoletos: exportava com a
+        // resolução/formato default em vez do que o probe detectou.
+        targetDims,
+        adData.format,
     ]);
 
     // Prevent accidental close during export

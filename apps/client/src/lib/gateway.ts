@@ -54,8 +54,13 @@ export async function gatewayFetch<T = unknown>(path: string, init: RequestInit 
 
     let res: Response;
     try {
-        res = await fetch(gatewayUrl(path), { ...init, headers });
-    } catch {
+        // Timeout para não pendurar login/conta num socket "aberto mas mudo".
+        res = await fetch(gatewayUrl(path), { ...init, headers, signal: AbortSignal.timeout(30000) });
+    } catch (err) {
+        const name = (err as Error)?.name;
+        if (name === 'TimeoutError' || name === 'AbortError') {
+            throw new GatewayError(0, 'O servidor Mileto demorou demais para responder. Tente de novo.');
+        }
         throw new GatewayError(0, 'Sem conexão com o servidor Mileto. Verifique sua internet.');
     }
 

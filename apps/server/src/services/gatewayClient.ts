@@ -29,6 +29,24 @@ export const bearerFrom = (req: Request): string | null => {
     return header.startsWith('Bearer ') ? header.slice(7) : null;
 };
 
+/**
+ * fetch com timeout. Sem isto, uma conexão "aberta mas muda" com o gateway nunca
+ * resolve nem rejeita — narração/chat/legenda ficam presas para sempre e o usuário
+ * precisa matar o app. O abort vira um erro tratável.
+ */
+const fetchWithTimeout = async (url: string, init: Record<string, unknown>, ms: number) => {
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return await fetch(url, { ...init, signal: AbortSignal.timeout(ms) } as any);
+    } catch (e) {
+        const name = (e as Error)?.name;
+        if (name === 'AbortError' || name === 'TimeoutError') {
+            throw new GatewayHttpError(504, 'O servidor Mileto demorou demais para responder. Tente de novo.');
+        }
+        throw new GatewayHttpError(0, 'Sem conexão com o servidor Mileto. Verifique sua internet.');
+    }
+};
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const parseBody = async (res: { text: () => Promise<string> }): Promise<any> => {
     const text = await res.text();
@@ -57,11 +75,15 @@ export interface GatewayChatPayload {
 }
 
 export const gatewayChat = async (token: string, payload: GatewayChatPayload): Promise<GatewayChatResult> => {
-    const res = await fetch(`${GATEWAY_URL}/v1/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-    });
+    const res = await fetchWithTimeout(
+        `${GATEWAY_URL}/v1/chat`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify(payload),
+        },
+        60000
+    );
     const data = await parseBody(res);
     if (!res.ok) throw new GatewayHttpError(res.status, data.message || `Gateway ${res.status}`);
     return data as GatewayChatResult;
@@ -77,11 +99,15 @@ export const gatewayTts = async (
     token: string,
     payload: { text: string; voiceId: string; provider: string; voiceSettings?: unknown }
 ): Promise<GatewayTtsResult> => {
-    const res = await fetch(`${GATEWAY_URL}/v1/tts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-    });
+    const res = await fetchWithTimeout(
+        `${GATEWAY_URL}/v1/tts`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify(payload),
+        },
+        60000
+    );
     if (!res.ok) {
         const data = await parseBody(res);
         throw new GatewayHttpError(res.status, data.message || `Gateway ${res.status}`);
@@ -117,12 +143,15 @@ export const gatewayStt = async (
     const form = new FormData();
     form.append('audio', audioBuffer, { filename: filename || 'audio.mp3', contentType: 'audio/mpeg' });
     form.append('language', language);
-    const res = await fetch(`${GATEWAY_URL}/v1/stt`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, ...form.getHeaders() },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        body: form as any,
-    });
+    const res = await fetchWithTimeout(
+        `${GATEWAY_URL}/v1/stt`,
+        {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, ...form.getHeaders() },
+            body: form,
+        },
+        120000
+    );
     const data = await parseBody(res);
     if (!res.ok) throw new GatewayHttpError(res.status, data.message || `Gateway ${res.status}`);
     return data as GatewaySttResult;

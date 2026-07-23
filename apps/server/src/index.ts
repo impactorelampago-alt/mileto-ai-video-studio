@@ -41,15 +41,33 @@ process.on('uncaughtException', (err) => {
 const app = express();
 const PORT = process.env.PORT || 3301;
 
-// CORS Configuration — allow all origins (Electron uses file:// which can't be whitelisted)
+// CORS restrito. O app Electron carrega de file:// (sem Origin ou 'null') no build
+// e de localhost:5173 em dev. Refletir QUALQUER origem (o padrão antigo) deixava
+// qualquer site aberto no navegador ler as respostas do servidor local e — via
+// preflight — disparar POSTs. Aqui só liberamos as origens do próprio app.
+const isAllowedOrigin = (origin?: string): boolean => {
+    if (!origin || origin === 'null') return true; // Electron file:// / same-origin
+    try {
+        const host = new URL(origin).hostname;
+        return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    } catch {
+        return false;
+    }
+};
 app.use(
     cors({
-        origin: true,
+        origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization', 'X-Runway-Token', 'X-Replicate-Token'],
         credentials: true,
     })
 );
+
+// Nunca deixe o navegador "adivinhar" o tipo de um arquivo servido (anti-XSS por sniffing).
+app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    next();
+});
 
 app.use(express.json({ limit: '50mb' }));
 

@@ -5,6 +5,7 @@ import * as videoController from '../controllers/videoController';
 import * as aiController from '../controllers/aiController';
 import * as chatController from '../controllers/chatController';
 import { upload } from '../middleware/upload';
+import { isSafeRemoteUrl } from '../utils/safePath';
 
 import * as uploadController from '../controllers/uploadController';
 import * as musicController from '../controllers/musicController';
@@ -155,10 +156,14 @@ router.post('/test-elevenlabs', async (req, res) => {
 router.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url as string;
     if (!targetUrl) return res.status(400).send('URL is required');
+    // Anti-SSRF: só http(s) para host PÚBLICO. Sem isso, `?url=http://169.254.169.254/...`
+    // lê metadados da nuvem e varre a rede interna usando o app como proxy cego.
+    if (!isSafeRemoteUrl(targetUrl)) return res.status(400).send('URL não permitida');
     try {
         const response = await axios.get(targetUrl, {
             responseType: 'stream',
             timeout: 10000,
+            maxRedirects: 0, // um redirect para host interno burlaria a checagem acima
         });
 
         // Copy content type and content length so browser knows what it's dealing with

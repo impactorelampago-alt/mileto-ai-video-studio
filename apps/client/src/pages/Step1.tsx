@@ -192,7 +192,11 @@ export const Step1 = () => {
                         </div>
                         <textarea
                             value={adData.narrationText}
-                            onChange={(e) => updateAdData({ narrationText: e.target.value })}
+                            onChange={(e) =>
+                                // Mudou o texto → o áudio gerado ficou desatualizado. Invalida
+                                // para forçar regerar (senão avança e o vídeo fala o texto antigo).
+                                updateAdData({ narrationText: e.target.value, isNarrationGenerated: false })
+                            }
                             placeholder="Escreva aqui o seu roteiro matador para o anúncio..."
                             className={cn(
                                 'w-full h-44 bg-background border border-black/5 dark:border-white/5 rounded-xl px-5 py-4 text-sm focus:outline-none focus:ring-1 transition-all placeholder:text-foreground/20 text-foreground resize-none leading-relaxed shadow-inner',

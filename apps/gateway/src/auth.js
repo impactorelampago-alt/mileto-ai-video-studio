@@ -3,6 +3,11 @@ import { verifyPassword, signToken, verifyToken, newId } from './crypto.js';
 
 const THIRTY_DAYS = 30 * 24 * 60 * 60;
 
+// Hash "isca" com formato válido de scrypt que nunca casa. Serve para gastar o
+// MESMO tempo de scrypt quando o e-mail não existe — sem isso, e-mail inexistente
+// responde na hora e e-mail real demora, revelando quais contas existem (timing).
+const DUMMY_HASH = `scrypt$${'ab'.repeat(16)}$${'cd'.repeat(64)}`;
+
 /** POST /auth/login — email + senha → token de sessão. */
 export const login = async (req, res) => {
     const { email, password } = req.body || {};
@@ -16,8 +21,14 @@ export const login = async (req, res) => {
     );
     const user = rows[0];
 
-    // Mensagem genérica de propósito: não revela se o email existe.
-    if (!user || !verifyPassword(password, user.password_hash)) {
+    // Mensagem genérica de propósito: não revela se o email existe. E rodamos o
+    // scrypt nos dois caminhos (contra hash isca quando não há usuário) para não
+    // vazar a existência da conta pelo tempo de resposta.
+    if (!user) {
+        verifyPassword(password, DUMMY_HASH);
+        return res.status(401).json({ ok: false, message: 'Email ou senha incorretos.' });
+    }
+    if (!verifyPassword(password, user.password_hash)) {
         return res.status(401).json({ ok: false, message: 'Email ou senha incorretos.' });
     }
     if (user.status !== 'active') {

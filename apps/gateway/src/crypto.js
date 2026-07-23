@@ -56,9 +56,13 @@ export const verifyToken = (token) => {
 export const newId = () => crypto.randomUUID();
 
 // ── Criptografia de segredos em repouso (chaves de IA no banco) ─────────────
-// AES-256-GCM com chave derivada do TOKEN_SECRET. Guardar chave de API em texto
-// puro no banco seria o mesmo erro de guardá-la no código.
-const encKey = crypto.scryptSync(config.tokenSecret, 'mileto-secret-salt', 32);
+// AES-256-GCM. Idealmente a chave de criptografia é INDEPENDENTE do TOKEN_SECRET
+// (senão um único vazamento do TOKEN_SECRET permite forjar token de super_admin E
+// descriptografar todas as chaves de API). Defina SECRET_ENCRYPTION_KEY para separar.
+// Sem ela, cai no TOKEN_SECRET (comportamento anterior) — assim os segredos já
+// gravados continuam descriptografáveis; troque só com re-encriptação planejada.
+const encSource = process.env.SECRET_ENCRYPTION_KEY || config.tokenSecret;
+const encKey = crypto.scryptSync(encSource, 'mileto-secret-salt', 32);
 
 export const encryptSecret = (plain) => {
     if (!plain) return '';

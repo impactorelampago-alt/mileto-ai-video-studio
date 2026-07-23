@@ -3,6 +3,13 @@ import { config } from './config.js';
 
 export const pool = new pg.Pool({ connectionString: config.databaseUrl });
 
+// Sem este listener, um erro num cliente OCIOSO (Postgres reinicia, TCP cai) vira
+// exceção não capturada e DERRUBA o processo inteiro do gateway. Aqui só logamos;
+// o pool descarta o cliente ruim e segue.
+pool.on('error', (err) => {
+    console.error('[gateway][db] erro em cliente ocioso do pool:', err.message);
+});
+
 export const query = (text, params) => pool.query(text, params);
 
 /**

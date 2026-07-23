@@ -3,9 +3,11 @@ FROM node:24-alpine
 
 WORKDIR /app
 
-# Instala dependências primeiro (cache de camada)
-COPY package.json ./
-RUN npm install --omit=dev
+# Instala dependências primeiro (cache de camada). `npm ci` respeita o lockfile:
+# build reproduzível. `npm install` (antigo) ignorava o lock e podia puxar
+# minor/patch mais novos num rebuild meses depois — regressão irreproduzível.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 # Código
 COPY src ./src

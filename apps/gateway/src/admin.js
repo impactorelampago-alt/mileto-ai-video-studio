@@ -74,6 +74,11 @@ export const createOrg = async (req, res) => {
     const maxSeats = PLAN_SEATS[plan];
     if (!maxSeats) return res.status(400).json({ ok: false, message: 'Plano inválido.' });
 
+    const credits0 = Number(initialCredits);
+    if (!Number.isFinite(credits0) || credits0 < 0) {
+        return res.status(400).json({ ok: false, message: 'Crédito inicial inválido (não pode ser negativo).' });
+    }
+
     const email = String(ownerEmail).toLowerCase().trim();
     const exists = (await query('SELECT 1 FROM users WHERE email = $1', [email])).rows[0];
     if (exists) return res.status(409).json({ ok: false, message: 'Já existe usuário com esse email.' });
@@ -91,11 +96,11 @@ export const createOrg = async (req, res) => {
             `INSERT INTO users (org_id, email, password_hash, name, role) VALUES ($1,$2,$3,$4,'owner')`,
             [org.id, email, hashPassword(ownerPassword), ownerName || null]
         );
-        await client.query('INSERT INTO credits (org_id, balance) VALUES ($1, $2)', [org.id, Number(initialCredits) || 0]);
-        if (Number(initialCredits) > 0) {
+        await client.query('INSERT INTO credits (org_id, balance) VALUES ($1, $2)', [org.id, credits0]);
+        if (credits0 > 0) {
             await client.query(
                 'INSERT INTO credit_events (org_id, amount, reason, created_by) VALUES ($1,$2,$3,$4)',
-                [org.id, Number(initialCredits), 'Crédito inicial', req.user.id]
+                [org.id, credits0, 'Crédito inicial', req.user.id]
             );
         }
         await client.query('COMMIT');
@@ -122,6 +127,13 @@ export const addCredits = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        // Trava a linha e impede que um estorno (amount negativo) deixe o saldo negativo.
+        const cur = (await client.query('SELECT balance FROM credits WHERE org_id = $1 FOR UPDATE', [id])).rows[0];
+        const current = cur ? Number(cur.balance) : 0;
+        if (current + amount < 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ ok: false, message: `Estorno maior que o saldo atual (${current}).` });
+        }
         await client.query(
             `INSERT INTO credits (org_id, balance) VALUES ($1,$2)
              ON CONFLICT (org_id) DO UPDATE SET balance = credits.balance + $2, updated_at = now()`,

@@ -5,8 +5,8 @@ import path from 'node:path';
 import { config } from './config.js';
 import { query } from './db.js';
 import { login, logout, requireAuth, requireSuperAdmin, requireOwner } from './auth.js';
-import { proxyTts, proxyChat, proxyStt } from './providers.js';
-import { estimateUnits, debitAndLog, getBalance } from './meter.js';
+import { proxyTts, proxyChat, proxyStt, hasKey } from './providers.js';
+import { estimateUnits, priceOf, reserve, settle, release, getBalance } from './meter.js';
 import { resolveTier, getSystemPrompt } from './settings.js';
 import * as admin from './admin.js';
 import * as account from './account.js';
@@ -18,174 +18,267 @@ app.use(express.json({ limit: '1mb' }));
 // Upload de áudio das legendas em memória (limite do Whisper = 25MB).
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
+/** Envolve handler/middleware async para que rejeições virem o error-middleware (Express 4 não faz isso). */
+const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+/** Traduz erros de cobrança (reserve) em status HTTP; repassa o resto ao error-middleware. */
+const billingError = (res, e) => {
+    if (e.code === 'INSUFFICIENT_CREDIT') return res.status(402).json({ ok: false, message: e.message });
+    if (e.code === 'ORG_SUSPENDED') return res.status(403).json({ ok: false, message: e.message });
+    if (e.code === 'ORG_NOT_FOUND') return res.status(404).json({ ok: false, message: e.message });
+    throw e;
+};
+
 // CORS liberado para o app local. Em produção, restrinja à origem do app.
 app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
 });
 
+// Valida qualquer :id / :userId de rota como inteiro positivo antes do handler (evita NaN -> erro de SQL).
+const intParam = (name) => (req, res, next, val) => {
+    if (!/^\d+$/.test(String(val))) return res.status(400).json({ ok: false, message: `${name} inválido.` });
+    next();
+};
+app.param('id', intParam('id'));
+app.param('userId', intParam('userId'));
+
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'mileto-gateway' }));
 
 // ── Autenticação ────────────────────────────────────────────────────────────
-app.post('/auth/login', login);
-app.post('/auth/logout', requireAuth, logout);
+app.post('/auth/login', asyncHandler(login));
+app.post('/auth/logout', asyncHandler(requireAuth), asyncHandler(logout));
 
-app.get('/auth/me', requireAuth, async (req, res) => {
-    const { rows } = await query(
-        `SELECT u.id, u.email, u.name, u.role, u.org_id,
-                o.name AS org_name, o.plan AS org_plan, o.max_seats,
-                (SELECT COUNT(*) FROM users x WHERE x.org_id = u.org_id) AS seats_used
-         FROM users u LEFT JOIN organizations o ON o.id = u.org_id
-         WHERE u.id = $1`,
-        [req.user.id]
-    );
-    const u = rows[0] || {};
-    const balance = req.user.orgId ? await getBalance(req.user.orgId) : null;
-    res.json({
-        ok: true,
-        user: {
-            id: u.id,
-            email: u.email,
-            name: u.name,
-            role: u.role,
-            orgId: u.org_id,
-            orgName: u.org_name,
-            orgPlan: u.org_plan,
-            maxSeats: u.max_seats,
-            seatsUsed: u.seats_used != null ? Number(u.seats_used) : null,
-        },
-        balance,
-    });
-});
+app.get(
+    '/auth/me',
+    asyncHandler(requireAuth),
+    asyncHandler(async (req, res) => {
+        const { rows } = await query(
+            `SELECT u.id, u.email, u.name, u.role, u.org_id,
+                    o.name AS org_name, o.plan AS org_plan, o.max_seats,
+                    (SELECT COUNT(*) FROM users x WHERE x.org_id = u.org_id) AS seats_used
+             FROM users u LEFT JOIN organizations o ON o.id = u.org_id
+             WHERE u.id = $1`,
+            [req.user.id]
+        );
+        const u = rows[0] || {};
+        const balance = req.user.orgId ? await getBalance(req.user.orgId) : null;
+        res.json({
+            ok: true,
+            user: {
+                id: u.id,
+                email: u.email,
+                name: u.name,
+                role: u.role,
+                orgId: u.org_id,
+                orgName: u.org_name,
+                orgPlan: u.org_plan,
+                maxSeats: u.max_seats,
+                seatsUsed: u.seats_used != null ? Number(u.seats_used) : null,
+            },
+            balance,
+        });
+    })
+);
 
 // ── Proxy de IA (autenticado + medido por organização) ──────────────────────
-app.post('/v1/tts', requireAuth, async (req, res) => {
-    try {
+// Padrão em TODOS: RESERVA o crédito estimado ANTES de chamar o fornecedor pago
+// (impede sangria por saldo 0 e gasto duplo por concorrência), chama, e concilia
+// pelo consumo real. Se o fornecedor falha, devolve a reserva.
+
+app.post(
+    '/v1/tts',
+    asyncHandler(requireAuth),
+    asyncHandler(async (req, res) => {
         if (!req.user.orgId) return res.status(403).json({ ok: false, message: 'Conta sem organização.' });
         const { text, voiceId, provider = 'fishAudio', voiceSettings } = req.body || {};
         if (!text || !voiceId) return res.status(400).json({ ok: false, message: 'Faltam text e voiceId.' });
 
-        const { audio, demo } = await proxyTts({ provider, voiceId, text, voiceSettings });
-        const units = estimateUnits(provider, 'tts', text);
+        const demo = !(await hasKey(provider));
+        const units = estimateUnits(provider, 'tts', text); // texto conhecido → estimativa exata
+        const { charged: estCharge } = await priceOf(provider, null, units, 'tts');
 
-        let meta;
+        let reserved;
         try {
-            meta = await debitAndLog({ orgId: req.user.orgId, userId: req.user.id, provider, kind: 'tts', units, demo });
+            reserved = await reserve({ orgId: req.user.orgId, estCharge, demo });
         } catch (e) {
-            if (e.code === 'INSUFFICIENT_CREDIT') return res.status(402).json({ ok: false, message: e.message });
-            throw e;
+            return billingError(res, e);
         }
 
+        let result;
+        try {
+            result = await proxyTts({ provider, voiceId, text, voiceSettings });
+        } catch (e) {
+            await release({ orgId: req.user.orgId, reserved, demo }).catch(() => {});
+            console.error('[gateway] /v1/tts provedor', e.message);
+            return res.status(502).json({ ok: false, message: `Falha no provedor de voz: ${e.message}` });
+        }
+
+        const meta = await settle({
+            orgId: req.user.orgId,
+            userId: req.user.id,
+            provider,
+            model: null,
+            kind: 'tts',
+            units,
+            demo: result.demo,
+            reserved,
+        });
+
         res.setHeader('Content-Type', 'audio/mpeg');
-        res.setHeader('X-Mileto-Demo', String(demo));
+        res.setHeader('X-Mileto-Demo', String(result.demo));
         res.setHeader('X-Mileto-Charged', String(meta.charged));
         res.setHeader('X-Mileto-Balance', String(meta.balanceAfter));
-        res.send(audio);
-    } catch (e) {
-        console.error('[gateway] /v1/tts', e.message);
-        res.status(500).json({ ok: false, message: e.message });
-    }
-});
+        res.send(result.audio);
+    })
+);
 
-app.post('/v1/chat', requireAuth, async (req, res) => {
-    try {
+app.post(
+    '/v1/chat',
+    asyncHandler(requireAuth),
+    asyncHandler(async (req, res) => {
         if (!req.user.orgId) return res.status(403).json({ ok: false, message: 'Conta sem organização.' });
         const { messages, model = 'mileto-plus', reasoning, locale = 'pt-BR', system, json } = req.body || {};
         if (!Array.isArray(messages) || !messages.length) {
             return res.status(400).json({ ok: false, message: 'Faltam messages.' });
         }
 
-        // Tier Mileto → provider+modelo real. O system vem do painel (persona do
-        // Chat Mileto), a menos que o chamador mande um `system` próprio — é o caso
-        // da geração de títulos, que tem instrução dedicada e não a persona.
         const { provider, model: realModel } = await resolveTier(model);
         const sys = typeof system === 'string' && system.trim() ? system : await getSystemPrompt(locale);
         const fullMessages = sys ? [{ role: 'system', content: sys }, ...messages] : messages;
 
-        const { text, demo } = await proxyChat({ messages: fullMessages, model: realModel, provider, reasoning, json: !!json });
+        const demo = !(await hasKey(provider));
         const promptChars = fullMessages.map((m) => m.content || '').join(' ');
-        const units = estimateUnits(provider, 'chat', promptChars + text);
+        // Estimativa como TETO (prompt + saída máxima) para reservar o suficiente.
+        const estUnits = estimateUnits(provider, 'chat', promptChars) + 4096;
+        const { charged: estCharge } = await priceOf(provider, realModel, estUnits, 'chat');
 
-        let meta;
+        let reserved;
         try {
-            meta = await debitAndLog({ orgId: req.user.orgId, userId: req.user.id, provider, kind: 'chat', units, demo });
+            reserved = await reserve({ orgId: req.user.orgId, estCharge, demo });
         } catch (e) {
-            if (e.code === 'INSUFFICIENT_CREDIT') return res.status(402).json({ ok: false, message: e.message });
-            throw e;
+            return billingError(res, e);
         }
 
-        res.json({ ok: true, text, demo, charged: meta.charged, balance: meta.balanceAfter });
-    } catch (e) {
-        console.error('[gateway] /v1/chat', e.message);
-        res.status(500).json({ ok: false, message: e.message });
-    }
-});
+        let result;
+        try {
+            result = await proxyChat({ messages: fullMessages, model: realModel, provider, reasoning, json: !!json });
+        } catch (e) {
+            await release({ orgId: req.user.orgId, reserved, demo }).catch(() => {});
+            console.error('[gateway] /v1/chat provedor', e.message);
+            return res.status(502).json({ ok: false, message: `Falha no provedor de IA: ${e.message}` });
+        }
 
-app.post('/v1/stt', requireAuth, upload.single('audio'), async (req, res) => {
-    try {
+        // Unidades REAIS: tokens do fornecedor (inclui reasoning oculto); senão estima por texto.
+        const realUnits =
+            result.usageTokens && result.usageTokens > 0
+                ? result.usageTokens
+                : estimateUnits(provider, 'chat', promptChars + (result.text || ''));
+
+        const meta = await settle({
+            orgId: req.user.orgId,
+            userId: req.user.id,
+            provider,
+            model: realModel,
+            kind: 'chat',
+            units: realUnits,
+            demo: result.demo,
+            reserved,
+        });
+
+        res.json({ ok: true, text: result.text, demo: result.demo, charged: meta.charged, balance: meta.balanceAfter });
+    })
+);
+
+app.post(
+    '/v1/stt',
+    asyncHandler(requireAuth),
+    upload.single('audio'),
+    asyncHandler(async (req, res) => {
         if (!req.user.orgId) return res.status(403).json({ ok: false, message: 'Conta sem organização.' });
         if (!req.file) return res.status(400).json({ ok: false, message: 'Envie o arquivo de áudio (campo "audio").' });
         const language = String(req.body?.language || 'pt').slice(0, 5);
 
-        const { words, durationSec, demo } = await proxyStt({
-            audio: req.file.buffer,
-            filename: req.file.originalname || 'audio.mp3',
-            language,
-        });
+        const demo = !(await hasKey('openai'));
+        // Estimativa de duração pelo tamanho do arquivo (mp3 ~128kbps ≈ 16000 bytes/s) + folga.
+        const bytes = req.file.size || req.file.buffer.length || 0;
+        const estSeconds = Math.ceil(bytes / 16000) + 5;
+        const { charged: estCharge } = await priceOf('openai', null, estSeconds, 'stt');
 
-        let meta;
+        let reserved;
         try {
-            meta = await debitAndLog({
-                orgId: req.user.orgId,
-                userId: req.user.id,
-                provider: 'openai',
-                kind: 'stt',
-                units: durationSec,
-                demo,
-            });
+            reserved = await reserve({ orgId: req.user.orgId, estCharge, demo });
         } catch (e) {
-            if (e.code === 'INSUFFICIENT_CREDIT') return res.status(402).json({ ok: false, message: e.message });
-            throw e;
+            return billingError(res, e);
         }
 
-        res.json({ ok: true, words, demo, charged: meta.charged, balance: meta.balanceAfter });
-    } catch (e) {
-        console.error('[gateway] /v1/stt', e.message);
-        res.status(500).json({ ok: false, message: e.message });
-    }
-});
+        let result;
+        try {
+            result = await proxyStt({
+                audio: req.file.buffer,
+                filename: req.file.originalname || 'audio.mp3',
+                language,
+            });
+        } catch (e) {
+            await release({ orgId: req.user.orgId, reserved, demo }).catch(() => {});
+            console.error('[gateway] /v1/stt provedor', e.message);
+            return res.status(502).json({ ok: false, message: `Falha na transcrição: ${e.message}` });
+        }
+
+        const meta = await settle({
+            orgId: req.user.orgId,
+            userId: req.user.id,
+            provider: 'openai',
+            model: null,
+            kind: 'stt',
+            units: result.durationSec,
+            demo: result.demo,
+            reserved,
+        });
+
+        res.json({ ok: true, words: result.words, demo: result.demo, charged: meta.charged, balance: meta.balanceAfter });
+    })
+);
 
 // ── Super admin (control plane) ─────────────────────────────────────────────
-const sa = [requireAuth, requireSuperAdmin];
-app.get('/admin/overview', sa, admin.overview);
-app.get('/admin/orgs', sa, admin.listOrgs);
-app.post('/admin/orgs', sa, admin.createOrg);
-app.get('/admin/orgs/:id', sa, admin.orgDetail);
-app.post('/admin/orgs/:id/credits', sa, admin.addCredits);
-app.post('/admin/orgs/:id/status', sa, admin.setStatus);
-app.post('/admin/orgs/:id/plan', sa, admin.setPlan);
-app.get('/admin/ia', sa, admin.getIa);
-app.post('/admin/ia/key', sa, admin.setIaKey);
-app.post('/admin/ia/multiplier', sa, admin.setIaMultiplier);
-app.get('/admin/models', sa, admin.getModels);
-app.post('/admin/models', sa, admin.setModel);
-app.get('/admin/prompt', sa, admin.getChatPrompt);
-app.post('/admin/prompt', sa, admin.setChatPrompt);
-app.get('/admin/credits', sa, admin.getCredits);
-app.post('/admin/credits', sa, admin.setCredit);
+const sa = [asyncHandler(requireAuth), requireSuperAdmin];
+app.get('/admin/overview', sa, asyncHandler(admin.overview));
+app.get('/admin/orgs', sa, asyncHandler(admin.listOrgs));
+app.post('/admin/orgs', sa, asyncHandler(admin.createOrg));
+app.get('/admin/orgs/:id', sa, asyncHandler(admin.orgDetail));
+app.post('/admin/orgs/:id/credits', sa, asyncHandler(admin.addCredits));
+app.post('/admin/orgs/:id/status', sa, asyncHandler(admin.setStatus));
+app.post('/admin/orgs/:id/plan', sa, asyncHandler(admin.setPlan));
+app.get('/admin/ia', sa, asyncHandler(admin.getIa));
+app.post('/admin/ia/key', sa, asyncHandler(admin.setIaKey));
+app.post('/admin/ia/multiplier', sa, asyncHandler(admin.setIaMultiplier));
+app.get('/admin/models', sa, asyncHandler(admin.getModels));
+app.post('/admin/models', sa, asyncHandler(admin.setModel));
+app.get('/admin/prompt', sa, asyncHandler(admin.getChatPrompt));
+app.post('/admin/prompt', sa, asyncHandler(admin.setChatPrompt));
+app.get('/admin/credits', sa, asyncHandler(admin.getCredits));
+app.post('/admin/credits', sa, asyncHandler(admin.setCredit));
 
 // ── Cliente (owner/member) — sempre escopado na própria org ─────────────────
-app.get('/account/usage', requireAuth, account.usage);
-app.get('/account/team', requireAuth, account.listTeam);
-app.post('/account/team', requireAuth, requireOwner, account.addMember);
-app.delete('/account/team/:userId', requireAuth, requireOwner, account.removeMember);
+app.get('/account/usage', asyncHandler(requireAuth), asyncHandler(account.usage));
+app.get('/account/team', asyncHandler(requireAuth), asyncHandler(account.listTeam));
+app.post('/account/team', asyncHandler(requireAuth), requireOwner, asyncHandler(account.addMember));
+app.delete('/account/team/:userId', asyncHandler(requireAuth), requireOwner, asyncHandler(account.removeMember));
 
 // ── Painel do super admin (HTML estático) ───────────────────────────────────
 app.use('/admin-ui', express.static(path.join(__dirname, '..', 'public')));
 app.get('/', (_req, res) => res.redirect('/admin-ui/'));
+
+// Error-middleware global: nada de resposta pendurada por exceção não tratada.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+    console.error('[gateway] erro não tratado:', err && err.message ? err.message : err);
+    if (res.headersSent) return;
+    res.status(500).json({ ok: false, message: 'Erro interno no servidor.' });
+});
 
 app.listen(config.port, () => {
     console.log(`[gateway] ouvindo em http://localhost:${config.port}`);

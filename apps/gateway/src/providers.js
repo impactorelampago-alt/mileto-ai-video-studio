@@ -1,5 +1,8 @@
 import { getKey } from './settings.js';
 
+/** Ha chave real para este provedor? (define modo demo antes de reservar credito). */
+export const hasKey = async (provider) => !!(await getKey(provider));
+
 /**
  * MP3 silencioso mínimo (um frame MPEG). Devolvido no modo demo para que o app
  * receba um áudio tocável sem gastar dinheiro nem exigir chave configurada.
@@ -116,7 +119,11 @@ const REASONING_MAP = {
 export const proxyChat = async ({ messages, model, provider, reasoning, json }) => {
     const apiKey = await getKey(provider);
     if (!apiKey) {
-        return { text: '[modo demo] Configure a chave no painel do super admin (aba IA) para respostas reais.', demo: true };
+        return {
+            text: '[modo demo] Configure a chave no painel do super admin (aba IA) para respostas reais.',
+            demo: true,
+            usageTokens: 0,
+        };
     }
 
     if (provider === 'gemini') {
@@ -133,13 +140,22 @@ export const proxyChat = async ({ messages, model, provider, reasoning, json }) 
         }
         const geminiBody = { contents };
         if (json) geminiBody.generationConfig = { responseMimeType: 'application/json' };
+        // Chave no HEADER (x-goog-api-key), nunca na query string — a URL vaza em log/proxy/CDN.
         const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-            { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(geminiBody) }
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+                body: JSON.stringify(geminiBody),
+            }
         );
         if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
         const data = await res.json();
-        return { text: data.candidates?.[0]?.content?.parts?.[0]?.text || '', demo: false };
+        return {
+            text: data.candidates?.[0]?.content?.parts?.[0]?.text || '',
+            demo: false,
+            usageTokens: data.usageMetadata?.totalTokenCount || 0,
+        };
     }
 
     // OpenAI
@@ -159,5 +175,10 @@ export const proxyChat = async ({ messages, model, provider, reasoning, json }) 
     });
     if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
     const data = await res.json();
-    return { text: data.choices?.[0]?.message?.content || '', demo: false };
+    // Tokens REAIS (inclui reasoning oculto dos modelos o*/gpt-5) — cobrar por len/4 subcobra.
+    return {
+        text: data.choices?.[0]?.message?.content || '',
+        demo: false,
+        usageTokens: data.usage?.total_tokens || 0,
+    };
 };

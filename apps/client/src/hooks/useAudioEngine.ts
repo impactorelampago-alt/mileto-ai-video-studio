@@ -24,6 +24,10 @@ export const useAudioEngine = (
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         audioContextRef.current = new AudioContextClass();
         return () => {
+            // Cancela o loop de animação ANTES de fechar o contexto: senão o tick
+            // continua rodando após o unmount (setState em componente desmontado e
+            // leitura de ctx.currentTime depois de close()).
+            if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
             audioContextRef.current?.close();
         };
     }, []);
@@ -135,6 +139,9 @@ export const useAudioEngine = (
 
         stopAll(); // Ensure clean slate
 
+        // Se o playhead está no fim (áudio terminou), reinicia do 0 — senão todos os
+        // clips satisfazem clipEnd <= startOffset, nada toca e o Play fica inerte.
+        if (pausedTimeRef.current >= timeline.durationSec) pausedTimeRef.current = 0;
         const startOffset = pausedTimeRef.current; // Start from here (seconds)
         startTimeRef.current = ctx.currentTime - startOffset;
 

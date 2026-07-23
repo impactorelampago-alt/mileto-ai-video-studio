@@ -121,6 +121,12 @@ export const ChatMileto: React.FC = () => {
 
     useEffect(() => {
         if (activeSessionId) {
+            // Sessão recém-criada NESTA ação já tem a mensagem otimista na tela; buscar
+            // do servidor devolveria [] e apagaria a bolha do usuário (race). Pula uma vez.
+            if (justCreatedSessionRef.current === activeSessionId) {
+                justCreatedSessionRef.current = null;
+                return;
+            }
             chatApi.getMessages(activeSessionId).then(setMessages).catch(console.error);
         } else {
             setMessages([]);
@@ -225,6 +231,9 @@ export const ChatMileto: React.FC = () => {
     }, []);
 
     const newChatFolderRef = useRef<string | null>(null);
+    // Marca a sessão criada dentro do próprio envio, para o efeito de carregar
+    // mensagens não sobrescrever a mensagem otimista com uma lista vazia.
+    const justCreatedSessionRef = useRef<string | null>(null);
 
     // Override handleSend to use the folder ref for auto-create
     const handleSendWithFolder = useCallback(async () => {
@@ -242,6 +251,7 @@ export const ChatMileto: React.FC = () => {
                 );
                 setSessions((prev) => [session, ...prev]);
                 sessionId = session.id;
+                justCreatedSessionRef.current = session.id;
                 setActiveSessionId(session.id);
                 newChatFolderRef.current = null;
             } catch (err) {

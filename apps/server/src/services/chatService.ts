@@ -55,16 +55,28 @@ function readDB(): ChatDB {
     try {
         const raw = fs.readFileSync(DB_PATH, 'utf-8');
         return JSON.parse(raw) as ChatDB;
-    } catch {
-        const empty: ChatDB = { folders: [], sessions: [], messages: [] };
-        fs.writeFileSync(DB_PATH, JSON.stringify(empty, null, 2), 'utf-8');
-        return empty;
+    } catch (err) {
+        // NÃO sobrescreve o arquivo: um JSON truncado (crash/antivírus durante a
+        // escrita) apagaria TODO o histórico. Preserva como .corrupt-<ts> para
+        // recuperação e segue com um DB vazio só em memória.
+        try {
+            const backup = `${DB_PATH}.corrupt-${Date.now()}`;
+            fs.renameSync(DB_PATH, backup);
+            console.error('[chat] chat_db.json ilegível — preservado em', backup, (err as Error).message);
+        } catch {
+            /* se nem renomear der, seguimos vazios sem destruir nada */
+        }
+        return { folders: [], sessions: [], messages: [] };
     }
 }
 
 function writeDB(db: ChatDB): void {
     ensureDir();
-    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf-8');
+    // Escrita ATÔMICA: grava num temp e faz rename (operação atômica no SO). Assim
+    // um crash no meio da escrita não deixa o chat_db.json principal truncado.
+    const tmp = `${DB_PATH}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf-8');
+    fs.renameSync(tmp, DB_PATH);
 }
 
 // ─── Folder CRUD ─────────────────────────────────────────────────────────────
