@@ -6,20 +6,16 @@ import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import { VideoSequencePreview } from '../components/VideoSequencePreview';
 import { CaptionStudio } from '../components/CaptionStudio';
+import { localAuthHeaders } from '../lib/serverAuth';
 
 export const Step3 = () => {
-    const { adData, updateAdData, apiKeys, mediaTakes, setMediaTakes, captionStyle } = useWizard();
+    const { adData, updateAdData, mediaTakes, setMediaTakes, captionStyle } = useWizard();
     const navigate = useNavigate();
     const [isGenerating, setIsGenerating] = useState(false);
 
     const handleGenerateCaptions = async () => {
         if (!adData.masterAudioUrl && !adData.narrationAudioUrl) {
             toast.error('Nenhum áudio encontrado. Volte ao Step 1 e gere a narração.');
-            return;
-        }
-
-        if (!apiKeys.openai) {
-            toast.error('Chave da OpenAI ausente. Necessária para legendas precisas (Whisper).');
             return;
         }
 
@@ -33,10 +29,9 @@ export const Step3 = () => {
 
             const response = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/stt/generate-captions`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
                 body: JSON.stringify({
                     audioUrl: audioToTranscribe,
-                    apiKey: apiKeys.openai,
                 }),
             });
 

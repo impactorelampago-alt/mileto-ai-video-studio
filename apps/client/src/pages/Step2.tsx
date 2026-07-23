@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { useWizard } from '../context/WizardContext';
+import { useWizard, ENABLE_MEDIA_AI } from '../context/WizardContext';
 import { VideoUpload } from '../components/VideoUpload';
 import { TrimModal } from '../components/TrimModal';
 import { AIImageModal } from '../components/AIImageModal';
@@ -43,7 +43,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { MediaTake } from '../types';
-import { SPEED_PRESETS, SpeedPresetType } from '../lib/speedRemapping';
+import { SpeedPresetType } from '../lib/speedRemapping';
 
 interface SortableTakeProps {
     take: MediaTake;
@@ -268,37 +268,39 @@ export const Step2 = () => {
                     <div className="space-y-6">
                         <VideoUpload />
 
-                        {/* AI Generation Tools */}
-                        <div className="space-y-4 bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-xl relative overflow-hidden">
-                            <div className="absolute top-0 left-0 w-full h-[2px] bg-linear-to-r from-brand-lime/40 to-brand-accent/10"></div>
-                            <h3 className="text-[13px] tracking-wide uppercase font-semibold text-brand-muted flex items-center gap-2 mb-4">
-                                <Wand2 className="w-4 h-4 text-brand-accent" /> Gerar com IA
-                            </h3>
-                            <div className="grid grid-cols-2 gap-3">
-                                <button
-                                    onClick={() => setShowImageModal(true)}
-                                    className="flex flex-col items-center justify-center p-4 bg-background hover:bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 hover:border-brand-accent/40 rounded-2xl transition-all group shadow-inner min-h-[110px]"
-                                >
-                                    <div className="p-3 bg-brand-accent/10 rounded-xl mb-3 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(0,230,118,0.1)]">
-                                        <ImageIcon className="w-5 h-5 text-brand-accent" />
-                                    </div>
-                                    <span className="text-xs font-bold uppercase tracking-wider text-foreground">
-                                        Imagem
-                                    </span>
-                                </button>
-                                <button
-                                    onClick={() => setShowVideoModal(true)}
-                                    className="flex flex-col items-center justify-center p-4 bg-background hover:bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 hover:border-purple-500/40 rounded-2xl transition-all group shadow-inner min-h-[110px]"
-                                >
-                                    <div className="p-3 bg-purple-500/10 rounded-xl mb-3 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(168,85,247,0.1)]">
-                                        <Video className="w-5 h-5 text-purple-400" />
-                                    </div>
-                                    <span className="text-xs font-bold uppercase tracking-wider text-foreground">
-                                        Vídeo
-                                    </span>
-                                </button>
+                        {/* AI Generation Tools — desligado no v1 (ver ENABLE_MEDIA_AI) */}
+                        {ENABLE_MEDIA_AI && (
+                            <div className="space-y-4 bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-xl relative overflow-hidden">
+                                <div className="absolute top-0 left-0 w-full h-[2px] bg-linear-to-r from-brand-lime/40 to-brand-accent/10"></div>
+                                <h3 className="text-[13px] tracking-wide uppercase font-semibold text-brand-muted flex items-center gap-2 mb-4">
+                                    <Wand2 className="w-4 h-4 text-brand-accent" /> Gerar com IA
+                                </h3>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button
+                                        onClick={() => setShowImageModal(true)}
+                                        className="flex flex-col items-center justify-center p-4 bg-background hover:bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 hover:border-brand-accent/40 rounded-2xl transition-all group shadow-inner min-h-[110px]"
+                                    >
+                                        <div className="p-3 bg-brand-accent/10 rounded-xl mb-3 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(0,230,118,0.1)]">
+                                            <ImageIcon className="w-5 h-5 text-brand-accent" />
+                                        </div>
+                                        <span className="text-xs font-bold uppercase tracking-wider text-foreground">
+                                            Imagem
+                                        </span>
+                                    </button>
+                                    <button
+                                        onClick={() => setShowVideoModal(true)}
+                                        className="flex flex-col items-center justify-center p-4 bg-background hover:bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 hover:border-purple-500/40 rounded-2xl transition-all group shadow-inner min-h-[110px]"
+                                    >
+                                        <div className="p-3 bg-purple-500/10 rounded-xl mb-3 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(168,85,247,0.1)]">
+                                            <Video className="w-5 h-5 text-purple-400" />
+                                        </div>
+                                        <span className="text-xs font-bold uppercase tracking-wider text-foreground">
+                                            Vídeo
+                                        </span>
+                                    </button>
+                                </div>
                             </div>
-                        </div>
+                        )}
                     </div>
 
                     {/* Col 2: Timeline/Segments */}
@@ -704,14 +706,18 @@ export const Step2 = () => {
                     <TrimModal take={editingTake} onSave={handleSaveTake} onClose={() => setEditingTake(null)} />
                 )}
 
-                {/* AI Modals */}
-                <AIImageModal isOpen={showImageModal} onClose={() => setShowImageModal(false)} />
-                <AIVideoModal
-                    isOpen={showVideoModal}
-                    onClose={() => setShowVideoModal(false)}
-                    apiKeys={apiKeys}
-                    addMediaTake={addMediaTake}
-                />
+                {/* AI Modals — desligados no v1 (ver ENABLE_MEDIA_AI) */}
+                {ENABLE_MEDIA_AI && (
+                    <>
+                        <AIImageModal isOpen={showImageModal} onClose={() => setShowImageModal(false)} />
+                        <AIVideoModal
+                            isOpen={showVideoModal}
+                            onClose={() => setShowVideoModal(false)}
+                            apiKeys={apiKeys}
+                            addMediaTake={addMediaTake}
+                        />
+                    </>
+                )}
 
                 {/* Footer Navigation */}
                 <div className="fixed bottom-0 right-0 left-0 bg-background/80 backdrop-blur-md border-t border-border p-4 z-20 flex justify-end">

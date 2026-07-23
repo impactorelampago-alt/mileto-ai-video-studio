@@ -4,6 +4,7 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { randomUUID as uuidv4 } from 'crypto';
+import { bearerFrom, gatewayChat, GatewayHttpError } from '../services/gatewayClient';
 
 // --- Replicate Integration ---
 
@@ -377,17 +378,15 @@ export const getRunwayJobStatus = async (req: Request, res: Response) => {
     }
 };
 
-import OpenAI from 'openai';
-
 export const generateTitles = async (req: Request, res: Response) => {
-    const { script, captions, openaiKey, geminiKey } = req.body;
+    const { script, captions } = req.body;
+    const token = bearerFrom(req);
 
     if (!script || !captions || !captions.segments) {
         return res.status(400).json({ ok: false, message: 'Missing script or captions data' });
     }
-
-    if (!openaiKey && !geminiKey) {
-        return res.status(401).json({ ok: false, message: 'Missing OpenAI or Gemini API Key' });
+    if (!token) {
+        return res.status(401).json({ ok: false, message: 'Sessão expirada. Entre novamente para gerar títulos.' });
     }
 
     // Extract all words with their start times for the AI to reference
@@ -414,44 +413,28 @@ Responda EXCLUSIVAMENTE em formato JSON. O JSON DEVE CONTER uma raiz com a chave
 }`;
 
     try {
-        let titlesJson = '';
+        // Títulos usam o tier mais barato (Lite) com system próprio e saída JSON.
+        // O gateway resolve o modelo real e mede o consumo como chat.
+        const result = await gatewayChat(token, {
+            messages: [{ role: 'user', content: `Roteiro: ${script}\n\nLegendas: ${wordTimings}` }],
+            system: systemPrompt,
+            json: true,
+            model: 'mileto-lite',
+            locale: 'pt-BR',
+        });
 
-        if (openaiKey) {
-            console.log('[AI] Gerando Títulos com OpenAI...');
-            const openai = new OpenAI({ apiKey: openaiKey });
-            const response = await openai.chat.completions.create({
-                model: 'gpt-4o-mini',
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: `Roteiro: ${script}\n\nLegendas: ${wordTimings}` },
-                ],
-                response_format: { type: 'json_object' },
-            });
-            const content = response.choices[0].message.content || '{}';
-            console.log('[AI] Output:', content);
-            const parsedContent = JSON.parse(content);
-            titlesJson = Array.isArray(parsedContent) ? parsedContent : parsedContent.titles || parsedContent;
-        } else if (geminiKey) {
-            console.log('[AI] Gerando Títulos com Gemini...');
-            const response = await axios.post(
-                `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
-                {
-                    contents: [
-                        {
-                            role: 'user',
-                            parts: [{ text: systemPrompt + '\n\n' + `Roteiro: ${script}\n\nLegendas: ${wordTimings}` }],
-                        },
-                    ],
-                    generationConfig: { responseMimeType: 'application/json' },
-                }
-            );
-            const content = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-            const parsedContent = JSON.parse(content);
-            titlesJson = Array.isArray(parsedContent) ? parsedContent : parsedContent.titles || parsedContent;
+        // A saída pode vir como objeto {titles:[...]}, array puro, ou com cercas de código.
+        const raw = (result.text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+        let parsed: any = {};
+        try {
+            parsed = JSON.parse(raw || '{}');
+        } catch {
+            parsed = {};
         }
+        const titlesArr = Array.isArray(parsed) ? parsed : parsed.titles || [];
 
         // Format titles and assign IDs
-        const finalTitles = (Array.isArray(titlesJson) ? titlesJson : []).map((t) => ({
+        const finalTitles = (Array.isArray(titlesArr) ? titlesArr : []).map((t: any) => ({
             id: uuidv4(),
             text: t.text || 'Título gerado',
             startSec: Number(t.startSec) || 0,
@@ -463,6 +446,15 @@ Responda EXCLUSIVAMENTE em formato JSON. O JSON DEVE CONTER uma raiz com a chave
 
         res.json({ ok: true, titles: finalTitles });
     } catch (error: any) {
+        if (error instanceof GatewayHttpError) {
+            const msg =
+                error.status === 402
+                    ? 'Seus créditos Mileto acabaram. Recarregue para gerar títulos.'
+                    : error.status === 401
+                      ? 'Sessão expirada. Entre novamente para gerar títulos.'
+                      : `Falha ao gerar títulos: ${error.message}`;
+            return res.status(error.status).json({ ok: false, message: msg });
+        }
         console.error('[AI] Erro ao gerar títulos:', error.response?.data || error.message);
         res.status(500).json({ ok: false, message: 'Falha ao processar IA para Títulos.' });
     }

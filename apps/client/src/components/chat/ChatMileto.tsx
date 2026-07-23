@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { toast } from 'sonner';
 import {
     MessageSquare,
     X,
@@ -16,47 +17,55 @@ import {
     User,
     FolderOpen,
     GripVertical,
+    Brain,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { useWizard } from '../../context/WizardContext';
 import * as chatApi from '../../lib/chatApi';
 import { ChatFolder, ChatSession, ChatMessage } from '../../types';
 
-// ─── AI Model Options ────────────────────────────────────────────────────────
+// ─── Níveis Mileto (o que o usuário vê) ──────────────────────────────────────
 
-type ModelGroup = { group: string; models: { id: string; name: string; provider: string; badge?: string }[] };
+// Níveis Mileto que o usuário vê. O modelo real fica escondido.
+// Mileto Ultra usa modelo de raciocínio, com nível ajustável.
+type MiletoTier = 'lite' | 'plus' | 'ultra';
+type ReasoningLevel = 'rapido' | 'equilibrado' | 'profundo';
 
-const AI_MODEL_GROUPS: ModelGroup[] = [
-    {
-        group: '⚡ Rápidos',
-        models: [
-            { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano', provider: 'openai', badge: 'Mais rápido' },
-            { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', provider: 'openai' },
-            { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai' },
-            { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', provider: 'gemini' },
-            { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'gemini' },
-        ],
-    },
-    {
-        group: '🧠 Melhores',
-        models: [
-            { id: 'gpt-4.1', name: 'GPT-4.1 Turbo', provider: 'openai', badge: 'Recomendado' },
-            { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai' },
-            { id: 'o4-mini', name: 'o4-mini', provider: 'openai', badge: 'Raciocínio' },
-            { id: 'o3-mini', name: 'o3-mini', provider: 'openai', badge: 'Raciocínio' },
-            { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'gemini', badge: 'Melhor Google' },
-        ],
-    },
+const MILETO_TIERS: { id: MiletoTier; name: string; desc: string }[] = [
+    { id: 'lite', name: 'Mileto Lite', desc: 'Rápido, para respostas ágeis' },
+    { id: 'plus', name: 'Mileto Plus', desc: 'Equilíbrio para o dia a dia' },
+    { id: 'ultra', name: 'Mileto Ultra', desc: 'Máxima qualidade, com raciocínio' },
 ];
 
-// Flat list for lookups
-const ALL_MODELS = AI_MODEL_GROUPS.flatMap((g) => g.models);
+const REASONING_LEVELS: { id: ReasoningLevel; name: string }[] = [
+    { id: 'rapido', name: 'Rápido' },
+    { id: 'equilibrado', name: 'Equilibrado' },
+    { id: 'profundo', name: 'Profundo' },
+];
+
+/**
+ * Tier Mileto → identificador que o gateway entende. O app manda só o tier
+ * ("mileto-ultra"); o modelo real é resolvido no super admin, escondido do cliente.
+ */
+const tierToGateway = (tier: MiletoTier): string => `mileto-${tier}`;
+
+/** Mapa reverso: a partir do que foi salvo numa sessão, recupera o tier. */
+const tierFromModel = (model: string): { tier: MiletoTier; reasoning: ReasoningLevel } => {
+    // Formato novo: "mileto-lite" | "mileto-plus" | "mileto-ultra".
+    if (model === 'mileto-lite') return { tier: 'lite', reasoning: 'equilibrado' };
+    if (model === 'mileto-plus') return { tier: 'plus', reasoning: 'equilibrado' };
+    if (model === 'mileto-ultra') return { tier: 'ultra', reasoning: 'equilibrado' };
+    // Back-compat: sessões antigas guardavam o nome do modelo real.
+    if (model === 'gpt-4.1-nano') return { tier: 'lite', reasoning: 'equilibrado' };
+    if (model === 'gpt-4.1-mini') return { tier: 'plus', reasoning: 'equilibrado' };
+    if (model === 'gpt-4.1') return { tier: 'ultra', reasoning: 'rapido' };
+    if (model === 'o3-mini') return { tier: 'ultra', reasoning: 'profundo' };
+    if (model === 'o4-mini') return { tier: 'ultra', reasoning: 'equilibrado' };
+    return { tier: 'plus', reasoning: 'equilibrado' }; // fallback p/ sessões antigas
+};
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export const ChatMileto: React.FC = () => {
-    const { apiKeys } = useWizard();
-
     // ─── Window State ────────────────────────────────────────────────────────
     const [isOpen, setIsOpen] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
@@ -76,7 +85,10 @@ export const ChatMileto: React.FC = () => {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputText, setInputText] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [selectedModel, setSelectedModel] = useState('gpt-4.1');
+    const [selectedTier, setSelectedTier] = useState<MiletoTier>('plus');
+    const [reasoning, setReasoning] = useState<ReasoningLevel>('equilibrado');
+    // O app manda o tier; o gateway resolve o modelo real e injeta a persona.
+    const selectedModel = tierToGateway(selectedTier);
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editingText, setEditingText] = useState('');
@@ -233,7 +245,12 @@ export const ChatMileto: React.FC = () => {
                 setActiveSessionId(session.id);
                 newChatFolderRef.current = null;
             } catch (err) {
-                console.error(err);
+                // Antes isto era um `return` mudo: o texto ficava na caixa e o
+                // usuário não tinha nenhuma pista do que aconteceu.
+                console.error('Falha ao criar sessão de chat:', err);
+                toast.error(
+                    'Não foi possível iniciar a conversa. Verifique se o servidor local está rodando.'
+                );
                 return;
             }
         }
@@ -257,8 +274,7 @@ export const ChatMileto: React.FC = () => {
                 sessionId,
                 userContent,
                 selectedModel,
-                apiKeys.openai,
-                apiKeys.gemini,
+                reasoning,
                 locale
             );
             setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id).concat([userMessage, assistantMessage]));
@@ -275,7 +291,7 @@ export const ChatMileto: React.FC = () => {
         } finally {
             setIsLoading(false);
         }
-    }, [inputText, isLoading, activeSessionId, selectedModel, apiKeys]);
+    }, [inputText, isLoading, activeSessionId, selectedModel, reasoning]);
 
     // ─── Inline Folder Creation ──────────────────────────────────────────────
     const handleCreateFolder = useCallback(() => {
@@ -342,7 +358,9 @@ export const ChatMileto: React.FC = () => {
 
     const selectSession = useCallback((session: ChatSession) => {
         setActiveSessionId(session.id);
-        setSelectedModel(session.model);
+        const { tier, reasoning: r } = tierFromModel(session.model);
+        setSelectedTier(tier);
+        setReasoning(r);
         newChatFolderRef.current = null;
     }, []);
 
@@ -456,22 +474,6 @@ export const ChatMileto: React.FC = () => {
                     <span className="text-sm font-bold text-foreground tracking-widest uppercase">Chat Mileto</span>
                 </div>
                 <div className="flex items-center gap-1">
-                    <select
-                        value={selectedModel}
-                        onChange={(e) => setSelectedModel(e.target.value)}
-                        className="text-xs bg-brand-dark text-brand-accent border border-black/10 dark:border-white/10 rounded px-2 py-1.5 outline-none hover:border-brand-accent/50 cursor-pointer font-medium tracking-wide transition-colors"
-                    >
-                        {AI_MODEL_GROUPS.map((group) => (
-                            <optgroup key={group.group} label={group.group}>
-                                {group.models.map((m) => (
-                                    <option key={m.id} value={m.id}>
-                                        {m.name}
-                                        {m.badge ? ` (${m.badge})` : ''}
-                                    </option>
-                                ))}
-                            </optgroup>
-                        ))}
-                    </select>
                     <button
                         onClick={() => setIsFullscreen(!isFullscreen)}
                         className="p-1.5 rounded hover:bg-black/10 dark:bg-white/10 text-slate-400 hover:text-foreground transition-colors"
@@ -788,11 +790,49 @@ export const ChatMileto: React.FC = () => {
                                 )}
                             </button>
                         </div>
-                        <p className="text-[10px] text-brand-muted mt-2 text-center uppercase tracking-widest font-semibold flex items-center justify-center gap-2">
-                            <span>M: {ALL_MODELS.find((m) => m.id === selectedModel)?.name || selectedModel}</span>
-                            <span className="w-1 h-1 rounded-full bg-brand-muted"></span>
-                            <span>Enter ↵</span>
-                        </p>
+
+                        {/* Seletor de nível Mileto, ao lado do envio (estilo Claude/GPT) */}
+                        <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+                            <div className="relative group">
+                                <select
+                                    value={selectedTier}
+                                    onChange={(e) => setSelectedTier(e.target.value as MiletoTier)}
+                                    className="appearance-none text-[11px] font-bold bg-brand-dark/60 text-brand-accent border border-brand-accent/25 rounded-lg pl-3 pr-7 py-1.5 outline-none hover:border-brand-accent/60 cursor-pointer transition-colors tracking-wide"
+                                    title={MILETO_TIERS.find((t) => t.id === selectedTier)?.desc}
+                                >
+                                    {MILETO_TIERS.map((t) => (
+                                        <option key={t.id} value={t.id}>
+                                            {t.name}
+                                        </option>
+                                    ))}
+                                </select>
+                                <ChevronDown className="w-3 h-3 text-brand-accent absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                            </div>
+
+                            {/* Nível de raciocínio — só no Ultra */}
+                            {selectedTier === 'ultra' && (
+                                <div className="relative animate-in fade-in slide-in-from-left-1 duration-200">
+                                    <select
+                                        value={reasoning}
+                                        onChange={(e) => setReasoning(e.target.value as ReasoningLevel)}
+                                        className="appearance-none text-[11px] font-semibold bg-brand-dark/60 text-brand-muted border border-black/10 dark:border-white/10 rounded-lg pl-6 pr-7 py-1.5 outline-none hover:border-brand-accent/40 cursor-pointer transition-colors"
+                                        title="Nível de raciocínio do Mileto Ultra"
+                                    >
+                                        {REASONING_LEVELS.map((r) => (
+                                            <option key={r.id} value={r.id}>
+                                                {r.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <Brain className="w-3 h-3 text-brand-muted absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                                    <ChevronDown className="w-3 h-3 text-brand-muted absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                                </div>
+                            )}
+
+                            <span className="text-[10px] text-brand-muted uppercase tracking-widest font-semibold ml-auto">
+                                Enter ↵
+                            </span>
+                        </div>
                     </div>
                 </div>
             </div>

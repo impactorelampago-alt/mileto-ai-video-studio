@@ -1,22 +1,29 @@
 import { useState, useEffect, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Home, User, RefreshCw, Cpu } from 'lucide-react';
+import { Home, User, RefreshCw, Wallet, LogOut } from 'lucide-react';
 import { toast } from 'sonner';
-import { ApiConfigModal } from '../components/ApiConfigModal';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { StepHeader } from '../components/StepHeader';
 import logoImg from '../../public/logo.png';
 import { cn } from '../lib/utils';
 import { updater, UpdateStatus } from '../lib/updater';
 import { useWizard } from '../context/WizardContext';
+import { useAuth } from '../context/AuthContext';
+
+/** Rótulo amigável do plano da organização. */
+const PLAN_LABEL: Record<string, string> = {
+    solo: 'Plano Solo',
+    business: 'Plano Business',
+    enterprise: 'Plano Enterprise',
+};
 
 export const MainLayout = () => {
-    const [isApiModalOpen, setIsApiModalOpen] = useState(false);
     const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
     const navigate = useNavigate();
     const location = useLocation();
     const progressToastId = useRef<string | number | null>(null);
     const { saveProject } = useWizard();
+    const { user, logout } = useAuth();
     const prevPathRef = useRef<string>(location.pathname);
 
     // Auto-save do rascunho quando o usuário sai de qualquer /wizard/step/*.
@@ -113,8 +120,6 @@ export const MainLayout = () => {
 
     return (
         <div className="flex h-screen bg-background text-foreground font-sans overflow-hidden transition-colors duration-300">
-            <ApiConfigModal isOpen={isApiModalOpen} onClose={() => setIsApiModalOpen(false)} />
-
             {/* Sidebar Lateral - Visível apenas na Home */}
             {location.pathname === '/' && (
                 <aside className="w-[260px] flex-shrink-0 bg-[#0a0f12] border-r border-border/50 flex flex-col justify-between py-6 z-40 relative transition-all">
@@ -156,24 +161,32 @@ export const MainLayout = () => {
                                 <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-brand-lime rounded-full border-2 border-[#0a0f12]"></div>
                             </div>
                             <div className="text-center">
-                                <h2 className="text-sm font-bold text-foreground">Usuário</h2>
-                                <p className="text-[10px] text-brand-muted uppercase tracking-wider font-semibold">Plano Gratuito</p>
+                                <h2 className="text-sm font-bold text-foreground truncate max-w-[180px]">
+                                    {user?.name || user?.email || 'Minha conta'}
+                                </h2>
+                                <p className="text-[10px] text-brand-muted uppercase tracking-wider font-semibold">
+                                    {user?.role === 'super_admin'
+                                        ? 'Super Admin'
+                                        : PLAN_LABEL[user?.orgPlan || ''] || 'Mileto AI'}
+                                </p>
                             </div>
                         </div>
 
-                        {/* Menu de Navegação */}
+                        {/* Menu de Navegação — a sidebar só aparece na Home, então "Início" fica ativo aqui. */}
                         <nav className="flex flex-col gap-2 mt-4">
                             <button
                                 onClick={() => navigate('/')}
-                                className={cn(
-                                    "flex items-center gap-3 px-4 py-3 rounded-xl transition-all",
-                                    location.pathname === '/' || location.pathname.startsWith('/wizard')
-                                        ? "bg-brand-lime/10 text-brand-lime border border-brand-lime/20"
-                                        : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
-                                )}
+                                className="flex items-center gap-3 px-4 py-3 rounded-xl transition-all bg-brand-lime/10 text-brand-lime border border-brand-lime/20"
                             >
                                 <Home className="w-5 h-5" />
                                 <span className="text-sm font-bold">Início</span>
+                            </button>
+                            <button
+                                onClick={() => navigate('/account')}
+                                className="flex items-center gap-3 px-4 py-3 rounded-xl transition-all text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                            >
+                                <Wallet className="w-5 h-5" />
+                                <span className="text-sm font-bold">Minha Conta</span>
                             </button>
                         </nav>
                     </div>
@@ -199,15 +212,12 @@ export const MainLayout = () => {
                             </span>
                         </button>
 
-                        <button 
-                            onClick={() => setIsApiModalOpen(true)}
-                            className="flex items-center gap-3 text-muted-foreground hover:text-foreground transition-colors group mt-2"
+                        <button
+                            onClick={() => void logout()}
+                            className="flex items-center gap-3 text-muted-foreground hover:text-red-400 transition-colors group mt-2"
                         >
-                            <div className="px-2 py-1 bg-white/5 border border-white/10 rounded flex items-center gap-1 group-hover:border-brand-lime/40 transition-colors">
-                                <Cpu className="w-3 h-3" />
-                                <span className="text-[10px] font-bold">API</span>
-                            </div>
-                            <span className="text-xs font-semibold">Configurações</span>
+                            <LogOut className="w-4 h-4" />
+                            <span className="text-xs font-semibold">Sair</span>
                         </button>
                     </div>
                 </aside>

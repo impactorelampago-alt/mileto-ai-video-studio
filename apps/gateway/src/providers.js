@@ -1,0 +1,163 @@
+import { getKey } from './settings.js';
+
+/**
+ * MP3 silencioso mínimo (um frame MPEG). Devolvido no modo demo para que o app
+ * receba um áudio tocável sem gastar dinheiro nem exigir chave configurada.
+ */
+const SILENT_MP3 = Buffer.from(
+    '//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCA' +
+        'gICAgICAgICAgICAgICAgICAgICAgICAgICAgP////////////////' +
+        '8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAnGMUKZa',
+    'base64'
+);
+
+/**
+ * Proxy de TTS. As chaves ficam AQUI, no servidor — nunca no cliente.
+ * Sem chave configurada → modo demo (áudio silencioso), para ver o fluxo local.
+ */
+export const proxyTts = async ({ provider, voiceId, text, voiceSettings }) => {
+    const apiKey = await getKey(provider);
+    if (!apiKey) return { audio: SILENT_MP3, demo: true };
+
+    if (provider === 'fishAudio') {
+        const model = voiceSettings?.fishModel || 's2.1-pro-free';
+        const prosody =
+            voiceSettings && (voiceSettings.speed !== 1 || voiceSettings.volume !== 0)
+                ? { speed: voiceSettings.speed ?? 1, volume: voiceSettings.volume ?? 0 }
+                : undefined;
+
+        const res = await fetch('https://api.fish.audio/v1/tts', {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+                model,
+            },
+            body: JSON.stringify({
+                text,
+                reference_id: voiceId,
+                format: 'mp3',
+                mp3_bitrate: 128,
+                ...(prosody ? { prosody } : {}),
+            }),
+        });
+        if (!res.ok) throw new Error(`Fish Audio ${res.status}: ${await res.text()}`);
+        return { audio: Buffer.from(await res.arrayBuffer()), demo: false };
+    }
+
+    if (provider === 'elevenLabs') {
+        const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+            method: 'POST',
+            headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text,
+                model_id: 'eleven_multilingual_v2',
+                voice_settings: {
+                    stability: voiceSettings?.stability ?? 0.4,
+                    similarity_boost: voiceSettings?.similarityBoost ?? 0.75,
+                    speed: voiceSettings?.speed ?? 1,
+                },
+            }),
+        });
+        if (!res.ok) throw new Error(`ElevenLabs ${res.status}: ${await res.text()}`);
+        return { audio: Buffer.from(await res.arrayBuffer()), demo: false };
+    }
+
+    throw new Error(`Provedor de TTS não suportado: ${provider}`);
+};
+
+/**
+ * Proxy de STT (legendas). Recebe o áudio em buffer e devolve as PALAVRAS com
+ * timestamps (o server local agrupa em blocos). A chave da OpenAI fica aqui.
+ * Sem chave → modo demo (sem palavras, legendas ficam vazias mas o fluxo roda).
+ */
+export const proxyStt = async ({ audio, filename = 'audio.mp3', language = 'pt' }) => {
+    const apiKey = await getKey('openai');
+    if (!apiKey) return { words: [], durationSec: 0, demo: true };
+
+    const fd = new FormData();
+    fd.append('file', new Blob([audio]), filename);
+    fd.append('model', 'whisper-1');
+    fd.append('response_format', 'verbose_json');
+    fd.append('timestamp_granularities[]', 'word');
+    fd.append('language', language);
+
+    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: fd,
+    });
+    if (!res.ok) throw new Error(`Whisper ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    const words = (data.words || []).map((w) => ({ word: w.word, start: w.start, end: w.end }));
+    const durationSec = data.duration
+        ? Math.ceil(Number(data.duration))
+        : words.length
+          ? Math.ceil(words[words.length - 1].end)
+          : 0;
+    return { words, durationSec, demo: false };
+};
+
+// Modelos de raciocínio da OpenAI: não aceitam temperature e usam max_completion_tokens.
+const isReasoningModel = (model) => /^o\d/.test(model) || String(model).startsWith('gpt-5');
+
+// Nível do app (rápido/equilibrado/profundo) → reasoning_effort da OpenAI.
+const REASONING_MAP = {
+    rapido: 'low', low: 'low',
+    equilibrado: 'medium', medium: 'medium',
+    profundo: 'high', high: 'high',
+};
+
+/**
+ * Proxy de chat/LLM. Recebe provider+model JÁ RESOLVIDOS (o tier virou modelo real
+ * no server). `messages` já pode conter a mensagem de sistema (persona do painel).
+ * Modo demo devolve texto fixo quando não há chave.
+ */
+export const proxyChat = async ({ messages, model, provider, reasoning, json }) => {
+    const apiKey = await getKey(provider);
+    if (!apiKey) {
+        return { text: '[modo demo] Configure a chave no painel do super admin (aba IA) para respostas reais.', demo: true };
+    }
+
+    if (provider === 'gemini') {
+        // Gemini não tem role 'system': vira um par user/model no início.
+        const sys = messages.find((m) => m.role === 'system');
+        const rest = messages.filter((m) => m.role !== 'system');
+        const contents = [];
+        if (sys) {
+            contents.push({ role: 'user', parts: [{ text: sys.content }] });
+            contents.push({ role: 'model', parts: [{ text: 'Entendido.' }] });
+        }
+        for (const m of rest) {
+            contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] });
+        }
+        const geminiBody = { contents };
+        if (json) geminiBody.generationConfig = { responseMimeType: 'application/json' };
+        const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+            { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(geminiBody) }
+        );
+        if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
+        const data = await res.json();
+        return { text: data.candidates?.[0]?.content?.parts?.[0]?.text || '', demo: false };
+    }
+
+    // OpenAI
+    const body = { model, messages };
+    if (json) body.response_format = { type: 'json_object' };
+    if (isReasoningModel(model)) {
+        body.max_completion_tokens = 4096;
+        if (reasoning && REASONING_MAP[reasoning]) body.reasoning_effort = REASONING_MAP[reasoning];
+    } else {
+        body.temperature = 0.7;
+        body.max_tokens = 4096;
+    }
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    return { text: data.choices?.[0]?.message?.content || '', demo: false };
+};

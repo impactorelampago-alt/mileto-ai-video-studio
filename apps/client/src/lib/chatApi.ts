@@ -1,11 +1,19 @@
 import { ChatFolder, ChatSession, ChatMessage } from '../types';
+import { API_BASE_URL } from './apiBase';
+import { authStorage } from './authStorage';
 
-const BASE = `${import.meta.env.VITE_API_BASE_URL}/api/chat`;
+const BASE = `${API_BASE_URL}/api/chat`;
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+    // O servidor local repassa este token ao gateway (que tem a chave da IA).
+    const token = await authStorage.get();
     const res = await fetch(url, {
-        headers: { 'Content-Type': 'application/json' },
         ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(options?.headers || {}),
+        },
     });
     if (!res.ok) {
         const data = await res.json().catch(() => ({ message: res.statusText }));
@@ -100,13 +108,14 @@ export async function sendMessage(
     sessionId: string,
     content: string,
     model: string,
-    openaiKey: string,
-    geminiKey: string,
+    reasoning?: string,
     locale: string = 'pt-BR'
 ): Promise<{ userMessage: ChatMessage; assistantMessage: ChatMessage }> {
+    // `model` é o tier Mileto (mileto-lite/plus/ultra); o gateway resolve o modelo
+    // real e injeta a persona. `reasoning` só vale para o Ultra.
     const data = await request<{ userMessage: ChatMessage; assistantMessage: ChatMessage }>(`${BASE}/message`, {
         method: 'POST',
-        body: JSON.stringify({ sessionId, content, model, openaiKey, geminiKey, locale }),
+        body: JSON.stringify({ sessionId, content, model, reasoning, locale }),
     });
     return {
         userMessage: data.userMessage,

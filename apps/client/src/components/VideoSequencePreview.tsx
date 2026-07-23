@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useCallback, useState, useMemo, forwardRef, u
 import { Play, Pause, Volume2, VolumeX, RotateCcw, Loader2, Zap } from 'lucide-react';
 import { MediaTake, TitleHook, CaptionTrack } from '../types';
 import { cn } from '../lib/utils';
+import { API_BASE_URL } from '../lib/apiBase';
 import { useWizard } from '../context/WizardContext';
 import { DynamicTitleRenderer } from './DynamicTitleRenderer';
 import { getPlaybackRateForRemap } from '../lib/speedRemapping';
@@ -331,7 +332,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             transitionTriggeredRef.current = true;
 
                             // Transition is Overlay Video (.mp4 / .webm)
-                            const tUrl = `${import.meta.env.VITE_API_BASE_URL || ''}${currentTransition.publicUrl}`;
+                            const tUrl = `${API_BASE_URL}${currentTransition.publicUrl}`;
                             setActiveTransitionUrl(tUrl);
 
                             // Play the transition overlay
@@ -634,7 +635,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 // Sync audio master position for UI dependencies (captions)
                 if (audioMasterRef.current) audioMasterRef.current.currentTime = targetGlobalTime;
 
-                const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
+                // Antes caía em localhost:3000 — porta errada, o servidor é o 3301.
+                const API_BASE = API_BASE_URL;
                 const getProxiedUrl = (rawUrl: string) => {
                     if (rawUrl.startsWith('http') && !rawUrl.includes('localhost') && !rawUrl.includes('127.0.0.1')) {
                         const cleanBase = API_BASE.endsWith('/api') ? API_BASE : `${API_BASE}/api`;
@@ -797,7 +799,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             try {
                                 // Calculate how far into the transition we are
                                 const transitionProgress = halfTransition - timeRemainingInTake;
-                                const tUrl = `${import.meta.env.VITE_API_BASE_URL || ''}${activeTransition.publicUrl}`;
+                                const tUrl = `${API_BASE_URL}${activeTransition.publicUrl}`;
                                 const transitionBlobUrl = await fetchAsBlobUrl(tUrl);
 
                                 const tVid = transitionRef.current || document.createElement('video');

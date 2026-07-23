@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -129,7 +129,56 @@ function createWindow() {
     }
 }
 
+// ─── Sessão do usuário (token) — guardado cifrado com safeStorage (DPAPI no
+// Windows). Nunca vai para localStorage do renderer, que é legível em texto. ──
+const authFilePath = () => path.join(app.getPath('userData'), 'mileto-auth.bin');
+
+function readAuthToken() {
+    try {
+        const f = authFilePath();
+        if (!fs.existsSync(f)) return null;
+        const buf = fs.readFileSync(f);
+        if (buf.length === 0) return null;
+        if (safeStorage.isEncryptionAvailable()) return safeStorage.decryptString(buf);
+        return buf.toString('utf8');
+    } catch (err) {
+        console.error('[auth] Falha ao ler token:', err.message);
+        return null;
+    }
+}
+
+function writeAuthToken(token) {
+    const f = authFilePath();
+    if (!token) {
+        if (fs.existsSync(f)) fs.unlinkSync(f);
+        return true;
+    }
+    const data = safeStorage.isEncryptionAvailable()
+        ? safeStorage.encryptString(String(token))
+        : Buffer.from(String(token), 'utf8');
+    fs.writeFileSync(f, data);
+    return true;
+}
+
 app.whenReady().then(() => {
+    // ─── Sessão do usuário ───────────────────────────────────────────────
+    ipcMain.handle('auth:get', () => readAuthToken());
+    ipcMain.handle('auth:set', (_event, token) => {
+        try {
+            return writeAuthToken(token);
+        } catch (err) {
+            console.error('[auth] Falha ao gravar token:', err.message);
+            return false;
+        }
+    });
+    ipcMain.handle('auth:clear', () => {
+        try {
+            return writeAuthToken(null);
+        } catch {
+            return false;
+        }
+    });
+
     // ─── Auto-updater IPC ────────────────────────────────────────────────
     ipcMain.handle('update:check', async () => {
         try {

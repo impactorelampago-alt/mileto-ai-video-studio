@@ -47,9 +47,57 @@ export interface ApiKeys {
     gemini: string;
     openai: string;
     fishAudio: string;
+    elevenLabs: string;
     replicate?: string;
     runway?: string;
 }
+
+/** Provedores de TTS suportados. Espelha `services/ttsTypes.ts` no servidor. */
+export type TtsProvider = 'fishAudio' | 'elevenLabs';
+
+export const TTS_PROVIDERS: { id: TtsProvider; label: string; apiKeyField: keyof ApiKeys }[] = [
+    { id: 'fishAudio', label: 'Fish Audio', apiKeyField: 'fishAudio' },
+    { id: 'elevenLabs', label: 'ElevenLabs', apiKeyField: 'elevenLabs' },
+];
+
+/**
+ * Ajustes manuais de voz. Faixas conforme a documentação de cada fornecedor —
+ * ver PESQUISA-NARRACAO-IA.md.
+ *
+ * `stability` é INVERTIDO: menor = mais emoção. Só vale para ElevenLabs.
+ */
+export interface VoiceSettings {
+    speed: number; // 0.5 – 2.0 (recomendado 0.80 – 1.25)
+    volume: number; // dB, -20 a +20 (recomendado -5 a +5) · só Fish Audio
+    stability: number; // 0.0 – 1.0 (recomendado 0.30 – 0.45) · só ElevenLabs
+    similarityBoost: number; // 0.0 – 1.0 · só ElevenLabs
+    fishModel: FishModel;
+}
+
+/**
+ * Modelos da Fish Audio. Vai no header `model` da requisição.
+ * Só o S2 entende a sintaxe [bracket] de emoção — no S1 as tags são LIDAS em voz alta.
+ */
+export type FishModel = 's2.1-pro-free' | 's2-pro' | 's1';
+
+export const FISH_MODELS: { id: FishModel; label: string; note: string; tags: boolean }[] = [
+    {
+        id: 's2.1-pro-free',
+        label: 'S2.1 Pro · grátis',
+        note: 'Sem custo e sem limite de caracteres. Sem SLA, e o áudio pode ser usado para treinar os modelos deles.',
+        tags: true,
+    },
+    { id: 's2-pro', label: 'S2 Pro · pago', note: 'Mesmo modelo, consumindo seu crédito de API.', tags: true },
+    { id: 's1', label: 'S1 · legado', note: 'Modelo antigo. Não entende tags de emoção.', tags: false },
+];
+
+export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
+    speed: 1,
+    volume: 0,
+    stability: 0.4, // preset "Conversational" da ElevenLabs
+    similarityBoost: 0.75,
+    fishModel: 's2.1-pro-free',
+};
 
 export type VideoFormat = '9:16' | '16:9' | '4:5' | '1:1';
 
@@ -67,6 +115,8 @@ export interface CustomVoice {
     id: string;
     name: string;
     description?: string;
+    /** Vozes salvas antes do suporte multi-provedor não têm o campo — trata-se como Fish Audio. */
+    provider?: TtsProvider;
 }
 
 export interface AudioTrackConfig {
@@ -157,6 +207,8 @@ export interface AdData {
     format: VideoFormat;
     narrationText: string;
     selectedVoiceId: string | null;
+    selectedVoiceProvider?: TtsProvider;
+    voiceSettings?: VoiceSettings;
     narrationVoiceId?: string;
     narrationAudioUrl: string | null;
     narrationAudioPath: string | null; // For backend reference

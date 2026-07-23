@@ -23,11 +23,12 @@ import { TitleHook } from '../types';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import axios from 'axios';
+import { localAuthHeaders } from '../lib/serverAuth';
 import { DynamicTitleRenderer } from '../components/DynamicTitleRenderer';
 import { ExportModal } from '../components/ExportModal';
 
 export const Step4 = () => {
-    const { adData, updateAdData, mediaTakes, apiKeys, isDebugMode, setIsDebugMode } = useWizard();
+    const { adData, updateAdData, mediaTakes, isDebugMode, setIsDebugMode } = useWizard();
     const [isGenerating, setIsGenerating] = useState(false);
     const [selectedTitleId, setSelectedTitleId] = useState<string | null>(null);
     // Accordion states
@@ -64,9 +65,8 @@ export const Step4 = () => {
                 {
                     script: adData.narrationText,
                     captions: adData.captions,
-                    openaiKey: apiKeys.openai,
-                    geminiKey: apiKeys.gemini,
-                }
+                },
+                { headers: await localAuthHeaders() }
             );
 
             if (res.data.ok && res.data.titles) {

@@ -13,11 +13,12 @@ export const ApiConfigModal: React.FC<ApiConfigModalProps> = ({ isOpen, onClose 
     const { apiKeys, setApiKey } = useWizard();
     const [validating, setValidating] = useState<Record<string, boolean>>({});
     const [valid, setValid] = useState<Record<string, boolean>>({});
+    const [fishWallet, setFishWallet] = useState<{ credit: number; accountId: string | null } | null>(null);
 
     if (!isOpen) return null;
 
     const validateKey = async (
-        provider: 'gemini' | 'openai' | 'fishAudio' | 'replicate' | 'runway',
+        provider: 'gemini' | 'openai' | 'fishAudio' | 'elevenLabs' | 'replicate' | 'runway',
         rawKey: string
     ) => {
         const key = rawKey.trim();
@@ -49,7 +50,22 @@ export const ApiConfigModal: React.FC<ApiConfigModalProps> = ({ isOpen, onClose 
 
             if (data.ok) {
                 setValid((prev) => ({ ...prev, [provider]: true }));
-                toast.success(`${provider} API Connected`);
+
+                // A Fish devolve saldo e id da conta: é o que distingue "chave errada"
+                // de "chave certa sem crédito".
+                if (provider === 'fishAudio' && typeof data.credit === 'number') {
+                    setFishWallet({ credit: data.credit, accountId: data.accountId ?? null });
+                    if (data.credit <= 0) {
+                        toast.error(
+                            `Chave válida, mas a conta ${data.accountId ?? ''} está com saldo de API US$ ${data.credit.toFixed(2)}. Confira se é a mesma conta do painel da Fish.`,
+                            { duration: 12000 }
+                        );
+                    } else {
+                        toast.success(`Fish Audio conectada · saldo US$ ${data.credit.toFixed(2)}`);
+                    }
+                } else {
+                    toast.success(`${provider} API Connected`);
+                }
             } else {
                 setValid((prev) => ({ ...prev, [provider]: false }));
                 toast.error(`Error: ${data.message}`);
@@ -163,6 +179,64 @@ export const ApiConfigModal: React.FC<ApiConfigModalProps> = ({ isOpen, onClose 
                                 )}
                                 {!validating.fishAudio && valid.fishAudio && <Check className="w-4 h-4 text-primary" />}
                                 {!validating.fishAudio && valid.fishAudio === false && (
+                                    <AlertCircle className="w-4 h-4 text-destructive" />
+                                )}
+                            </div>
+                        </div>
+
+                        {fishWallet && (
+                            <div
+                                className={cn(
+                                    'text-xs rounded-md px-3 py-2 border',
+                                    fishWallet.credit > 0
+                                        ? 'text-primary border-primary/30 bg-primary/5'
+                                        : 'text-destructive border-destructive/30 bg-destructive/5'
+                                )}
+                            >
+                                <span className="font-semibold">
+                                    Saldo de API: US$ {fishWallet.credit.toFixed(4)}
+                                </span>
+                                {fishWallet.accountId && (
+                                    <span className="opacity-70"> · conta {fishWallet.accountId}…</span>
+                                )}
+                                {fishWallet.credit <= 0 && (
+                                    <p className="mt-1 opacity-90 leading-snug">
+                                        Sem saldo. Se o painel da Fish mostra saldo, esta chave é de outra
+                                        conta — gere uma nova chave na conta certa. O modelo{' '}
+                                        <strong>S2.1 Pro grátis</strong> funciona mesmo sem saldo.
+                                    </p>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* ElevenLabs */}
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground">
+                            ElevenLabs API Key (Narração expressiva)
+                        </label>
+                        <div className="relative">
+                            <input
+                                type="password"
+                                value={apiKeys.elevenLabs}
+                                onChange={(e) => setApiKey('elevenLabs', e.target.value)}
+                                onBlur={(e) => validateKey('elevenLabs', e.target.value)}
+                                className={cn(
+                                    'w-full bg-input/50 border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 transition-all text-foreground',
+                                    valid.elevenLabs
+                                        ? 'border-primary/50 focus:ring-primary'
+                                        : 'border-input focus:ring-primary'
+                                )}
+                                placeholder="sk_..."
+                            />
+                            <div className="absolute right-3 top-2.5">
+                                {validating.elevenLabs && (
+                                    <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+                                )}
+                                {!validating.elevenLabs && valid.elevenLabs && (
+                                    <Check className="w-4 h-4 text-primary" />
+                                )}
+                                {!validating.elevenLabs && valid.elevenLabs === false && (
                                     <AlertCircle className="w-4 h-4 text-destructive" />
                                 )}
                             </div>

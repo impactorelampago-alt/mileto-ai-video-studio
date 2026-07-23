@@ -1,53 +1,6 @@
 import { Request, Response } from 'express';
-import https from 'https';
 import * as chatService from '../services/chatService';
-
-// ─── Helper: HTTPS POST (stable, no crash) ──────────────────────────────────
-
-function httpsPost(
-    url: string,
-    body: object,
-    headers: Record<string, string>
-): Promise<{ status: number; data: string }> {
-    return new Promise((resolve, reject) => {
-        const parsed = new URL(url);
-        const postData = JSON.stringify(body);
-
-        const options = {
-            hostname: parsed.hostname,
-            port: 443,
-            path: parsed.pathname + parsed.search,
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(postData),
-                ...headers,
-            },
-        };
-
-        const req = https.request(options, (res) => {
-            let data = '';
-            res.on('data', (chunk: string) => {
-                data += chunk;
-            });
-            res.on('end', () => {
-                resolve({ status: res.statusCode || 0, data });
-            });
-        });
-
-        req.on('error', (err) => {
-            reject(err);
-        });
-
-        req.setTimeout(60000, () => {
-            req.destroy();
-            reject(new Error('Request timeout (60s)'));
-        });
-
-        req.write(postData);
-        req.end();
-    });
-}
+import { bearerFrom, gatewayChat, GatewayHttpError } from '../services/gatewayClient';
 
 // ─── Folder Endpoints ────────────────────────────────────────────────────────
 
@@ -185,7 +138,7 @@ export const getMessages = async (req: Request, res: Response) => {
 
 export const sendMessage = async (req: Request, res: Response) => {
     try {
-        const { sessionId, content, model, openaiKey, geminiKey, locale } = req.body;
+        const { sessionId, content, model, reasoning, locale } = req.body;
 
         if (!sessionId || !content) {
             res.status(400).json({ ok: false, message: 'sessionId and content are required' });
@@ -194,92 +147,43 @@ export const sendMessage = async (req: Request, res: Response) => {
 
         const userMsg = chatService.addMessage(sessionId, 'user', content);
 
-        const selectedModel = model || 'gpt-4o';
-        const isGemini = selectedModel.startsWith('gemini');
-        const apiKey = isGemini ? geminiKey : openaiKey;
-
-        if (!apiKey) {
-            const provider = isGemini ? 'Gemini' : 'OpenAI';
+        const token = bearerFrom(req);
+        if (!token) {
             const errMsg = chatService.addMessage(
                 sessionId,
                 'assistant',
-                `⚠️ Chave da API ${provider} não configurada. Vá em Configurações para adicionar.`
+                '⚠️ Sessão expirada. Entre novamente para conversar com o assistente.'
             );
             res.json({ ok: true, userMessage: userMsg, assistantMessage: errMsg });
             return;
         }
 
-        // Build system prompt with language from locale
-        const langMap: Record<string, string> = {
-            pt: 'Português do Brasil',
-            'pt-BR': 'Português do Brasil',
-            'pt-PT': 'Português de Portugal',
-            en: 'English',
-            'en-US': 'English',
-            es: 'Español',
-            fr: 'Français',
-            de: 'Deutsch',
-            it: 'Italiano',
-            ja: '日本語',
-            ko: '한국어',
-            zh: '中文',
-        };
-        const userLocale = locale || 'pt-BR';
-        const langName = langMap[userLocale] || langMap[userLocale.split('-')[0]] || 'Português do Brasil';
-        const systemPrompt = `Você é Mileto, um assistente de IA inteligente e prestativo. Responda SEMPRE em ${langName}. Seja claro, objetivo e amigável. Quando o usuário pedir algo criativo, seja criativo. Quando pedir algo técnico, seja preciso.`;
+        // O histórico é local; a persona e a chave ficam no gateway. Mandamos só a
+        // conversa (o tier Mileto e o nível de raciocínio o gateway resolve).
+        const history = chatService
+            .getMessages(sessionId)
+            .filter((m) => m.role === 'user' || m.role === 'assistant')
+            .map((m) => ({ role: m.role, content: m.content }));
 
-        const history = chatService.getMessages(sessionId);
         let assistantContent = '';
-
-        if (isGemini) {
-            // Gemini doesn't support 'system' role — inject as first user/model pair
-            const geminiMessages: { role: string; parts: { text: string }[] }[] = [
-                { role: 'user', parts: [{ text: systemPrompt }] },
-                { role: 'model', parts: [{ text: 'Entendido! Estou pronto para ajudar.' }] },
-            ];
-            history
-                .filter((m) => m.role !== 'system')
-                .forEach((m) => {
-                    geminiMessages.push({
-                        role: m.role === 'assistant' ? 'model' : 'user',
-                        parts: [{ text: m.content }],
-                    });
-                });
-
-            try {
-                const resp = await httpsPost(
-                    `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${geminiKey}`,
-                    { contents: geminiMessages, generationConfig: { temperature: 0.7, maxOutputTokens: 4096 } },
-                    {}
-                );
-                const data = JSON.parse(resp.data);
-                if (resp.status !== 200) {
-                    throw new Error(data?.error?.message || `Gemini API error: ${resp.status}`);
-                }
-                assistantContent = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'Sem resposta do Gemini.';
-            } catch (apiErr: unknown) {
-                assistantContent = `❌ Erro Gemini: ${apiErr instanceof Error ? apiErr.message : 'Erro desconhecido'}`;
-            }
-        } else {
-            // OpenAI: inject system prompt as first message
-            const openaiMessages: { role: string; content: string }[] = [{ role: 'system', content: systemPrompt }];
-            history.forEach((m) => {
-                openaiMessages.push({ role: m.role, content: m.content });
+        try {
+            const result = await gatewayChat(token, {
+                messages: history,
+                model: model || 'mileto-plus',
+                reasoning,
+                locale: locale || 'pt-BR',
             });
-
-            try {
-                const resp = await httpsPost(
-                    'https://api.openai.com/v1/chat/completions',
-                    { model: selectedModel, messages: openaiMessages, temperature: 0.7, max_tokens: 4096 },
-                    { Authorization: `Bearer ${openaiKey}` }
-                );
-                const data = JSON.parse(resp.data);
-                if (resp.status !== 200) {
-                    throw new Error(data?.error?.message || `OpenAI API error: ${resp.status}`);
-                }
-                assistantContent = data?.choices?.[0]?.message?.content || 'Sem resposta da OpenAI.';
-            } catch (apiErr: unknown) {
-                assistantContent = `❌ Erro OpenAI: ${apiErr instanceof Error ? apiErr.message : 'Erro desconhecido'}`;
+            assistantContent = result.text || 'Sem resposta do assistente.';
+        } catch (apiErr: unknown) {
+            if (apiErr instanceof GatewayHttpError) {
+                assistantContent =
+                    apiErr.status === 402
+                        ? '⚠️ Seus créditos Mileto acabaram. Recarregue para continuar usando o assistente.'
+                        : apiErr.status === 401
+                          ? '⚠️ Sessão expirada. Entre novamente para conversar com o assistente.'
+                          : `❌ Erro do servidor Mileto: ${apiErr.message}`;
+            } else {
+                assistantContent = `❌ Erro: ${apiErr instanceof Error ? apiErr.message : 'desconhecido'}`;
             }
         }
 

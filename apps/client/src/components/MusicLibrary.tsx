@@ -5,7 +5,7 @@ import { Music, Upload, Play, Pause, Pencil, Trash2, Check, X, Loader2 } from 'l
 import { toast } from 'sonner';
 import type { MusicTrack } from '../types';
 
-const API = import.meta.env.VITE_API_BASE_URL;
+import { API_BASE_URL as API } from '../lib/apiBase';
 
 const formatDuration = (sec: number) => {
     const m = Math.floor(sec / 60);

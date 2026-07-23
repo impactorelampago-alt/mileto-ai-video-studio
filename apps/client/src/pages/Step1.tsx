@@ -2,7 +2,10 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import { VoiceSelector } from '../components/VoiceSelector';
+import { VoiceSettingsPanel } from '../components/VoiceSettingsPanel';
+import type { TtsProvider } from '../types';
 import { cn } from '../lib/utils';
+import { localAuthHeaders } from '../lib/serverAuth';
 import { ArrowRight, Wand2, Loader2, Music2, Check, Pencil } from 'lucide-react';
 import { TimelineEditor } from '../components/timeline/TimelineEditor';
 import { toast } from 'sonner';
@@ -10,7 +13,7 @@ import { AudioPlayer } from '../components/AudioPlayer';
 import { MusicLibrary } from '../components/MusicLibrary';
 
 export const Step1 = () => {
-    const { adData, updateAdData, apiKeys } = useWizard();
+    const { adData, updateAdData } = useWizard();
     const navigate = useNavigate();
     const [isGenerating, setIsGenerating] = useState(false);
     const [isMixing, setIsMixing] = useState(false);
@@ -66,26 +69,27 @@ export const Step1 = () => {
             toast.error('Digite o texto da narração');
             return;
         }
-        if (!apiKeys.fishAudio) {
-            if (!auto) toast.error('Configure a chave da Fish Audio primeiro');
-            return;
-        }
+
+        // A voz escolhida define o provedor; a chave da IA fica no gateway.
+        const provider: TtsProvider = adData.selectedVoiceProvider ?? 'fishAudio';
 
         setIsGenerating(true);
         try {
             const response = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/tts/generate-narration`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
                 body: JSON.stringify({
                     text: adData.narrationText,
                     voiceId: adData.selectedVoiceId || '3cd37df623144626b4c9d12e22dbe898',
-                    apiKey: apiKeys.fishAudio,
+                    provider,
+                    voiceSettings: adData.voiceSettings,
                 }),
             });
 
             const data = await response.json();
             if (!data.ok) throw new Error(data.message);
 
+            // Feedback específico para as duas falhas mais comuns, que não são bug do app.
             updateAdData({
                 isNarrationGenerated: true,
                 narrationAudioUrl: `${((window as any).API_BASE_URL || 'http://localhost:3301')}${data.url}`,
@@ -95,7 +99,18 @@ export const Step1 = () => {
         } catch (error: unknown) {
             console.error(error);
             const errMsg = error instanceof Error ? error.message : 'Erro desconhecido';
-            if (!auto) toast.error('Erro ao gerar narração: ' + errMsg);
+            if (!auto) {
+                if (errMsg.includes('créditos') || errMsg.includes('insuficiente') || errMsg.includes('402')) {
+                    toast.error(
+                        'Seus créditos Mileto acabaram. Recarregue em "Minha Conta" para gerar mais narrações.',
+                        { duration: 10000 }
+                    );
+                } else if (errMsg.includes('Sessão') || errMsg.includes('401')) {
+                    toast.error('Sua sessão expirou. Entre novamente para continuar.');
+                } else {
+                    toast.error('Erro ao gerar narração: ' + errMsg);
+                }
+            }
         } finally {
             setIsGenerating(false);
         }
@@ -104,22 +119,23 @@ export const Step1 = () => {
     // Auto-generation on mount removed per user request to start from scratch.
 
     return (
-        <div className="max-w-6xl mx-auto pb-32 pt-8 px-4">
-            <header className="mb-12 text-center">
-                <h2 className="text-4xl font-extrabold text-foreground tracking-tight">
+        <div className="max-w-[1440px] mx-auto pb-32 pt-8 px-6 lg:px-10">
+            <header className="mb-9 text-center">
+                <h2 className="text-3xl lg:text-4xl font-extrabold text-foreground tracking-tight">
                     Crie sua{' '}
                     <span className="bg-linear-to-r from-brand-lime to-brand-accent bg-clip-text text-transparent">
                         Narração
                     </span>
                 </h2>
-                <p className="text-brand-muted mt-3 max-w-2xl mx-auto text-sm font-medium">
+                <p className="text-brand-muted mt-2.5 max-w-2xl mx-auto text-sm font-medium">
                     Defina o título do projeto, o formato de tela do vídeo e escreva o seu roteiro inteligente.
                 </p>
             </header>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            {/* 5/7 em vez de 50/50: a coluna de voz tem grade de cards e precisa de mais largura. */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                 {/* Left Column: Form */}
-                <div className="space-y-8 bg-brand-card rounded-3xl p-8 border border-black/5 dark:border-white/5 shadow-2xl relative overflow-hidden">
+                <div className="lg:col-span-5 space-y-7 bg-brand-card rounded-3xl p-6 border border-black/5 dark:border-white/5 shadow-2xl relative overflow-hidden">
                     <div className="absolute top-0 left-0 w-full h-[2px] bg-linear-to-r from-brand-lime/40 to-brand-accent/10"></div>
 
                     {/* Title */}
@@ -187,43 +203,21 @@ export const Step1 = () => {
                         />
                     </div>
 
-                    {/* Music Library */}
-                    <MusicLibrary />
-                </div>
-
-                {/* Right Column: Voice & Preview */}
-                <div className="space-y-6">
-                    <div className="bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
-                        <div className="absolute top-0 right-0 w-full h-[2px] bg-linear-to-l from-brand-lime/40 to-brand-accent/10"></div>
-                        <h3 className="text-[13px] tracking-wide uppercase font-semibold text-brand-muted mb-5 flex items-center gap-2">
-                            <Music2 className="w-4 h-4 text-brand-lime" />
-                            Voz da Inteligência Artificial
-                        </h3>
-                        <VoiceSelector />
-                    </div>
-
-                    {/* Generated Output Preview */}
+                    {/* Síntese — logo abaixo do roteiro, que é o insumo dela */}
                     <div
                         className={cn(
-                            'rounded-3xl border p-8 transition-all relative overflow-hidden',
+                            'rounded-3xl border p-5 transition-all',
                             adData.isNarrationGenerated
                                 ? 'bg-brand-accent/5 border-brand-accent/20'
-                                : 'bg-brand-card border-black/5 dark:border-white/5'
+                                : 'bg-background border-black/5 dark:border-white/5 shadow-inner'
                         )}
                     >
                         {!adData.isNarrationGenerated ? (
-                            <div className="text-center py-8">
-                                <div className="w-16 h-16 rounded-2xl bg-background border border-black/5 dark:border-white/5 mx-auto flex items-center justify-center mb-5 shadow-inner">
-                                    <Wand2 className="w-6 h-6 text-brand-muted" />
-                                </div>
-                                <h4 className="text-base font-bold text-foreground">Sintetizar Áudio Master</h4>
-                                <p className="text-sm text-brand-muted mt-2 max-w-[260px] mx-auto leading-relaxed">
-                                    Preencha o roteiro e defina a voz para gerar a locução profissional.
-                                </p>
+                            <div className="space-y-3">
                                 <button
                                     onClick={() => handleGenerateNarration()}
                                     disabled={!adData.narrationText || !adData.selectedVoiceId || isGenerating}
-                                    className="mt-6 px-8 py-3 bg-brand-accent/10 hover:bg-brand-accent/20 border border-brand-accent/30 disabled:border-black/5 dark:border-white/5 disabled:bg-black/5 dark:bg-white/5 disabled:text-foreground/30 text-brand-accent font-bold rounded-xl text-sm transition-all flex items-center gap-2 mx-auto"
+                                    className="w-full px-6 py-3.5 bg-brand-accent/10 hover:bg-brand-accent/20 border border-brand-accent/30 disabled:border-black/5 dark:disabled:border-white/5 disabled:bg-black/5 dark:disabled:bg-white/5 disabled:text-foreground/30 text-brand-accent font-bold rounded-xl text-sm transition-all flex items-center justify-center gap-2"
                                 >
                                     {isGenerating ? (
                                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -232,12 +226,19 @@ export const Step1 = () => {
                                     )}
                                     Tornar Roteiro em Áudio
                                 </button>
+                                <p className="text-[11px] text-brand-muted text-center leading-snug">
+                                    {!adData.narrationText
+                                        ? 'Escreva o roteiro acima para liberar.'
+                                        : !adData.selectedVoiceId
+                                          ? 'Escolha uma voz ao lado para liberar.'
+                                          : 'Pronto para gerar a locução.'}
+                                </p>
                             </div>
                         ) : (
-                            <div className="text-center py-4">
-                                <div className="flex items-center justify-center gap-2 text-brand-accent mb-4">
-                                    <div className="w-8 h-8 rounded-full bg-brand-accent/20 flex items-center justify-center">
-                                        <Check className="w-5 h-5 drop-shadow-[0_0_8px_rgba(0,230,118,0.8)]" />
+                            <div className="space-y-3">
+                                <div className="flex items-center gap-2 text-brand-accent">
+                                    <div className="w-7 h-7 rounded-full bg-brand-accent/20 flex items-center justify-center shrink-0">
+                                        <Check className="w-4 h-4 drop-shadow-[0_0_8px_rgba(0,230,118,0.8)]" />
                                     </div>
                                     <span className="font-bold text-sm tracking-wide">Narração Finalizada</span>
                                 </div>
@@ -246,10 +247,31 @@ export const Step1 = () => {
                                 </div>
                                 <button
                                     onClick={() => updateAdData({ isNarrationGenerated: false })}
-                                    className="mt-5 text-xs text-brand-muted hover:text-foreground transition-colors uppercase tracking-widest font-semibold"
+                                    className="w-full text-xs text-brand-muted hover:text-foreground transition-colors uppercase tracking-widest font-semibold pt-1"
                                 >
                                     Refazer Sintetização
                                 </button>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Music Library */}
+                    <MusicLibrary />
+                </div>
+
+                {/* Right Column: Voice */}
+                <div className="lg:col-span-7 space-y-6">
+                    <div className="bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+                        <div className="absolute top-0 right-0 w-full h-[2px] bg-linear-to-l from-brand-lime/40 to-brand-accent/10"></div>
+                        <h3 className="text-[13px] tracking-wide uppercase font-semibold text-brand-muted mb-5 flex items-center gap-2">
+                            <Music2 className="w-4 h-4 text-brand-lime" />
+                            Voz da Inteligência Artificial
+                        </h3>
+                        <VoiceSelector />
+
+                        {adData.selectedVoiceId && (
+                            <div className="mt-5">
+                                <VoiceSettingsPanel />
                             </div>
                         )}
                     </div>

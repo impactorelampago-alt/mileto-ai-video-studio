@@ -3,6 +3,11 @@ import type { AdData, MediaTake, CaptionStyle, ApiKeys, MusicTrack, CustomVoice 
 
 export const SHOW_DEBUG_FEATURES = false;
 
+// Geração de imagem e vídeo por IA fica DESLIGADA no v1. Volta numa versão
+// futura com as APIs trocadas (vídeo=Seedance, imagem=Banana/Gemini) —
+// ver ROADMAP-IMAGEM-VIDEO.md. Basta virar para true quando reativar.
+export const ENABLE_MEDIA_AI = false;
+
 const ACTIVE_DRAFT_STORAGE_KEY = 'mileto_active_draft_id';
 
 const generateDraftId = (): string => {
@@ -92,15 +97,25 @@ const WizardContext = createContext<WizardContextType | undefined>(undefined);
 
 export const WizardProvider = ({ children }: { children: ReactNode }) => {
     const [apiKeys, setApiKeys] = useState<ApiKeys>(() => {
+        // NENHUMA chave chumbada aqui. Este arquivo vai para o Git e é empacotado
+        // no instalador — um app Electron não guarda segredo, qualquer pessoa abre
+        // o .asar e lê. Chave entra só pelo modal de Configurações.
         const defaults = {
             gemini: '',
             openai: '',
-            fishAudio: 'b9b6ca3a75c940ad96cc7833bd803669',
+            fishAudio: '',
+            elevenLabs: '',
             replicate: '',
             runway: '',
         };
-        const EXPIRED_FISH_KEYS = new Set(['6607173b195648c580bda6f4e15497de']);
-        const EXPIRED_OPENAI_KEYS = new Set([
+
+        // Chaves que já vazaram no histórico do Git: se estiverem salvas na máquina
+        // de alguém, são apagadas na inicialização para forçar a troca.
+        const REVOKED_FISH_KEYS = new Set([
+            '6607173b195648c580bda6f4e15497de',
+            'b9b6ca3a75c940ad96cc7833bd803669',
+        ]);
+        const REVOKED_OPENAI_KEYS = new Set([
             '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',
         ]);
         try {
@@ -109,12 +124,13 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 const parsed = JSON.parse(stored);
                 // Ensure properly merged object, handling null/non-object results
                 if (parsed && typeof parsed === 'object') {
-                    const storedFish = EXPIRED_FISH_KEYS.has(parsed.fishAudio) ? '' : parsed.fishAudio;
-                    const storedOpenai = EXPIRED_OPENAI_KEYS.has(parsed.openai) ? '' : parsed.openai;
+                    const storedFish = REVOKED_FISH_KEYS.has(parsed.fishAudio) ? '' : parsed.fishAudio;
+                    const storedOpenai = REVOKED_OPENAI_KEYS.has(parsed.openai) ? '' : parsed.openai;
                     return {
                         gemini: parsed.gemini || defaults.gemini,
                         openai: storedOpenai || defaults.openai,
                         fishAudio: storedFish || defaults.fishAudio,
+                        elevenLabs: parsed.elevenLabs || defaults.elevenLabs,
                         replicate: parsed.replicate || defaults.replicate,
                         runway: parsed.runway || defaults.runway,
                     };
@@ -166,7 +182,9 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     const [customVoices, setCustomVoices] = useState<CustomVoice[]>(() => {
         try {
             const stored = localStorage.getItem('mileto_custom_voices');
-            return stored ? JSON.parse(stored) : [];
+            const parsed: CustomVoice[] = stored ? JSON.parse(stored) : [];
+            // Vozes salvas antes do suporte multi-provedor são todas da Fish Audio.
+            return parsed.map((v) => ({ ...v, provider: v.provider ?? 'fishAudio' }));
         } catch {
             return [];
         }

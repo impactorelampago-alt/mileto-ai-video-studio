@@ -52,6 +52,7 @@ router.post('/uploads/image', upload.single('file'), uploadController.uploadImag
 router.post('/tts/preview-voice', ttsController.previewVoice);
 router.post('/tts/generate-narration', ttsController.createNarration);
 router.post('/tts/clone-voice', upload.single('audio'), ttsController.cloneVoice);
+router.post('/tts/list-voices', ttsController.listProviderVoices);
 
 import * as sttController from '../controllers/sttController';
 // STT Routes
@@ -107,7 +108,7 @@ router.post('/test-openai', async (req, res) => {
     }
 });
 
-import { testApiKey } from '../services/fishAudio';
+import { testApiKey, getApiCredit } from '../services/fishAudio';
 
 router.post('/test-fishaudio', async (req, res) => {
     const { apiKey } = req.body;
@@ -115,10 +116,35 @@ router.post('/test-fishaudio', async (req, res) => {
 
     try {
         const isValid = await testApiKey(apiKey);
+        if (!isValid) {
+            return res.status(401).json({ ok: false, message: 'Invalid Fish Audio Key or Connection Failed' });
+        }
+
+        // Autenticar não basta: a chave pode ser de outra conta, sem saldo.
+        const wallet = await getApiCredit(apiKey);
+        res.json({
+            ok: true,
+            message: 'Fish Audio API Connected',
+            credit: wallet?.credit ?? null,
+            accountId: wallet?.accountId ?? null,
+        });
+    } catch (e: any) {
+        res.status(500).json({ ok: false, message: e.message });
+    }
+});
+
+import { testApiKey as testElevenLabsKey } from '../services/elevenlabs';
+
+router.post('/test-elevenlabs', async (req, res) => {
+    const { apiKey } = req.body;
+    if (!apiKey) return res.status(400).json({ ok: false, message: 'API Key missing' });
+
+    try {
+        const isValid = await testElevenLabsKey(apiKey);
         if (isValid) {
-            res.json({ ok: true, message: 'Fish Audio API Connected' });
+            res.json({ ok: true, message: 'ElevenLabs API Connected' });
         } else {
-            res.status(401).json({ ok: false, message: 'Invalid Fish Audio Key or Connection Failed' });
+            res.status(401).json({ ok: false, message: 'Invalid ElevenLabs Key or Connection Failed' });
         }
     } catch (e: any) {
         res.status(500).json({ ok: false, message: e.message });

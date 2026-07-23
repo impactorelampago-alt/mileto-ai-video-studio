@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { cn } from '../lib/utils';
+import { API_BASE_URL } from '../lib/apiBase';
 import { TitleHook } from '../types';
 
 interface Props {
@@ -26,7 +27,7 @@ export const DynamicTitleRenderer: React.FC<Props> = ({ title, className, timeEl
     useEffect(() => {
         if (!title.hasSound || !styleId.startsWith('cta-')) return;
 
-        const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
+        const baseUrl = API_BASE_URL;
 
         const playSfx = () => {
             const audio = new Audio(`${baseUrl}/transitions/hit.mp3`);
