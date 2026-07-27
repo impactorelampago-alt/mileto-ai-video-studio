@@ -54,6 +54,10 @@ app.get('/health', (_req, res) => res.json({ ok: true, service: 'mileto-gateway'
 // Callback OAuth do Ops: público porque é aberto pelo navegador, porém vinculado
 // a state de uso único, expiração e PKCE persistidos no gateway.
 app.get('/v1/integrations/mileto-ops/callback', asyncHandler(opsIntegration.authorizationCallback));
+// O consentimento atual do Ops responde com redirect 307 após um formulário POST,
+// portanto o navegador preserva o método no callback. Aceitar os dois métodos é
+// seguro porque code/state continuam obrigatórios, de uso único e validados por PKCE.
+app.post('/v1/integrations/mileto-ops/callback', asyncHandler(opsIntegration.authorizationCallback));
 
 // ── Autenticação ────────────────────────────────────────────────────────────
 app.post('/auth/login', asyncHandler(login));
