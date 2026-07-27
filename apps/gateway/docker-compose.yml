@@ -1,0 +1,23 @@
+# Postgres local do gateway. `npm run db:up` sobe, `npm run db:down` derruba.
+# Os dados ficam num volume nomeado — sobrevivem a reinícios do container.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mileto-gateway-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mileto
+      POSTGRES_PASSWORD: mileto_dev
+      POSTGRES_DB: mileto_gateway
+    ports:
+      - '5433:5432' # 5433 no host para não colidir com um Postgres já instalado
+    volumes:
+      - mileto_gateway_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U mileto -d mileto_gateway']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mileto_gateway_data:

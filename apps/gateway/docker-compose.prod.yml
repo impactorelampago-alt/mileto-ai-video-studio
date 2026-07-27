@@ -1,0 +1,57 @@
+# Stack de produção do gateway na VPS.
+# Sobe Postgres + gateway juntos, numa rede isolada.
+#
+# O gateway escuta APENAS em 127.0.0.1:4000 — só o OpenResty local alcança.
+# Nada é exposto direto à internet; o acesso público vem pelo proxy (api.miletoaivideo.com.br).
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mileto-gateway-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mileto
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: mileto_gateway
+    volumes:
+      - mileto_gateway_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U mileto -d mileto_gateway']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    build: .
+    container_name: mileto-gateway
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://mileto:${DB_PASSWORD}@db:5432/mileto_gateway
+      PORT: '4000'
+      TOKEN_SECRET: ${TOKEN_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      SEED_OWNER_EMAIL: ${SEED_OWNER_EMAIL}
+      SEED_OWNER_PASSWORD: ${SEED_OWNER_PASSWORD}
+      SEED_OWNER_ORG: ${SEED_OWNER_ORG}
+      SEED_OWNER_PLAN: ${SEED_OWNER_PLAN}
+      RESELL_MULTIPLIER: ${RESELL_MULTIPLIER}
+      OPS_BASE_URL: ${OPS_BASE_URL:?OPS_BASE_URL obrigatorio}
+      OPS_CLIENT_ID: ${OPS_CLIENT_ID:?OPS_CLIENT_ID obrigatorio}
+      OPS_CLIENT_SECRET: ${OPS_CLIENT_SECRET:?OPS_CLIENT_SECRET obrigatorio}
+      OPS_REDIRECT_URI: ${OPS_REDIRECT_URI:?OPS_REDIRECT_URI obrigatorio}
+      OPS_TOKEN_ENCRYPTION_KEY: ${OPS_TOKEN_ENCRYPTION_KEY:?OPS_TOKEN_ENCRYPTION_KEY obrigatorio}
+      OPS_SCOPES: ${OPS_SCOPES:?OPS_SCOPES obrigatorio}
+    ports:
+      - '127.0.0.1:4000:4000' # só local — o OpenResty faz o proxy público
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:4000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+volumes:
+  mileto_gateway_data:
