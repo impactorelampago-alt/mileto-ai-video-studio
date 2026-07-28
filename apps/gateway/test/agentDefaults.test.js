@@ -6,6 +6,7 @@ import {
     AGENT_TIERS,
     DEFAULT_AGENT_CONFIGS,
     LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1,
+    NARRATION_SALES_SYSTEM_PROMPT_V3,
     PROMPT_SALES_SYSTEM_PROMPT_V2,
     agentRequiresStrictJsonOutput,
     upgradeBundledAgentSystemPrompt,
@@ -54,23 +55,27 @@ test('cada agente oferece Mileto Lite, Mileto e Mileto Ultra', () => {
     assert.deepEqual(AGENT_TIERS.map((tier) => tier.label), ['Mileto Lite', 'Mileto', 'Mileto Ultra']);
 });
 
-test('Prompt e Vendas v2 cobre retenção, conversão, testes e primeiros cinco segundos', () => {
+test('Narração e Vendas v3 conduz briefing, confirmação e narração final', () => {
     const prompt = DEFAULT_AGENT_CONFIGS.prompt_sales.systemPrompt;
-    assert.equal(prompt, PROMPT_SALES_SYSTEM_PROMPT_V2);
-    assert.match(prompt, /versao="2"/);
-    assert.match(prompt, /<PRIMEIROS_5_SEGUNDOS>/);
-    assert.match(prompt, /<GATILHOS_MENTAIS_ETICOS>/);
-    assert.match(prompt, /awarenessStage/);
-    assert.match(prompt, /hookVariants/);
-    assert.match(prompt, /abTestVariants/);
-    assert.match(prompt, /successMetrics/);
-    assert.match(prompt, /Não declare que um conteúdo vai viralizar ou converter/);
+    assert.equal(prompt, NARRATION_SALES_SYSTEM_PROMPT_V3);
+    assert.match(prompt, /versao="3"/);
+    assert.match(prompt, /ETAPA 1 — DIAGNÓSTICO/);
+    assert.match(prompt, /cidade, bairro ou região é informação prioritária/);
+    assert.match(prompt, /Posso gerar a narração agora\?/);
+    assert.match(prompt, /Somente depois de uma confirmação explícita/);
+    assert.match(prompt, /===ROTEIRO===/);
+    assert.match(prompt, /Não entregue nessa etapa narração, roteiro completo, hooks, storyboard/);
+    assert.match(prompt, /Não use tabelas, JSON, blocos gigantes/);
 });
 
-test('migra somente o prompt v1 original e preserva personalizações do Super Admin', () => {
+test('migra somente prompts distribuídos pelo produto e preserva personalizações do Super Admin', () => {
     assert.equal(
         upgradeBundledAgentSystemPrompt('prompt_sales', LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1),
-        PROMPT_SALES_SYSTEM_PROMPT_V2
+        NARRATION_SALES_SYSTEM_PROMPT_V3
+    );
+    assert.equal(
+        upgradeBundledAgentSystemPrompt('prompt_sales', PROMPT_SALES_SYSTEM_PROMPT_V2),
+        NARRATION_SALES_SYSTEM_PROMPT_V3
     );
     const customPrompt = `${LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1}\n<!-- personalizado -->`;
     assert.equal(upgradeBundledAgentSystemPrompt('prompt_sales', customPrompt), customPrompt);

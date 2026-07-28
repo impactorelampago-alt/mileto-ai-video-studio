@@ -137,9 +137,9 @@ const CHAT_AGENTS: Array<{
     },
     {
         id: 'prompt_sales',
-        label: 'Prompt e Vendas',
-        shortLabel: 'Prompt e Vendas',
-        description: 'Oferta, gatilhos éticos, roteiro e prompts de produção.',
+        label: 'Narração e Vendas',
+        shortLabel: 'Narração e Vendas',
+        description: 'Briefing guiado e narração comercial pronta para locução.',
         accent: 'amber',
     },
     {
@@ -167,9 +167,79 @@ const AgentGlyph = ({ id, className = 'w-4 h-4' }: { id: ChatAgentId; className?
     return <Sparkles className={className} />;
 };
 
+const renderInlineChatText = (text: string, keyPrefix: string): React.ReactNode[] =>
+    text
+        .split(/(\*\*[^*]+\*\*|`[^`]+`)/g)
+        .filter(Boolean)
+        .map((part, index) => {
+            if (part.startsWith('**') && part.endsWith('**')) {
+                return <strong key={`${keyPrefix}-strong-${index}`} className="font-semibold text-foreground">{part.slice(2, -2)}</strong>;
+            }
+            if (part.startsWith('`') && part.endsWith('`')) {
+                return <code key={`${keyPrefix}-code-${index}`} className="rounded bg-black/10 px-1 py-0.5 text-[.92em] text-brand-accent dark:bg-white/10">{part.slice(1, -1)}</code>;
+            }
+            return <React.Fragment key={`${keyPrefix}-text-${index}`}>{part}</React.Fragment>;
+        });
+
+const RichChatText = ({ content }: { content: string }) => {
+    const lines = content.split('\n');
+
+    return (
+        <div className="space-y-2 text-[13px] leading-6 text-foreground/90">
+            {lines.map((rawLine, index) => {
+                const line = rawLine.trim();
+                if (!line) return <div key={`space-${index}`} className="h-1" aria-hidden="true" />;
+
+                const heading = line.match(/^(#{1,3})\s+(.+)$/);
+                if (heading) {
+                    return (
+                        <h4 key={`heading-${index}`} className="pt-1 text-sm font-bold tracking-tight text-foreground">
+                            {renderInlineChatText(heading[2], `heading-${index}`)}
+                        </h4>
+                    );
+                }
+
+                const ordered = line.match(/^(\d+)[.)]\s+(.+)$/);
+                if (ordered) {
+                    return (
+                        <div key={`ordered-${index}`} className="flex items-start gap-2.5 rounded-xl border border-brand-accent/10 bg-brand-accent/[.035] px-3 py-2">
+                            <span className="mt-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-brand-accent/15 text-[10px] font-bold text-brand-accent">{ordered[1]}</span>
+                            <span className="min-w-0">{renderInlineChatText(ordered[2], `ordered-${index}`)}</span>
+                        </div>
+                    );
+                }
+
+                const bullet = line.match(/^[-•]\s+(.+)$/);
+                if (bullet) {
+                    return (
+                        <div key={`bullet-${index}`} className="flex items-start gap-2.5 pl-1">
+                            <span className="mt-[9px] h-1.5 w-1.5 shrink-0 rounded-full bg-brand-accent" />
+                            <span className="min-w-0">{renderInlineChatText(bullet[1], `bullet-${index}`)}</span>
+                        </div>
+                    );
+                }
+
+                if (line.startsWith('> ')) {
+                    return (
+                        <div key={`quote-${index}`} className="rounded-r-xl border-l-2 border-brand-accent bg-brand-accent/[.045] px-3 py-2 text-foreground">
+                            {renderInlineChatText(line.slice(2), `quote-${index}`)}
+                        </div>
+                    );
+                }
+
+                if (/^[\p{L}][\p{L}\s]{1,36}:$/u.test(line)) {
+                    return <div key={`label-${index}`} className="pt-1 text-[10px] font-bold uppercase tracking-[.16em] text-brand-accent">{line.slice(0, -1)}</div>;
+                }
+
+                return <p key={`paragraph-${index}`}>{renderInlineChatText(line, `paragraph-${index}`)}</p>;
+            })}
+        </div>
+    );
+};
+
 const StructuredAgentResponse = ({ content }: { content: string }) => {
     const result = parseStructuredResult(content);
-    if (!result) return <div className="whitespace-pre-wrap">{stripMarkers(content)}</div>;
+    if (!result) return <RichChatText content={stripMarkers(content)} />;
 
     const title = typeof result.title === 'string' ? result.title : 'Plano de produção';
     const mainPrompt = [result.prompt, result.masterPrompt, result.objective]
