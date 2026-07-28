@@ -8,6 +8,7 @@ import {
     getAgentHistory as listAgentHistory, rollbackAgentConfig,
 } from './settings.js';
 import { proxyChat } from './providers.js';
+import { agentRequiresStrictJsonOutput } from './agentDefaults.js';
 
 /** Assentos por plano. Define quantos usuários a organização pode ter. */
 export const PLAN_SEATS = { solo: 1, business: 5, enterprise: 25 };
@@ -312,7 +313,7 @@ export const testAgent = async (req, res) => {
             provider: tier.provider,
             model: tier.model,
             reasoning: tier.reasoning,
-            json: id !== 'director',
+            json: agentRequiresStrictJsonOutput(id),
             maxOutputTokens: tier.maxOutputTokens,
         });
         res.json({ ok: true, text: result.text, demo: result.demo, tier: tierId });

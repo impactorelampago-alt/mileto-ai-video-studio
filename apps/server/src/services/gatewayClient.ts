@@ -13,6 +13,10 @@ import { Request } from 'express';
  */
 
 const GATEWAY_URL = (process.env.GATEWAY_BASE_URL || 'https://api.miletoaivideo.com.br').replace(/\/+$/, '');
+// O Prompt e Vendas pode usar modelos com raciocínio profundo. O gateway encerra
+// o provedor em 180 s; damos uma margem para ele responder e liberar a reserva de
+// créditos antes de o servidor local abandonar a conexão.
+const CHAT_GATEWAY_TIMEOUT_MS = 195000;
 
 export class GatewayHttpError extends Error {
     status: number;
@@ -56,13 +60,26 @@ const fetchWithTimeout = async (url: string, init: Record<string, unknown>, ms: 
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const parseBody = async (res: { text: () => Promise<string> }): Promise<any> => {
+const gatewayStatusMessage = (status?: number): string => {
+    if (status === 504) return 'O agente demorou além do limite do servidor. Sua mensagem foi preservada; tente novamente.';
+    if (status === 502 || status === 503) return 'O serviço de IA está temporariamente indisponível. Tente novamente em instantes.';
+    return `O servidor Mileto respondeu com um erro${status ? ` (${status})` : ''}.`;
+};
+
+const parseBody = async (res: {
+    text: () => Promise<string>;
+    status?: number;
+    headers?: { get(name: string): string | null };
+}): Promise<any> => {
     const text = await res.text();
     if (!text) return {};
     try {
         return JSON.parse(text);
     } catch {
-        return { message: text };
+        const contentType = String(res.headers?.get('content-type') || '').toLowerCase();
+        const looksLikeHtml = contentType.includes('text/html') || /<\s*!doctype\s+html|<\s*html[\s>]/i.test(text);
+        if (looksLikeHtml) return { message: gatewayStatusMessage(res.status), code: 'GATEWAY_HTML_ERROR' };
+        return { message: text.length <= 500 ? text : gatewayStatusMessage(res.status) };
     }
 };
 
@@ -134,10 +151,17 @@ export const gatewayChat = async (token: string, payload: GatewayChatPayload): P
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
             body: JSON.stringify(payload),
         },
-        60000
+        CHAT_GATEWAY_TIMEOUT_MS
     );
     const data = await parseBody(res);
-    if (!res.ok) throw new GatewayHttpError(res.status, data.message || `Gateway ${res.status}`);
+    if (!res.ok || data?.ok === false) {
+        const status = !res.ok ? res.status : Number(data.status) || 502;
+        throw new GatewayHttpError(
+            status,
+            data.message || gatewayStatusMessage(status),
+            typeof data.code === 'string' ? data.code : null
+        );
+    }
     return data as GatewayChatResult;
 };
 

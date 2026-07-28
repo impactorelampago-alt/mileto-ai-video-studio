@@ -1,7 +1,13 @@
 import { query } from './db.js';
 import { encryptSecret, decryptSecret } from './crypto.js';
 import { config } from './config.js';
-import { AGENT_DEFINITIONS, AGENT_REASONING_LEVELS, AGENT_TIERS, DEFAULT_AGENT_CONFIGS } from './agentDefaults.js';
+import {
+    AGENT_DEFINITIONS,
+    AGENT_REASONING_LEVELS,
+    AGENT_TIERS,
+    DEFAULT_AGENT_CONFIGS,
+    upgradeBundledAgentSystemPrompt,
+} from './agentDefaults.js';
 
 export const PROVIDERS = [
     { id: 'fishAudio', label: 'Fish Audio', help: 'Narração (TTS). Cobra por byte UTF-8.' },
@@ -286,7 +292,10 @@ export const getAgentConfig = async (id) => {
     const defaults = clone(DEFAULT_AGENT_CONFIGS[id]);
     // Preserva o prompt do Chat Mileto existente na primeira adoção do Diretor.
     if (!stored && id === 'director' && map.chat_prompt) defaults.systemPrompt = map.chat_prompt;
-    const normalized = normalizeAgentConfig(id, stored || defaults, defaults);
+    const effectiveStored = stored
+        ? { ...stored, systemPrompt: upgradeBundledAgentSystemPrompt(id, stored.systemPrompt) }
+        : null;
+    const normalized = normalizeAgentConfig(id, effectiveStored || defaults, defaults);
     return {
         ...normalized,
         version: Number(stored?.version) || 1,

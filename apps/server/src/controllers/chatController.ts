@@ -193,7 +193,14 @@ export const sendMessage = async (req: Request, res: Response) => {
         // conversa (o tier Mileto e o nível de raciocínio o gateway resolve).
         const history = chatService
             .getMessages(sessionId)
-            .filter((m) => m.role === 'user' || m.role === 'assistant')
+            .filter((m) => {
+                if (m.role === 'user') return true;
+                if (m.role !== 'assistant') return false;
+                // Falhas transitórias ficam visíveis no histórico local, mas não
+                // são contexto de negócio e não devem contaminar a próxima tentativa.
+                const content = m.content.trim();
+                return !content.startsWith('❌') && !content.startsWith('⚠️');
+            })
             .map((m) => ({ role: m.role, content: m.content }));
         const historyForGateway = history.map((message, index) =>
             agentId === 'director' && index === history.length - 1 && message.role === 'user'
@@ -220,6 +227,10 @@ export const sendMessage = async (req: Request, res: Response) => {
                         ? '⚠️ Seus créditos Mileto acabaram. Recarregue para continuar usando o assistente.'
                         : apiErr.status === 401
                           ? '⚠️ Sessão expirada. Entre novamente para conversar com o assistente.'
+                          : apiErr.status === 504
+                            ? '⚠️ O agente precisou de mais tempo do que o servidor permitiu. Sua mensagem foi preservada e nenhum erro técnico precisa ser copiado: tente novamente.'
+                            : apiErr.status === 502 || apiErr.status === 503
+                              ? '⚠️ O serviço de IA ficou temporariamente indisponível. Sua mensagem foi preservada; tente novamente em instantes.'
                           : `❌ Erro do servidor Mileto: ${apiErr.message}`;
             } else {
                 assistantContent = `❌ Erro: ${apiErr instanceof Error ? apiErr.message : 'desconhecido'}`;

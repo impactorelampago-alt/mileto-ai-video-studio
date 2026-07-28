@@ -8,6 +8,7 @@ import { login, logout, requireAuth, requireSuperAdmin, requireOwner } from './a
 import { proxyTts, proxyChat, proxyStt, hasKey } from './providers.js';
 import { estimateUnits, priceOf, reserve, settle, release, getBalance } from './meter.js';
 import { resolveTier, getSystemPrompt, resolveAgent } from './settings.js';
+import { agentRequiresStrictJsonOutput } from './agentDefaults.js';
 import { CHAT_SCRIPT_OUTPUT_CONTRACT } from './defaultPrompt.js';
 import * as admin from './admin.js';
 import * as account from './account.js';
@@ -24,6 +25,42 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 
 
 /** Envolve handler/middleware async para que rejeições virem o error-middleware (Express 4 não faz isso). */
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+/**
+ * Mantém proxies reversos informados enquanto um modelo de raciocínio trabalha.
+ * Espaços antes do JSON são válidos e impedem que o OpenResty interprete o
+ * silêncio do provedor como uma conexão travada.
+ */
+const beginJsonHeartbeat = (res, intervalMs = 15000) => {
+    let finished = false;
+    res.status(200);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    res.write('\n');
+
+    const timer = setInterval(() => {
+        if (!finished && !res.destroyed && !res.writableEnded) res.write(' ');
+    }, intervalMs);
+    timer.unref?.();
+
+    const stop = () => {
+        if (finished) return;
+        finished = true;
+        clearInterval(timer);
+    };
+
+    return {
+        stop,
+        finish(payload) {
+            stop();
+            if (res.destroyed || res.writableEnded) return false;
+            res.end(JSON.stringify(payload));
+            return true;
+        },
+    };
+};
 
 /** Traduz erros de cobrança (reserve) em status HTTP; repassa o resto ao error-middleware. */
 const billingError = (res, e) => {
@@ -201,6 +238,15 @@ app.post(
             return billingError(res, e);
         }
 
+        const upstreamController = new AbortController();
+        const heartbeat = beginJsonHeartbeat(res);
+        let providerFinished = false;
+        const closeUpstream = () => {
+            heartbeat.stop();
+            if (!providerFinished) upstreamController.abort();
+        };
+        res.once('close', closeUpstream);
+
         let result;
         try {
             result = await proxyChat({
@@ -208,13 +254,30 @@ app.post(
                 model: realModel,
                 provider,
                 reasoning: realReasoning,
-                json: selectedAgent ? selectedAgent.id !== 'director' : !!json,
+                // Imagem e vídeo possuem contratos estritamente estruturados.
+                // Prompt e Vendas conversa durante o briefing e só emite JSON
+                // quando o próprio prompt identificar uma entrega de produção.
+                json: selectedAgent ? agentRequiresStrictJsonOutput(selectedAgent.id) : !!json,
                 maxOutputTokens,
+                signal: upstreamController.signal,
             });
+            providerFinished = true;
         } catch (e) {
+            providerFinished = true;
             await release({ orgId: req.user.orgId, reserved, demo }).catch(() => {});
-            console.error('[gateway] /v1/chat provedor', e.message);
-            return res.status(502).json({ ok: false, message: `Falha no provedor de IA: ${e.message}` });
+            if (e?.code !== 'CHAT_CLIENT_DISCONNECTED') {
+                console.error('[gateway] /v1/chat provedor', e.message);
+            }
+            heartbeat.finish({
+                ok: false,
+                status: e?.code === 'CHAT_PROVIDER_TIMEOUT' ? 504 : 502,
+                code: e?.code || 'CHAT_PROVIDER_ERROR',
+                message:
+                    e?.code === 'CHAT_PROVIDER_TIMEOUT'
+                        ? 'O agente levou mais tempo que o limite para concluir. Tente novamente.'
+                        : 'Não foi possível concluir a resposta do agente. Tente novamente.',
+            });
+            return;
         }
 
         // Unidades REAIS: tokens do fornecedor (inclui reasoning oculto); senão estima por texto.
@@ -223,34 +286,47 @@ app.post(
                 ? result.usageTokens
                 : estimateUnits(provider, 'chat', promptChars + (result.text || ''));
 
-        const meta = await settle({
-            orgId: req.user.orgId,
-            userId: req.user.id,
-            provider,
-            model: realModel,
-            kind: 'chat',
-            units: realUnits,
-            demo: result.demo,
-            reserved,
-        });
+        try {
+            const meta = await settle({
+                orgId: req.user.orgId,
+                userId: req.user.id,
+                provider,
+                model: realModel,
+                kind: 'chat',
+                units: realUnits,
+                demo: result.demo,
+                reserved,
+            });
 
-        res.json({
-            ok: true,
-            text: result.text,
-            demo: result.demo,
-            charged: meta.charged,
-            balance: meta.balanceAfter,
-            ...(selectedAgent
-                ? {
-                    agent: {
-                        id: selectedAgent.id,
-                        label: selectedAgent.label,
-                        version: selectedAgent.version,
-                        tier: selectedAgent.tier,
-                    },
-                }
-                : {}),
-        });
+            heartbeat.finish({
+                ok: true,
+                text: result.text,
+                demo: result.demo,
+                charged: meta.charged,
+                balance: meta.balanceAfter,
+                ...(selectedAgent
+                    ? {
+                        agent: {
+                            id: selectedAgent.id,
+                            label: selectedAgent.label,
+                            version: selectedAgent.version,
+                            tier: selectedAgent.tier,
+                        },
+                    }
+                    : {}),
+            });
+        } catch (error) {
+            console.error('[gateway] /v1/chat conciliação', error?.message || error);
+            heartbeat.finish({
+                ok: false,
+                status: 500,
+                code: 'CHAT_SETTLEMENT_ERROR',
+                message: 'A resposta foi processada, mas o servidor não conseguiu concluir a operação com segurança.',
+            });
+        } finally {
+            res.off('close', closeUpstream);
+            heartbeat.stop();
+        }
     })
 );
 

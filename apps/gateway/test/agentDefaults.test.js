@@ -5,6 +5,10 @@ import {
     AGENT_REASONING_LEVELS,
     AGENT_TIERS,
     DEFAULT_AGENT_CONFIGS,
+    LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1,
+    PROMPT_SALES_SYSTEM_PROMPT_V2,
+    agentRequiresStrictJsonOutput,
+    upgradeBundledAgentSystemPrompt,
 } from '../src/agentDefaults.js';
 
 test('declara os quatro agentes com identidades e funções únicas', () => {
@@ -48,4 +52,37 @@ test('níveis de raciocínio expõem rápido, equilibrado e profundo', () => {
 test('cada agente oferece Mileto Lite, Mileto e Mileto Ultra', () => {
     assert.deepEqual(AGENT_TIERS.map((tier) => tier.id), ['lite', 'mileto', 'ultra']);
     assert.deepEqual(AGENT_TIERS.map((tier) => tier.label), ['Mileto Lite', 'Mileto', 'Mileto Ultra']);
+});
+
+test('Prompt e Vendas v2 cobre retenção, conversão, testes e primeiros cinco segundos', () => {
+    const prompt = DEFAULT_AGENT_CONFIGS.prompt_sales.systemPrompt;
+    assert.equal(prompt, PROMPT_SALES_SYSTEM_PROMPT_V2);
+    assert.match(prompt, /versao="2"/);
+    assert.match(prompt, /<PRIMEIROS_5_SEGUNDOS>/);
+    assert.match(prompt, /<GATILHOS_MENTAIS_ETICOS>/);
+    assert.match(prompt, /awarenessStage/);
+    assert.match(prompt, /hookVariants/);
+    assert.match(prompt, /abTestVariants/);
+    assert.match(prompt, /successMetrics/);
+    assert.match(prompt, /Não declare que um conteúdo vai viralizar ou converter/);
+});
+
+test('migra somente o prompt v1 original e preserva personalizações do Super Admin', () => {
+    assert.equal(
+        upgradeBundledAgentSystemPrompt('prompt_sales', LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1),
+        PROMPT_SALES_SYSTEM_PROMPT_V2
+    );
+    const customPrompt = `${LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1}\n<!-- personalizado -->`;
+    assert.equal(upgradeBundledAgentSystemPrompt('prompt_sales', customPrompt), customPrompt);
+    assert.equal(
+        upgradeBundledAgentSystemPrompt('image_director', LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1),
+        LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1
+    );
+});
+
+test('somente os diretores de mídia forçam JSON durante toda a conversa', () => {
+    assert.equal(agentRequiresStrictJsonOutput('director'), false);
+    assert.equal(agentRequiresStrictJsonOutput('prompt_sales'), false);
+    assert.equal(agentRequiresStrictJsonOutput('image_director'), true);
+    assert.equal(agentRequiresStrictJsonOutput('video_director'), true);
 });

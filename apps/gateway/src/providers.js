@@ -111,12 +111,37 @@ const REASONING_MAP = {
     profundo: 'high', high: 'high',
 };
 
+// Modelos de raciocínio podem levar mais de um minuto, mas uma conexão muda não
+// pode manter créditos reservados indefinidamente. O servidor local espera um
+// pouco mais que este limite para receber a resposta de erro e encerrar o fluxo.
+const CHAT_PROVIDER_TIMEOUT_MS = 180000;
+
+const fetchChatProvider = async (url, init, externalSignal) => {
+    const timeoutSignal = AbortSignal.timeout(CHAT_PROVIDER_TIMEOUT_MS);
+    const signal = externalSignal ? AbortSignal.any([externalSignal, timeoutSignal]) : timeoutSignal;
+    try {
+        return await fetch(url, { ...init, signal });
+    } catch (error) {
+        if (externalSignal?.aborted) {
+            const cancelled = new Error('A conexão com o cliente foi encerrada.');
+            cancelled.code = 'CHAT_CLIENT_DISCONNECTED';
+            throw cancelled;
+        }
+        if (error?.name === 'AbortError' || error?.name === 'TimeoutError') {
+            const timeout = new Error('O provedor de IA demorou demais para responder. Tente novamente.');
+            timeout.code = 'CHAT_PROVIDER_TIMEOUT';
+            throw timeout;
+        }
+        throw error;
+    }
+};
+
 /**
  * Proxy de chat/LLM. Recebe provider+model JÁ RESOLVIDOS (o tier virou modelo real
  * no server). `messages` já pode conter a mensagem de sistema (persona do painel).
  * Modo demo devolve texto fixo quando não há chave.
  */
-export const proxyChat = async ({ messages, model, provider, reasoning, json, maxOutputTokens = 4096 }) => {
+export const proxyChat = async ({ messages, model, provider, reasoning, json, maxOutputTokens = 4096, signal }) => {
     const outputLimit = Math.max(512, Math.min(32768, Math.round(Number(maxOutputTokens) || 4096)));
     const apiKey = await getKey(provider);
     if (!apiKey) {
@@ -147,13 +172,14 @@ export const proxyChat = async ({ messages, model, provider, reasoning, json, ma
             },
         };
         // Chave no HEADER (x-goog-api-key), nunca na query string — a URL vaza em log/proxy/CDN.
-        const res = await fetch(
+        const res = await fetchChatProvider(
             `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
                 body: JSON.stringify(geminiBody),
-            }
+            },
+            signal
         );
         if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
         const data = await res.json();
@@ -174,11 +200,15 @@ export const proxyChat = async ({ messages, model, provider, reasoning, json, ma
         body.temperature = 0.7;
         body.max_tokens = outputLimit;
     }
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-    });
+    const res = await fetchChatProvider(
+        'https://api.openai.com/v1/chat/completions',
+        {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        },
+        signal
+    );
     if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
     const data = await res.json();
     // Tokens REAIS (inclui reasoning oculto dos modelos o*/gpt-5) — cobrar por len/4 subcobra.
