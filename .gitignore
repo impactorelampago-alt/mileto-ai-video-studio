@@ -10,6 +10,8 @@ Thumbs.db
 # Project specific ignores
 apps/client/dist/
 apps/client/release/
+apps/client/release_*/
+apps/client/*.tsbuildinfo
 apps/server/dist/
 apps/server/uploads/
 apps/server/videos/
@@ -21,7 +23,16 @@ apps/server/data/
 apps/server/public/mixes/
 apps/server/public/transitions/
 apps/server/src/public/
+apps/server/files/
+apps/server/test_upload.js
+apps/frame_cache/
 apps/client/stats.json
+.playwright-mcp/
+.zcode/
+deleted_files.txt
+git_diff_app.txt
+git_log_utf8.txt
+git_status.txt
 *.log
 *.exe
 *.msi

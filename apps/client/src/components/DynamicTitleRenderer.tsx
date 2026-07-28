@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { cn } from '../lib/utils';
+import { API_BASE_URL } from '../lib/apiBase';
 import { TitleHook } from '../types';
 
 interface Props {
@@ -7,11 +8,33 @@ interface Props {
     className?: string;
     timeElapsed?: number;
     isHybridMode?: boolean;
+    previewMode?: boolean;
 }
 
-import { Search, MapPin, Navigation, Globe, ShoppingBag, ArrowRight } from 'lucide-react';
+import {
+    Search,
+    MapPin,
+    Navigation,
+    Globe,
+    ShoppingBag,
+    ArrowRight,
+    BadgePercent,
+    CheckCircle2,
+    Clock3,
+    Sparkles,
+    Star,
+    Zap,
+    Crown,
+    ArrowUpRight,
+} from 'lucide-react';
 
-export const DynamicTitleRenderer: React.FC<Props> = ({ title, className, timeElapsed = 0, isHybridMode = false }) => {
+export const DynamicTitleRenderer: React.FC<Props> = ({
+    title,
+    className,
+    timeElapsed = 0,
+    isHybridMode = false,
+    previewMode = false,
+}) => {
     const text = title.text || '';
     const styleId = title.styleId || 'default';
     const primary = title.primaryColor || '#FF0000'; // Default red
@@ -21,12 +44,55 @@ export const DynamicTitleRenderer: React.FC<Props> = ({ title, className, timeEl
     const firstSpaceIdx = text.indexOf(' ');
     const firstWord = firstSpaceIdx !== -1 ? text.substring(0, firstSpaceIdx) : text;
     const restOfText = firstSpaceIdx !== -1 ? text.substring(firstSpaceIdx) : '';
+    const words = text.trim().split(/\s+/).filter(Boolean);
+    const midpoint = Math.max(1, Math.ceil(words.length / 2));
+    const firstLine = words.slice(0, midpoint).join(' ');
+    const secondLine = words.slice(midpoint).join(' ');
+
+    const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+    const easeOutCubic = (value: number) => 1 - Math.pow(1 - clamp01(value), 3);
+    const easeOutBack = (value: number) => {
+        const p = clamp01(value);
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+        return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2);
+    };
+    const enterProgress = (delay = 0, duration = 0.45, back = false) => {
+        if (previewMode) return 1;
+        const raw = (timeElapsed - delay) / duration;
+        return back ? easeOutBack(raw) : easeOutCubic(raw);
+    };
+    const exitOpacity = previewMode
+        ? 1
+        : clamp01((Math.max(0, title.durationSec - timeElapsed)) / 0.3);
+    const motionStyle = (
+        kind: 'rise' | 'drop' | 'left' | 'right' | 'pop',
+        delay = 0,
+        duration = 0.45
+    ): React.CSSProperties => {
+        const progress = enterProgress(delay, duration, kind === 'pop');
+        const opacity = clamp01(progress) * exitOpacity;
+        if (kind === 'rise') return { opacity, transform: `translateY(${(1 - progress) * 28}px)` };
+        if (kind === 'drop') return { opacity, transform: `translateY(${(progress - 1) * 28}px)` };
+        if (kind === 'left') return { opacity, transform: `translateX(${(progress - 1) * 42}px)` };
+        if (kind === 'right') return { opacity, transform: `translateX(${(1 - progress) * 42}px)` };
+        return { opacity, transform: `scale(${0.58 + progress * 0.42})` };
+    };
+    const lineProgress = (delay = 0, duration = 0.5) => enterProgress(delay, duration);
+    const pulse = previewMode ? 0.5 : (Math.sin(Math.max(0, timeElapsed) * 5.5) + 1) / 2;
+    const fontStack = (defaultFont: string) => {
+        const family = title.fontFamily || defaultFont;
+        const primaryFamily = family.includes(',') ? family : `"${family}"`;
+        return /playfair|serif/i.test(family)
+            ? `${primaryFamily}, Georgia, "Times New Roman", serif`
+            : `${primaryFamily}, "Arial Black", Arial, Helvetica, sans-serif`;
+    };
 
     // Audio Preview Logic for CTA
     useEffect(() => {
         if (!title.hasSound || !styleId.startsWith('cta-')) return;
 
-        const baseUrl = import.meta.env.VITE_API_BASE_URL || '';
+        const baseUrl = API_BASE_URL;
 
         const playSfx = () => {
             const audio = new Audio(`${baseUrl}/transitions/hit.mp3`);
@@ -453,6 +519,332 @@ export const DynamicTitleRenderer: React.FC<Props> = ({ title, className, timeEl
                             {text}
                         </span>
                     </div>
+                </div>
+            );
+
+        case 'premium-kinetic-punch':
+            return (
+                <div className={cn('relative max-w-[520px] text-center', className)} style={motionStyle('pop', 0, 0.5)}>
+                    <div className="mb-1 inline-flex items-center gap-2 rounded-full bg-black/75 px-3 py-1 text-[10px] font-black uppercase tracking-[0.28em] text-white/75">
+                        <Zap className="h-3 w-3" style={{ color: primary }} /> Atenção
+                    </div>
+                    <div className="relative px-3 py-1">
+                        <h2
+                            className="relative text-4xl font-black uppercase leading-[.92] tracking-[-0.055em] md:text-6xl"
+                            style={{
+                                color: secondary,
+                                fontFamily: fontStack('Archivo Black'),
+                                textShadow: `6px 6px 0 ${primary}, 0 12px 30px rgba(0,0,0,.55)`,
+                            }}
+                        >
+                            {text}
+                        </h2>
+                    </div>
+                    <div className="mx-auto mt-3 h-1.5 rounded-full" style={{ backgroundColor: primary, width: `${lineProgress(0.18) * 78}%` }} />
+                </div>
+            );
+
+        case 'premium-sticker-pop':
+            return (
+                <div className={cn('relative', className)} style={motionStyle('pop', 0.02, 0.5)}>
+                    <div className="absolute -inset-3 rotate-2 rounded-[28px] bg-black/90" />
+                    <div
+                        className="relative -rotate-2 rounded-[24px] border-[5px] border-white px-7 py-4 shadow-[0_14px_35px_rgba(0,0,0,.45)]"
+                        style={{ backgroundColor: primary }}
+                    >
+                        <Star className="absolute -right-4 -top-4 h-9 w-9 rotate-12 fill-white text-white drop-shadow-lg" />
+                        <h2
+                            className="max-w-[440px] text-center text-3xl font-black uppercase leading-none tracking-[-0.04em] md:text-5xl"
+                            style={{ color: secondary, fontFamily: fontStack('Archivo Black'), textShadow: '0 3px 0 rgba(0,0,0,.28)' }}
+                        >
+                            {text}
+                        </h2>
+                    </div>
+                </div>
+            );
+
+        case 'premium-marker-swipe':
+            return (
+                <div className={cn('relative max-w-[500px] px-4 py-3 text-center', className)} style={motionStyle('rise', 0, 0.45)}>
+                    <div
+                        className="absolute bottom-2 left-1/2 h-[52%] -translate-x-1/2 -rotate-1 -skew-x-6 rounded-sm"
+                        style={{ backgroundColor: primary, width: `${lineProgress(0.08, 0.55) * 100}%`, opacity: 0.92 }}
+                    />
+                    <h2
+                        className="relative text-3xl font-black uppercase leading-[.96] tracking-[-0.035em] md:text-5xl"
+                        style={{ color: secondary, fontFamily: fontStack('League Spartan'), textShadow: '0 3px 14px rgba(0,0,0,.85)' }}
+                    >
+                        {text}
+                    </h2>
+                </div>
+            );
+
+        case 'premium-split-block':
+            return (
+                <div className={cn('flex max-w-[500px] flex-col items-start gap-1.5', className)}>
+                    <div className="max-w-full -skew-x-6 bg-black px-5 py-2 shadow-xl" style={motionStyle('left', 0, 0.4)}>
+                        <span
+                            className="block skew-x-6 text-3xl font-black uppercase leading-none tracking-tight md:text-5xl"
+                            style={{ color: secondary, fontFamily: fontStack('Anton') }}
+                        >
+                            {firstLine || text}
+                        </span>
+                    </div>
+                    {secondLine && (
+                        <div className="max-w-full -skew-x-6 px-5 py-2 shadow-xl" style={{ backgroundColor: primary, ...motionStyle('right', 0.13, 0.42) }}>
+                            <span
+                                className="block skew-x-6 text-2xl font-black uppercase leading-none tracking-tight md:text-4xl"
+                                style={{ color: '#07110D', fontFamily: fontStack('Anton') }}
+                            >
+                                {secondLine}
+                            </span>
+                        </div>
+                    )}
+                </div>
+            );
+
+        case 'premium-outline-echo':
+            return (
+                <div className={cn('relative min-w-[330px] py-8 text-center', className)} style={motionStyle('pop', 0, 0.48)}>
+                    {[3, 2, 1].map((level) => (
+                        <span
+                            key={level}
+                            aria-hidden="true"
+                            className="absolute inset-x-0 text-4xl font-black uppercase leading-none tracking-[-0.05em] md:text-6xl"
+                            style={{
+                                top: `${(3 - level) * 9}px`,
+                                color: 'transparent',
+                                fontFamily: fontStack('Archivo Black'),
+                                WebkitTextStroke: `2px ${primary}`,
+                                opacity: 0.13 + level * 0.13,
+                            }}
+                        >
+                            {text}
+                        </span>
+                    ))}
+                    <h2
+                        className="relative text-4xl font-black uppercase leading-none tracking-[-0.05em] md:text-6xl"
+                        style={{ color: secondary, fontFamily: fontStack('Archivo Black'), textShadow: '0 8px 25px rgba(0,0,0,.7)' }}
+                    >
+                        {text}
+                    </h2>
+                </div>
+            );
+
+        case 'premium-creator-caption':
+            return (
+                <div className={cn('relative max-w-[500px] overflow-hidden rounded-2xl border border-white/15 bg-black/85 p-1 shadow-2xl', className)} style={motionStyle('rise', 0, 0.42)}>
+                    <div className="flex items-center gap-2 px-4 pb-2 pt-3 text-[9px] font-black uppercase tracking-[.24em] text-white/55">
+                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: primary, boxShadow: `0 0 12px ${primary}` }} />
+                        Ponto de vista
+                    </div>
+                    <div className="rounded-xl bg-white/[.07] px-5 py-4">
+                        <h2 className="text-2xl font-black leading-tight md:text-4xl" style={{ color: secondary, fontFamily: fontStack('DM Sans') }}>
+                            {text}
+                        </h2>
+                    </div>
+                    <div className="h-1 origin-left rounded-full" style={{ backgroundColor: primary, transform: `scaleX(${lineProgress(0.15)})` }} />
+                </div>
+            );
+
+        case 'premium-sale-spotlight':
+            return (
+                <div className={cn('relative max-w-[510px] pt-4 text-center', className)} style={motionStyle('pop', 0, 0.48)}>
+                    <div
+                        className="absolute left-1/2 top-0 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border-2 border-white bg-black px-3 py-1 text-[10px] font-black uppercase tracking-widest"
+                        style={{ color: primary }}
+                    >
+                        <BadgePercent className="h-3.5 w-3.5" /> Oferta especial
+                    </div>
+                    <div className="relative overflow-hidden rounded-[22px] border-4 border-white px-7 pb-5 pt-7 shadow-[0_16px_40px_rgba(0,0,0,.5)]" style={{ backgroundColor: primary }}>
+                        <div className="absolute -right-10 -top-16 h-36 w-36 rounded-full bg-white/25 blur-2xl" />
+                        <h2
+                            className="relative text-3xl font-black uppercase leading-[.94] tracking-[-0.045em] md:text-5xl"
+                            style={{ color: secondary, fontFamily: fontStack('Archivo Black'), textShadow: '0 4px 0 rgba(0,0,0,.22)' }}
+                        >
+                            {text}
+                        </h2>
+                    </div>
+                </div>
+            );
+
+        case 'premium-price-tag':
+            return (
+                <div className={cn('relative flex items-center', className)} style={motionStyle('right', 0, 0.45)}>
+                    <div
+                        className="relative flex min-w-[330px] items-center gap-4 py-4 pl-10 pr-7 shadow-[0_14px_34px_rgba(0,0,0,.45)]"
+                        style={{ backgroundColor: primary, clipPath: 'polygon(9% 0,100% 0,100% 100%,9% 100%,0 50%)' }}
+                    >
+                        <span className="absolute left-4 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-black/50 ring-2 ring-white/45" />
+                        <div>
+                            <p className="text-[9px] font-black uppercase tracking-[.25em] text-black/55">Condição especial</p>
+                            <h2 className="mt-0.5 text-3xl font-black uppercase leading-none md:text-5xl" style={{ color: secondary, fontFamily: fontStack('League Spartan') }}>
+                                {text}
+                            </h2>
+                        </div>
+                    </div>
+                </div>
+            );
+
+        case 'premium-urgency-pulse':
+            return (
+                <div
+                    className={cn('relative flex max-w-[500px] items-center gap-4 rounded-2xl border-2 bg-black/90 px-5 py-4 shadow-2xl', className)}
+                    style={{ borderColor: primary, boxShadow: `0 0 ${16 + pulse * 18}px ${primary}44`, ...motionStyle('pop', 0, 0.45) }}
+                >
+                    <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl" style={{ backgroundColor: `${primary}25`, color: primary }}>
+                        <Clock3 className="h-7 w-7" />
+                    </div>
+                    <div>
+                        <p className="text-[9px] font-black uppercase tracking-[.28em]" style={{ color: primary }}>Acaba em breve</p>
+                        <h2 className="mt-1 text-2xl font-black uppercase leading-none md:text-4xl" style={{ color: secondary, fontFamily: fontStack('Anton') }}>
+                            {text}
+                        </h2>
+                    </div>
+                </div>
+            );
+
+        case 'premium-coupon-ticket':
+            return (
+                <div className={cn('relative rounded-2xl border-2 border-dashed p-2 shadow-2xl', className)} style={{ borderColor: primary, ...motionStyle('rise', 0, 0.44) }}>
+                    <div className="relative flex min-w-[360px] items-center gap-4 overflow-hidden rounded-xl px-5 py-4" style={{ backgroundColor: primary }}>
+                        <BadgePercent className="h-9 w-9 shrink-0" style={{ color: secondary }} />
+                        <div className="h-11 border-l-2 border-dashed border-black/25" />
+                        <div>
+                            <p className="text-[8px] font-black uppercase tracking-[.28em] text-black/50">Use no checkout</p>
+                            <h2 className="mt-1 text-2xl font-black uppercase leading-none md:text-4xl" style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}>
+                                {text}
+                            </h2>
+                        </div>
+                    </div>
+                </div>
+            );
+
+        case 'premium-benefit-badge':
+            return (
+                <div className={cn('relative flex max-w-[500px] items-center gap-4 rounded-full border border-white/20 bg-black/85 py-3 pl-3 pr-6 shadow-2xl', className)} style={motionStyle('left', 0, 0.42)}>
+                    <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full" style={{ backgroundColor: primary }}>
+                        <CheckCircle2 className="h-7 w-7" style={{ color: secondary }} />
+                    </div>
+                    <div>
+                        <p className="text-[8px] font-black uppercase tracking-[.25em] text-white/45">Benefício confirmado</p>
+                        <h2 className="mt-0.5 text-2xl font-black leading-none md:text-4xl" style={{ color: secondary, fontFamily: fontStack('DM Sans') }}>
+                            {text}
+                        </h2>
+                    </div>
+                </div>
+            );
+
+        case 'premium-product-launch':
+            return (
+                <div className={cn('relative max-w-[520px] overflow-hidden rounded-3xl border border-white/20 bg-[#080A10]/90 px-7 py-6 text-left shadow-2xl', className)} style={motionStyle('rise', 0, 0.48)}>
+                    <div className="absolute inset-y-0 right-0 w-2/3 opacity-35 blur-2xl" style={{ background: `radial-gradient(circle at right, ${primary}, transparent 66%)` }} />
+                    <div className="relative flex items-center gap-2 text-[9px] font-black uppercase tracking-[.28em]" style={{ color: primary }}>
+                        <Sparkles className="h-4 w-4" /> Nova geração
+                    </div>
+                    <h2 className="relative mt-3 text-3xl font-bold uppercase leading-[.95] tracking-[-0.04em] md:text-5xl" style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}>
+                        {text}
+                    </h2>
+                    <div className="relative mt-4 flex items-center gap-2 text-[9px] font-bold uppercase tracking-[.18em] text-white/50">
+                        Descubra agora <ArrowRight className="h-3.5 w-3.5" style={{ color: primary }} />
+                    </div>
+                </div>
+            );
+
+        case 'premium-luxury-editorial':
+            return (
+                <div className={cn('relative min-w-[390px] px-8 py-6 text-center', className)} style={motionStyle('rise', 0, 0.55)}>
+                    <div className="mx-auto mb-4 h-px origin-center" style={{ backgroundColor: primary, width: `${lineProgress(0.05) * 70}%` }} />
+                    <div className="mb-2 flex items-center justify-center gap-2 text-[8px] font-semibold uppercase tracking-[.45em]" style={{ color: primary }}>
+                        <Crown className="h-3.5 w-3.5" /> Edição exclusiva
+                    </div>
+                    <h2 className="max-w-[470px] text-3xl font-semibold italic leading-tight md:text-5xl" style={{ color: secondary, fontFamily: fontStack('Playfair Display'), textShadow: '0 8px 28px rgba(0,0,0,.75)' }}>
+                        {text}
+                    </h2>
+                    <div className="mx-auto mt-4 h-px origin-center" style={{ backgroundColor: primary, width: `${lineProgress(0.18) * 42}%` }} />
+                </div>
+            );
+
+        case 'premium-swiss-modern':
+            return (
+                <div className={cn('flex max-w-[520px] items-stretch bg-white text-black shadow-2xl', className)} style={motionStyle('left', 0, 0.48)}>
+                    <div className="flex w-16 shrink-0 flex-col justify-between p-3" style={{ backgroundColor: primary }}>
+                        <span className="text-[9px] font-black uppercase tracking-widest">M / 01</span>
+                        <ArrowUpRight className="h-5 w-5" />
+                    </div>
+                    <div className="px-5 py-4 text-left">
+                        <p className="text-[8px] font-bold uppercase tracking-[.32em] text-black/45">Ideia em destaque</p>
+                        <h2 className="mt-2 max-w-[420px] text-2xl font-black uppercase leading-[.95] tracking-[-0.04em] md:text-4xl" style={{ fontFamily: fontStack('DM Sans') }}>
+                            {text}
+                        </h2>
+                    </div>
+                </div>
+            );
+
+        case 'premium-glass-prism':
+            return (
+                <div className={cn('relative max-w-[520px] overflow-hidden rounded-[26px] border border-white/25 bg-black/55 px-7 py-6 shadow-2xl backdrop-blur-xl', className)} style={motionStyle('pop', 0, 0.5)}>
+                    <div className="absolute -left-16 -top-20 h-44 w-44 rounded-full blur-3xl" style={{ backgroundColor: `${primary}80` }} />
+                    <div className="absolute -bottom-20 -right-14 h-44 w-44 rounded-full bg-fuchsia-500/35 blur-3xl" />
+                    <div className="relative flex items-center gap-2 text-[8px] font-black uppercase tracking-[.3em] text-white/55">
+                        <span className="h-1.5 w-10 rounded-full" style={{ backgroundColor: primary }} /> Perspectiva
+                    </div>
+                    <h2 className="relative mt-3 text-3xl font-bold leading-tight tracking-[-0.035em] md:text-5xl" style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}>
+                        {text}
+                    </h2>
+                </div>
+            );
+
+        case 'premium-cinema-chapter':
+            return (
+                <div className={cn('min-w-[420px] max-w-[560px] text-center', className)} style={motionStyle('rise', 0, 0.58)}>
+                    <div className="mb-3 flex items-center justify-center gap-3">
+                        <span className="h-px flex-1 origin-right" style={{ backgroundColor: primary, transform: `scaleX(${lineProgress(0.05)})` }} />
+                        <span className="text-[8px] font-semibold uppercase tracking-[.45em]" style={{ color: primary }}>Capítulo um</span>
+                        <span className="h-px flex-1 origin-left" style={{ backgroundColor: primary, transform: `scaleX(${lineProgress(0.05)})` }} />
+                    </div>
+                    <h2 className="text-3xl font-medium uppercase leading-tight tracking-[.12em] md:text-5xl" style={{ color: secondary, fontFamily: fontStack('Montserrat'), textShadow: '0 8px 30px rgba(0,0,0,.8)' }}>
+                        {text}
+                    </h2>
+                </div>
+            );
+
+        case 'premium-magazine-stack':
+            return (
+                <div className={cn('relative max-w-[500px] border-l-[7px] px-5 py-2 text-left', className)} style={{ borderColor: primary, ...motionStyle('left', 0, 0.48) }}>
+                    <div className="mb-2 flex items-center gap-2 text-[8px] font-black uppercase tracking-[.32em] text-white/55">
+                        <span className="rounded-full px-2 py-1" style={{ backgroundColor: primary, color: '#08090C' }}>Em pauta</span>
+                        Mileto Journal
+                    </div>
+                    <h2 className="text-4xl font-black uppercase leading-[.82] tracking-[-0.025em] md:text-6xl" style={{ color: secondary, fontFamily: fontStack('Bebas Neue'), textShadow: '0 8px 24px rgba(0,0,0,.7)' }}>
+                        {firstLine || text}
+                    </h2>
+                    {secondLine && (
+                        <h3 className="mt-1 text-3xl font-black uppercase leading-none tracking-tight md:text-5xl" style={{ color: primary, fontFamily: fontStack('Bebas Neue') }}>
+                            {secondLine}
+                        </h3>
+                    )}
+                </div>
+            );
+
+        case 'premium-chrome-future':
+            return (
+                <div className={cn('relative max-w-[520px] px-5 py-4 text-center', className)} style={motionStyle('pop', 0, 0.52)}>
+                    <div className="mb-2 flex items-center justify-center gap-2 text-[8px] font-black uppercase tracking-[.35em]" style={{ color: primary }}>
+                        <Sparkles className="h-3.5 w-3.5" /> Future series
+                    </div>
+                    <h2
+                        className="bg-clip-text text-4xl font-black uppercase leading-[.9] tracking-[-0.06em] text-transparent md:text-6xl"
+                        style={{
+                            backgroundImage: `linear-gradient(180deg, #ffffff 0%, ${primary} 28%, #5a6873 48%, #ffffff 68%, ${primary} 100%)`,
+                            fontFamily: fontStack('Archivo Black'),
+                            filter: `drop-shadow(0 0 ${8 + pulse * 9}px ${primary}70) drop-shadow(0 8px 16px rgba(0,0,0,.8))`,
+                            WebkitTextStroke: '1px rgba(255,255,255,.5)',
+                        }}
+                    >
+                        {text}
+                    </h2>
+                    <div className="mx-auto mt-3 h-[2px] rounded-full" style={{ background: `linear-gradient(90deg, transparent, ${primary}, transparent)`, width: `${lineProgress(0.2) * 88}%` }} />
                 </div>
             );
 

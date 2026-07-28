@@ -8,6 +8,8 @@ dotenv.config();
 
 // Base path for persistent data (critical for installed version)
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+const BUILTIN_TRANSITIONS_PATH =
+    process.env.BUILTIN_TRANSITIONS_PATH || path.join(__dirname, '..', 'public', 'transitions', 'builtins');
 console.log(`[Server] Base Data Path: ${BASE_DATA_PATH}`);
 
 // Ensure directories exist in the persistent path
@@ -17,8 +19,12 @@ const persistentDirs = [
     'frame_cache',
     'videos',
     'uploads',
+    'ops-cache',
     'music',
     'data',
+    'files/Imagens',
+    'files/Vídeos',
+    'files/Músicas',
     'public/mixes',
     'public/transitions',
 ];
@@ -27,6 +33,14 @@ persistentDirs.forEach((dir) => {
     if (!fs.existsSync(dirPath)) {
         fs.mkdirSync(dirPath, { recursive: true });
     }
+});
+
+// Migração v1: centraliza mídia em files/ (Imagens/Vídeos/Músicas) + índice.
+// Idempotente (flag .files_v1); no boot sempre aplica com backup automático.
+// Falhas aqui não podem derrubar o server — capturamos e só logamos.
+import { runMigration } from './scripts/migrateToFiles';
+void runMigration({ apply: true }).catch((e) => {
+    console.error('[Migrate] Falha na migração (server continua normalmente):', e);
 });
 
 // Prevent server crashes from unhandled promise rejections
@@ -41,15 +55,39 @@ process.on('uncaughtException', (err) => {
 const app = express();
 const PORT = process.env.PORT || 3301;
 
-// CORS Configuration — allow all origins (Electron uses file:// which can't be whitelisted)
+// CORS restrito. O app Electron carrega de file:// (sem Origin ou 'null') no build
+// e de localhost:5173 em dev. Refletir QUALQUER origem (o padrão antigo) deixava
+// qualquer site aberto no navegador ler as respostas do servidor local e — via
+// preflight — disparar POSTs. Aqui só liberamos as origens do próprio app.
+const isAllowedOrigin = (origin?: string): boolean => {
+    if (!origin || origin === 'null') return true; // Electron file:// / same-origin
+    try {
+        const host = new URL(origin).hostname;
+        return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    } catch {
+        return false;
+    }
+};
 app.use(
     cors({
-        origin: true,
+        origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'X-Runway-Token', 'X-Replicate-Token'],
+        allowedHeaders: [
+            'Content-Type',
+            'Authorization',
+            'X-Runway-Token',
+            'X-Replicate-Token',
+            'X-Ops-View-Context',
+        ],
         credentials: true,
     })
 );
+
+// Nunca deixe o navegador "adivinhar" o tipo de um arquivo servido (anti-XSS por sniffing).
+app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    next();
+});
 
 app.use(express.json({ limit: '50mb' }));
 
@@ -61,6 +99,9 @@ app.use('/narrations', express.static(path.join(BASE_DATA_PATH, 'narrations')));
 app.use('/videos', express.static(path.join(BASE_DATA_PATH, 'videos')));
 app.use('/mixes', express.static(path.join(BASE_DATA_PATH, 'public', 'mixes')));
 app.use('/transitions', express.static(path.join(BASE_DATA_PATH, 'public', 'transitions')));
+app.use('/built-in-transitions', express.static(BUILTIN_TRANSITIONS_PATH));
+app.use('/files', express.static(path.join(BASE_DATA_PATH, 'files')));
+app.use('/preview-cache', express.static(path.join(BASE_DATA_PATH, 'preview-cache')));
 app.use(express.static(path.join(__dirname, '../public'))); // Correct for bundled dist/index.js
 
 // Basic Routes

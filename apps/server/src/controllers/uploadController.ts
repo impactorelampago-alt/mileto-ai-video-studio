@@ -2,20 +2,24 @@ import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { randomUUID as uuidv4 } from 'crypto';
+import { safeResolve, isSafeSegment } from '../utils/safePath';
 
 export const uploadImage = async (req: Request, res: Response) => {
     try {
         if (!req.file) return res.status(400).json({ ok: false, message: 'No file uploaded' });
 
         const projectId = req.body.projectId;
+        if (!isSafeSegment(projectId)) {
+            return res.status(400).json({ ok: false, message: 'projectId inválido ou ausente' });
+        }
         const tempPath = req.file.path;
-        const ext = path.extname(req.file.originalname);
+        // A extensão já vem saneada do multer (derivada do mimetype); mantém consistência.
+        const ext = path.extname(req.file.filename) || path.extname(req.file.originalname);
         const newFileName = `${uuidv4()}${ext}`;
 
-        // Define target directory structure
-        // apps/server/data/projects/<projectId>/uploads/images/
+        // apps/server/data/projects/<projectId>/uploads/images/ — resolvido com containment.
         const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
-        const projectDir = path.join(BASE_DATA_PATH, 'data/projects', projectId, 'uploads/images');
+        const projectDir = safeResolve(BASE_DATA_PATH, 'data/projects', projectId, 'uploads/images');
 
         if (!fs.existsSync(projectDir)) {
             fs.mkdirSync(projectDir, { recursive: true });

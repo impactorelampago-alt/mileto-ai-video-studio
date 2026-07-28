@@ -42,6 +42,20 @@ const STT_USD_PER_SECOND = 0.0001;
 /** 1 credito Mileto = US$ 0,001 de custo de fornecedor. Escala so de exibicao. */
 const CREDITS_PER_USD = 1000;
 
+/** Cotação para recursos cobrados por saída (imagem/vídeo), configurada no agente. */
+export const quoteFixedProviderCost = async (providerCostUsd, kind) => {
+    const providerCost = Number(providerCostUsd);
+    if (!Number.isFinite(providerCost) || providerCost <= 0) {
+        throw new Error('Custo do fornecedor não configurado para esta geração.');
+    }
+    const rawMult = await getMultiplier(kind);
+    const multiplier = Number.isFinite(rawMult) && rawMult > 0 ? rawMult : 1.5;
+    return {
+        providerCost,
+        charged: providerCost * multiplier * CREDITS_PER_USD,
+    };
+};
+
 export const estimateUnits = (provider, kind, text) => {
     if (kind === 'tts' && provider === 'fishAudio') return Buffer.byteLength(text, 'utf8');
     if (kind === 'tts') return text.length; // ElevenLabs cobra por caractere
@@ -146,6 +160,35 @@ export const settle = async ({ orgId, userId, provider, model, kind, units, demo
             `INSERT INTO usage_ledger (org_id, user_id, provider, kind, units, provider_cost, charged, demo)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
             [orgId, userId, provider, kind, units, providerCost.toFixed(6), finalCharge.toFixed(4), demo]
+        );
+        const { rows } = await client.query('SELECT balance FROM credits WHERE org_id = $1', [orgId]);
+        await client.query('COMMIT');
+        return { providerCost, charged: finalCharge, balanceAfter: rows[0] ? Number(rows[0].balance) : 0 };
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+    } finally {
+        client.release();
+    }
+};
+
+/** Conciliação de uma geração síncrona cujo custo máximo foi configurado no agente. */
+export const settleFixed = async ({ orgId, userId, provider, kind, providerCost, charged, demo, reserved }) => {
+    const finalCharge = demo ? 0 : charged;
+    const adjust = (reserved || 0) - finalCharge;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        if (!demo && adjust !== 0) {
+            await client.query('UPDATE credits SET balance = balance + $2, updated_at = now() WHERE org_id = $1', [
+                orgId,
+                adjust,
+            ]);
+        }
+        await client.query(
+            `INSERT INTO usage_ledger (org_id, user_id, provider, kind, units, provider_cost, charged, demo)
+             VALUES ($1,$2,$3,$4,1,$5,$6,$7)`,
+            [orgId, userId, provider, kind, Number(providerCost).toFixed(6), Number(finalCharge).toFixed(4), demo]
         );
         const { rows } = await client.query('SELECT balance FROM credits WHERE org_id = $1', [orgId]);
         await client.query('COMMIT');

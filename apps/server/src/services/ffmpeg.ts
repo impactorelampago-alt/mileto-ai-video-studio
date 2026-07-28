@@ -14,11 +14,11 @@ const ffPath = process.env.FFMPEG_PATH;
 const probePath = process.env.FFPROBE_PATH;
 
 if (ffPath && fs.existsSync(ffPath)) {
-    console.log(`[FFmpeg] Using bundled FFmpeg: ${ffPath}`);
+    console.log('[FFmpeg] Using bundled FFmpeg.');
     ffmpeg.setFfmpegPath(ffPath);
 }
 if (probePath && fs.existsSync(probePath)) {
-    console.log(`[FFmpeg] Using bundled FFprobe: ${probePath}`);
+    console.log('[FFmpeg] Using bundled FFprobe.');
     ffmpeg.setFfprobePath(probePath);
 }
 
@@ -173,9 +173,7 @@ export const extractFrames = (sourceId: string, filePath: string, count = 10): P
 
 export const muxVideoAudio = (videoPath: string, audioPath: string, outputPath: string): Promise<string> => {
     return new Promise((resolve, reject) => {
-        console.log(`[FFmpeg Mux] Video Input: ${videoPath}`);
-        console.log(`[FFmpeg Mux] Audio Input: ${audioPath}`);
-        console.log(`[FFmpeg Mux] Output Target: ${outputPath}`);
+        console.log('[FFmpeg Mux] Entradas e destino temporário validados.');
 
         let actualVideoInput = videoPath;
         let isImageSequence = false;
@@ -208,7 +206,7 @@ export const muxVideoAudio = (videoPath: string, audioPath: string, outputPath: 
         // Ensure the destination directory exists (FFmpeg fails if it doesn't)
         const outputDir = path.dirname(outputPath);
         if (!fs.existsSync(outputDir)) {
-            console.log(`[FFmpeg] Creating missing output directory: ${outputDir}`);
+            console.log('[FFmpeg] Creating missing temporary output directory.');
             fs.mkdirSync(outputDir, { recursive: true });
         }
 
@@ -280,6 +278,13 @@ export interface HybridTake {
     end: number;
     speed?: string | number;
     objectFit?: 'cover' | 'contain';
+    motionEffect?: {
+        type: 'zoom-in' | 'zoom-out' | 'zoom-in-out';
+        intensity: number;
+        focalX: number;
+        focalY: number;
+        easing: 'linear' | 'smooth';
+    };
 }
 
 export interface HybridParams {
@@ -318,7 +323,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                         if (meta.height < minH) minH = meta.height;
                     }
                 } catch (err) {
-                    console.warn(`[FFmpeg Hybrid] ffprobe falhou em ${t.file_path}:`, err);
+                    console.warn('[FFmpeg Hybrid] ffprobe falhou em um take:', err instanceof Error ? err.message : String(err));
                 }
             }
             if (Number.isFinite(minW) && Number.isFinite(minH)) {
@@ -342,7 +347,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             tempOverlayDir = overlayPath.replace(/\.txt$/, '_seq');
 
             if (!fs.existsSync(tempOverlayDir)) {
-                console.error('[FFmpeg Hybrid] Pasta de sequencia Alpha Nativa nao encontrada:', tempOverlayDir);
+                console.error('[FFmpeg Hybrid] Pasta da sequência alpha não encontrada.');
                 return reject(new Error('Falha catastrófica: Os frames nativos sumiram antes do Muxing.'));
             }
 
@@ -369,6 +374,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             end: number;
             speed?: string | number;
             objectFit?: 'cover' | 'contain';
+            motionEffect?: HybridTake['motionEffect'];
         }
 
         (takes as TakeData[]).forEach((t) => {
@@ -395,7 +401,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         }
 
         // ─── BUILD COMPLEX FILTERGRAPH ───
-        console.log('[FFmpeg Hybrid Direct] TransitionPath:', transitionPath, '| transIdx:', transIdx);
+        console.log('[FFmpeg Hybrid Direct] Transição:', transitionPath ? 'configurada' : 'ausente', '| transIdx:', transIdx);
         takes.forEach((t, i) =>
             console.log(`  Take[${i}]: speed=${t.speed}, start=${t.start}, end=${t.end}, type=${t.type}`)
         );
@@ -440,8 +446,29 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                 ? `pad=${TARGET_W}:${TARGET_H}:(ow-iw)/2:(oh-ih)/2:color=black`
                 : `crop=${TARGET_W}:${TARGET_H}`;
             const scaleStr = `${scaleBase},${fitFilter},setsar=1`;
+            let motionStr = '';
+            if (take.motionEffect) {
+                const effect = take.motionEffect;
+                const amount = Math.min(0.35, Math.max(0.02, Number(effect.intensity) || 0.12));
+                const motionDuration = Math.max(0.001, physicalDuration);
+                const p = `min(max(t/${motionDuration.toFixed(6)},0),1)`;
+                const motionProgress = effect.type === 'zoom-in-out'
+                    ? `(if(lt(${p},0.5),2*(${p}),2*(1-(${p}))))`
+                    : `(${p})`;
+                const eased = effect.easing === 'smooth'
+                    ? `((${motionProgress})*(${motionProgress})*(3-2*(${motionProgress})))`
+                    : motionProgress;
+                const zoom = effect.type === 'zoom-out'
+                    ? `(1+${amount.toFixed(6)}*(1-${eased}))`
+                    : `(1+${amount.toFixed(6)}*${eased})`;
+                const focalX = Math.min(1, Math.max(0, (Number(effect.focalX) || 50) / 100));
+                const focalY = Math.min(1, Math.max(0, (Number(effect.focalY) || 50) / 100));
+                // Fixar o arredondamento do recorte evita alternância subpixel
+                // entre frames, percebida como vibração no vídeo exportado.
+                motionStr = `,scale=w='trunc(iw*${zoom}/2)*2':h='trunc(ih*${zoom}/2)*2':eval=frame,crop=${TARGET_W}:${TARGET_H}:x='floor((in_w-out_w)*${focalX.toFixed(4)})':y='floor((in_h-out_h)*${focalY.toFixed(4)})'`;
+            }
 
-            filterGraph += `[${index}:v]${trimStr}${scaleStr}[v${index}];`;
+            filterGraph += `[${index}:v]${trimStr}${scaleStr}${motionStr}[v${index}];`;
             concatInputs.push(`[v${index}]`);
         });
 
@@ -519,7 +546,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         // Ensure the destination directory exists (FFmpeg fails if it doesn't)
         const outputDir = path.dirname(outputPath);
         if (!fs.existsSync(outputDir)) {
-            console.log(`[FFmpeg Hybrid Direct] Creating missing output directory: ${outputDir}`);
+                    console.log('[FFmpeg Hybrid Direct] Criando diretório temporário de saída.');
             fs.mkdirSync(outputDir, { recursive: true });
         }
 
@@ -549,7 +576,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                     cleanup();
                     reject(error);
                 } else {
-                    console.log('[FFmpeg Hybrid Direct] ✅ Vídeo exportado com sucesso:', outputPath);
+                    console.log('[FFmpeg Hybrid Direct] ✅ Vídeo exportado com sucesso.');
                     cleanup();
                     resolve(outputPath);
                 }

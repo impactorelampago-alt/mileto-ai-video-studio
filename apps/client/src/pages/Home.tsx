@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, Film, ArrowRight, Wand2, Scissors, Clock, Trash2, CheckCircle2, Loader2 } from 'lucide-react';
+import { ArrowRight, Wand2, Scissors, Clock, Trash2, CheckCircle2, Loader2, HardDrive, Users, Share2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
+import { gatewayApi } from '../lib/gateway';
 
 interface DraftSummary {
     projectId: string;
@@ -12,6 +13,7 @@ interface DraftSummary {
     exported: boolean;
     mediaCount: number;
     duration: number;
+    author?: string | null;
 }
 
 const API_BASE = (window as unknown as { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
@@ -41,14 +43,31 @@ const formatDuration = (sec: number): string => {
 
 export const Home = () => {
     const navigate = useNavigate();
-    const { startNewDraft, loadDraft } = useWizard();
+    const { startNewDraft, loadDraft, publishDraftToShared, projectId, draftScope } = useWizard();
     const [drafts, setDrafts] = useState<DraftSummary[]>([]);
     const [loadingDrafts, setLoadingDrafts] = useState(true);
     const [resumingId, setResumingId] = useState<string | null>(null);
+    const [sharingId, setSharingId] = useState<string | null>(null);
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [scope, setScope] = useState<'local' | 'shared'>('local');
+    const [newDraftTitle, setNewDraftTitle] = useState('');
 
     const refreshDrafts = useCallback(async () => {
         setLoadingDrafts(true);
         try {
+            if (scope === 'shared') {
+                const json = await gatewayApi.sharedDrafts();
+                setDrafts(json.drafts.map((draft) => ({
+                    projectId: draft.id,
+                    title: draft.title,
+                    updatedAt: draft.updatedAt,
+                    exported: false,
+                    mediaCount: 0,
+                    duration: 0,
+                    author: draft.authorName || draft.authorEmail || null,
+                })));
+                return;
+            }
             const res = await fetch(`${API_BASE}/api/projects`);
             const json = await res.json();
             if (json.ok && Array.isArray(json.drafts)) {
@@ -59,32 +78,66 @@ export const Home = () => {
         } finally {
             setLoadingDrafts(false);
         }
-    }, []);
+    }, [scope]);
 
     useEffect(() => {
         refreshDrafts();
     }, [refreshDrafts]);
 
     const handleNewProject = () => {
-        startNewDraft();
+        startNewDraft({ scope: 'local', title: newDraftTitle });
+        setNewDraftTitle('');
         navigate('/wizard/step/1');
+    };
+
+    const handleShare = async (event: React.MouseEvent, id: string) => {
+        event.stopPropagation();
+        if (sharingId) return;
+        setSharingId(id);
+        const published = await publishDraftToShared(id);
+        setSharingId(null);
+        if (published) {
+            toast.success('Rascunho publicado no Compartilhado. O original continua salvo neste computador.');
+        } else {
+            toast.error('Não foi possível compartilhar o rascunho. Confira sua conexão e tente novamente.');
+        }
     };
 
     const handleResume = async (id: string) => {
         if (resumingId) return;
         setResumingId(id);
-        const ok = await loadDraft(id);
+        const lastStep = await loadDraft(id, scope);
         setResumingId(null);
-        if (!ok) {
+        if (!lastStep) {
             toast.error('Não foi possível abrir este rascunho.');
             return;
         }
-        navigate('/wizard/step/1');
+        navigate(`/wizard/step/${lastStep}`);
     };
 
     const handleDelete = async (e: React.MouseEvent, id: string) => {
         e.stopPropagation();
+        if (deletingId) return;
+        if (scope === 'shared') {
+            if (!window.confirm('Mover este rascunho compartilhado para a lixeira?')) return;
+            setDeletingId(id);
+            try {
+                await gatewayApi.deleteSharedDraft(id);
+                setDrafts((prev) => prev.filter((d) => d.projectId !== id));
+                // Um rascunho compartilhado aberto continua sendo observado pelo
+                // autosave. Ao apagá-lo, soltamos essa referência para que ele
+                // não seja recriado alguns milissegundos depois.
+                if (draftScope === 'shared' && projectId === id) startNewDraft({ scope: 'local' });
+                toast.success('Rascunho movido para a lixeira por 30 dias.');
+            } catch (err) {
+                toast.error(err instanceof Error ? err.message : 'Erro ao mover para a lixeira');
+            } finally {
+                setDeletingId(null);
+            }
+            return;
+        }
         if (!window.confirm('Excluir este rascunho? Essa ação não pode ser desfeita.')) return;
+        setDeletingId(id);
         try {
             const res = await fetch(`${API_BASE}/api/projects/${id}`, { method: 'DELETE' });
             const json = await res.json();
@@ -93,6 +146,8 @@ export const Home = () => {
             toast.success('Rascunho excluído.');
         } catch (err) {
             toast.error(err instanceof Error ? err.message : 'Erro ao excluir');
+        } finally {
+            setDeletingId(null);
         }
     };
 
@@ -107,99 +162,73 @@ export const Home = () => {
                     </span>
                 </h1>
                 <p className="text-lg text-muted-foreground">
-                    Escolha como você quer criar seu vídeo hoje.
+                    Escreva um roteiro e deixe a Mileto montar seu vídeo em 4 passos.
                 </p>
             </div>
 
-            {/* Two creation modes */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* AI Mode */}
+            {/* Criar */}
+            <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+                <label className="flex-1 max-w-lg space-y-1.5">
+                    <span className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                        <span>Título do novo rascunho</span>
+                        <span className="inline-flex items-center gap-1 normal-case tracking-normal text-brand-lime/80">
+                            <HardDrive className="h-3 w-3" /> Salvo localmente
+                        </span>
+                    </span>
+                    <input
+                        type="text"
+                        value={newDraftTitle}
+                        onChange={(event) => setNewDraftTitle(event.target.value)}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Enter') handleNewProject();
+                        }}
+                        placeholder="Ex.: Campanha de julho"
+                        className="w-full h-11 rounded-xl border border-border bg-card px-4 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-brand-lime/60"
+                    />
+                </label>
                 <button
                     onClick={handleNewProject}
-                    className="group relative overflow-hidden rounded-2xl border-2 border-brand-lime/40 bg-linear-to-br from-brand-lime/10 via-card to-card p-8 text-left transition-all duration-300 hover:border-brand-lime hover:shadow-[0_0_40px_rgba(0,230,118,0.2)] hover:-translate-y-1"
+                    className="group inline-flex items-center gap-2.5 rounded-xl bg-brand-lime px-5 py-3 text-sm font-bold text-[#0a0f12] transition-all hover:brightness-110 hover:shadow-[0_0_30px_rgba(0,230,118,0.25)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-lime"
                 >
-                    <div className="absolute top-4 right-4 flex items-center gap-1 px-2 py-1 rounded-full bg-brand-lime/20 border border-brand-lime/40">
-                        <Sparkles className="w-3 h-3 text-brand-lime" />
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-brand-lime">
-                            Recomendado
-                        </span>
-                    </div>
-
-                    <div className="mb-6 w-16 h-16 rounded-2xl bg-brand-lime/15 border border-brand-lime/30 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                        <Wand2 className="w-8 h-8 text-brand-lime" />
-                    </div>
-
-                    <h2 className="text-2xl font-black text-foreground mb-2">
-                        Criação com IA
-                    </h2>
-                    <p className="text-sm text-muted-foreground mb-6 leading-relaxed">
-                        Escreva um roteiro e deixe a Mileto gerar narração, legendas, títulos e montar seu vídeo automaticamente em 4 passos.
-                    </p>
-
-                    <ul className="space-y-2 mb-8">
-                        {[
-                            'Narração TTS automática',
-                            'Legendas sincronizadas (Whisper)',
-                            'Títulos gerados por IA',
-                            'Fluxo guiado de 4 etapas',
-                        ].map((feat) => (
-                            <li key={feat} className="flex items-center gap-2 text-sm text-foreground/80">
-                                <div className="w-1.5 h-1.5 rounded-full bg-brand-lime" />
-                                {feat}
-                            </li>
-                        ))}
-                    </ul>
-
-                    <div className="flex items-center gap-2 text-brand-lime font-bold text-sm group-hover:gap-3 transition-all">
-                        Começar com IA
-                        <ArrowRight className="w-4 h-4" />
-                    </div>
-                </button>
-
-                {/* Manual Mode */}
-                <button
-                    onClick={() => navigate('/editor')}
-                    className="group relative overflow-hidden rounded-2xl border-2 border-border bg-card p-8 text-left transition-all duration-300 hover:border-foreground/40 hover:shadow-[0_0_40px_rgba(255,255,255,0.05)] hover:-translate-y-1"
-                >
-                    <div className="mb-6 w-16 h-16 rounded-2xl bg-foreground/5 border border-border flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                        <Film className="w-8 h-8 text-foreground" />
-                    </div>
-
-                    <h2 className="text-2xl font-black text-foreground mb-2">
-                        Edição Manual
-                    </h2>
-                    <p className="text-sm text-muted-foreground mb-6 leading-relaxed">
-                        Editor completo com timeline multi-track. Controle total sobre cortes, transições, áudio e efeitos.
-                    </p>
-
-                    <ul className="space-y-2 mb-8">
-                        {[
-                            'Timeline multi-track',
-                            'Cortes e recortes precisos',
-                            'Transições personalizáveis',
-                            'Controle profissional',
-                        ].map((feat) => (
-                            <li key={feat} className="flex items-center gap-2 text-sm text-foreground/80">
-                                <div className="w-1.5 h-1.5 rounded-full bg-foreground/60" />
-                                {feat}
-                            </li>
-                        ))}
-                    </ul>
-
-                    <div className="flex items-center gap-2 text-foreground font-bold text-sm group-hover:gap-3 transition-all">
-                        Abrir Editor
-                        <ArrowRight className="w-4 h-4" />
-                    </div>
+                    <Wand2 className="w-4 h-4" />
+                    Criar
+                    <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
                 </button>
             </div>
 
             {/* Rascunhos recentes */}
             <div className="flex flex-col gap-3">
-                <div className="flex items-center gap-2">
-                    <Clock className="w-4 h-4 text-muted-foreground" />
-                    <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-muted-foreground">
-                        Rascunhos recentes
-                    </h3>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-muted-foreground" />
+                        <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                            Rascunhos recentes
+                        </h3>
+                    </div>
+                    <div className="inline-flex items-center rounded-xl border border-border bg-card p-1">
+                        <button
+                            type="button"
+                            onClick={() => setScope('local')}
+                            className={cn(
+                                'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors',
+                                scope === 'local' ? 'bg-brand-lime/15 text-brand-lime' : 'text-muted-foreground hover:text-foreground'
+                            )}
+                        >
+                            <HardDrive className="h-3.5 w-3.5" />
+                            Local
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setScope('shared')}
+                            className={cn(
+                                'inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors',
+                                scope === 'shared' ? 'bg-brand-accent/15 text-brand-accent' : 'text-muted-foreground hover:text-foreground'
+                            )}
+                        >
+                            <Users className="h-3.5 w-3.5" />
+                            Compartilhado
+                        </button>
+                    </div>
                 </div>
 
                 {loadingDrafts ? (
@@ -221,6 +250,8 @@ export const Home = () => {
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                         {drafts.map((d) => {
                             const isLoading = resumingId === d.projectId;
+                            const isSharing = sharingId === d.projectId;
+                            const isDeleting = deletingId === d.projectId;
                             return (
                                 <div
                                     key={d.projectId}
@@ -242,11 +273,12 @@ export const Home = () => {
                                         <button
                                             type="button"
                                             onClick={(e) => handleDelete(e, d.projectId)}
+                                            disabled={!!deletingId}
                                             className="shrink-0 p-1.5 rounded-lg text-muted-foreground/60 hover:text-red-400 hover:bg-red-500/10 transition-colors opacity-0 group-hover:opacity-100"
                                             title="Excluir rascunho"
                                             aria-label="Excluir rascunho"
                                         >
-                                            <Trash2 className="w-3.5 h-3.5" />
+                                            {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                                         </button>
                                     </div>
 
@@ -262,6 +294,13 @@ export const Home = () => {
                                         )}
                                     </div>
 
+                                    {scope === 'shared' && d.author && (
+                                        <div className="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                                            <Users className="h-3 w-3" />
+                                            Atualizado por {d.author}
+                                        </div>
+                                    )}
+
                                     <div className="mt-4 flex items-center justify-between">
                                         {d.exported ? (
                                             <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-brand-lime">
@@ -275,16 +314,30 @@ export const Home = () => {
                                             </span>
                                         )}
 
-                                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-foreground/70 group-hover:text-brand-lime transition-colors">
-                                            {isLoading ? (
-                                                <Loader2 className="w-3 h-3 animate-spin" />
-                                            ) : (
-                                                <>
-                                                    Retomar
-                                                    <ArrowRight className="w-3 h-3" />
-                                                </>
+                                        <div className="flex items-center gap-2">
+                                            {scope === 'local' && (
+                                                <button
+                                                    type="button"
+                                                    onClick={(event) => void handleShare(event, d.projectId)}
+                                                    disabled={!!sharingId}
+                                                    className="inline-flex items-center gap-1.5 rounded-lg border border-brand-accent/20 bg-brand-accent/5 px-2.5 py-1.5 text-[10px] font-bold text-brand-accent transition hover:border-brand-accent/40 hover:bg-brand-accent/10 disabled:opacity-45"
+                                                    title="Publicar uma cópia no ambiente compartilhado"
+                                                >
+                                                    {isSharing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Share2 className="h-3 w-3" />}
+                                                    {isSharing ? 'Compartilhando' : 'Compartilhar'}
+                                                </button>
                                             )}
-                                        </span>
+                                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-foreground/70 transition-colors group-hover:text-brand-lime">
+                                                {isLoading ? (
+                                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                                ) : (
+                                                    <>
+                                                        Retomar
+                                                        <ArrowRight className="w-3 h-3" />
+                                                    </>
+                                                )}
+                                            </span>
+                                        </div>
                                     </div>
                                 </div>
                             );

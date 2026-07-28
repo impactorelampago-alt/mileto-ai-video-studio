@@ -1,12 +1,14 @@
 import { query } from './db.js';
 import { encryptSecret, decryptSecret } from './crypto.js';
 import { config } from './config.js';
+import { AGENT_DEFINITIONS, AGENT_REASONING_LEVELS, AGENT_TIERS, DEFAULT_AGENT_CONFIGS } from './agentDefaults.js';
 
 export const PROVIDERS = [
     { id: 'fishAudio', label: 'Fish Audio', help: 'Narração (TTS). Cobra por byte UTF-8.' },
     { id: 'elevenLabs', label: 'ElevenLabs', help: 'Narração expressiva.' },
     { id: 'openai', label: 'OpenAI', help: 'Roteiros e chat.' },
     { id: 'gemini', label: 'Google Gemini', help: 'Roteiros e chat (alternativa).' },
+    { id: 'seedance', label: 'Seedance', help: 'Geração de vídeo por IA. A chave fica somente no gateway.' },
 ];
 
 // Cache em memória: evita descriptografar a cada chamada de IA.
@@ -175,6 +177,202 @@ export const setPrompt = async (text) => {
         [String(text)]
     );
     cache = null;
+};
+
+// ── Agentes especializados ───────────────────────────────────────────────
+
+export { AGENT_DEFINITIONS, AGENT_REASONING_LEVELS, AGENT_TIERS };
+
+const agentDefinition = (id) => AGENT_DEFINITIONS.find((agent) => agent.id === id) || null;
+const agentSettingKey = (id) => `agent_${id}`;
+const agentHistoryKey = (id) => `agent_history_${id}`;
+const clone = (value) => JSON.parse(JSON.stringify(value));
+
+const parseJsonSetting = (map, key, fallback) => {
+    try {
+        return map[key] ? JSON.parse(map[key]) : fallback;
+    } catch {
+        return fallback;
+    }
+};
+
+export const normalizeAgentTierId = (value) => {
+    const raw = String(value || '').toLowerCase();
+    if (raw === 'lite' || raw === 'mileto-lite') return 'lite';
+    if (raw === 'ultra' || raw === 'mileto-ultra') return 'ultra';
+    return 'mileto';
+};
+
+const normalizeAgentTier = (definition, input = {}, fallback = {}) => {
+    const provider = String(input.provider ?? fallback.provider ?? 'openai').trim().toLowerCase();
+    if (!['openai', 'gemini'].includes(provider)) {
+        throw new Error('O cérebro do agente deve usar OpenAI ou Gemini.');
+    }
+    const model = String(input.model ?? fallback.model ?? '').trim();
+    if (!model) throw new Error('Informe o modelo do agente.');
+    const reasoning = String(input.reasoning ?? fallback.reasoning ?? 'equilibrado').trim().toLowerCase();
+    if (!AGENT_REASONING_LEVELS.some((level) => level.id === reasoning)) {
+        throw new Error('Modo de raciocínio inválido.');
+    }
+    const maxOutputTokens = Math.round(Number(input.maxOutputTokens ?? fallback.maxOutputTokens ?? 4096));
+    if (!Number.isFinite(maxOutputTokens) || maxOutputTokens < 512 || maxOutputTokens > 32768) {
+        throw new Error('O limite de saída deve ficar entre 512 e 32768 tokens.');
+    }
+    const productionAgent = ['image', 'video'].includes(definition.kind);
+    const generationProvider = productionAgent
+        ? String(input.generationProvider ?? fallback.generationProvider ?? '').trim().toLowerCase().slice(0, 60)
+        : '';
+    const generationModel = productionAgent
+        ? String(input.generationModel ?? fallback.generationModel ?? '').trim().slice(0, 160)
+        : '';
+    const generationCostUsd = productionAgent
+        ? Number(input.generationCostUsd ?? fallback.generationCostUsd ?? 0)
+        : 0;
+    if (!Number.isFinite(generationCostUsd) || generationCostUsd < 0 || generationCostUsd > 10000) {
+        throw new Error('O custo máximo por geração deve ficar entre US$ 0 e US$ 10.000.');
+    }
+    return {
+        provider,
+        model: model.slice(0, 160),
+        reasoning,
+        maxOutputTokens,
+        generationProvider,
+        generationModel,
+        generationCostUsd: Math.round(generationCostUsd * 1_000_000) / 1_000_000,
+    };
+};
+
+/** Normaliza os três níveis e migra silenciosamente configurações antigas para "Mileto". */
+export const normalizeAgentConfig = (id, input = {}, baseConfig = null) => {
+    const definition = agentDefinition(id);
+    if (!definition) throw new Error('Agente inválido.');
+    const defaults = DEFAULT_AGENT_CONFIGS[id];
+    const base = baseConfig || defaults;
+    const inputTiers = input.tiers && typeof input.tiers === 'object' ? input.tiers : {};
+    const baseTiers = base.tiers && typeof base.tiers === 'object' ? base.tiers : defaults.tiers;
+    const legacyInput = input.provider || input.model ? input : {};
+    const legacyBase = base.provider || base.model ? base : {};
+    const tiers = Object.fromEntries(
+        AGENT_TIERS.map((tier) => {
+            const defaultTier = defaults.tiers[tier.id];
+            const fallback = {
+                ...defaultTier,
+                ...(baseTiers?.[tier.id] || {}),
+                ...(tier.id === 'mileto' ? legacyBase : {}),
+            };
+            const incoming = {
+                ...(tier.id === 'mileto' ? legacyInput : {}),
+                ...(inputTiers?.[tier.id] || {}),
+            };
+            return [tier.id, normalizeAgentTier(definition, incoming, fallback)];
+        })
+    );
+    const systemPrompt = String(input.systemPrompt ?? base.systemPrompt ?? '').trim();
+    if (!systemPrompt) throw new Error('O prompt de sistema não pode ficar vazio.');
+    if (systemPrompt.length > 120000) throw new Error('O prompt de sistema ultrapassa 120.000 caracteres.');
+
+    return {
+        enabled: input.enabled === undefined ? Boolean(base.enabled) : Boolean(input.enabled),
+        tiers,
+        systemPrompt,
+    };
+};
+
+export const getAgentConfig = async (id) => {
+    const definition = agentDefinition(id);
+    if (!definition) throw new Error('Agente inválido.');
+    const map = await ensure();
+    const stored = parseJsonSetting(map, agentSettingKey(id), null);
+    const defaults = clone(DEFAULT_AGENT_CONFIGS[id]);
+    // Preserva o prompt do Chat Mileto existente na primeira adoção do Diretor.
+    if (!stored && id === 'director' && map.chat_prompt) defaults.systemPrompt = map.chat_prompt;
+    const normalized = normalizeAgentConfig(id, stored || defaults, defaults);
+    return {
+        ...normalized,
+        version: Number(stored?.version) || 1,
+        publishedAt: stored?.publishedAt || null,
+        publishedBy: stored?.publishedBy || null,
+        rollbackOf: stored?.rollbackOf || null,
+    };
+};
+
+export const getAgents = async () => {
+    const agents = await Promise.all(
+        AGENT_DEFINITIONS.map(async (definition) => ({ ...definition, config: await getAgentConfig(definition.id) }))
+    );
+    return { agents, catalog: MODEL_CATALOG, reasoningLevels: AGENT_REASONING_LEVELS, tiers: AGENT_TIERS };
+};
+
+export const publishAgentConfig = async (id, input, actorId = null, metadata = {}) => {
+    const map = await ensure();
+    const current = await getAgentConfig(id);
+    const normalized = normalizeAgentConfig(id, input, current);
+    const history = parseJsonSetting(map, agentHistoryKey(id), []);
+    const highestVersion = Math.max(current.version || 1, ...history.map((item) => Number(item.version) || 0));
+    const published = {
+        ...normalized,
+        version: highestVersion + 1,
+        publishedAt: new Date().toISOString(),
+        publishedBy: actorId || null,
+        rollbackOf: metadata.rollbackOf || null,
+    };
+    const nextHistory = [published, current, ...history]
+        .filter((item, index, items) => items.findIndex((other) => Number(other.version) === Number(item.version)) === index)
+        .slice(0, 30);
+    await query(
+        `INSERT INTO settings (key, value) VALUES ($1,$2)
+         ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()`,
+        [agentSettingKey(id), JSON.stringify(published)]
+    );
+    await query(
+        `INSERT INTO settings (key, value) VALUES ($1,$2)
+         ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()`,
+        [agentHistoryKey(id), JSON.stringify(nextHistory)]
+    );
+    cache = null;
+    return published;
+};
+
+export const getAgentHistory = async (id) => {
+    if (!agentDefinition(id)) throw new Error('Agente inválido.');
+    const map = await ensure();
+    const history = parseJsonSetting(map, agentHistoryKey(id), []);
+    if (history.length) return history;
+    return [await getAgentConfig(id)];
+};
+
+export const rollbackAgentConfig = async (id, version, actorId = null) => {
+    const history = await getAgentHistory(id);
+    const target = history.find((item) => Number(item.version) === Number(version));
+    if (!target) throw new Error('Versão do agente não encontrada.');
+    return publishAgentConfig(id, target, actorId, { rollbackOf: Number(version) });
+};
+
+/** Resolve somente no gateway: o renderer nunca recebe prompt, provedor ou modelo reais. */
+export const resolveAgent = async (id, locale = 'pt-BR', requestedTier = 'mileto') => {
+    const definition = agentDefinition(id);
+    if (!definition) throw new Error('Agente inválido.');
+    const config = await getAgentConfig(id);
+    const tierId = normalizeAgentTierId(requestedTier);
+    const tier = config.tiers[tierId];
+    const key = String(locale).toLowerCase();
+    const language = LANG_NAMES[key] || LANG_NAMES[key.split('-')[0]] || 'Português do Brasil';
+    return {
+        id,
+        label: definition.label,
+        kind: definition.kind,
+        enabled: config.enabled,
+        tier: tierId,
+        provider: tier.provider,
+        model: tier.model,
+        reasoning: tier.reasoning,
+        maxOutputTokens: tier.maxOutputTokens,
+        generationProvider: tier.generationProvider,
+        generationModel: tier.generationModel,
+        generationCostUsd: tier.generationCostUsd,
+        systemPrompt: config.systemPrompt.split('{idioma}').join(language),
+        version: config.version,
+    };
 };
 
 // ── Créditos de IA: multiplicador de revenda por RECURSO ────────────────────

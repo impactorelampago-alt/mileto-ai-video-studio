@@ -16,6 +16,8 @@ import {
     Image as ImageIcon,
     Trash2,
     Upload,
+    Move,
+    Scaling,
 } from 'lucide-react';
 import { useWizard, SHOW_DEBUG_FEATURES } from '../context/WizardContext';
 import { VideoSequencePreview, VideoSequencePreviewRef } from '../components/VideoSequencePreview';
@@ -23,17 +25,20 @@ import { TitleHook } from '../types';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import axios from 'axios';
+import { localAuthHeaders } from '../lib/serverAuth';
 import { DynamicTitleRenderer } from '../components/DynamicTitleRenderer';
 import { ExportModal } from '../components/ExportModal';
+import { PREMIUM_TITLE_GROUPS, PREMIUM_TITLE_MODELS } from '../lib/premiumTitleModels';
+import { missingForCompletion, pendingWarningText } from '../lib/workflowWarnings';
 
 export const Step4 = () => {
-    const { adData, updateAdData, mediaTakes, apiKeys, isDebugMode, setIsDebugMode } = useWizard();
+    const { adData, updateAdData, mediaTakes, isDebugMode, setIsDebugMode } = useWizard();
     const [isGenerating, setIsGenerating] = useState(false);
     const [selectedTitleId, setSelectedTitleId] = useState<string | null>(null);
     // Accordion states
-    const [isSimplesOpen, setIsSimplesOpen] = useState(true); // Changed to true as per instruction
+    const [isSimplesOpen, setIsSimplesOpen] = useState(false);
     const [isCtaOpen, setIsCtaOpen] = useState(false);
-    const [isPremiumOpen, setIsPremiumOpen] = useState(false); // New state
+    const [isPremiumOpen, setIsPremiumOpen] = useState(true);
     const [isLocationOpen, setIsLocationOpen] = useState(false);
     const [isCustomImgOpen, setIsCustomImgOpen] = useState(false);
     const [isUploadingImage, setIsUploadingImage] = useState(false);
@@ -64,9 +69,8 @@ export const Step4 = () => {
                 {
                     script: adData.narrationText,
                     captions: adData.captions,
-                    openaiKey: apiKeys.openai,
-                    geminiKey: apiKeys.gemini,
-                }
+                },
+                { headers: await localAuthHeaders() }
             );
 
             if (res.data.ok && res.data.titles) {
@@ -94,6 +98,18 @@ export const Step4 = () => {
         previewRef.current?.seekToTime(time);
     }, []);
 
+    const currentPreviewTime = useCallback(
+        () => Math.max(0, previewRef.current?.getCurrentTime() ?? 0),
+        []
+    );
+
+    const handleOpenExport = () => {
+        const missing = missingForCompletion(adData, mediaTakes);
+        if (missing.length) toast.warning(pendingWarningText(missing), { duration: 8000 });
+        (window as unknown as { _isTestExportPattern: boolean })._isTestExportPattern = false;
+        setShowExportModal(true);
+    };
+
     const updateTitle = (id: string, updates: Partial<TitleHook>) => {
         const newTitles = titles.map((t) => {
             if (t.id === id) {
@@ -103,6 +119,7 @@ export const Step4 = () => {
                     updates.fontFamily ||
                     updates.primaryColor ||
                     updates.secondaryColor ||
+                    updates.posX !== undefined ||
                     updates.posY !== undefined ||
                     updates.scale !== undefined ||
                     updates.text ||
@@ -115,6 +132,20 @@ export const Step4 = () => {
             return t;
         });
         updateAdData({ dynamicTitles: newTitles });
+    };
+
+    const updateTitleTransform = (id: string, updates: Partial<TitleHook>) => {
+        updateAdData({
+            dynamicTitles: titles.map((title) => title.id === id ? { ...title, ...updates } : title),
+        });
+    };
+
+    const deleteTitle = (id: string) => {
+        const index = titles.findIndex((title) => title.id === id);
+        const remaining = titles.filter((title) => title.id !== id);
+        updateAdData({ dynamicTitles: remaining });
+        setSelectedTitleId(remaining[Math.min(Math.max(index, 0), Math.max(remaining.length - 1, 0))]?.id ?? null);
+        toast.success('Título removido.');
     };
 
     const handleSelectTitle = (title: TitleHook) => {
@@ -140,10 +171,6 @@ export const Step4 = () => {
         { id: 'cta-whatsapp', name: 'Balão WhatsApp' },
         { id: 'cta-shop', name: 'Sacola (Comprar)' },
         { id: 'cta-minimal', name: 'Seta Minimalista' },
-    ];
-
-    const PREMIUM_MODELS = [
-        { id: 'premium-01', name: 'Lançamento Pro' }
     ];
 
     const LOCATION_MODELS = [
@@ -186,15 +213,17 @@ export const Step4 = () => {
 
                     <button
                         onClick={() => {
+                            const startSec = currentPreviewTime();
                             const newTitle: TitleHook = {
                                 id: `manual-${Date.now()}`,
-                                text: '',
+                                text: 'Novo título',
                                 styleId: 'solid-ribbon',
-                                startSec: 0,
+                                startSec,
                                 durationSec: 3,
                                 isActive: true,
                                 hasSound: true,
                                 posY: 30,
+                                posX: 50,
                                 scale: 1,
                                 primaryColor: '#00E676',
                                 secondaryColor: '#ffffff',
@@ -203,7 +232,8 @@ export const Step4 = () => {
                             };
                             updateAdData({ dynamicTitles: [...titles, newTitle] });
                             setSelectedTitleId(newTitle.id);
-                            toast.success('Título criado! Edite o texto abaixo.');
+                            handleTargetTime(startSec);
+                            toast.success(`Título criado em ${startSec.toFixed(1)}s. Dê dois cliques nele para editar.`);
                         }}
                         className="w-full py-3 border-2 border-dashed border-brand-accent/30 hover:border-brand-accent/60 hover:bg-brand-accent/5 text-brand-accent font-bold rounded-2xl text-[12px] uppercase tracking-wider transition-all flex items-center justify-center gap-2 mt-1"
                     >
@@ -229,15 +259,17 @@ export const Step4 = () => {
 
                                 // Create title with uploaded image
                                 const imageUrl = URL.createObjectURL(file);
+                                const startSec = currentPreviewTime();
                                 const newTitle: TitleHook = {
                                     id: `upload-${Date.now()}`,
                                     text: file.name.replace(/\.[^/.]+$/, ''), // Remove extension
                                     styleId: 'image-overlay', // Custom style for uploaded images
-                                    startSec: 0,
+                                    startSec,
                                     durationSec: 3,
                                     isActive: true,
                                     hasSound: false,
                                     posY: 50,
+                                    posX: 50,
                                     scale: 1,
                                     primaryColor: '#ffffff',
                                     secondaryColor: '#000000',
@@ -247,6 +279,7 @@ export const Step4 = () => {
                                 };
                                 updateAdData({ dynamicTitles: [...titles, newTitle] });
                                 setSelectedTitleId(newTitle.id);
+                                handleTargetTime(startSec);
                                 toast.success('Imagem de título carregada!');
                             };
                             input.click();
@@ -433,6 +466,12 @@ export const Step4 = () => {
                                                             <option value="Impact">Impact</option>
                                                             <option value="Bebas Neue">Bebas Neue</option>
                                                             <option value="Anton">Anton</option>
+                                                            <option value="Archivo Black">Archivo Black</option>
+                                                            <option value="DM Sans">DM Sans</option>
+                                                            <option value="League Spartan">League Spartan</option>
+                                                            <option value="Oswald">Oswald</option>
+                                                            <option value="Playfair Display">Playfair Display</option>
+                                                            <option value="Space Grotesk">Space Grotesk</option>
                                                         </select>
                                                     </div>
 
@@ -459,119 +498,29 @@ export const Step4 = () => {
                                                 </div>
                                             </div>
 
-                                            {/* Vertical Sliders (Right) */}
-                                            <div className="min-w-[84px] w-[84px] shrink-0 flex border-l border-white/5 bg-black/30 rounded-br-lg p-1.5">
-                                                {/* Position */}
-                                                <div className="w-1/2 flex flex-col items-center justify-between py-2 border-r border-white/5">
-                                                    <span
-                                                        className="text-[9px] uppercase tracking-widest text-brand-muted font-bold leading-none"
-                                                        title="Topo"
-                                                    >
-                                                        0%
-                                                    </span>
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            updateTitle(title.id, {
-                                                                posY: Math.max(0, title.posY - 2),
-                                                            });
-                                                        }}
-                                                        className="w-6 h-6 flex items-center justify-center text-brand-muted hover:text-foreground bg-black/20 hover:bg-white/10 rounded transition-colors text-sm font-bold"
-                                                        title="Subir"
-                                                    >
-                                                        −
-                                                    </button>
-                                                    <div className="relative flex justify-center items-center py-2 h-full w-full overflow-visible min-h-[80px] md:min-h-[100px]">
-                                                        <input
-                                                            type="range"
-                                                            min="0"
-                                                            max="100"
-                                                            step="1"
-                                                            value={100 - title.posY}
-                                                            onChange={(e) =>
-                                                                updateTitle(title.id, {
-                                                                    posY: 100 - parseInt(e.target.value),
-                                                                })
-                                                            }
-                                                            className="absolute w-[80px] md:w-[96px] h-1.5 accent-brand-accent rounded-full appearance-none bg-brand-dark -rotate-90 origin-center cursor-ns-resize shadow-inner border border-white/5"
-                                                            title={`Posição Vertical: ${title.posY}%`}
-                                                        />
-                                                    </div>
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            updateTitle(title.id, {
-                                                                posY: Math.min(100, title.posY + 2),
-                                                            });
-                                                        }}
-                                                        className="w-6 h-6 flex items-center justify-center text-brand-muted hover:text-foreground bg-black/20 hover:bg-white/10 rounded transition-colors text-sm font-bold"
-                                                        title="Descer"
-                                                    >
-                                                        +
-                                                    </button>
-                                                    <span
-                                                        className="text-[9px] uppercase tracking-widest text-slate-500 font-bold leading-none"
-                                                        title="Base"
-                                                    >
-                                                        100%
-                                                    </span>
+                                            {/* Edição direta no monitor */}
+                                            <div className="flex w-[118px] shrink-0 flex-col items-center justify-center border-l border-white/5 bg-linear-to-b from-brand-lime/[.07] to-black/25 p-3 text-center">
+                                                <div className="grid h-9 w-9 place-items-center rounded-xl border border-brand-lime/20 bg-brand-lime/10 text-brand-lime">
+                                                    <Move className="h-4 w-4" />
                                                 </div>
-
-                                                {/* Size */}
-                                                <div className="w-1/2 flex flex-col items-center justify-between py-2">
-                                                    <span
-                                                        className="text-[9px] uppercase tracking-widest text-brand-muted font-bold leading-none"
-                                                        title="Max"
-                                                    >
-                                                        2x
-                                                    </span>
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            updateTitle(title.id, {
-                                                                scale: Math.min(2.5, (title.scale ?? 1) + 0.1),
-                                                            });
-                                                        }}
-                                                        className="w-6 h-6 flex items-center justify-center text-brand-muted hover:text-foreground bg-black/20 hover:bg-white/10 rounded transition-colors text-sm font-bold"
-                                                        title="Aumentar"
-                                                    >
-                                                        +
-                                                    </button>
-                                                    <div className="relative flex justify-center items-center py-2 h-full w-full overflow-visible min-h-[80px] md:min-h-[100px]">
-                                                        <input
-                                                            type="range"
-                                                            min="0.5"
-                                                            max="2.5"
-                                                            step="0.1"
-                                                            value={title.scale ?? 1}
-                                                            onChange={(e) =>
-                                                                updateTitle(title.id, {
-                                                                    scale: parseFloat(e.target.value),
-                                                                })
-                                                            }
-                                                            className="absolute w-[80px] md:w-[96px] h-1.5 accent-brand-accent rounded-full appearance-none bg-brand-dark -rotate-90 origin-center cursor-ns-resize shadow-inner border border-white/5"
-                                                            title={`Tamanho: ${title.scale ?? 1}x`}
-                                                        />
-                                                    </div>
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            updateTitle(title.id, {
-                                                                scale: Math.max(0.5, (title.scale ?? 1) - 0.1),
-                                                            });
-                                                        }}
-                                                        className="w-6 h-6 flex items-center justify-center text-brand-muted hover:text-foreground bg-black/20 hover:bg-white/10 rounded transition-colors text-sm font-bold"
-                                                        title="Diminuir"
-                                                    >
-                                                        −
-                                                    </button>
-                                                    <span
-                                                        className="text-[9px] uppercase tracking-widest text-brand-muted font-bold leading-none"
-                                                        title="Min"
-                                                    >
-                                                        .5x
-                                                    </span>
+                                                <p className="mt-2 text-[9px] font-black uppercase leading-relaxed tracking-wider text-foreground/75">
+                                                    Edite no preview
+                                                </p>
+                                                <p className="mt-1 text-[8px] leading-relaxed text-brand-muted">
+                                                    Arraste para mover. Puxe os cantos para redimensionar.
+                                                </p>
+                                                <div className="mt-2 flex items-center gap-1 rounded-md bg-black/25 px-2 py-1 font-mono text-[8px] text-brand-lime/80">
+                                                    <Scaling className="h-3 w-3" /> {(title.scale ?? 1).toFixed(2)}x
                                                 </div>
+                                                <button
+                                                    onClick={(event) => {
+                                                        event.stopPropagation();
+                                                        updateTitle(title.id, { posX: 50, posY: 30, scale: 1 });
+                                                    }}
+                                                    className="mt-2 text-[8px] font-black uppercase tracking-wider text-brand-muted transition hover:text-brand-lime"
+                                                >
+                                                    Centralizar
+                                                </button>
                                             </div>
                                         </div>
                                     )}
@@ -694,7 +643,7 @@ export const Step4 = () => {
 
                                             <div className="flex-1 w-full flex items-center justify-center overflow-hidden">
                                                 <div className="scale-[0.45] origin-center">
-                                                    <DynamicTitleRenderer title={mockTitle} />
+                                                    <DynamicTitleRenderer title={mockTitle} previewMode />
                                                 </div>
                                             </div>
                                         </button>
@@ -814,7 +763,7 @@ export const Step4 = () => {
                                                 className="flex-1 w-full flex items-center justify-center pointer-events-none overflow-hidden"
                                                 style={{ transform: 'scale(0.40)' }}
                                             >
-                                                <DynamicTitleRenderer title={mockTitle} />
+                                                <DynamicTitleRenderer title={mockTitle} previewMode />
                                             </div>
                                         </button>
                                     );
@@ -824,118 +773,143 @@ export const Step4 = () => {
                     </div>
 
                     {/* Accordion: Premium */}
-                    <div className="mb-6 mt-4">
+                    <div className="mb-6 mt-1">
                         <div
-                            className="flex items-center justify-between bg-brand-dark p-4 rounded-t-2xl border border-black/5 dark:border-white/5 shadow-sm cursor-pointer hover:bg-black/5 dark:bg-white/5 transition-colors group"
+                            className="group flex cursor-pointer items-center justify-between rounded-t-2xl border border-amber-400/15 bg-linear-to-r from-amber-400/10 via-brand-dark to-fuchsia-500/5 p-4 shadow-sm transition-colors hover:border-amber-400/30"
                             onClick={() => setIsPremiumOpen(!isPremiumOpen)}
                         >
                             <div className="flex items-center gap-3">
                                 {isPremiumOpen ? (
-                                    <ChevronUp className="w-5 h-5 text-amber-400" />
+                                    <ChevronUp className="h-5 w-5 text-amber-300" />
                                 ) : (
-                                    <ChevronDown className="w-5 h-5 text-amber-400" />
+                                    <ChevronDown className="h-5 w-5 text-amber-300" />
                                 )}
-                                <h4 className="font-bold uppercase tracking-wider text-amber-400 text-[13px] drop-shadow-[0_0_5px_rgba(251,191,36,0.3)]">
-                                    Categoria: Especiais (Premium)
-                                </h4>
+                                <div>
+                                    <h4 className="text-[13px] font-black uppercase tracking-wider text-amber-300">
+                                        Biblioteca Premium
+                                    </h4>
+                                    <p className="mt-0.5 text-[9px] font-semibold text-brand-muted">
+                                        18 modelos curados para uso real
+                                    </p>
+                                </div>
                             </div>
+                            <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-amber-200">
+                                Motion
+                            </span>
                         </div>
 
                         {isPremiumOpen && (
-                            <div className="grid gap-4 bg-brand-dark/40 p-5 border border-t-0 border-black/5 dark:border-white/5 rounded-b-2xl animate-in slide-in-from-top-2 duration-200">
-                                {PREMIUM_MODELS.map((model) => {
-                                    const isSelected = selectedTitle?.styleId === model.id;
+                            <div className="space-y-6 rounded-b-2xl border border-t-0 border-amber-400/10 bg-brand-dark/40 p-4 animate-in slide-in-from-top-2 duration-200">
+                                {PREMIUM_TITLE_GROUPS.map((group) => (
+                                    <section key={group}>
+                                        <div className="mb-3 flex items-center gap-3">
+                                            <span className="text-[9px] font-black uppercase tracking-[.22em] text-amber-200/80">
+                                                {group}
+                                            </span>
+                                            <span className="h-px flex-1 bg-linear-to-r from-amber-300/20 to-transparent" />
+                                        </div>
 
-                                    const mockTitle: TitleHook = selectedTitle
-                                        ? {
-                                              ...selectedTitle,
-                                              text: 'Lançamento',
-                                              styleId: model.id,
-                                              primaryColor: isSelected ? selectedTitle.primaryColor : '#FBBF24',
-                                              secondaryColor: isSelected ? selectedTitle.secondaryColor : '#ffffff',
-                                          }
-                                        : {
-                                              id: 'mock',
-                                              text: 'Lançamento',
-                                              styleId: model.id,
-                                              startSec: 0,
-                                              durationSec: 1,
-                                              isActive: true,
-                                              posY: 30,
-                                              scale: 1,
-                                              primaryColor: '#FBBF24', // Amber default for Premium
-                                              secondaryColor: '#ffffff',
-                                          };
+                                        <div className="grid gap-3">
+                                            {PREMIUM_TITLE_MODELS.filter((model) => model.group === group).map((model) => {
+                                                const isSelected = selectedTitle?.styleId === model.id;
+                                                const mockTitle: TitleHook = {
+                                                    ...(selectedTitle || {
+                                                        id: 'mock',
+                                                        startSec: 0,
+                                                        durationSec: 3,
+                                                        isActive: true,
+                                                        posY: 30,
+                                                        scale: 1,
+                                                    }),
+                                                    text: model.sample,
+                                                    styleId: model.id,
+                                                    animationId: 'none',
+                                                    primaryColor: isSelected
+                                                        ? selectedTitle?.primaryColor || model.primaryColor
+                                                        : model.primaryColor,
+                                                    secondaryColor: isSelected
+                                                        ? selectedTitle?.secondaryColor || model.secondaryColor
+                                                        : model.secondaryColor,
+                                                    fontFamily: isSelected
+                                                        ? selectedTitle?.fontFamily || model.fontFamily
+                                                        : model.fontFamily,
+                                                };
 
-                                    return (
-                                        <button
-                                            key={model.id}
-                                            onClick={() =>
-                                                selectedTitle && updateTitle(selectedTitle.id, { styleId: model.id })
-                                            }
-                                            className={cn(
-                                                'relative h-24 bg-background rounded-2xl border-2 flex flex-col items-center justify-center transition-all group overflow-hidden shadow-lg hover:shadow-xl',
-                                                isSelected && selectedTitle
-                                                    ? 'border-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.15)]'
-                                                    : 'border-transparent hover:border-black/10 dark:border-white/10',
-                                                !selectedTitle && 'opacity-60 cursor-not-allowed'
-                                            )}
-                                            disabled={!selectedTitle}
-                                        >
-                                            <div className="absolute top-3 inset-x-0 w-full flex justify-center z-20">
-                                                <span
-                                                    className={cn(
-                                                        'text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-background/80 backdrop-blur-md',
-                                                        isSelected && selectedTitle
-                                                            ? 'text-amber-400 border border-amber-400/50'
-                                                            : 'text-brand-muted border border-white/5'
-                                                    )}
-                                                >
-                                                    {model.name}
-                                                </span>
-                                            </div>
-
-                                            {isSelected && selectedTitle && (
-                                                <>
-                                                    <div className="absolute top-3 right-3 bg-amber-400 rounded-full p-0.5 shadow-[0_0_10px_rgba(251,191,36,0.6)] z-10">
-                                                        <CheckCircle2 className="w-5 h-5 text-[#0a0f12]" />
-                                                    </div>
-                                                    <div
-                                                        className="absolute bottom-3 right-3 flex items-center gap-2 bg-brand-dark/95 p-1.5 rounded-xl border border-black/10 dark:border-white/10 backdrop-blur-md z-20 shadow-xl"
-                                                        onClick={(e) => e.stopPropagation()}
+                                                return (
+                                                    <button
+                                                        key={model.id}
+                                                        onClick={() =>
+                                                            selectedTitle &&
+                                                            updateTitle(selectedTitle.id, {
+                                                                styleId: model.id,
+                                                                animationId: 'none',
+                                                                primaryColor: model.primaryColor,
+                                                                secondaryColor: model.secondaryColor,
+                                                                fontFamily: model.fontFamily,
+                                                            })
+                                                        }
+                                                        className={cn(
+                                                            'group/model relative min-h-40 overflow-hidden rounded-2xl border bg-background text-left shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-2xl',
+                                                            isSelected && selectedTitle
+                                                                ? 'border-amber-300/65 ring-1 ring-amber-300/15'
+                                                                : 'border-white/8 hover:border-amber-300/25',
+                                                            !selectedTitle && 'cursor-not-allowed opacity-60'
+                                                        )}
+                                                        disabled={!selectedTitle}
                                                     >
-                                                        <input
-                                                            type="color"
-                                                            value={selectedTitle.primaryColor || '#FBBF24'}
-                                                            onChange={(e) =>
-                                                                updateTitle(selectedTitle.id, {
-                                                                    primaryColor: e.target.value,
-                                                                })
-                                                            }
-                                                            className="w-5 h-5 rounded cursor-pointer border-0 p-0 bg-transparent"
-                                                            title="Cor de Fundo / Destaque"
-                                                        />
-                                                        <input
-                                                            type="color"
-                                                            value={selectedTitle.secondaryColor || '#ffffff'}
-                                                            onChange={(e) =>
-                                                                updateTitle(selectedTitle.id, {
-                                                                    secondaryColor: e.target.value,
-                                                                })
-                                                            }
-                                                            className="w-5 h-5 rounded cursor-pointer border-0 p-0 bg-transparent"
-                                                            title="Cor do Texto"
-                                                        />
-                                                    </div>
-                                                </>
-                                            )}
+                                                        <div className="flex items-start justify-between gap-3 border-b border-white/6 bg-white/[.025] px-3.5 py-3">
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="truncate text-[11px] font-black uppercase tracking-wider text-foreground">
+                                                                        {model.name}
+                                                                    </span>
+                                                                    {isSelected && selectedTitle && (
+                                                                        <CheckCircle2 className="h-4 w-4 shrink-0 text-amber-300" />
+                                                                    )}
+                                                                </div>
+                                                                <p className="mt-1 line-clamp-2 text-[9px] leading-relaxed text-brand-muted">
+                                                                    {model.description}
+                                                                </p>
+                                                            </div>
+                                                            <div className="flex shrink-0 gap-1">
+                                                                <span className="h-3.5 w-3.5 rounded-full border border-white/20" style={{ backgroundColor: model.primaryColor }} />
+                                                                <span className="h-3.5 w-3.5 rounded-full border border-white/20" style={{ backgroundColor: model.secondaryColor }} />
+                                                            </div>
+                                                        </div>
 
-                                            <div className="scale-[0.45] origin-center -mt-2 w-full flex items-center justify-center">
-                                                <DynamicTitleRenderer title={mockTitle} />
-                                            </div>
-                                        </button>
-                                    );
-                                })}
+                                                        <div className="flex h-24 w-full items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_center,rgba(255,255,255,.06),transparent_70%)] px-2">
+                                                            <div className="origin-center scale-[0.36]">
+                                                                <DynamicTitleRenderer title={mockTitle} previewMode />
+                                                            </div>
+                                                        </div>
+
+                                                        {isSelected && selectedTitle && (
+                                                            <div
+                                                                className="absolute bottom-2.5 right-2.5 z-20 flex items-center gap-1.5 rounded-xl border border-white/10 bg-brand-dark/95 p-1.5 shadow-xl backdrop-blur-md"
+                                                                onClick={(event) => event.stopPropagation()}
+                                                            >
+                                                                <input
+                                                                    type="color"
+                                                                    value={selectedTitle.primaryColor || model.primaryColor}
+                                                                    onChange={(event) => updateTitle(selectedTitle.id, { primaryColor: event.target.value })}
+                                                                    className="h-5 w-5 cursor-pointer rounded border-0 bg-transparent p-0"
+                                                                    title="Cor de destaque"
+                                                                />
+                                                                <input
+                                                                    type="color"
+                                                                    value={selectedTitle.secondaryColor || model.secondaryColor}
+                                                                    onChange={(event) => updateTitle(selectedTitle.id, { secondaryColor: event.target.value })}
+                                                                    className="h-5 w-5 cursor-pointer rounded border-0 bg-transparent p-0"
+                                                                    title="Cor do texto"
+                                                                />
+                                                            </div>
+                                                        )}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </section>
+                                ))}
                             </div>
                         )}
                     </div>
@@ -1050,7 +1024,7 @@ export const Step4 = () => {
 
                                             <div className="flex-1 w-full flex items-center justify-center overflow-hidden">
                                                 <div className="scale-[0.35] origin-center">
-                                                    <DynamicTitleRenderer title={mockTitle} />
+                                                    <DynamicTitleRenderer title={mockTitle} previewMode />
                                                 </div>
                                             </div>
                                         </button>
@@ -1157,6 +1131,10 @@ export const Step4 = () => {
                                     onMuteToggle={() => {}}
                                     onMuteAll={() => {}}
                                     dynamicTitles={titles.filter((t) => t.isActive)}
+                                    selectedTitleId={selectedTitleId}
+                                    onTitleSelect={setSelectedTitleId}
+                                    onTitleTransformChange={updateTitleTransform}
+                                    onTitleDelete={deleteTitle}
                                 />
                             </div>
                         </div>
@@ -1209,10 +1187,7 @@ export const Step4 = () => {
 
                 {/* Primary Export Action (Right) */}
                 <button
-                    onClick={() => {
-                        (window as unknown as { _isTestExportPattern: boolean })._isTestExportPattern = false;
-                        setShowExportModal(true);
-                    }}
+                    onClick={handleOpenExport}
                     className="px-10 py-3.5 bg-linear-to-r from-brand-lime to-brand-accent hover:shadow-[0_0_20px_rgba(0,230,118,0.4)] text-[#0a0f12] font-extrabold uppercase tracking-widest rounded-xl text-sm flex items-center gap-3 transition-transform hover:scale-[1.02] active:scale-[0.98]"
                 >
                     <Download className="w-5 h-5 flex-shrink-0" />

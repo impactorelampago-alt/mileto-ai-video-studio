@@ -9,6 +9,7 @@ export const useAudioEngine = (
     const [currentTime, setCurrentTime] = useState(0);
     const [isReady, setIsReady] = useState(false);
     const [buffersVersion, setBuffersVersion] = useState(0);
+    const [loadError, setLoadError] = useState<string | null>(null);
 
     const audioContextRef = useRef<AudioContext | null>(null);
     const audioBuffersRef = useRef<Map<string, AudioBuffer>>(new Map());
@@ -16,7 +17,8 @@ export const useAudioEngine = (
     const gainNodesRef = useRef<Map<string, GainNode>>(new Map());
     const startTimeRef = useRef<number>(0); // When playback started (context time)
     const pausedTimeRef = useRef<number>(0); // Where we paused (timeline time)
-    const animationFrameRef = useRef<number>(0);
+    const playbackClockRef = useRef<number | null>(null);
+    const playbackRunRef = useRef(0);
 
     // Init Context
     useEffect(() => {
@@ -24,6 +26,10 @@ export const useAudioEngine = (
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         audioContextRef.current = new AudioContextClass();
         return () => {
+            // Stop the playback clock before closing the audio context.
+            if (playbackClockRef.current !== null) {
+                window.clearInterval(playbackClockRef.current);
+            }
             audioContextRef.current?.close();
         };
     }, []);
@@ -36,6 +42,8 @@ export const useAudioEngine = (
 
         const load = async () => {
             const ctx = audioContextRef.current!;
+            setIsReady(false);
+            setLoadError(null);
 
             // Collect all unique URLs from the timeline
             const uniqueUrls = new Set<string>();
@@ -94,7 +102,15 @@ export const useAudioEngine = (
             });
 
             await Promise.all(promises);
-            setIsReady(true);
+            const missing = [...uniqueUrls].filter((url) => !audioBuffersRef.current.has(url));
+            if (missing.length) {
+                setLoadError(
+                    missing.length === 1
+                        ? 'Não foi possível carregar uma das faixas de áudio.'
+                        : `Não foi possível carregar ${missing.length} faixas de áudio.`
+                );
+            }
+            setIsReady(missing.length === 0);
         };
 
         load();
@@ -111,6 +127,8 @@ export const useAudioEngine = (
     ]);
 
     const stopAll = useCallback(() => {
+        // Invalidate callbacks that belong to an earlier playback run.
+        playbackRunRef.current += 1;
         sourceNodesRef.current.forEach((node) => {
             try {
                 node.stop();
@@ -124,19 +142,27 @@ export const useAudioEngine = (
         gainNodesRef.current.forEach((node) => node.disconnect());
         gainNodesRef.current.clear();
 
-        if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+        if (playbackClockRef.current !== null) {
+            window.clearInterval(playbackClockRef.current);
+            playbackClockRef.current = null;
+        }
         setIsPlaying(false);
     }, []);
 
-    const play = useCallback(() => {
+    const play = useCallback(async () => {
         if (!timeline || !audioContextRef.current || !isReady) return;
         const ctx = audioContextRef.current;
-        if (ctx.state === 'suspended') ctx.resume();
+        if (ctx.state === 'suspended') await ctx.resume();
 
         stopAll(); // Ensure clean slate
+        const playbackRun = playbackRunRef.current;
 
+        // Se o playhead está no fim (áudio terminou), reinicia do 0 — senão todos os
+        // clips satisfazem clipEnd <= startOffset, nada toca e o Play fica inerte.
+        if (pausedTimeRef.current >= timeline.durationSec) pausedTimeRef.current = 0;
         const startOffset = pausedTimeRef.current; // Start from here (seconds)
         startTimeRef.current = ctx.currentTime - startOffset;
+        setCurrentTime(startOffset);
 
         // Schedule clips
         timeline.tracks.forEach((track) => {
@@ -207,18 +233,24 @@ export const useAudioEngine = (
 
         setIsPlaying(true);
 
-        const tick = () => {
+        const updatePlaybackClock = () => {
+            if (playbackRun !== playbackRunRef.current) return;
             const t = ctx.currentTime - startTimeRef.current;
-            setCurrentTime(t);
+            const boundedTime = Math.min(Math.max(0, t), timeline.durationSec);
+            pausedTimeRef.current = boundedTime;
+            setCurrentTime(boundedTime);
             if (t >= timeline.durationSec) {
-                pause();
-                setCurrentTime(timeline.durationSec); // Snap to end? Or loop?
-            } else {
-                animationFrameRef.current = requestAnimationFrame(tick);
+                pausedTimeRef.current = timeline.durationSec;
+                stopAll();
+                setCurrentTime(timeline.durationSec);
             }
         };
-        animationFrameRef.current = requestAnimationFrame(tick);
-    }, [timeline, isReady, isPlaying]); // stopAll is internal
+
+        // AudioContext is the source of truth; this clock only publishes its time
+        // so React redraws the playhead and counter continuously during playback.
+        updatePlaybackClock();
+        playbackClockRef.current = window.setInterval(updatePlaybackClock, 33);
+    }, [timeline, isReady, stopAll]);
 
     // Real-time Volume Adjustment
     useEffect(() => {
@@ -253,7 +285,7 @@ export const useAudioEngine = (
             if (wasPlaying) pause();
             pausedTimeRef.current = Math.max(0, time);
             setCurrentTime(pausedTimeRef.current);
-            if (wasPlaying) play();
+            if (wasPlaying) void play();
         },
         [isPlaying, pause, play]
     );
@@ -267,5 +299,6 @@ export const useAudioEngine = (
         isReady,
         audioBuffers: audioBuffersRef.current,
         buffersVersion, // Export version to trigger effects on load
+        loadError,
     };
 };

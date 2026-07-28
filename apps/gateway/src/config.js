@@ -33,6 +33,7 @@ export const config = {
         elevenLabs: process.env.ELEVENLABS_KEY || '',
         openai: process.env.OPENAI_KEY || '',
         gemini: process.env.GEMINI_KEY || '',
+        seedance: process.env.SEEDANCE_KEY || '',
     },
     resellMultiplier: safeMultiplier,
     r2: {

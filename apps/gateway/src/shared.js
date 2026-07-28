@@ -10,7 +10,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from './config.js';
 import { pool, query } from './db.js';
 
-const CATEGORIES = ['Imagens', 'Músicas', 'Vídeos'];
+const CATEGORIES = ['Imagens', 'Músicas', 'Vídeos', 'Geração por IA'];
 const TRASH_DAYS = 30;
 
 const s3 = config.r2.enabled
@@ -66,14 +66,26 @@ const cleanPath = (value, { allowRoot = true } = {}) => {
         throw error;
     }
     if (segments.length && !CATEGORIES.includes(segments[0])) {
-        const error = new Error('O caminho deve começar por Imagens, Músicas ou Vídeos.');
+        const error = new Error('O caminho deve começar por Imagens, Músicas, Vídeos ou Geração por IA.');
         error.status = 400;
         throw error;
     }
     return segments.join('/');
 };
 
-const mediaType = (category) => (category === 'Músicas' ? 'audio' : category === 'Imagens' ? 'image' : 'video');
+const mediaType = (category, mimeType = '', name = '') => {
+    if (category === 'Músicas') return 'audio';
+    if (category === 'Imagens') return 'image';
+    if (category === 'Vídeos') return 'video';
+    const mime = String(mimeType).toLowerCase();
+    if (mime.startsWith('image/')) return 'image';
+    if (mime.startsWith('audio/')) return 'audio';
+    if (mime.startsWith('video/')) return 'video';
+    const ext = String(name).toLowerCase().split('.').pop();
+    if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext)) return 'image';
+    if (['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'].includes(ext)) return 'audio';
+    return 'video';
+};
 const categoryFromPath = (parentPath, fallback) => parentPath.split('/')[0] || fallback;
 const prefixFor = (type) => (type === 'video' ? 'VID' : type === 'audio' ? 'AUD' : 'IMG');
 
@@ -105,14 +117,14 @@ const itemSelect = `
       FROM media_items i
       JOIN media_blobs b ON b.id = i.blob_id`;
 
-const createItem = async (client, { orgId, userId, blobId, parentPath, category, name, durationSec }) => {
+const createItem = async (client, { orgId, userId, blobId, parentPath, category, name, durationSec, mediaType: itemMediaType }) => {
     const id = randomUUID();
     const result = await client.query(
         `INSERT INTO media_items
              (id, org_id, blob_id, parent_path, category, name, media_type, duration_sec, created_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          RETURNING *`,
-        [id, orgId, blobId, parentPath, category, name, mediaType(category), durationSec ?? null, userId]
+        [id, orgId, blobId, parentPath, category, name, itemMediaType || mediaType(category, '', name), durationSec ?? null, userId]
     );
     return result.rows[0];
 };
@@ -221,6 +233,7 @@ export const prepareUpload = async (req, res) => {
                 category,
                 name,
                 durationSec,
+                mediaType: mediaType(category, mimeType, name),
             });
             return res.json({
                 ok: true,
@@ -284,7 +297,7 @@ export const completeUpload = async (req, res) => {
         ).rows[0];
         const deduplicated = Boolean(blob);
         if (!blob) {
-            const code = `${prefixFor(mediaType(category))}-${String(org.next_asset_number).padStart(6, '0')}`;
+            const code = `${prefixFor(mediaType(category, mimeType, name))}-${String(org.next_asset_number).padStart(6, '0')}`;
             await client.query('UPDATE organizations SET next_asset_number = next_asset_number + 1 WHERE id = $1', [orgId]);
             blob = (
                 await client.query(
@@ -302,6 +315,7 @@ export const completeUpload = async (req, res) => {
             category,
             name,
             durationSec,
+            mediaType: mediaType(category, mimeType, name),
         });
         await client.query('COMMIT');
         res.json({ ok: true, deduplicated, item: await mapItem({ ...blob, ...item }) });
@@ -349,9 +363,9 @@ export const moveItem = async (req, res) => {
     const parentPath = cleanPath(req.body.destPath || '', { allowRoot: false });
     const category = categoryFromPath(parentPath, 'Imagens');
     const result = await query(
-        `UPDATE media_items SET parent_path = $3, category = $4, media_type = $5
+        `UPDATE media_items SET parent_path = $3, category = $4
          WHERE org_id = $1 AND id = $2 AND trashed_at IS NULL RETURNING id`,
-        [orgId, req.body.id, parentPath, category, mediaType(category)]
+        [orgId, req.body.id, parentPath, category]
     );
     if (!result.rowCount) return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
     res.json({ ok: true });
@@ -373,6 +387,7 @@ export const copyItem = async (req, res) => {
             category,
             name: source.name,
             durationSec: source.duration_sec,
+            mediaType: source.media_type,
         });
         res.json({ ok: true, item: await mapItem({ ...source, ...item }) });
     } finally {
@@ -505,11 +520,17 @@ export const saveDraft = async (req, res) => {
 
 export const trashDraft = async (req, res) => {
     const orgId = orgIdOf(req);
+    const draftId = String(req.params.draftId || '').trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(draftId)) {
+        return res.status(400).json({ ok: false, message: 'Identificador do rascunho inválido.' });
+    }
     const result = await query(
         `UPDATE shared_drafts
-            SET trashed_at = now(), purge_after = now() + interval '${TRASH_DAYS} days'
-          WHERE org_id = $1 AND id = $2 AND trashed_at IS NULL RETURNING id`,
-        [orgId, req.params.draftId]
+            SET trashed_at = CURRENT_TIMESTAMP,
+                purge_after = CURRENT_TIMESTAMP + ($3::integer * INTERVAL '1 day'),
+                updated_at = CURRENT_TIMESTAMP
+          WHERE org_id = $1::bigint AND id = $2::uuid AND trashed_at IS NULL RETURNING id`,
+        [orgId, draftId, TRASH_DAYS]
     );
     if (!result.rowCount) return res.status(404).json({ ok: false, message: 'Rascunho não encontrado.' });
     res.json({ ok: true, trashDays: TRASH_DAYS });

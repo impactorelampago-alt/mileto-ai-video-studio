@@ -38,7 +38,7 @@
         --brand-card: 0 0% 100%;
         --brand-card-hover: 210 40% 96.1%;
         --brand-accent: 151 100% 35%;
-        --brand-lime: 83 76% 35%;
+        --brand-lime: 142 71% 36%;
         --brand-muted: 215.4 16.3% 46.9%;
         --brand-border: 214.3 31.8% 91.4%;
 
@@ -80,7 +80,7 @@
         --brand-card: 207 18% 10%;
         --brand-card-hover: 206 17% 14%;
         --brand-accent: 151 100% 45.1%;
-        --brand-lime: 83 76% 55%;
+        --brand-lime: 142 69% 49%;
         --brand-muted: 210 5% 58%;
         --brand-border: 217.2 32.6% 17.5%;
     }
@@ -97,7 +97,7 @@
 
 /* Custom Gradient Text Utility */
 .text-gradient {
-    @apply bg-gradient-to-r from-teal-400 to-lime-400 bg-clip-text text-transparent;
+    @apply bg-gradient-to-r from-teal-400 to-green-400 bg-clip-text text-transparent;
 }
 
 /* Gradient Border Helper */
@@ -106,7 +106,7 @@
     position: relative;
     background:
         linear-gradient(var(--background), var(--background)) padding-box,
-        linear-gradient(to right, #2dd4bf, #a3e635) border-box;
+        linear-gradient(to right, #2dd4bf, #4ade80) border-box;
     border: 2px solid transparent;
     border-radius: var(--radius);
 }

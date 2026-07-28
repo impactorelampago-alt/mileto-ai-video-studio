@@ -1,33 +1,61 @@
 import { useState, useEffect, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Home, User, RefreshCw, Cpu } from 'lucide-react';
+import {
+    Bell,
+    CheckCircle2,
+    Download,
+    Film,
+    FolderOpen,
+    Home,
+    Image as ImageIcon,
+    Loader2,
+    Link2,
+    LogOut,
+    Music,
+    RefreshCw,
+    User,
+    Wallet,
+    XCircle,
+} from 'lucide-react';
 import { toast } from 'sonner';
-import { ApiConfigModal } from '../components/ApiConfigModal';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { StepHeader } from '../components/StepHeader';
 import logoImg from '../../public/logo.png';
 import { cn } from '../lib/utils';
 import { updater, UpdateStatus } from '../lib/updater';
 import { useWizard } from '../context/WizardContext';
+import { useAuth } from '../context/AuthContext';
+import { useDownloadJobs } from '../context/DownloadJobsContext';
+
+/** Rótulo amigável do plano da organização. */
+const PLAN_LABEL: Record<string, string> = {
+    solo: 'Plano Solo',
+    business: 'Plano Business',
+    enterprise: 'Plano Enterprise',
+};
 
 export const MainLayout = () => {
-    const [isApiModalOpen, setIsApiModalOpen] = useState(false);
     const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+    const [isDownloadPanelOpen, setIsDownloadPanelOpen] = useState(false);
     const navigate = useNavigate();
     const location = useLocation();
     const progressToastId = useRef<string | number | null>(null);
     const { saveProject } = useWizard();
+    const { user, logout } = useAuth();
+    const { activeCount, jobs } = useDownloadJobs();
     const prevPathRef = useRef<string>(location.pathname);
+    const downloadPanelRef = useRef<HTMLDivElement | null>(null);
 
     // Auto-save do rascunho quando o usuário sai de qualquer /wizard/step/*.
     // Isso cobre tanto o clique no logo quanto navegação via StepHeader e back do browser.
     useEffect(() => {
         const prev = prevPathRef.current;
         const curr = location.pathname;
-        const leavingWizard = prev.startsWith('/wizard/step/') && !curr.startsWith('/wizard/step/');
-        if (leavingWizard) {
+        const changedWizardRoute = prev !== curr && prev.startsWith('/wizard/step/');
+        if (changedWizardRoute) {
             // saveProject internamente só grava se houver conteúdo — vazio não vira rascunho.
-            void saveProject();
+            const previousStep = Number(prev.match(/\/wizard\/step\/(\d+)/)?.[1] || 1);
+            void saveProject({ lastStep: previousStep });
         }
         prevPathRef.current = curr;
     }, [location.pathname, saveProject]);
@@ -36,11 +64,31 @@ export const MainLayout = () => {
     useEffect(() => {
         const onBeforeUnload = () => {
             // Fire-and-forget: em beforeunload não podemos aguardar async.
-            void saveProject();
+            void saveProject({ keepalive: true });
         };
         window.addEventListener('beforeunload', onBeforeUnload);
         return () => window.removeEventListener('beforeunload', onBeforeUnload);
     }, [saveProject]);
+
+    useEffect(() => {
+        if (!isDownloadPanelOpen) return;
+        const closeOnOutsideClick = (event: MouseEvent) => {
+            if (!downloadPanelRef.current?.contains(event.target as Node)) setIsDownloadPanelOpen(false);
+        };
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') setIsDownloadPanelOpen(false);
+        };
+        document.addEventListener('mousedown', closeOnOutsideClick);
+        document.addEventListener('keydown', closeOnEscape);
+        return () => {
+            document.removeEventListener('mousedown', closeOnOutsideClick);
+            document.removeEventListener('keydown', closeOnEscape);
+        };
+    }, [isDownloadPanelOpen]);
+
+    useEffect(() => {
+        setIsDownloadPanelOpen(false);
+    }, [location.pathname]);
 
     useEffect(() => {
         const off = updater.onStatus((s: UpdateStatus) => {
@@ -111,12 +159,17 @@ export const MainLayout = () => {
         }
     };
 
+    const notificationJobs = [...jobs]
+        .sort((a, b) => {
+            const activeDifference = Number(b.phase === 'downloading') - Number(a.phase === 'downloading');
+            return activeDifference || b.startedAt - a.startedAt;
+        })
+        .slice(0, 4);
+
     return (
         <div className="flex h-screen bg-background text-foreground font-sans overflow-hidden transition-colors duration-300">
-            <ApiConfigModal isOpen={isApiModalOpen} onClose={() => setIsApiModalOpen(false)} />
-
-            {/* Sidebar Lateral - Visível apenas na Home */}
-            {location.pathname === '/' && (
+            {/* Sidebar Lateral - Visível na Home e na aba Arquivos */}
+            {(location.pathname === '/' || location.pathname === '/files' || location.pathname === '/downloads' || location.pathname === '/account' || location.pathname === '/integrations') && (
                 <aside className="w-[260px] flex-shrink-0 bg-[#0a0f12] border-r border-border/50 flex flex-col justify-between py-6 z-40 relative transition-all">
                     
                     {/* Parte Superior */}
@@ -156,8 +209,14 @@ export const MainLayout = () => {
                                 <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-brand-lime rounded-full border-2 border-[#0a0f12]"></div>
                             </div>
                             <div className="text-center">
-                                <h2 className="text-sm font-bold text-foreground">Usuário</h2>
-                                <p className="text-[10px] text-brand-muted uppercase tracking-wider font-semibold">Plano Gratuito</p>
+                                <h2 className="text-sm font-bold text-foreground truncate max-w-[180px]">
+                                    {user?.name || user?.email || 'Minha conta'}
+                                </h2>
+                                <p className="text-[10px] text-brand-muted uppercase tracking-wider font-semibold">
+                                    {user?.role === 'super_admin'
+                                        ? 'Super Admin'
+                                        : PLAN_LABEL[user?.orgPlan || ''] || 'Mileto AI'}
+                                </p>
                             </div>
                         </div>
 
@@ -166,14 +225,67 @@ export const MainLayout = () => {
                             <button
                                 onClick={() => navigate('/')}
                                 className={cn(
-                                    "flex items-center gap-3 px-4 py-3 rounded-xl transition-all",
-                                    location.pathname === '/' || location.pathname.startsWith('/wizard')
-                                        ? "bg-brand-lime/10 text-brand-lime border border-brand-lime/20"
-                                        : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                                    'flex items-center gap-3 px-4 py-3 rounded-xl transition-all border',
+                                    location.pathname === '/'
+                                        ? 'bg-brand-lime/10 text-brand-lime border-brand-lime/20'
+                                        : 'text-muted-foreground hover:bg-white/5 hover:text-foreground border-transparent'
                                 )}
                             >
                                 <Home className="w-5 h-5" />
                                 <span className="text-sm font-bold">Início</span>
+                            </button>
+                            <button
+                                onClick={() => navigate('/files')}
+                                className={cn(
+                                    'flex items-center gap-3 px-4 py-3 rounded-xl transition-all border',
+                                    location.pathname === '/files'
+                                        ? 'bg-brand-lime/10 text-brand-lime border-brand-lime/20'
+                                        : 'text-muted-foreground hover:bg-white/5 hover:text-foreground border-transparent'
+                                )}
+                            >
+                                <FolderOpen className="w-5 h-5" />
+                                <span className="text-sm font-bold">Arquivos</span>
+                            </button>
+                            <button
+                                onClick={() => navigate('/downloads')}
+                                className={cn(
+                                    'flex items-center gap-3 px-4 py-3 rounded-xl transition-all border',
+                                    location.pathname === '/downloads'
+                                        ? 'bg-brand-lime/10 text-brand-lime border-brand-lime/20'
+                                        : 'text-muted-foreground hover:bg-white/5 hover:text-foreground border-transparent'
+                                )}
+                            >
+                                <Download className="w-5 h-5" />
+                                <span className="text-sm font-bold">Downloads</span>
+                                {activeCount > 0 && (
+                                    <span className="ml-auto flex min-w-5 h-5 items-center justify-center rounded-full bg-brand-lime px-1.5 text-[10px] font-black text-[#0a0f12]">
+                                        {activeCount}
+                                    </span>
+                                )}
+                            </button>
+                            <button
+                                onClick={() => navigate('/account')}
+                                className={cn(
+                                    'flex items-center gap-3 px-4 py-3 rounded-xl transition-all border',
+                                    location.pathname === '/account'
+                                        ? 'bg-brand-lime/10 text-brand-lime border-brand-lime/20'
+                                        : 'text-muted-foreground hover:bg-white/5 hover:text-foreground border-transparent'
+                                )}
+                            >
+                                <Wallet className="w-5 h-5" />
+                                <span className="text-sm font-bold">Minha Conta</span>
+                            </button>
+                            <button
+                                onClick={() => navigate('/integrations')}
+                                className={cn(
+                                    'flex items-center gap-3 px-4 py-3 rounded-xl transition-all border',
+                                    location.pathname === '/integrations'
+                                        ? 'bg-brand-lime/10 text-brand-lime border-brand-lime/20'
+                                        : 'text-muted-foreground hover:bg-white/5 hover:text-foreground border-transparent'
+                                )}
+                            >
+                                <Link2 className="w-5 h-5" />
+                                <span className="text-sm font-bold">Integrações</span>
                             </button>
                         </nav>
                     </div>
@@ -199,15 +311,12 @@ export const MainLayout = () => {
                             </span>
                         </button>
 
-                        <button 
-                            onClick={() => setIsApiModalOpen(true)}
-                            className="flex items-center gap-3 text-muted-foreground hover:text-foreground transition-colors group mt-2"
+                        <button
+                            onClick={() => void logout()}
+                            className="flex items-center gap-3 text-muted-foreground hover:text-red-400 transition-colors group mt-2"
                         >
-                            <div className="px-2 py-1 bg-white/5 border border-white/10 rounded flex items-center gap-1 group-hover:border-brand-lime/40 transition-colors">
-                                <Cpu className="w-3 h-3" />
-                                <span className="text-[10px] font-bold">API</span>
-                            </div>
-                            <span className="text-xs font-semibold">Configurações</span>
+                            <LogOut className="w-4 h-4" />
+                            <span className="text-xs font-semibold">Sair</span>
                         </button>
                     </div>
                 </aside>
@@ -215,34 +324,151 @@ export const MainLayout = () => {
 
             {/* Conteúdo Principal (Direita) */}
             <div className="flex-1 flex flex-col min-w-0 h-screen relative bg-background">
-                {/* Topbar com logo → volta pra Home. Só aparece fora da Home (que já tem logo na sidebar).
-                    Fica numa faixa própria acima do stepper pra não sobrepor nenhum step. */}
-                {location.pathname !== '/' && (
-                    <div className="shrink-0 border-b border-border/50 bg-background/80 backdrop-blur-sm z-40 px-4 py-2 flex items-center">
+                {/* Faixa global: aparece em todas as abas e concentra atividades do app. */}
+                <div className="relative z-50 flex shrink-0 items-center justify-between border-b border-border/50 bg-background/80 px-4 py-2 backdrop-blur-sm">
+                    <button
+                        type="button"
+                        onClick={() => navigate('/')}
+                        title="Voltar para o início"
+                        aria-label="Voltar para o início"
+                        className="group flex items-center gap-2 rounded-xl px-2 py-1 transition-all hover:bg-white/5"
+                    >
+                        <div className="relative flex items-center justify-center">
+                            <div className="absolute inset-0 rounded-full bg-brand-lime/20 opacity-0 blur-lg transition-opacity duration-500 group-hover:opacity-100" />
+                            <img
+                                src={logoImg}
+                                alt="Mileto AI"
+                                className="relative z-10 h-7 w-7 object-contain drop-shadow-[0_0_6px_rgba(0,230,118,0.3)]"
+                            />
+                        </div>
+                        <span className="text-[11px] font-black uppercase leading-none tracking-widest text-foreground/80 group-hover:text-foreground">
+                            Mileto{' '}
+                            <span className="bg-linear-to-r from-brand-lime to-brand-accent bg-clip-text text-transparent">
+                                AI
+                            </span>
+                        </span>
+                    </button>
+
+                    <div ref={downloadPanelRef} className="relative">
                         <button
                             type="button"
-                            onClick={() => navigate('/')}
-                            title="Voltar para o início"
-                            aria-label="Voltar para o início"
-                            className="flex items-center gap-2 px-2 py-1 rounded-xl hover:bg-white/5 transition-all group"
+                            onClick={() => setIsDownloadPanelOpen((open) => !open)}
+                            aria-label="Atividades em segundo plano"
+                            aria-expanded={isDownloadPanelOpen}
+                            title="Atividades"
+                            className={cn(
+                                'relative flex h-9 w-9 items-center justify-center rounded-xl border transition-all',
+                                isDownloadPanelOpen
+                                    ? 'border-brand-lime/30 bg-brand-lime/15 text-brand-lime'
+                                    : 'border-white/10 bg-white/5 text-brand-muted hover:border-white/20 hover:text-foreground'
+                            )}
                         >
-                            <div className="relative flex items-center justify-center">
-                                <div className="absolute inset-0 rounded-full bg-brand-lime/20 blur-lg opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-                                <img
-                                    src={logoImg}
-                                    alt="Mileto AI"
-                                    className="w-7 h-7 object-contain drop-shadow-[0_0_6px_rgba(0,230,118,0.3)] relative z-10"
-                                />
-                            </div>
-                            <span className="text-[11px] font-black uppercase tracking-widest text-foreground/80 group-hover:text-foreground leading-none">
-                                Mileto{' '}
-                                <span className="text-transparent bg-clip-text bg-linear-to-r from-brand-lime to-brand-accent">
-                                    AI
+                            <Bell className="h-4.5 w-4.5" />
+                            {activeCount > 0 && (
+                                <span className="absolute -right-1.5 -top-1.5 flex min-w-5 h-5 items-center justify-center rounded-full border-2 border-background bg-brand-lime px-1 text-[9px] font-black text-[#0a0f12]">
+                                    {activeCount > 9 ? '9+' : activeCount}
                                 </span>
-                            </span>
+                            )}
                         </button>
+
+                        {isDownloadPanelOpen && (
+                            <div className="absolute right-0 top-[calc(100%+0.6rem)] w-[min(380px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-white/10 bg-brand-dark/98 shadow-2xl backdrop-blur-xl">
+                                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+                                    <div>
+                                        <p className="text-sm font-black text-foreground">Atividades</p>
+                                        <p className="mt-0.5 text-[10px] text-brand-muted">
+                                            {activeCount > 0
+                                                ? `${activeCount} ${activeCount === 1 ? 'atividade em andamento' : 'atividades em andamento'}`
+                                                : 'Nenhuma atividade em andamento'}
+                                        </p>
+                                    </div>
+                                    {activeCount > 0 && <span className="h-2 w-2 animate-pulse rounded-full bg-brand-lime" />}
+                                </div>
+
+                                <div className="max-h-80 overflow-y-auto">
+                                    {notificationJobs.length === 0 ? (
+                                        <div className="flex flex-col items-center gap-2 px-5 py-8 text-center text-brand-muted">
+                                            <Bell className="h-7 w-7 opacity-40" />
+                                            <p className="text-xs">Downloads, importações e gerações aparecerão aqui.</p>
+                                        </div>
+                                    ) : (
+                                        <div className="divide-y divide-white/5">
+                                            {notificationJobs.map((job) => {
+                                                const progress = Math.max(0, Math.min(100, Number(job.percent || job.stepPercent || 0)));
+                                                return (
+                                                    <div key={job.id} className="flex gap-3 px-4 py-3">
+                                                        <div className={cn(
+                                                            'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                                                            job.phase === 'downloading'
+                                                                ? 'bg-brand-accent/10 text-brand-accent'
+                                                                : job.phase === 'done'
+                                                                  ? 'bg-brand-lime/10 text-brand-lime'
+                                                                  : 'bg-red-500/10 text-red-400'
+                                                        )}>
+                                                            {job.phase === 'downloading' ? (
+                                                                <Loader2 className="h-4 w-4 animate-spin" />
+                                                            ) : job.phase === 'done' ? (
+                                                                <CheckCircle2 className="h-4 w-4" />
+                                                            ) : (
+                                                                <XCircle className="h-4 w-4" />
+                                                            )}
+                                                        </div>
+                                                        <div className="min-w-0 flex-1">
+                                                            <div className="flex items-center gap-2">
+                                                                {job.mode === 'video' ? (
+                                                                    <Film className="h-3 w-3 shrink-0 text-brand-muted" />
+                                                                ) : job.mode === 'image' ? (
+                                                                    <ImageIcon className="h-3 w-3 shrink-0 text-brand-muted" />
+                                                                ) : (
+                                                                    <Music className="h-3 w-3 shrink-0 text-brand-muted" />
+                                                                )}
+                                                                <p className="truncate text-xs font-bold text-foreground">
+                                                                    {job.track?.displayName || job.title || 'Preparando download...'}
+                                                                </p>
+                                                            </div>
+                                                            {job.phase === 'downloading' ? (
+                                                                <div className="mt-2">
+                                                                    <div className="mb-1 flex justify-between text-[9px] text-brand-muted">
+                                                                        <span>{job.statusText || (job.step === 'processing' ? 'Processando' : 'Baixando')}</span>
+                                                                        <span>{Math.round(progress)}%</span>
+                                                                    </div>
+                                                                    <div className="h-1.5 overflow-hidden rounded-full bg-white/5">
+                                                                        <div
+                                                                            className="h-full bg-linear-to-r from-brand-lime to-brand-accent transition-all duration-500"
+                                                                            style={{ width: `${Math.max(2, progress)}%` }}
+                                                                        />
+                                                                    </div>
+                                                                </div>
+                                                            ) : (
+                                                                <p className={cn(
+                                                                    'mt-1 text-[10px]',
+                                                                    job.phase === 'done' ? 'text-brand-lime' : 'text-red-400'
+                                                                )}>
+                                                                    {job.phase === 'done' ? 'Concluído' : job.error || 'Falhou'}
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setIsDownloadPanelOpen(false);
+                                        navigate('/downloads');
+                                    }}
+                                    className="flex w-full items-center justify-center gap-2 border-t border-white/10 px-4 py-3 text-xs font-black text-brand-lime transition-colors hover:bg-brand-lime/5"
+                                >
+                                    <Download className="h-3.5 w-3.5" /> Ver todas as atividades
+                                </button>
+                            </div>
+                        )}
                     </div>
-                )}
+                </div>
 
                 {/* Horizontal Stepper */}
                 <div className="shrink-0 border-b border-border bg-card/40 backdrop-blur-sm z-30">

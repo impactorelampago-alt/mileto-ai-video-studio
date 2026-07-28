@@ -4,6 +4,8 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { randomUUID as uuidv4 } from 'crypto';
+import { bearerFrom, gatewayChat, GatewayHttpError } from '../services/gatewayClient';
+import { storeAiGeneratedMedia } from './fileExplorerController';
 
 // --- Replicate Integration ---
 
@@ -24,7 +26,7 @@ export const testReplicate = async (req: Request, res: Response) => {
 
 export const generateReplicateImage = async (req: Request, res: Response) => {
     const token = (req.headers['x-replicate-token'] as string)?.trim();
-    const { projectId, prompt, aspectRatio = '1:1', qualityPreset = 'standard' } = req.body;
+    const { projectId, prompt, aspectRatio = '1:1', qualityPreset = 'standard', conversationId, conversationTitle } = req.body;
 
     if (!token) return res.status(401).json({ ok: false, message: 'Missing Token' });
     if (!projectId || !prompt) return res.status(400).json({ ok: false, message: 'Missing parameters' });
@@ -44,26 +46,21 @@ export const generateReplicateImage = async (req: Request, res: Response) => {
         if (!imageUrl) throw new Error('No image URL returned');
 
         const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
-        const fileName = `img-${uuidv4()}.png`;
-        const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
-        const projectDir = path.join(BASE_DATA_PATH, 'data/projects', projectId, 'ai/images');
-
-        if (!fs.existsSync(projectDir)) {
-            fs.mkdirSync(projectDir, { recursive: true });
-        }
-
-        const filePath = path.join(projectDir, fileName);
-        fs.writeFileSync(filePath, response.data);
-
-        const publicUrl = `/data/projects/${projectId}/ai/images/${fileName}`;
+        const entry = await storeAiGeneratedMedia(Buffer.from(response.data), '.png', {
+            conversationId: String(conversationId || projectId),
+            conversationTitle: String(conversationTitle || 'Projeto atual'),
+            prompt: String(prompt),
+            provider: 'replicate',
+            model,
+        });
 
         res.json({
             ok: true,
             asset: {
-                id: uuidv4(),
+                id: entry.id,
                 type: 'image',
-                path: filePath,
-                publicUrl: publicUrl,
+                path: entry.filePath,
+                publicUrl: entry.publicUrl,
                 duration: 3.5,
             },
         });
@@ -341,27 +338,21 @@ export const getRunwayJobStatus = async (req: Request, res: Response) => {
             }
 
             const videoResponse = await axios.get(videoUrl, { responseType: 'arraybuffer' });
-            const fileName = `vid-${uuidv4()}.mp4`;
             const pId = String(projectId);
-            const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
-            const projectDir = path.join(BASE_DATA_PATH, 'data/projects', pId, 'ai/videos');
-
-            if (!fs.existsSync(projectDir)) {
-                fs.mkdirSync(projectDir, { recursive: true });
-            }
-
-            const filePath = path.join(projectDir, fileName);
-            fs.writeFileSync(filePath, videoResponse.data);
-
-            const publicUrl = `/data/projects/${pId}/ai/videos/${fileName}`;
+            const entry = await storeAiGeneratedMedia(Buffer.from(videoResponse.data), '.mp4', {
+                conversationId: pId,
+                conversationTitle: 'Projeto atual',
+                provider: 'runway',
+                model: 'runway-video',
+            });
 
             res.json({
                 status: 'SUCCEEDED',
                 asset: {
-                    id: uuidv4(),
+                    id: entry.id,
                     type: 'video',
-                    path: filePath,
-                    publicUrl: publicUrl,
+                    path: entry.filePath,
+                    publicUrl: entry.publicUrl,
                     duration: 5, // Default/Fallback, checks metadata in future
                     source: 'AI-Generated',
                 },
@@ -377,17 +368,15 @@ export const getRunwayJobStatus = async (req: Request, res: Response) => {
     }
 };
 
-import OpenAI from 'openai';
-
 export const generateTitles = async (req: Request, res: Response) => {
-    const { script, captions, openaiKey, geminiKey } = req.body;
+    const { script, captions } = req.body;
+    const token = bearerFrom(req);
 
     if (!script || !captions || !captions.segments) {
         return res.status(400).json({ ok: false, message: 'Missing script or captions data' });
     }
-
-    if (!openaiKey && !geminiKey) {
-        return res.status(401).json({ ok: false, message: 'Missing OpenAI or Gemini API Key' });
+    if (!token) {
+        return res.status(401).json({ ok: false, message: 'Sessão expirada. Entre novamente para gerar títulos.' });
     }
 
     // Extract all words with their start times for the AI to reference
@@ -414,44 +403,28 @@ Responda EXCLUSIVAMENTE em formato JSON. O JSON DEVE CONTER uma raiz com a chave
 }`;
 
     try {
-        let titlesJson = '';
+        // Títulos usam o tier mais barato (Lite) com system próprio e saída JSON.
+        // O gateway resolve o modelo real e mede o consumo como chat.
+        const result = await gatewayChat(token, {
+            messages: [{ role: 'user', content: `Roteiro: ${script}\n\nLegendas: ${wordTimings}` }],
+            system: systemPrompt,
+            json: true,
+            model: 'mileto-lite',
+            locale: 'pt-BR',
+        });
 
-        if (openaiKey) {
-            console.log('[AI] Gerando Títulos com OpenAI...');
-            const openai = new OpenAI({ apiKey: openaiKey });
-            const response = await openai.chat.completions.create({
-                model: 'gpt-4o-mini',
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: `Roteiro: ${script}\n\nLegendas: ${wordTimings}` },
-                ],
-                response_format: { type: 'json_object' },
-            });
-            const content = response.choices[0].message.content || '{}';
-            console.log('[AI] Output:', content);
-            const parsedContent = JSON.parse(content);
-            titlesJson = Array.isArray(parsedContent) ? parsedContent : parsedContent.titles || parsedContent;
-        } else if (geminiKey) {
-            console.log('[AI] Gerando Títulos com Gemini...');
-            const response = await axios.post(
-                `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
-                {
-                    contents: [
-                        {
-                            role: 'user',
-                            parts: [{ text: systemPrompt + '\n\n' + `Roteiro: ${script}\n\nLegendas: ${wordTimings}` }],
-                        },
-                    ],
-                    generationConfig: { responseMimeType: 'application/json' },
-                }
-            );
-            const content = response.data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-            const parsedContent = JSON.parse(content);
-            titlesJson = Array.isArray(parsedContent) ? parsedContent : parsedContent.titles || parsedContent;
+        // A saída pode vir como objeto {titles:[...]}, array puro, ou com cercas de código.
+        const raw = (result.text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+        let parsed: any = {};
+        try {
+            parsed = JSON.parse(raw || '{}');
+        } catch {
+            parsed = {};
         }
+        const titlesArr = Array.isArray(parsed) ? parsed : parsed.titles || [];
 
         // Format titles and assign IDs
-        const finalTitles = (Array.isArray(titlesJson) ? titlesJson : []).map((t) => ({
+        const finalTitles = (Array.isArray(titlesArr) ? titlesArr : []).map((t: any) => ({
             id: uuidv4(),
             text: t.text || 'Título gerado',
             startSec: Number(t.startSec) || 0,
@@ -463,6 +436,15 @@ Responda EXCLUSIVAMENTE em formato JSON. O JSON DEVE CONTER uma raiz com a chave
 
         res.json({ ok: true, titles: finalTitles });
     } catch (error: any) {
+        if (error instanceof GatewayHttpError) {
+            const msg =
+                error.status === 402
+                    ? 'Seus créditos Mileto acabaram. Recarregue para gerar títulos.'
+                    : error.status === 401
+                      ? 'Sessão expirada. Entre novamente para gerar títulos.'
+                      : `Falha ao gerar títulos: ${error.message}`;
+            return res.status(error.status).json({ ok: false, message: msg });
+        }
         console.error('[AI] Erro ao gerar títulos:', error.response?.data || error.message);
         res.status(500).json({ ok: false, message: 'Falha ao processar IA para Títulos.' });
     }

@@ -1,11 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
-import { Music, Upload, Play, Pause, Pencil, Trash2, Check, X, Loader2 } from 'lucide-react';
+import { Music, Play, Pause, Pencil, Trash2, Check, X, Loader2, ArrowDownToLine, ArrowUpFromLine, HardDrive, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import type { MusicTrack } from '../types';
 
-const API = import.meta.env.VITE_API_BASE_URL;
+import { API_BASE_URL as API } from '../lib/apiBase';
+import { DownloadModal } from './DownloadModal';
+import { localAuthHeaders } from '../lib/serverAuth';
+import { useDownloadJobs } from '../context/DownloadJobsContext';
 
 const formatDuration = (sec: number) => {
     const m = Math.floor(sec / 60);
@@ -40,9 +43,12 @@ function clearLocalRename(id: string) {
 }
 
 export const MusicLibrary: React.FC = () => {
-    const { musicLibrary, setMusicLibrary, selectedMusicId, setSelectedMusicId, loadMusicLibrary } = useWizard();
+    const { musicLibrary, setMusicLibrary, selectedMusicId, setSelectedMusicId, loadMusicLibrary, draftScope } = useWizard();
+    const { jobs: downloadJobs } = useDownloadJobs();
 
     const [isUploading, setIsUploading] = useState(false);
+    const [scope, setScope] = useState<'local' | 'shared'>(draftScope);
+    const [isDownloadOpen, setIsDownloadOpen] = useState(false);
     const [playingId, setPlayingId] = useState<string | null>(null);
     const [isPaused, setIsPaused] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -52,6 +58,47 @@ export const MusicLibrary: React.FC = () => {
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const editInputRef = useRef<HTMLInputElement | null>(null);
     const animFrameRef = useRef<number>(0);
+
+    useEffect(() => {
+        if (scope !== 'local') return;
+        const completedTracks = downloadJobs
+            .filter((job) => job.phase === 'done' && job.track?.type === 'audio')
+            .map((job) => job.track as MusicTrack);
+        if (completedTracks.length === 0) return;
+        setMusicLibrary((current) => {
+            const currentIds = new Set(current.map((track) => track.id));
+            const additions = completedTracks.filter((track) => !currentIds.has(track.id));
+            return additions.length > 0 ? [...current, ...additions] : current;
+        });
+    }, [downloadJobs, scope, setMusicLibrary]);
+
+    const loadScopeLibrary = useCallback(async (nextScope: 'local' | 'shared') => {
+        if (nextScope === 'local') {
+            await loadMusicLibrary();
+            return;
+        }
+        try {
+            const headers = await localAuthHeaders();
+            const res = await fetch(`${API}/api/shared/files/list?path=${encodeURIComponent('Músicas')}`, { headers });
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.message);
+            const tracks: MusicTrack[] = (data.files || []).map((file: {
+                id: string; name: string; publicUrl: string; durationSec?: number; createdAt: string;
+            }) => ({
+                id: file.id,
+                originalName: file.name,
+                displayName: file.name.replace(/\.[^.]+$/, ''),
+                publicUrl: file.publicUrl,
+                filePath: '',
+                durationSec: Number(file.durationSec || 0),
+                createdAt: file.createdAt,
+            }));
+            setMusicLibrary(tracks);
+        } catch (error) {
+            setMusicLibrary([]);
+            toast.error(error instanceof Error ? error.message : 'Falha ao carregar músicas compartilhadas.');
+        }
+    }, [loadMusicLibrary, setMusicLibrary]);
 
     // Focus input when entering edit mode
     useEffect(() => {
@@ -121,15 +168,23 @@ export const MusicLibrary: React.FC = () => {
         try {
             const formData = new FormData();
             formData.append('file', file);
+            if (scope === 'shared') formData.append('parent', 'Músicas');
 
-            const res = await fetch(`${API}/api/music/upload`, {
+            const headers = scope === 'shared' ? await localAuthHeaders() : undefined;
+            const res = await fetch(scope === 'shared' ? `${API}/api/shared/files/upload` : `${API}/api/music/upload`, {
                 method: 'POST',
                 body: formData,
+                headers,
             });
 
             const data = await res.json();
             if (!data.ok) throw new Error(data.message || 'Erro no upload');
 
+            if (scope === 'shared') {
+                await loadScopeLibrary('shared');
+                toast.success(data.deduplicated ? 'Música já existia; referência criada.' : 'Música compartilhada com a equipe.', { id: toastId });
+                return;
+            }
             setMusicLibrary((prev) => [...prev, data.track as MusicTrack]);
             toast.success(`Música adicionada: ${data.track.displayName}`, { id: toastId });
         } catch (error: unknown) {
@@ -230,10 +285,13 @@ export const MusicLibrary: React.FC = () => {
 
         // 2. Try backend
         try {
-            const res = await fetch(`${API}/api/music/${targetId}`, {
+            const headers = scope === 'shared'
+                ? { ...(await localAuthHeaders()), 'Content-Type': 'application/json' }
+                : { 'Content-Type': 'application/json' };
+            const res = await fetch(scope === 'shared' ? `${API}/api/shared/files/rename` : `${API}/api/music/${targetId}`, {
                 method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ displayName: trimmed }),
+                headers,
+                body: JSON.stringify(scope === 'shared' ? { id: targetId, name: trimmed } : { displayName: trimmed }),
             });
 
             if (!res.ok) {
@@ -281,26 +339,73 @@ export const MusicLibrary: React.FC = () => {
             setIsPaused(false);
         }
 
-        try {
-            const res = await fetch(`${API}/api/music/${track.id}`, { method: 'DELETE' });
-            const data = await res.json();
-            if (!data.ok) throw new Error(data.message);
-
+        // Tira a faixa da lista + limpa seleção (usado no sucesso e no "já não existe")
+        const removeLocally = () => {
             setMusicLibrary((prev) => prev.filter((t) => t.id !== track.id));
             if (selectedMusicId === track.id) {
                 setSelectedMusicId(null);
             }
-            toast.success('Música removida');
+        };
+
+        try {
+            const headers = scope === 'shared' ? await localAuthHeaders() : undefined;
+            const res = await fetch(
+                scope === 'shared' ? `${API}/api/shared/files/item/${track.id}` : `${API}/api/music/${track.id}`,
+                { method: 'DELETE', headers }
+            );
+
+            // 404 = a faixa não existe no servidor (ex.: entrada obsoleta em memória de uma
+            // sessão antiga). Reconcilia removendo da UI mesmo assim — não há o que apagar lá.
+            if (res.status === 404) {
+                removeLocally();
+                toast.success(scope === 'shared' ? 'Música já não estava na biblioteca.' : 'Música removida');
+                return;
+            }
+
+            const data = await res.json().catch(() => ({ ok: false, message: `HTTP ${res.status}` }));
+            if (!data.ok) throw new Error(data.message || `Erro ${res.status}`);
+
+            removeLocally();
+            toast.success(scope === 'shared' ? 'Música movida para a lixeira por 30 dias.' : 'Música removida');
         } catch (error: unknown) {
             const msg = error instanceof Error ? error.message : 'Erro desconhecido';
             toast.error(`Falha ao remover: ${msg}`);
         }
     };
 
+    const handleShare = async (track: MusicTrack) => {
+        try {
+            const headers = { ...(await localAuthHeaders()), 'Content-Type': 'application/json' };
+            const response = await fetch(`${API}/api/shared/files/import-local`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    sourceUrl: track.publicUrl,
+                    backendPath: track.filePath,
+                    name: track.originalName,
+                    parent: 'Músicas',
+                }),
+            });
+            const result = await response.json();
+            if (!response.ok || !result.ok) throw new Error(result.message);
+            toast.success(
+                result.deduplicated
+                    ? 'Música compartilhada sem duplicar espaço no R2; a cópia local foi mantida.'
+                    : 'Música compartilhada com a equipe; a cópia local foi mantida.'
+            );
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Falha ao compartilhar a música.');
+        }
+    };
+
     // Load library on mount
     useEffect(() => {
-        loadMusicLibrary();
-    }, [loadMusicLibrary]);
+        void loadScopeLibrary(scope);
+    }, [scope, loadScopeLibrary]);
+
+    useEffect(() => {
+        setScope(draftScope);
+    }, [draftScope]);
 
     return (
         <div className="bg-background border border-black/5 dark:border-white/5 rounded-3xl p-6 space-y-5 shadow-inner">
@@ -310,33 +415,61 @@ export const MusicLibrary: React.FC = () => {
                     <Music className="w-4 h-4 text-brand-accent" />
                     Música de Fundo
                 </h3>
-                <label
-                    className={cn(
-                        'cursor-pointer text-xs px-4 py-2 rounded-xl font-bold transition-all border shadow-sm',
-                        isUploading
-                            ? 'opacity-50 cursor-not-allowed bg-black/5 dark:bg-white/5 text-foreground/40 border-black/5 dark:border-white/5'
-                            : 'bg-brand-accent/10 text-brand-accent border-brand-accent/20 hover:bg-brand-accent/20'
-                    )}
-                >
-                    {isUploading ? (
-                        <span className="flex items-center gap-1.5">
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                            Enviando...
-                        </span>
-                    ) : (
-                        <span className="flex items-center gap-1.5">
-                            <Upload className="w-3 h-3" />
-                            Enviar Música
-                        </span>
-                    )}
-                    <input
-                        type="file"
-                        accept="audio/mpeg,audio/wav,audio/ogg,.mp3,.wav,.ogg"
-                        className="hidden"
-                        onChange={handleUpload}
-                        disabled={isUploading}
-                    />
-                </label>
+                <div className="flex items-center gap-2.5">
+                    <div className="flex items-center gap-0.5 rounded-lg border border-black/10 dark:border-white/10 p-0.5">
+                        <button
+                            type="button"
+                            onClick={() => setScope('local')}
+                            className={cn('p-1.5 rounded-md transition-colors', scope === 'local' ? 'bg-brand-lime/15 text-brand-lime' : 'text-brand-muted')}
+                            title="Biblioteca local"
+                        >
+                            <HardDrive className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setScope('shared')}
+                            className={cn('p-1.5 rounded-md transition-colors', scope === 'shared' ? 'bg-brand-accent/15 text-brand-accent' : 'text-brand-muted')}
+                            title="Biblioteca compartilhada com a equipe"
+                        >
+                            <Users className="w-3.5 h-3.5" />
+                        </button>
+                    </div>
+                    {scope === 'local' && <button
+                        type="button"
+                        onClick={() => setIsDownloadOpen(true)}
+                        className="cursor-pointer text-xs px-4 py-2 rounded-xl font-bold transition-all border shadow-sm bg-brand-lime/10 text-brand-lime border-brand-lime/20 hover:bg-brand-lime/20 flex items-center gap-2"
+                    >
+                        <ArrowDownToLine className="w-3.5 h-3.5" />
+                        Download
+                    </button>}
+                    <label
+                        className={cn(
+                            'cursor-pointer text-xs px-4 py-2 rounded-xl font-bold transition-all border shadow-sm',
+                            isUploading
+                                ? 'opacity-50 cursor-not-allowed bg-black/5 dark:bg-white/5 text-foreground/40 border-black/5 dark:border-white/5'
+                                : 'bg-brand-accent/10 text-brand-accent border-brand-accent/20 hover:bg-brand-accent/20'
+                        )}
+                    >
+                        {isUploading ? (
+                            <span className="flex items-center gap-2">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                Enviando...
+                            </span>
+                        ) : (
+                            <span className="flex items-center gap-2">
+                                <ArrowUpFromLine className="w-3.5 h-3.5" />
+                                Enviar Música
+                            </span>
+                        )}
+                        <input
+                            type="file"
+                            accept="audio/mpeg,audio/wav,audio/ogg,.mp3,.wav,.ogg"
+                            className="hidden"
+                            onChange={handleUpload}
+                            disabled={isUploading}
+                        />
+                    </label>
+                </div>
             </div>
 
             {/* Empty State */}
@@ -349,80 +482,10 @@ export const MusicLibrary: React.FC = () => {
                     <p className="text-[11px] text-brand-muted uppercase tracking-wider font-semibold mt-1">
                         MP3, WAV ou OGG (máx 30MB)
                     </p>
-                    <button
-                        onClick={() => {
-                            setMusicLibrary([
-                                {
-                                    id: 'default-1',
-                                    originalName: 'Corporate Lofi (Open Repo).mp3',
-                                    displayName: 'Corporate Lofi (Open Repo)',
-                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-                                    filePath: '',
-                                    durationSec: 135,
-                                    createdAt: new Date().toISOString()
-                                },
-                                {
-                                    id: 'default-2',
-                                    originalName: 'Epic Cinematic (Open Repo).mp3',
-                                    displayName: 'Epic Cinematic (Open Repo)',
-                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-                                    filePath: '',
-                                    durationSec: 140,
-                                    createdAt: new Date().toISOString()
-                                },
-                                {
-                                    id: 'default-3',
-                                    originalName: 'Upbeat Tech (Open Repo).mp3',
-                                    displayName: 'Upbeat Tech (Open Repo)',
-                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
-                                    filePath: '',
-                                    durationSec: 156,
-                                    createdAt: new Date().toISOString()
-                                },
-                                {
-                                    id: 'default-4',
-                                    originalName: 'Energetic Vlog (Open Repo).mp3',
-                                    displayName: 'Energetic Vlog (Open Repo)',
-                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
-                                    filePath: '',
-                                    durationSec: 161,
-                                    createdAt: new Date().toISOString()
-                                },
-                                {
-                                    id: 'default-5',
-                                    originalName: 'Dark Synthwave (Open Repo).mp3',
-                                    displayName: 'Dark Synthwave (Open Repo)',
-                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3',
-                                    filePath: '',
-                                    durationSec: 130,
-                                    createdAt: new Date().toISOString()
-                                },
-                                {
-                                    id: 'default-6',
-                                    originalName: 'Lo-Fi Chill (Open Repo).mp3',
-                                    displayName: 'Lo-Fi Chill (Open Repo)',
-                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3',
-                                    filePath: '',
-                                    durationSec: 172,
-                                    createdAt: new Date().toISOString()
-                                },
-                                {
-                                    id: 'default-7',
-                                    originalName: 'Stomp & Clap (Open Repo).mp3',
-                                    displayName: 'Stomp & Clap (Open Repo)',
-                                    publicUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3',
-                                    filePath: '',
-                                    durationSec: 110,
-                                    createdAt: new Date().toISOString()
-                                }
-                            ]);
-                            toast.success('Músicas padrão carregadas!');
-                        }}
-                        className="mt-6 px-4 py-2.5 border border-brand-accent/30 text-brand-accent bg-brand-accent/5 rounded-xl hover:bg-brand-accent/20 transition-all font-bold text-xs flex items-center justify-center mx-auto"
-                    >
-                        <Music className="w-4 h-4 mr-2" />
-                        Carregar Biblioteca Gratuita
-                    </button>
+                    <p className="text-[11px] text-brand-muted/70 mt-3 leading-snug max-w-[220px]">
+                        Use <span className="font-bold text-brand-accent">Enviar Música</span> para adicionar suas
+                        próprias trilhas (MP3, WAV ou OGG).
+                    </p>
                 </div>
             )}
 
@@ -511,6 +574,15 @@ export const MusicLibrary: React.FC = () => {
                                     {/* Actions */}
                                     {!isEditing && (
                                         <div className="flex items-center gap-1 shrink-0">
+                                            {scope === 'local' && (
+                                                <button
+                                                    onClick={() => void handleShare(track)}
+                                                    className="p-1.5 text-brand-muted hover:text-brand-accent hover:bg-brand-accent/10 rounded-lg transition-colors"
+                                                    title="Compartilhar com a equipe mantendo a cópia local"
+                                                >
+                                                    <Users className="w-3.5 h-3.5" />
+                                                </button>
+                                            )}
                                             <button
                                                 onClick={() => handleSelect(track)}
                                                 className={cn(
@@ -574,6 +646,15 @@ export const MusicLibrary: React.FC = () => {
                         );
                     })}
                 </div>
+            )}
+
+            {isDownloadOpen && (
+                <DownloadModal
+                    onClose={() => setIsDownloadOpen(false)}
+                    onDownloaded={(media) => {
+                        if (media.type === 'audio') setMusicLibrary((prev) => [...prev, media]);
+                    }}
+                />
             )}
         </div>
     );

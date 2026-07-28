@@ -5,11 +5,17 @@ import * as videoController from '../controllers/videoController';
 import * as aiController from '../controllers/aiController';
 import * as chatController from '../controllers/chatController';
 import { upload } from '../middleware/upload';
+import { isSafeRemoteUrl } from '../utils/safePath';
 
 import * as uploadController from '../controllers/uploadController';
 import * as musicController from '../controllers/musicController';
 import * as projectController from '../controllers/projectController';
 import * as transitionController from '../controllers/transitionController';
+import * as downloadController from '../controllers/downloadController';
+import * as fileExplorerController from '../controllers/fileExplorerController';
+import * as sharedController from '../controllers/sharedController';
+import * as opsController from '../controllers/opsController';
+import * as aiGenerationController from '../controllers/aiGenerationController';
 
 const router = express.Router();
 
@@ -28,6 +34,11 @@ router.delete('/chat/sessions/:id', chatController.deleteSession);
 
 router.get('/chat/sessions/:sessionId/messages', chatController.getMessages);
 router.post('/chat/message', chatController.sendMessage);
+
+// Geração pelos agentes: execução continua no servidor local e termina na pasta local Geração por IA.
+router.post('/ai/generations', aiGenerationController.start);
+router.get('/ai/generations', aiGenerationController.list);
+router.get('/ai/generations/:id', aiGenerationController.status);
 
 // Project Persistence
 router.get('/projects', projectController.listProjects);
@@ -52,6 +63,9 @@ router.post('/uploads/image', upload.single('file'), uploadController.uploadImag
 router.post('/tts/preview-voice', ttsController.previewVoice);
 router.post('/tts/generate-narration', ttsController.createNarration);
 router.post('/tts/clone-voice', upload.single('audio'), ttsController.cloneVoice);
+router.post('/tts/list-voices', ttsController.listProviderVoices);
+// Gravação da própria voz do usuário (alternativa à narração por IA).
+router.post('/tts/upload-recording', upload.single('audio'), ttsController.uploadNarrationRecording);
 
 import * as sttController from '../controllers/sttController';
 // STT Routes
@@ -68,6 +82,47 @@ router.post('/music/upload', upload.single('file'), musicController.uploadMusic)
 router.get('/music/list', musicController.listMusic);
 router.patch('/music/:id', musicController.renameMusic);
 router.delete('/music/:id', musicController.deleteMusic);
+
+// Download Routes — analisa e baixa mídia de sites suportados pelo yt-dlp.
+router.post('/download/inspect', downloadController.inspectDownload);
+router.post('/download/start', downloadController.startDownload);
+router.post('/download/ops', downloadController.startOpsDownload);
+router.get('/download/jobs', downloadController.listDownloadJobs);
+router.delete('/download/:jobId', downloadController.cancelDownload);
+router.get('/download/status/:jobId', downloadController.getDownloadStatus);
+
+// File Explorer Routes — explorador de mídia (pastas/mover/copiar).
+router.get('/files/tree', fileExplorerController.getTree);
+router.get('/files/list', fileExplorerController.listItems);
+router.post('/files/folder', fileExplorerController.createFolder);
+router.post('/files/upload', upload.single('file'), fileExplorerController.uploadFile);
+router.post('/files/import-paths', fileExplorerController.importLocalPaths);
+router.post('/files/preview-source', fileExplorerController.preparePreviewSource);
+router.patch('/files/rename', fileExplorerController.renameItem);
+router.post('/files/move', fileExplorerController.moveItem);
+router.post('/files/copy', fileExplorerController.copyItem);
+router.delete('/files/item', fileExplorerController.deleteItem);
+
+// Ambiente Compartilhado: o servidor local calcula o SHA-256 por streaming e
+// encaminha as operaÃ§Ãµes autenticadas ao gateway/R2.
+router.get('/shared/status', sharedController.status);
+router.get('/shared/files/tree', sharedController.tree);
+router.get('/shared/files/list', sharedController.list);
+router.get('/shared/files/trash', sharedController.trash);
+router.post('/shared/files/folder', sharedController.createFolder);
+router.post('/shared/files/upload', upload.single('file'), sharedController.uploadFile);
+router.post('/shared/files/import-local', sharedController.importLocalFile);
+router.patch('/shared/files/rename', sharedController.renameItem);
+router.post('/shared/files/move', sharedController.moveItem);
+router.post('/shared/files/copy', sharedController.copyItem);
+router.delete('/shared/files/item/:assetId', sharedController.trashItem);
+router.post('/shared/files/item/:assetId/restore', sharedController.restoreItem);
+
+// Mileto Ops: o renderer envia apenas uma referência opaca. O servidor local
+// busca uma URL curta via gateway e materializa o arquivo no cache privado.
+router.post('/ops/cache/materialize', opsController.materialize);
+router.get('/ops/cache/status', opsController.cacheStatus);
+router.get('/ops/cache/file/:cacheId/:filename', opsController.serveCacheFile);
 
 // Transition Routes
 router.post('/transitions/upload', upload.single('file'), transitionController.uploadTransition);
@@ -107,7 +162,7 @@ router.post('/test-openai', async (req, res) => {
     }
 });
 
-import { testApiKey } from '../services/fishAudio';
+import { testApiKey, getApiCredit } from '../services/fishAudio';
 
 router.post('/test-fishaudio', async (req, res) => {
     const { apiKey } = req.body;
@@ -115,10 +170,35 @@ router.post('/test-fishaudio', async (req, res) => {
 
     try {
         const isValid = await testApiKey(apiKey);
+        if (!isValid) {
+            return res.status(401).json({ ok: false, message: 'Invalid Fish Audio Key or Connection Failed' });
+        }
+
+        // Autenticar não basta: a chave pode ser de outra conta, sem saldo.
+        const wallet = await getApiCredit(apiKey);
+        res.json({
+            ok: true,
+            message: 'Fish Audio API Connected',
+            credit: wallet?.credit ?? null,
+            accountId: wallet?.accountId ?? null,
+        });
+    } catch (e: any) {
+        res.status(500).json({ ok: false, message: e.message });
+    }
+});
+
+import { testApiKey as testElevenLabsKey } from '../services/elevenlabs';
+
+router.post('/test-elevenlabs', async (req, res) => {
+    const { apiKey } = req.body;
+    if (!apiKey) return res.status(400).json({ ok: false, message: 'API Key missing' });
+
+    try {
+        const isValid = await testElevenLabsKey(apiKey);
         if (isValid) {
-            res.json({ ok: true, message: 'Fish Audio API Connected' });
+            res.json({ ok: true, message: 'ElevenLabs API Connected' });
         } else {
-            res.status(401).json({ ok: false, message: 'Invalid Fish Audio Key or Connection Failed' });
+            res.status(401).json({ ok: false, message: 'Invalid ElevenLabs Key or Connection Failed' });
         }
     } catch (e: any) {
         res.status(500).json({ ok: false, message: e.message });
@@ -129,10 +209,14 @@ router.post('/test-fishaudio', async (req, res) => {
 router.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url as string;
     if (!targetUrl) return res.status(400).send('URL is required');
+    // Anti-SSRF: só http(s) para host PÚBLICO. Sem isso, `?url=http://169.254.169.254/...`
+    // lê metadados da nuvem e varre a rede interna usando o app como proxy cego.
+    if (!isSafeRemoteUrl(targetUrl)) return res.status(400).send('URL não permitida');
     try {
         const response = await axios.get(targetUrl, {
             responseType: 'stream',
             timeout: 10000,
+            maxRedirects: 0, // um redirect para host interno burlaria a checagem acima
         });
 
         // Copy content type and content length so browser knows what it's dealing with

@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useWizard } from '../../context/WizardContext';
 import { AudioTimeline } from '../../types';
-import { Play, Pause, ZoomIn, ZoomOut, Wand2, Scissors, Trash2, Undo2, X } from 'lucide-react';
+import { Play, Pause, ZoomIn, ZoomOut, Wand2, Scissors, Trash2, Undo2, X, Loader2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { TrackLane } from './TrackLane.tsx';
 import { TimeRuler } from './TimeRuler.tsx';
 import { useAudioEngine } from '../../hooks/useAudioEngine';
 import { timeToX } from './timelineUtils';
+import { toast } from 'sonner';
 
 interface TimelineEditorProps {
     isOpen: boolean;
@@ -19,6 +20,7 @@ const HEADER_WIDTH = 128; // Width of the TrackLane header (w-32) // 30 seconds 
 export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose }) => {
     const { adData, updateAdData } = useWizard();
     const [timeline, setTimeline] = useState<AudioTimeline | null>(null);
+    const [history, setHistory] = useState<AudioTimeline[]>([]);
 
     // Zoom Logic
     const [zoomPercent, setZoomPercent] = useState(100); // UI display value (100 = 100% fit)
@@ -34,7 +36,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
     const [dragTime, setDragTime] = useState<number | null>(null);
 
     // Audio Engine - Moved up to be available for Zoom logic
-    const { isPlaying, currentTime, play, pause, seek, isReady, audioBuffers } = useAudioEngine(
+    const { isPlaying, currentTime, play, pause, seek, isReady, audioBuffers, buffersVersion, loadError } = useAudioEngine(
         timeline,
         React.useCallback((sourceUrl: string, duration: number) => {
             setTimeline((prev) => {
@@ -188,7 +190,36 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
         }
 
         setTimeline(initialTimeline);
+        setHistory([]);
+        setSelectedClipId(null);
+        setSelectedTrackId(null);
     }, [isOpen, adData.narrationAudioUrl, adData.musicAudioUrl]); // Re-run if URLs change while open
+
+    const cloneTimeline = React.useCallback(
+        (value: AudioTimeline): AudioTimeline => JSON.parse(JSON.stringify(value)) as AudioTimeline,
+        []
+    );
+
+    useEffect(() => {
+        if (loadError) toast.error(loadError);
+    }, [loadError]);
+
+    const rememberTimeline = React.useCallback(
+        (value: AudioTimeline) => {
+            setHistory((previous) => [...previous.slice(-49), cloneTimeline(value)]);
+        },
+        [cloneTimeline]
+    );
+
+    const undo = React.useCallback(() => {
+        const previous = history[history.length - 1];
+        if (!previous) return;
+        pause();
+        setTimeline(cloneTimeline(previous));
+        setHistory((items) => items.slice(0, -1));
+        setSelectedClipId(null);
+        setSelectedTrackId(null);
+    }, [cloneTimeline, history, pause]);
 
     // Auto-Zoom Logic
     const handleAutoZoom = React.useCallback(() => {
@@ -210,7 +241,9 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
         const maxClipEnd = timeline.tracks.reduce((max, track) => {
             const trackEnd = track.clips.reduce((tMax, clip) => {
                 let duration = clip.outSec;
-                if (!duration || duration <= 30.1) {
+                // outSec > 0 Ã© um corte intencional. NÃ£o o substitua pela
+                // duraÃ§Ã£o original do buffer ao calcular o zoom automÃ¡tico.
+                if (!duration || duration <= 0) {
                     const buf = audioBuffers.get(clip.sourceUrl);
                     if (buf) duration = buf.duration;
                 }
@@ -268,15 +301,6 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
 
             const narrClip = narrTrack?.clips[0];
             const bgmClip = bgmTrack?.clips[0];
-
-            // DEBUG: Trace autosave payload
-            console.log('Autosaving timeline:', timeline);
-            console.log('Saving audioConfig:', {
-                bgmVol: bgmTrack?.volume ?? 1,
-                bgmClipVol: bgmClip?.volume ?? 1,
-                narrTrackVol: narrTrack?.volume,
-                calcBgm: (bgmTrack?.volume ?? 1) * (bgmClip?.volume ?? 1),
-            });
 
             updateAdData({
                 audioTimeline: timeline,
@@ -397,6 +421,10 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
             const clip = track?.clips.find((c) => c.id === clipId);
             if (!clip) return;
 
+            // Um gesto de arrastar gera muitos mousemoves. Um Ãºnico snapshot
+            // antes do gesto faz o Desfazer voltar exatamente ao ponto inicial.
+            if (timeline) rememberTimeline(timeline);
+
             setDragState({
                 type,
                 clipId,
@@ -409,7 +437,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
             setSelectedClipId(clipId);
             setSelectedTrackId(trackId);
         },
-        [timeline]
+        [timeline, rememberTimeline]
     );
 
     const handleVolumeChange = React.useCallback((trackId: string, newVolume: number) => {
@@ -480,6 +508,8 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                             onClick={() => {
                                 if (!selectedClipId || !timeline) return;
 
+                                rememberTimeline(timeline);
+
                                 setTimeline((prev) => {
                                     if (!prev) return null;
                                     let hasChanges = false;
@@ -549,8 +579,9 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                             <Scissors size={14} />
                         </button>
                         <button
-                            onClick={() =>
-                                selectedClipId &&
+                            onClick={() => {
+                                if (!selectedClipId || !timeline) return;
+                                rememberTimeline(timeline);
                                 setTimeline((prev) => {
                                     if (!prev) return null;
                                     const newTracks = prev.tracks.map((t) => ({
@@ -573,15 +604,20 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                                         tracks: newTracks,
                                         durationSec: maxEnd,
                                     };
-                                })
-                            }
+                                });
+                            }}
                             className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-black/5 dark:bg-white/5 rounded"
                             title="Excluir (Del)"
                         >
                             <Trash2 size={14} />
                         </button>
                         <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
-                        <button className="p-1.5 text-slate-400 hover:text-foreground hover:bg-black/5 dark:bg-white/5 rounded">
+                        <button
+                            onClick={undo}
+                            disabled={history.length === 0}
+                            className="p-1.5 text-slate-400 hover:text-foreground hover:bg-black/5 dark:bg-white/5 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                            title="Desfazer (Ctrl+Z)"
+                        >
                             <Undo2 size={14} />
                         </button>
 
@@ -695,6 +731,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                                                 track={track}
                                                 zoom={zoom}
                                                 audioBuffers={audioBuffers}
+                                                buffersVersion={buffersVersion}
                                                 selectedClipId={selectedClipId}
                                                 onSelectClip={setSelectedClipId}
                                                 onUpdateClip={handleClipUpdate}
@@ -734,7 +771,9 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                             onClick={handlePlayPause}
                             disabled={!isReady}
                         >
-                            {isPlaying ? (
+                            {!isReady ? (
+                                <Loader2 className="w-5 h-5 animate-spin" />
+                            ) : isPlaying ? (
                                 <Pause className="fill-current w-5 h-5" />
                             ) : (
                                 <Play className="fill-current ml-1 w-5 h-5" />

@@ -6,11 +6,37 @@ import ffmpeg from 'fluent-ffmpeg';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const transitionsDir = path.join(BASE_DATA_PATH, 'public/transitions');
+const builtInTransitionsDir =
+    process.env.BUILTIN_TRANSITIONS_PATH || path.join(__dirname, '..', '..', 'public', 'transitions', 'builtins');
+const builtInCatalogPath = path.join(builtInTransitionsDir, 'catalog.json');
 
 // Ensure directory exists
 if (!fs.existsSync(transitionsDir)) {
     fs.mkdirSync(transitionsDir, { recursive: true });
 }
+
+const readBuiltInTransitions = (): any[] => {
+    if (!fs.existsSync(builtInCatalogPath)) return [];
+
+    try {
+        const catalog = JSON.parse(fs.readFileSync(builtInCatalogPath, 'utf8')) as any[];
+        return catalog.map((transition) => ({
+            ...transition,
+            publicUrl: `/built-in-transitions/${encodeURIComponent(transition.fileName)}`,
+            filePath: path.join(builtInTransitionsDir, transition.fileName),
+            isBuiltIn: true,
+        }));
+    } catch (error) {
+        console.error('[Transitions] Failed to read built-in catalog:', error);
+        return [];
+    }
+};
+
+const readUserTransitions = (): any[] => {
+    const libraryPath = path.join(BASE_DATA_PATH, 'data/transition_library.json');
+    if (!fs.existsSync(libraryPath)) return [];
+    return JSON.parse(fs.readFileSync(libraryPath, 'utf8'));
+};
 
 export const uploadTransition = async (req: Request, res: Response) => {
     try {
@@ -42,6 +68,8 @@ export const uploadTransition = async (req: Request, res: Response) => {
             publicUrl: `/transitions/${filename}`,
             filePath: targetPath,
             durationSec,
+            category: String(req.body.category || 'Meus efeitos'),
+            isBuiltIn: false,
             createdAt: new Date().toISOString(),
         };
 
@@ -63,12 +91,9 @@ export const uploadTransition = async (req: Request, res: Response) => {
 
 export const listTransitions = async (_req: Request, res: Response) => {
     try {
-        const libraryPath = path.join(BASE_DATA_PATH, 'data/transition_library.json');
-        if (!fs.existsSync(libraryPath)) {
-            return res.json({ ok: true, transitions: [] });
-        }
-        const library = JSON.parse(fs.readFileSync(libraryPath, 'utf8'));
-        res.json({ ok: true, transitions: library });
+        const builtIns = readBuiltInTransitions();
+        const userTransitions = readUserTransitions().map((transition) => ({ ...transition, isBuiltIn: false }));
+        res.json({ ok: true, transitions: [...builtIns, ...userTransitions] });
     } catch (e: unknown) {
         console.error('[Transitions] Error listing transitions:', e);
         res.status(500).json({ ok: false, message: (e as Error).message });
@@ -79,6 +104,10 @@ export const deleteTransition = async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
         const libraryPath = path.join(BASE_DATA_PATH, 'data/transition_library.json');
+
+        if (id.startsWith('builtin-')) {
+            return res.status(403).json({ ok: false, message: 'Os efeitos incluídos não podem ser removidos.' });
+        }
 
         if (!fs.existsSync(libraryPath)) {
             return res.status(404).json({ ok: false, message: 'Library not found' });

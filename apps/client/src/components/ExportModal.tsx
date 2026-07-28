@@ -6,6 +6,9 @@ import { DOMCaptureEngine } from '../lib/export/DOMCaptureEngine';
 import { VideoSequencePreviewRef } from './VideoSequencePreview';
 import { MediaTake } from '../types';
 import { useWizard, SHOW_DEBUG_FEATURES } from '../context/WizardContext';
+import { useDownloadJobs } from '../context/DownloadJobsContext';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 
 interface ExportModalProps {
     onClose: () => void;
@@ -27,6 +30,8 @@ export const ExportModal = ({
     transitionPath,
 }: ExportModalProps) => {
     const { adData, saveProject } = useWizard();
+    const { registerClientJob, updateClientJob } = useDownloadJobs();
+    const navigate = useNavigate();
     // Config state
     const [fileName, setFileName] = useState('MeuVideo_Mileto');
     const [fps, setFps] = useState(30);
@@ -88,8 +93,12 @@ export const ExportModal = ({
         };
     }, [mediaTakes]);
 
-    // Calculate total duration from all takes
-    let totalDuration = mediaTakes.reduce((acc, take) => acc + (take.trim.end - take.trim.start), 0);
+    // A mixagem/narração é o relógio final do anúncio. Takes que ultrapassem esse
+    // ponto são preservados no editor, mas não prolongam o arquivo exportado.
+    const takesDuration = mediaTakes.reduce((acc, take) => acc + (take.trim.end - take.trim.start), 0);
+    let totalDuration = Number(adData.narrationDuration || 0) > 0
+        ? Number(adData.narrationDuration)
+        : takesDuration;
 
     // Override length if user clicked "Testar Motor Rápido (5s)"
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -125,8 +134,28 @@ export const ExportModal = ({
         }
     }, []);
 
+    const handleFinishWithoutExport = useCallback(async () => {
+        setStatusText('Salvando o rascunho...');
+        const saved = await saveProject({ lastStep: 4 });
+        if (!saved) {
+            toast.error('Não foi possível salvar o rascunho. Nenhuma edição foi descartada.');
+            setStatusText('');
+            return;
+        }
+        toast.success('Edição concluída sem exportar. Você pode retomá-la quando quiser.');
+        onClose();
+        navigate('/');
+    }, [navigate, onClose, saveProject]);
+
     const handleExport = useCallback(async () => {
         if (!previewRef.current) return;
+        if (!Number.isFinite(totalDuration) || totalDuration <= 0) {
+            setErrorMsg('A duração final do projeto é inválida. Confira a narração e os takes.');
+            setPhase('error');
+            return;
+        }
+        let activityId: string | null = null;
+        let temporaryExportPaths: string[] = [];
         // ═══ EXPORT DEBUG ALERT ═══
         if (SHOW_DEBUG_FEATURES) {
             const debugInfo = mediaTakes
@@ -149,6 +178,18 @@ export const ExportModal = ({
         startTimeRef.current = Date.now();
 
         try {
+            setStatusText('Salvando o projeto completo...');
+            const projectSaved = await saveProject();
+            if (!projectSaved) {
+                throw new Error('Não foi possível salvar o projeto antes da exportação. Nenhuma edição foi descartada; tente novamente.');
+            }
+            activityId = registerClientJob({
+                mode: 'video',
+                title: `${fileName.trim() || 'MeuVideo_Mileto'}.mp4`,
+                destination: outputFolder,
+                source: 'export',
+                statusText: 'Preparando exportação',
+            });
             // Se estiver em modo híbrido, avisa o CaptureEngine para filmar com Transparencia (Alpha WebM)
             const engine = new DOMCaptureEngine(targetDims.w, targetDims.h, fps, isHybridMode);
             await engine.start();
@@ -159,6 +200,11 @@ export const ExportModal = ({
                 // Check cancellation
                 if (cancelledRef.current) {
                     engine.abort();
+                    if (activityId) updateClientJob(activityId, {
+                        phase: 'error',
+                        completedAt: Date.now(),
+                        error: 'Exportação interrompida.',
+                    });
                     setPhase('config');
                     setStatusText('');
                     return;
@@ -184,12 +230,22 @@ export const ExportModal = ({
                 // Update status every 10 frames
                 if (i % 10 === 0) {
                     setStatusText(`Frame ${i + 1}/${total} (${framesPerSec.toFixed(1)} fps)`);
+                    if (activityId) updateClientJob(activityId, {
+                        percent: Math.min(98, pct),
+                        stepPercent: Math.min(98, pct),
+                        statusText: `Renderizando frame ${i + 1} de ${total}`,
+                    });
                 }
             }
 
             // Check cancellation before finishing
             if (cancelledRef.current) {
                 engine.abort();
+                if (activityId) updateClientJob(activityId, {
+                    phase: 'error',
+                    completedAt: Date.now(),
+                    error: 'Exportação interrompida.',
+                });
                 setPhase('config');
                 return;
             }
@@ -203,7 +259,7 @@ export const ExportModal = ({
             const safeName = (fileName.trim() || 'MeuVideo_Mileto').replace(/[\\/:*?"<>|]/g, '_');
             const fullOutputPath = path.join(outputFolder, `${safeName}.mp4`);
 
-            const API_BASE = ((window as any).API_BASE_URL || 'http://localhost:3301') || 'http://localhost:3000';
+            const API_BASE = (window as any).API_BASE_URL || 'http://localhost:3301';
             let finalPath: string;
 
             if (isHybridMode) {
@@ -218,8 +274,18 @@ export const ExportModal = ({
 
                 const overlayPath = finishResult.videoPath;
                 const generatedAudioPath = finishResult.audioPath;
+                if (!overlayPath || !generatedAudioPath) throw new Error('Os arquivos temporários da exportação não foram criados.');
 
-                // ═══ DEBUG: Log payload before sending to backend ═══
+                // O backend só pode escrever em sua área temporária. Depois que o
+                // MP4 é validado, o processo principal do Electron o copia para a
+                // pasta que o usuário autorizou no seletor.
+                const os = (window as any).require('os');
+                const tempFinalPath = path.join(
+                    os.tmpdir(),
+                    `mileto-final-${Date.now()}-${crypto.randomUUID()}.mp4`
+                );
+                temporaryExportPaths = [overlayPath, generatedAudioPath, tempFinalPath];
+
                 const hybridPayload = {
                     takes: mediaTakes.map((t) => ({
                         id: t.id,
@@ -229,11 +295,12 @@ export const ExportModal = ({
                         end: t.trim.end,
                         speed: t.speedPresetId && t.speedPresetId !== 'normal' ? t.speedPresetId : 1.0,
                         objectFit: t.objectFit || 'cover',
+                        motionEffect: t.motionEffect,
                     })),
                     transitionPath: transitionPath,
                     audioPath: generatedAudioPath,
                     overlayPath: overlayPath,
-                    finalPath: fullOutputPath,
+                    finalPath: tempFinalPath,
                     duration: totalDuration,
                     format: adData.format,
                     // Envia a resolução usada na captura do overlay p/ o FFmpeg não
@@ -242,19 +309,6 @@ export const ExportModal = ({
                     targetH: targetDims.h,
                 };
 
-                console.log('══════════════════════════════════════════════');
-                console.log('[EXPORT DEBUG] HYBRID PAYLOAD COMPLETO:', JSON.stringify(hybridPayload, null, 2));
-                console.log(
-                    '[EXPORT DEBUG] mediaTakes speedPresetIds:',
-                    mediaTakes.map((t) => `${t.fileName}: ${t.speedPresetId || 'undefined'}`)
-                );
-                console.log('[EXPORT DEBUG] transitionPath:', transitionPath);
-                console.log(
-                    '[EXPORT DEBUG] takes backendPaths:',
-                    mediaTakes.map((t) => `backendPath=${t.backendPath}, fileUrl=${t.fileUrl}`)
-                );
-                console.log('══════════════════════════════════════════════');
-
                 const hybridResp = await fetch(`${API_BASE}/api/video/export-hybrid`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -262,8 +316,19 @@ export const ExportModal = ({
                 });
 
                 const hbData = await hybridResp.json();
-                if (!hbData.ok) throw new Error(hbData.message);
-                finalPath = hbData.finalPath || hbData.outputPath || fullOutputPath;
+                if (!hybridResp.ok || !hbData.ok) throw new Error(hbData.message || 'Falha ao montar o vídeo final.');
+                const renderedPath = hbData.finalPath || hbData.outputPath || tempFinalPath;
+                const { ipcRenderer } = (window as any).require('electron');
+                const committed = await ipcRenderer.invoke('export-commit', {
+                    sourcePath: renderedPath,
+                    destinationPath: fullOutputPath,
+                });
+                if (!committed?.ok || !committed?.destinationPath) {
+                    throw new Error(committed?.message || 'O vídeo foi renderizado, mas não pôde ser salvo na pasta escolhida.');
+                }
+                finalPath = committed.destinationPath;
+                await ipcRenderer.invoke('export-cleanup', { paths: temporaryExportPaths });
+                temporaryExportPaths = [];
             } else {
                 // Legado: Muxa Opaque Video + Audio Localmente
                 const legacyResult = await engine.finish(
@@ -276,12 +341,27 @@ export const ExportModal = ({
             }
 
             if (finalPath) {
+                const fs = (window as any).require('fs');
+                const stats = fs.existsSync(finalPath) ? fs.statSync(finalPath) : null;
+                if (!stats?.isFile() || stats.size < 1024) {
+                    throw new Error('A exportação não gerou um arquivo MP4 válido na pasta escolhida.');
+                }
                 setOutputPath(finalPath);
                 setPhase('done');
                 setProgress(100);
                 setStatusText('Exportação concluída!');
                 // Grava o projeto como rascunho "exportado" pra aparecer em Rascunhos Recentes.
-                void saveProject({ exported: true });
+                const exportedSaved = await saveProject({ exported: true });
+                if (!exportedSaved) {
+                    console.warn('[Export] O MP4 foi salvo, mas o marcador de projeto exportado não pôde ser atualizado.');
+                }
+                if (activityId) updateClientJob(activityId, {
+                    phase: 'done',
+                    percent: 100,
+                    stepPercent: 100,
+                    completedAt: Date.now(),
+                    statusText: 'Vídeo exportado e salvo',
+                });
             } else {
                 // User cancelled save dialog
                 setPhase('config');
@@ -289,7 +369,21 @@ export const ExportModal = ({
             }
         } catch (err: unknown) {
             console.error('[Export Error]', err);
-            setErrorMsg(err instanceof Error ? err.message : String(err));
+            const message = err instanceof Error ? err.message : String(err);
+            if (temporaryExportPaths.length) {
+                try {
+                    const { ipcRenderer } = (window as any).require('electron');
+                    await ipcRenderer.invoke('export-cleanup', { paths: temporaryExportPaths });
+                } catch {
+                    // O sistema operacional também limpa a pasta temporária.
+                }
+            }
+            if (activityId) updateClientJob(activityId, {
+                phase: 'error',
+                completedAt: Date.now(),
+                error: message,
+            });
+            setErrorMsg(message);
             setPhase('error');
         }
     }, [
@@ -303,6 +397,12 @@ export const ExportModal = ({
         fileName,
         outputFolder,
         saveProject,
+        registerClientJob,
+        updateClientJob,
+        // Sem estas, handleExport fecha sobre valores obsoletos: exportava com a
+        // resolução/formato default em vez do que o probe detectou.
+        targetDims,
+        adData.format,
     ]);
 
     // Prevent accidental close during export
@@ -543,6 +643,12 @@ export const ExportModal = ({
                     {phase === 'config' && (
                         <>
                             <button
+                                onClick={() => void handleFinishWithoutExport()}
+                                className="px-5 py-3.5 rounded-xl border border-white/10 bg-white/5 text-brand-muted hover:border-white/20 hover:text-foreground font-bold transition-colors text-[10px] uppercase tracking-wider"
+                            >
+                                Concluir sem exportar
+                            </button>
+                            <button
                                 onClick={handleExport}
                                 disabled={!fileName.trim()}
                                 className="px-10 py-3.5 bg-linear-to-r from-brand-lime to-brand-accent hover:shadow-[0_0_25px_rgba(0,230,118,0.4)] text-[#0a0f12] font-black rounded-xl transition-transform hover:scale-105 active:scale-95 flex items-center gap-3 text-xs uppercase tracking-widest disabled:opacity-50 disabled:hover:scale-100 disabled:shadow-none"
@@ -559,6 +665,19 @@ export const ExportModal = ({
                             className="px-8 py-3.5 bg-red-500/10 text-red-400 hover:text-red-300 hover:bg-red-500/20 font-black uppercase tracking-widest rounded-xl transition-colors text-xs border border-red-500/30 w-full shadow-[0_0_15px_rgba(239,68,68,0.1)]"
                         >
                             INTERROMPER PROCESSO
+                        </button>
+                    )}
+
+                    {phase === 'done' && (
+                        <button
+                            onClick={() => {
+                                const { ipcRenderer } = (window as any).require('electron');
+                                void ipcRenderer.invoke('export-show-in-folder', outputPath);
+                            }}
+                            className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-brand-lime/25 bg-brand-lime/10 px-6 py-3.5 text-xs font-black uppercase tracking-widest text-brand-lime transition hover:bg-brand-lime/15"
+                        >
+                            <FolderOpen className="h-4 w-4" />
+                            Mostrar arquivo
                         </button>
                     )}
 

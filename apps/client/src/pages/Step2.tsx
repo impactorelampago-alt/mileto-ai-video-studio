@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { useWizard } from '../context/WizardContext';
+import { useWizard, ENABLE_MEDIA_AI } from '../context/WizardContext';
 import { VideoUpload } from '../components/VideoUpload';
 import { TrimModal } from '../components/TrimModal';
 import { AIImageModal } from '../components/AIImageModal';
@@ -43,7 +43,11 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { MediaTake } from '../types';
-import { SPEED_PRESETS, SpeedPresetType } from '../lib/speedRemapping';
+import { SpeedPresetType } from '../lib/speedRemapping';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ZoomEffectsModal } from '../components/ZoomEffectsModal';
+import { takeMotionLabel } from '../lib/takeMotion';
+import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 
 interface SortableTakeProps {
     take: MediaTake;
@@ -72,18 +76,18 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, format }: So
             ref={setNodeRef}
             style={style}
             className={cn(
-                'p-4 hover:bg-black/5 dark:bg-white/5 transition-all flex items-center gap-4 group bg-background border border-black/5 dark:border-white/5 rounded-2xl mb-3 shadow-[0_4px_20px_rgba(0,0,0,0.2)] relative overflow-hidden'
+                'group relative mb-2.5 flex min-w-0 items-center gap-3 overflow-hidden rounded-2xl border border-black/5 bg-background p-3 shadow-[0_6px_24px_rgba(0,0,0,0.16)] transition-all hover:border-brand-lime/15 hover:bg-black/[0.025] dark:border-white/7 dark:hover:bg-white/[0.035]'
             )}
         >
             <div
                 {...attributes}
                 {...listeners}
-                className="cursor-move text-brand-muted hover:text-foreground p-1 -ml-2"
+                className="-ml-1 cursor-grab rounded-lg p-1 text-brand-muted/45 transition hover:bg-white/5 hover:text-foreground active:cursor-grabbing"
             >
                 <GripVertical className="w-5 h-5 text-brand-muted/50" />
             </div>
 
-            <div className="text-xs font-mono font-bold text-brand-muted/40 w-6">
+            <div className="w-5 shrink-0 text-center font-mono text-[10px] font-bold text-brand-muted/40">
                 {(index + 1).toString().padStart(2, '0')}
             </div>
 
@@ -91,7 +95,7 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, format }: So
             <div
                 className={cn(
                     'bg-brand-dark rounded-xl overflow-hidden relative border border-black/10 dark:border-white/10 shrink-0 shadow-inner',
-                    format === '9:16' ? 'w-14 h-24' : 'w-20 h-20'
+                    format === '9:16' ? 'h-20 w-12' : 'h-16 w-16'
                 )}
             >
                 {take.type === 'video' ? (
@@ -116,26 +120,31 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, format }: So
 
             {/* Details */}
             <div className="flex-1 min-w-0">
-                <h4 className="text-sm font-semibold text-foreground tracking-wide truncate">{take.fileName}</h4>
-                <div className="flex gap-2 mt-2">
+                <h4 className="truncate text-xs font-bold tracking-wide text-foreground">{take.fileName}</h4>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
                     <span className="text-[10px] bg-black/5 dark:bg-white/5 px-2 py-0.5 rounded-md text-brand-muted font-mono font-semibold border border-black/5 dark:border-white/5">
                         {take.trim.start.toFixed(1)}s - {take.trim.end.toFixed(1)}s
                     </span>
+                    {take.motionEffect && (
+                        <span className="rounded-md border border-emerald-400/20 bg-emerald-400/8 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-emerald-300">
+                            {takeMotionLabel(take.motionEffect)} · {Math.round(take.motionEffect.intensity * 100)}%
+                        </span>
+                    )}
                 </div>
             </div>
 
             {/* Duration */}
-            <div className="text-right px-4">
-                <span className="text-sm font-mono font-bold text-brand-accent bg-brand-accent/10 px-3 py-1 rounded-lg border border-brand-accent/20">
+            <div className="shrink-0 text-right">
+                <span className="rounded-lg border border-brand-accent/20 bg-brand-accent/10 px-2 py-1 font-mono text-xs font-bold text-brand-accent">
                     {duration.toFixed(1)}s
                 </span>
             </div>
 
             {/* Actions */}
-            <div className="flex items-center gap-2 pr-2">
+            <div className="flex shrink-0 items-center gap-1 rounded-xl border border-white/7 bg-black/10 p-1">
                 <button
                     onClick={() => onToggleFit(take.id)}
-                    className="p-2.5 text-brand-muted hover:text-blue-400 hover:bg-blue-500/10 rounded-xl transition-all shadow-sm border border-transparent hover:border-blue-500/20"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-brand-muted transition hover:bg-cyan-500/10 hover:text-cyan-300"
                     title={
                         take.objectFit === 'contain'
                             ? 'Preencher Tela (Cortar Bordas)'
@@ -146,14 +155,15 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, format }: So
                 </button>
                 <button
                     onClick={() => onEdit(take)}
-                    className="p-2.5 text-brand-muted hover:text-[#0a0f12] hover:bg-brand-accent rounded-xl transition-all shadow-sm border border-transparent hover:border-brand-accent"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-brand-muted transition hover:bg-brand-lime/12 hover:text-brand-lime"
                     title="Editar Take"
                 >
                     <Scissors className="w-4 h-4" />
                 </button>
                 <button
                     onClick={() => onRemove(take.id)}
-                    className="p-2.5 text-brand-muted hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all border border-transparent hover:border-red-500/20"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-brand-muted transition hover:bg-red-500/10 hover:text-red-400"
+                    title="Remover take"
                 >
                     <Trash2 className="w-4 h-4" />
                 </button>
@@ -164,13 +174,15 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, format }: So
 
 export const Step2 = () => {
     const navigate = useNavigate();
-    const { mediaTakes, setMediaTakes, removeMediaTake, apiKeys, addMediaTake, adData, musicLibrary, selectedMusicId } =
+    const { mediaTakes, setMediaTakes, removeMediaTake, clearMediaTakes, apiKeys, addMediaTake, adData, musicLibrary, selectedMusicId } =
         useWizard();
     const [editingTake, setEditingTake] = useState<MediaTake | null>(null);
     const [showImageModal, setShowImageModal] = useState(false);
     const [showVideoModal, setShowVideoModal] = useState(false);
     const [showTransitionsModal, setShowTransitionsModal] = useState(false);
+    const [showZoomModal, setShowZoomModal] = useState(false);
     const [targetTakeId, setTargetTakeId] = useState<string | null>(null);
+    const [confirmClear, setConfirmClear] = useState(false);
 
     const sensors = useSensors(
         useSensor(PointerSensor, {
@@ -183,11 +195,22 @@ export const Step2 = () => {
         })
     );
 
-    const totalDuration = mediaTakes.reduce((acc, take) => {
+    const rawTakesDuration = mediaTakes.reduce((acc, take) => {
         const duration = take.trim.end - take.trim.start;
         return acc + duration;
     }, 0);
     const narrationDuration = adData.narrationDuration || 0;
+    // A narração/mixagem é o relógio final. Takes excedentes continuam editáveis,
+    // porém nada depois do fim do áudio entra no preview ou na exportação.
+    const totalDuration = narrationDuration > 0
+        ? Math.min(rawTakesDuration, narrationDuration)
+        : rawTakesDuration;
+
+    const handleNext = () => {
+        const missing = missingBeforeStep(3, adData, mediaTakes);
+        if (missing.length) toast.warning(pendingWarningText(missing), { duration: 7000 });
+        navigate('/wizard/step/3');
+    };
 
     const handleMuteToggle = (takeId: string) => {
         setMediaTakes((prev) =>
@@ -250,8 +273,8 @@ export const Step2 = () => {
 
     return (
         <ErrorBoundary>
-            <div className="max-w-6xl mx-auto pb-20">
-                <header className="mb-12 text-center mt-8">
+            <div className="mx-auto w-full max-w-[1440px] pb-24">
+                <header className="mb-7 mt-2 text-center">
                     <h2 className="text-4xl font-extrabold text-foreground tracking-tight">
                         Seus{' '}
                         <span className="bg-linear-to-r from-brand-lime to-brand-accent bg-clip-text text-transparent">
@@ -263,42 +286,44 @@ export const Step2 = () => {
                     </p>
                 </header>
 
-                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_minmax(0,0.9fr)] gap-6">
+                <div className="grid grid-cols-1 gap-5 xl:grid-cols-[220px_minmax(480px,1fr)_320px]">
                     {/* Col 1: Upload & Sources */}
                     <div className="space-y-6">
                         <VideoUpload />
 
-                        {/* AI Generation Tools */}
-                        <div className="space-y-4 bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-xl relative overflow-hidden">
-                            <div className="absolute top-0 left-0 w-full h-[2px] bg-linear-to-r from-brand-lime/40 to-brand-accent/10"></div>
-                            <h3 className="text-[13px] tracking-wide uppercase font-semibold text-brand-muted flex items-center gap-2 mb-4">
-                                <Wand2 className="w-4 h-4 text-brand-accent" /> Gerar com IA
-                            </h3>
-                            <div className="grid grid-cols-2 gap-3">
-                                <button
-                                    onClick={() => setShowImageModal(true)}
-                                    className="flex flex-col items-center justify-center p-4 bg-background hover:bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 hover:border-brand-accent/40 rounded-2xl transition-all group shadow-inner min-h-[110px]"
-                                >
-                                    <div className="p-3 bg-brand-accent/10 rounded-xl mb-3 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(0,230,118,0.1)]">
-                                        <ImageIcon className="w-5 h-5 text-brand-accent" />
-                                    </div>
-                                    <span className="text-xs font-bold uppercase tracking-wider text-foreground">
-                                        Imagem
-                                    </span>
-                                </button>
-                                <button
-                                    onClick={() => setShowVideoModal(true)}
-                                    className="flex flex-col items-center justify-center p-4 bg-background hover:bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 hover:border-purple-500/40 rounded-2xl transition-all group shadow-inner min-h-[110px]"
-                                >
-                                    <div className="p-3 bg-purple-500/10 rounded-xl mb-3 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(168,85,247,0.1)]">
-                                        <Video className="w-5 h-5 text-purple-400" />
-                                    </div>
-                                    <span className="text-xs font-bold uppercase tracking-wider text-foreground">
-                                        Vídeo
-                                    </span>
-                                </button>
+                        {/* AI Generation Tools — desligado no v1 (ver ENABLE_MEDIA_AI) */}
+                        {ENABLE_MEDIA_AI && (
+                            <div className="space-y-4 bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-xl relative overflow-hidden">
+                                <div className="absolute top-0 left-0 w-full h-[2px] bg-linear-to-r from-brand-lime/40 to-brand-accent/10"></div>
+                                <h3 className="text-[13px] tracking-wide uppercase font-semibold text-brand-muted flex items-center gap-2 mb-4">
+                                    <Wand2 className="w-4 h-4 text-brand-accent" /> Gerar com IA
+                                </h3>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button
+                                        onClick={() => setShowImageModal(true)}
+                                        className="flex flex-col items-center justify-center p-4 bg-background hover:bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 hover:border-brand-accent/40 rounded-2xl transition-all group shadow-inner min-h-[110px]"
+                                    >
+                                        <div className="p-3 bg-brand-accent/10 rounded-xl mb-3 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(0,230,118,0.1)]">
+                                            <ImageIcon className="w-5 h-5 text-brand-accent" />
+                                        </div>
+                                        <span className="text-xs font-bold uppercase tracking-wider text-foreground">
+                                            Imagem
+                                        </span>
+                                    </button>
+                                    <button
+                                        onClick={() => setShowVideoModal(true)}
+                                        className="flex flex-col items-center justify-center p-4 bg-background hover:bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 hover:border-purple-500/40 rounded-2xl transition-all group shadow-inner min-h-[110px]"
+                                    >
+                                        <div className="p-3 bg-purple-500/10 rounded-xl mb-3 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(168,85,247,0.1)]">
+                                            <Video className="w-5 h-5 text-purple-400" />
+                                        </div>
+                                        <span className="text-xs font-bold uppercase tracking-wider text-foreground">
+                                            Vídeo
+                                        </span>
+                                    </button>
+                                </div>
                             </div>
-                        </div>
+                        )}
                     </div>
 
                     {/* Col 2: Timeline/Segments */}
@@ -351,19 +376,29 @@ export const Step2 = () => {
                             </div>
                         </div>
 
-                        {totalDuration < narrationDuration && (
+                        {mediaTakes.length > 0 && totalDuration < narrationDuration && (
                             <div className="flex items-start gap-3 text-yellow-500 text-xs bg-yellow-500/10 p-4 rounded-2xl border border-yellow-500/20 font-medium leading-relaxed">
                                 <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
                                 <p>
-                                    Seus takes somam menos tempo do que a narração. O vídeo final ficará com tela preta
-                                    ou loop no final.
+                                    Seus takes ainda não cobrem toda a narração. Adicione mais material ou use o corte
+                                    automático para completar o tempo.
+                                </p>
+                            </div>
+                        )}
+
+                        {narrationDuration > 0 && rawTakesDuration > narrationDuration + 0.05 && (
+                            <div className="flex items-start gap-3 rounded-2xl border border-brand-lime/20 bg-brand-lime/[0.06] p-4 text-xs font-medium leading-relaxed text-brand-lime">
+                                <Clock className="mt-0.5 h-4 w-4 shrink-0" />
+                                <p>
+                                    A sequência possui {(rawTakesDuration - narrationDuration).toFixed(1)}s além do áudio.
+                                    O preview e a exportação terminam exatamente junto com a mixagem.
                                 </p>
                             </div>
                         )}
 
                         {/* Segments List */}
-                        <div className="bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl overflow-hidden shadow-2xl p-6">
-                            <div className="pb-4 mb-4 border-b border-black/5 dark:border-white/5 flex justify-between items-center">
+                        <div className="overflow-hidden rounded-3xl border border-black/5 bg-brand-card p-4 shadow-2xl dark:border-white/5 sm:p-5">
+                            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-black/5 pb-4 dark:border-white/5">
                                 {/* Toggle All Fit Button */}
                                 <button
                                     onClick={() => {
@@ -387,13 +422,27 @@ export const Step2 = () => {
                                     )}
                                 </button>
 
-                                <div className="flex items-center gap-3">
+                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                    {mediaTakes.length > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setConfirmClear(true)}
+                                            className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/15 bg-red-500/[0.055] px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-red-300 transition hover:bg-red-500/10"
+                                            title="Remover todos os takes"
+                                        >
+                                            <Trash2 className="h-3.5 w-3.5" /> Limpar
+                                        </button>
+                                    )}
                                     <button
-                                        disabled
-                                        className="p-2 bg-emerald-500/5 text-emerald-500 rounded-lg border border-emerald-500/10 transition-colors opacity-50 cursor-not-allowed"
-                                        title="Zoom (Disponível em breve)"
+                                        onClick={() => setShowZoomModal(true)}
+                                        disabled={mediaTakes.length === 0}
+                                        className="relative p-2 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 rounded-lg border border-emerald-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                        title="Aplicar Zoom In ou Zoom Out em um ou vários takes"
                                     >
                                         <ZoomIn className="w-4 h-4" />
+                                        {mediaTakes.some((take) => take.motionEffect) && (
+                                            <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_8px_rgba(110,231,183,.9)]" />
+                                        )}
                                     </button>
 
                                     <button
@@ -408,15 +457,6 @@ export const Step2 = () => {
                                         {adData.globalTransition && (
                                             <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-fuchsia-400 shadow-[0_0_8px_rgba(232,121,249,0.8)]"></span>
                                         )}
-                                    </button>
-
-                                    <button
-                                        disabled
-                                        className="px-3 py-2 bg-black/5 dark:bg-white/5 text-brand-muted rounded-lg border border-black/5 dark:border-white/5 transition-all shadow-sm opacity-50 cursor-not-allowed flex items-center gap-2 text-xs font-bold uppercase tracking-wider"
-                                        title="Corte Manual (Edição individual de cortes)"
-                                    >
-                                        <Scissors className="w-4 h-4" />
-                                        Corte Manual
                                     </button>
 
                                     <button
@@ -464,9 +504,6 @@ export const Step2 = () => {
                                                     toast.error('Adicione uma narração ou música para ajustar!');
                                                 return;
                                             }
-
-                                            // Overshoot by 1.5 seconds to ensure video doesn't cut to black before audio ends
-                                            effectiveAudioDuration += 1.5;
 
                                             // Redistribuição Inteligente (Smart Split)
                                             let remainingAudioTime = effectiveAudioDuration;
@@ -523,7 +560,9 @@ export const Step2 = () => {
                                                     ...take,
                                                     trim: {
                                                         start: 0,
-                                                        end: Number(assignedDuration.toFixed(1)),
+                                                        // Manter a precisão evita que o arredondamento de cada
+                                                        // take some décimos e ultrapasse o fim do áudio.
+                                                        end: Math.max(0, assignedDuration),
                                                     },
                                                     speedPresetId: 'normal' as const, // Remove speed effects for automatic mode
                                                 };
@@ -550,7 +589,7 @@ export const Step2 = () => {
                                                         id: `${baseTake.id}-loop-${Date.now()}-${loopIdx}`,
                                                         trim: {
                                                             start: 0,
-                                                            end: Number(durationForThisLoop.toFixed(1))
+                                                            end: Math.max(0, durationForThisLoop)
                                                         },
                                                         speedPresetId: 'normal' as const, // Remove speed effects for automatic mode
                                                     });
@@ -570,15 +609,15 @@ export const Step2 = () => {
                                             }
                                         }}
                                         disabled={mediaTakes.length === 0}
-                                        className="px-3 py-2 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 rounded-lg border border-blue-500/20 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-xs font-bold uppercase tracking-wider"
+                                        className="grid h-9 w-9 place-items-center rounded-lg border border-blue-500/20 bg-blue-500/10 text-blue-400 shadow-sm transition-all hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                                         title="Dividir e preencher tempo do áudio inteligentemente (Corte Automático)"
+                                        aria-label="Corte automático"
                                     >
-                                        <Wand2 className="w-4 h-4" />
-                                        Corte Automático
+                                        <Scissors className="w-4 h-4" />
                                     </button>
 
-                                    <span className="text-[10px] uppercase tracking-wider font-bold text-brand-muted ml-2">
-                                        {mediaTakes.length} cortes
+                                    <span className="ml-1 rounded-lg border border-white/7 bg-black/10 px-2.5 py-2 text-[9px] font-black uppercase tracking-wider text-brand-muted">
+                                        {mediaTakes.length} {mediaTakes.length === 1 ? 'take' : 'takes'}
                                     </span>
                                 </div>
                             </div>
@@ -704,21 +743,40 @@ export const Step2 = () => {
                     <TrimModal take={editingTake} onSave={handleSaveTake} onClose={() => setEditingTake(null)} />
                 )}
 
-                {/* AI Modals */}
-                <AIImageModal isOpen={showImageModal} onClose={() => setShowImageModal(false)} />
-                <AIVideoModal
-                    isOpen={showVideoModal}
-                    onClose={() => setShowVideoModal(false)}
-                    apiKeys={apiKeys}
-                    addMediaTake={addMediaTake}
-                />
+                {confirmClear && (
+                    <ConfirmDialog
+                        mode="confirm"
+                        title="Remover todos os takes?"
+                        message="A sequência visual será esvaziada por completo. As mídias originais continuarão nas bibliotecas."
+                        confirmLabel="Remover todos"
+                        onClose={() => setConfirmClear(false)}
+                        onConfirm={() => {
+                            clearMediaTakes();
+                            setEditingTake(null);
+                            setConfirmClear(false);
+                            toast.success('Todos os takes foram removidos.');
+                        }}
+                    />
+                )}
+
+                {/* AI Modals — desligados no v1 (ver ENABLE_MEDIA_AI) */}
+                {ENABLE_MEDIA_AI && (
+                    <>
+                        <AIImageModal isOpen={showImageModal} onClose={() => setShowImageModal(false)} />
+                        <AIVideoModal
+                            isOpen={showVideoModal}
+                            onClose={() => setShowVideoModal(false)}
+                            apiKeys={apiKeys}
+                            addMediaTake={addMediaTake}
+                        />
+                    </>
+                )}
 
                 {/* Footer Navigation */}
                 <div className="fixed bottom-0 right-0 left-0 bg-background/80 backdrop-blur-md border-t border-border p-4 z-20 flex justify-end">
                     <button
-                        onClick={() => navigate('/wizard/step/3')}
-                        disabled={mediaTakes.length === 0}
-                        className="px-8 py-2.5 bg-primary hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed text-primary-foreground font-bold rounded-lg text-sm transition-all flex items-center gap-2 shadow-lg shadow-green-900/10"
+                        onClick={handleNext}
+                        className="px-8 py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground font-bold rounded-lg text-sm transition-all flex items-center gap-2 shadow-lg shadow-green-900/10"
                     >
                         Próximo: Estilo
                         <ArrowRight className="w-4 h-4" />
@@ -727,11 +785,22 @@ export const Step2 = () => {
             </div>
 
             {/* Transitions Modal */}
-            <TransitionsModal
+                <TransitionsModal
                 isOpen={showTransitionsModal}
                 onClose={() => setShowTransitionsModal(false)}
                 targetTakeId={targetTakeId}
-            />
+                />
+
+                <ZoomEffectsModal
+                    isOpen={showZoomModal}
+                    takes={mediaTakes}
+                    onClose={() => setShowZoomModal(false)}
+                    onApply={(takeIds, effect) => {
+                        const selected = new Set(takeIds);
+                        setMediaTakes((current) => current.map((take) => selected.has(take.id) ? { ...take, motionEffect: effect || undefined } : take));
+                        toast.success(effect ? `Zoom aplicado em ${takeIds.length} ${takeIds.length === 1 ? 'take' : 'takes'}.` : 'Zoom removido dos takes selecionados.');
+                    }}
+                />
         </ErrorBoundary>
     );
 };

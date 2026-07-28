@@ -7,12 +7,13 @@ import { query } from './db.js';
 import { login, logout, requireAuth, requireSuperAdmin, requireOwner } from './auth.js';
 import { proxyTts, proxyChat, proxyStt, hasKey } from './providers.js';
 import { estimateUnits, priceOf, reserve, settle, release, getBalance } from './meter.js';
-import { resolveTier, getSystemPrompt } from './settings.js';
+import { resolveTier, getSystemPrompt, resolveAgent } from './settings.js';
 import { CHAT_SCRIPT_OUTPUT_CONTRACT } from './defaultPrompt.js';
 import * as admin from './admin.js';
 import * as account from './account.js';
 import * as shared from './shared.js';
 import * as opsIntegration from './opsIntegration.js';
+import * as generation from './generation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -35,7 +36,7 @@ const billingError = (res, e) => {
 // CORS liberado para o app local. Em produção, restrinja à origem do app.
 app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Ops-View-Context');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
@@ -58,6 +59,9 @@ app.get('/v1/integrations/mileto-ops/callback', asyncHandler(opsIntegration.auth
 // portanto o navegador preserva o método no callback. Aceitar os dois métodos é
 // seguro porque code/state continuam obrigatórios, de uso único e validados por PKCE.
 app.post('/v1/integrations/mileto-ops/callback', asyncHandler(opsIntegration.authorizationCallback));
+// A rota pública usa um ticket aleatório, efêmero e mantido apenas em memória.
+// O grant original do Ops nunca sai do gateway.
+app.get('/v1/integrations/mileto-ops/media/:ticket', asyncHandler(opsIntegration.proxyMedia));
 
 // ── Autenticação ────────────────────────────────────────────────────────────
 app.post('/auth/login', asyncHandler(login));
@@ -152,25 +156,42 @@ app.post(
     asyncHandler(requireAuth),
     asyncHandler(async (req, res) => {
         if (!req.user.orgId) return res.status(403).json({ ok: false, message: 'Conta sem organização.' });
-        const { messages, model = 'mileto-plus', reasoning, locale = 'pt-BR', system, json } = req.body || {};
+        const { messages, model = 'mileto-plus', reasoning, locale = 'pt-BR', system, json, agentId } = req.body || {};
         if (!Array.isArray(messages) || !messages.length) {
             return res.status(400).json({ ok: false, message: 'Faltam messages.' });
         }
 
-        const { provider, model: realModel } = await resolveTier(model);
         const hasCustomSystem = typeof system === 'string' && system.trim();
-        const baseSystem = hasCustomSystem ? system : await getSystemPrompt(locale);
-        // The stored admin prompt can predate this feature. Append the app output
-        // contract at request time so title + script works without rewriting settings.
-        const sys = hasCustomSystem
-            ? baseSystem
-            : [baseSystem, CHAT_SCRIPT_OUTPUT_CONTRACT].filter(Boolean).join('\n\n');
+        // Chamadas internas com `system` continuam usando os tiers legados. Todo o
+        // chat do produto passa pelo Diretor (ou por um especialista explicitamente
+        // solicitado), cuja configuraÃ§Ã£o real nunca sai deste gateway.
+        const selectedAgent = hasCustomSystem
+            ? null
+            : await resolveAgent(String(agentId || 'director'), locale, model);
+        if (selectedAgent && !selectedAgent.enabled) {
+            return res.status(409).json({
+                ok: false,
+                code: 'AGENT_DISABLED',
+                message: `${selectedAgent.label} estÃ¡ desativado no Super Admin.`,
+            });
+        }
+        const tier = selectedAgent ? null : await resolveTier(model);
+        const provider = selectedAgent?.provider || tier.provider;
+        const realModel = selectedAgent?.model || tier.model;
+        const realReasoning = selectedAgent?.reasoning || reasoning;
+        const maxOutputTokens = selectedAgent?.maxOutputTokens || 4096;
+        const baseSystem = hasCustomSystem ? system : selectedAgent?.systemPrompt || (await getSystemPrompt(locale));
+        // Somente o Diretor recebe o contrato do compositor do app. Especialistas
+        // possuem contratos JSON prÃ³prios em seus prompts versionados.
+        const sys = selectedAgent?.id === 'director'
+            ? [baseSystem, CHAT_SCRIPT_OUTPUT_CONTRACT].filter(Boolean).join('\n\n')
+            : baseSystem;
         const fullMessages = sys ? [{ role: 'system', content: sys }, ...messages] : messages;
 
         const demo = !(await hasKey(provider));
         const promptChars = fullMessages.map((m) => m.content || '').join(' ');
         // Estimativa como TETO (prompt + saída máxima) para reservar o suficiente.
-        const estUnits = estimateUnits(provider, 'chat', promptChars) + 4096;
+        const estUnits = estimateUnits(provider, 'chat', promptChars) + maxOutputTokens;
         const { charged: estCharge } = await priceOf(provider, realModel, estUnits, 'chat');
 
         let reserved;
@@ -182,7 +203,14 @@ app.post(
 
         let result;
         try {
-            result = await proxyChat({ messages: fullMessages, model: realModel, provider, reasoning, json: !!json });
+            result = await proxyChat({
+                messages: fullMessages,
+                model: realModel,
+                provider,
+                reasoning: realReasoning,
+                json: selectedAgent ? selectedAgent.id !== 'director' : !!json,
+                maxOutputTokens,
+            });
         } catch (e) {
             await release({ orgId: req.user.orgId, reserved, demo }).catch(() => {});
             console.error('[gateway] /v1/chat provedor', e.message);
@@ -206,7 +234,23 @@ app.post(
             reserved,
         });
 
-        res.json({ ok: true, text: result.text, demo: result.demo, charged: meta.charged, balance: meta.balanceAfter });
+        res.json({
+            ok: true,
+            text: result.text,
+            demo: result.demo,
+            charged: meta.charged,
+            balance: meta.balanceAfter,
+            ...(selectedAgent
+                ? {
+                    agent: {
+                        id: selectedAgent.id,
+                        label: selectedAgent.label,
+                        version: selectedAgent.version,
+                        tier: selectedAgent.tier,
+                    },
+                }
+                : {}),
+        });
     })
 );
 
@@ -260,6 +304,16 @@ app.post(
     })
 );
 
+// Mídia gerada por agentes. Chaves, modelos e URLs do fornecedor permanecem no gateway.
+app.post('/v1/generations/image', asyncHandler(requireAuth), asyncHandler(generation.generateImage));
+app.post('/v1/generations/video', asyncHandler(requireAuth), asyncHandler(generation.createVideo));
+app.get('/v1/generations/video/:generationId', asyncHandler(requireAuth), asyncHandler(generation.videoStatus));
+app.get(
+    '/v1/generations/video/:generationId/content',
+    asyncHandler(requireAuth),
+    asyncHandler(generation.videoContent)
+);
+
 // ── Super admin (control plane) ─────────────────────────────────────────────
 const sa = [asyncHandler(requireAuth), requireSuperAdmin];
 app.get('/admin/overview', sa, asyncHandler(admin.overview));
@@ -276,6 +330,11 @@ app.get('/admin/models', sa, asyncHandler(admin.getModels));
 app.post('/admin/models', sa, asyncHandler(admin.setModel));
 app.get('/admin/prompt', sa, asyncHandler(admin.getChatPrompt));
 app.post('/admin/prompt', sa, asyncHandler(admin.setChatPrompt));
+app.get('/admin/agents', sa, asyncHandler(admin.getAgents));
+app.post('/admin/agents/:agentId', sa, asyncHandler(admin.setAgent));
+app.get('/admin/agents/:agentId/history', sa, asyncHandler(admin.getAgentHistory));
+app.post('/admin/agents/:agentId/rollback', sa, asyncHandler(admin.rollbackAgent));
+app.post('/admin/agents/:agentId/test', sa, asyncHandler(admin.testAgent));
 app.get('/admin/credits', sa, asyncHandler(admin.getCredits));
 app.post('/admin/credits', sa, asyncHandler(admin.setCredit));
 
@@ -297,6 +356,7 @@ app.post('/v1/integrations/mileto-ops/sync/users', authed, requireOwner, asyncHa
 app.get('/v1/integrations/mileto-ops/sync/conflicts', authed, requireOwner, asyncHandler(opsIntegration.listConflicts));
 app.put('/v1/integrations/mileto-ops/user-links/:aiUserId', authed, requireOwner, asyncHandler(opsIntegration.confirmUserLink));
 app.delete('/v1/integrations/mileto-ops/user-links/:aiUserId', authed, requireOwner, asyncHandler(opsIntegration.removeUserLink));
+app.get('/v1/integrations/mileto-ops/view-contexts', authed, asyncHandler(opsIntegration.listViewContexts));
 app.get('/v1/integrations/mileto-ops/companies', authed, asyncHandler(opsIntegration.listCompanies));
 app.get('/v1/integrations/mileto-ops/companies/:companyId/folders', authed, asyncHandler(opsIntegration.listFolders));
 app.get('/v1/integrations/mileto-ops/companies/:companyId/assets', authed, asyncHandler(opsIntegration.listAssets));
@@ -323,6 +383,9 @@ app.get('/shared/drafts', authed, asyncHandler(shared.listDrafts));
 app.get('/shared/drafts/:draftId', authed, asyncHandler(shared.getDraft));
 app.put('/shared/drafts/:draftId', authed, asyncHandler(shared.saveDraft));
 app.delete('/shared/drafts/:draftId', authed, asyncHandler(shared.trashDraft));
+// Ação explícita para clientes desktop e proxies que tratam DELETE de forma
+// diferente. Mantemos DELETE por compatibilidade com versões anteriores.
+app.post('/shared/drafts/:draftId/trash', authed, asyncHandler(shared.trashDraft));
 
 // ── Painel do super admin (HTML estático) ───────────────────────────────────
 app.use('/admin-ui', express.static(path.join(__dirname, '..', 'public')));

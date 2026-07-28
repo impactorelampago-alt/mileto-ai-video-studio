@@ -7,6 +7,7 @@ interface TrackLaneProps {
     track: TimelineTrack;
     zoom: number;
     audioBuffers?: Map<string, AudioBuffer>; // New prop
+    buffersVersion: number; // força novo render quando o Map mutável recebe um buffer
     selectedClipId: string | null;
     onSelectClip: (id: string | null) => void;
     onUpdateClip: (trackId: string, clipId: string, updates: Partial<AudioClip>) => void;

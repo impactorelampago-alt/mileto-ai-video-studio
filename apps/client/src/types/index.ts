@@ -7,6 +7,7 @@ export interface TransitionAsset {
     durationSec: number;
     category?: string;
     isBuiltIn?: boolean;
+    description?: string;
 }
 
 import { SpeedPresetType } from '../lib/speedRemapping';
@@ -15,6 +16,33 @@ export interface SpeedKeyframe {
     id: string;
     position: number;
     speed: number;
+}
+
+export type TakeZoomType = 'zoom-in' | 'zoom-out' | 'zoom-in-out';
+
+export interface TakeMotionEffect {
+    type: TakeZoomType;
+    /** Ampliação adicional no ponto mais fechado. 0.12 = 12%. */
+    intensity: number;
+    /** Ponto de interesse dentro do quadro, em porcentagem. */
+    focalX: number;
+    focalY: number;
+    easing: 'linear' | 'smooth';
+}
+
+export interface ExternalMediaReference {
+    source: 'mileto_ops';
+    referenceId: string;
+    connectionId: string;
+    accountId: string;
+    companyId: string;
+    folderId?: string | null;
+    assetId: string;
+    mid?: string | null;
+    version?: string | null;
+    checksum?: string | null;
+    opsUpdatedAt?: string | null;
+    cacheId?: string | null;
 }
 
 export interface MediaTake {
@@ -26,6 +54,8 @@ export interface MediaTake {
     backendPath?: string; // restored
     fileUrl?: string; // URL for the uploaded file
     proxyUrl?: string; // URL for the optimized proxy video
+    sharedAssetId?: string; // Referência estável do item no ambiente compartilhado
+    externalMedia?: ExternalMediaReference; // Referência estável; nunca contém signed URL/token do Ops
     objectUrl?: string; // Local blob URL (temporary)
     type: 'video' | 'image';
     objectFit?: 'cover' | 'contain';
@@ -36,6 +66,7 @@ export interface MediaTake {
     };
     speedPresetId?: SpeedPresetType;
     muteOriginalAudio?: boolean;
+    motionEffect?: TakeMotionEffect;
     transition?: {
         asset: TransitionAsset;
         volume: number;
@@ -47,9 +78,64 @@ export interface ApiKeys {
     gemini: string;
     openai: string;
     fishAudio: string;
+    elevenLabs: string;
     replicate?: string;
     runway?: string;
+    seedance?: string;
 }
+
+/** Provedores de TTS suportados. Espelha `services/ttsTypes.ts` no servidor. */
+export type TtsProvider = 'fishAudio' | 'elevenLabs';
+
+export const TTS_PROVIDERS: { id: TtsProvider; label: string; apiKeyField: keyof ApiKeys }[] = [
+    { id: 'fishAudio', label: 'Fish Audio', apiKeyField: 'fishAudio' },
+    { id: 'elevenLabs', label: 'ElevenLabs', apiKeyField: 'elevenLabs' },
+];
+
+/**
+ * Ajustes manuais de voz. Faixas conforme a documentação de cada fornecedor —
+ * ver PESQUISA-NARRACAO-IA.md.
+ *
+ * `stability` é INVERTIDO: menor = mais emoção. Só vale para ElevenLabs.
+ */
+export interface VoiceSettings {
+    speed: number; // 0.5 – 2.0 (recomendado 0.80 – 1.25)
+    volume: number; // dB, -20 a +20 (recomendado -5 a +5) · só Fish Audio
+    stability: number; // 0.0 – 1.0 (recomendado 0.30 – 0.45) · só ElevenLabs
+    similarityBoost: number; // 0.0 – 1.0 · só ElevenLabs
+    fishModel: FishModel;
+}
+
+/**
+ * Modelos da Fish Audio. Vai no header `model` da requisição.
+ * Só o S2 entende a sintaxe [bracket] de emoção — no S1 as tags são LIDAS em voz alta.
+ */
+export type FishModel = 's2.1-pro-free' | 's2-pro' | 's1';
+
+export const FISH_MODELS: { id: FishModel; label: string; note: string; tags: boolean }[] = [
+    {
+        id: 's2-pro',
+        label: 'S2 Pro · recomendado',
+        note: 'Melhor qualidade de voz, com SLA. É o padrão do Mileto para narração profissional.',
+        tags: true,
+    },
+    {
+        id: 's2.1-pro-free',
+        label: 'S2.1 Pro · econômico',
+        note: 'Mais barato, sem SLA — o áudio pode ser usado para treinar os modelos do fornecedor.',
+        tags: true,
+    },
+    { id: 's1', label: 'S1 · legado', note: 'Modelo antigo. Não entende tags de emoção.', tags: false },
+];
+
+export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
+    speed: 1,
+    volume: 0,
+    stability: 0.4, // preset "Conversational" da ElevenLabs
+    similarityBoost: 0.75,
+    // Pro por padrão: a voz é melhor. É o que o cliente enxerga como "Mileto".
+    fishModel: 's2-pro',
+};
 
 export type VideoFormat = '9:16' | '16:9' | '4:5' | '1:1';
 
@@ -67,6 +153,8 @@ export interface CustomVoice {
     id: string;
     name: string;
     description?: string;
+    /** Vozes salvas antes do suporte multi-provedor não têm o campo — trata-se como Fish Audio. */
+    provider?: TtsProvider;
 }
 
 export interface AudioTrackConfig {
@@ -142,6 +230,7 @@ export interface TitleHook {
     durationSec: number;
     isActive: boolean;
     posY: number; // Vertical position percentage (0-100), default 30
+    posX?: number; // Horizontal position percentage (0-100), default 50
     scale?: number; // Size/zoom multiplier (e.g. 0.5 to 2.0), default 1.0
     styleId?: string; // e.g., 'neo-pop', 'solid-ribbon', 'gradient-glow'
     primaryColor?: string; // Primary text or accent color
@@ -157,14 +246,19 @@ export interface AdData {
     format: VideoFormat;
     narrationText: string;
     selectedVoiceId: string | null;
+    selectedVoiceProvider?: TtsProvider;
+    voiceSettings?: VoiceSettings;
     narrationVoiceId?: string;
     narrationAudioUrl: string | null;
     narrationAudioPath: string | null; // For backend reference
+    sharedNarrationAssetId?: string;
     isNarrationGenerated: boolean;
     musicAudioUrl?: string | null;
+    sharedMusicAssetId?: string;
     audioConfig: AudioConfig; // Kept for backward compatibility
     audioTimeline?: AudioTimeline; // New Data Model
     masterAudioUrl?: string; // Mix of Narration + Background music generated on backend
+    sharedMasterAssetId?: string;
     narrationDuration?: number;
     captions?: CaptionTrack;
     globalTransition?: TransitionAsset | null;
@@ -206,11 +300,15 @@ export interface ChatFolder {
     createdAt: string;
 }
 
+export type ChatAgentId = 'director' | 'prompt_sales' | 'image_director' | 'video_director';
+
 export interface ChatSession {
     id: string;
     title: string;
     folderId: string | null;
     model: string;
+    /** Agente principal desta conversa. Sessões antigas assumem `director`. */
+    agentId?: ChatAgentId;
     createdAt: string;
     updatedAt: string;
 }
@@ -220,5 +318,10 @@ export interface ChatMessage {
     sessionId: string;
     role: 'user' | 'assistant' | 'system';
     content: string;
+    /** Identidade pública segura; prompt/modelo reais nunca chegam ao renderer. */
+    agentId?: ChatAgentId;
+    agentLabel?: string;
+    agentVersion?: number;
+    agentTier?: 'lite' | 'mileto' | 'ultra';
     createdAt: string;
 }

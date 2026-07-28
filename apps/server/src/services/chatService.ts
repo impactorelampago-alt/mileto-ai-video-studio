@@ -15,6 +15,7 @@ export interface ChatSession {
     title: string;
     folderId: string | null; // null = unfiled
     model: string; // e.g. 'gpt-4o', 'gemini-1.5-pro'
+    agentId?: ChatAgentId;
     createdAt: string;
     updatedAt: string;
 }
@@ -24,8 +25,14 @@ export interface ChatMessage {
     sessionId: string;
     role: 'user' | 'assistant' | 'system';
     content: string;
+    agentId?: ChatAgentId;
+    agentLabel?: string;
+    agentVersion?: number;
+    agentTier?: 'lite' | 'mileto' | 'ultra';
     createdAt: string;
 }
+
+export type ChatAgentId = 'director' | 'prompt_sales' | 'image_director' | 'video_director';
 
 interface ChatDB {
     folders: ChatFolder[];
@@ -55,16 +62,28 @@ function readDB(): ChatDB {
     try {
         const raw = fs.readFileSync(DB_PATH, 'utf-8');
         return JSON.parse(raw) as ChatDB;
-    } catch {
-        const empty: ChatDB = { folders: [], sessions: [], messages: [] };
-        fs.writeFileSync(DB_PATH, JSON.stringify(empty, null, 2), 'utf-8');
-        return empty;
+    } catch (err) {
+        // NÃO sobrescreve o arquivo: um JSON truncado (crash/antivírus durante a
+        // escrita) apagaria TODO o histórico. Preserva como .corrupt-<ts> para
+        // recuperação e segue com um DB vazio só em memória.
+        try {
+            const backup = `${DB_PATH}.corrupt-${Date.now()}`;
+            fs.renameSync(DB_PATH, backup);
+            console.error('[chat] chat_db.json ilegível — preservado em', backup, (err as Error).message);
+        } catch {
+            /* se nem renomear der, seguimos vazios sem destruir nada */
+        }
+        return { folders: [], sessions: [], messages: [] };
     }
 }
 
 function writeDB(db: ChatDB): void {
     ensureDir();
-    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf-8');
+    // Escrita ATÔMICA: grava num temp e faz rename (operação atômica no SO). Assim
+    // um crash no meio da escrita não deixa o chat_db.json principal truncado.
+    const tmp = `${DB_PATH}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf-8');
+    fs.renameSync(tmp, DB_PATH);
 }
 
 // ─── Folder CRUD ─────────────────────────────────────────────────────────────
@@ -120,7 +139,12 @@ export function getSession(id: string): ChatSession | null {
     return db.sessions.find((s) => s.id === id) || null;
 }
 
-export function createSession(title: string, folderId: string | null = null, model: string = 'gpt-4o'): ChatSession {
+export function createSession(
+    title: string,
+    folderId: string | null = null,
+    model: string = 'gpt-4o',
+    agentId: ChatAgentId = 'director'
+): ChatSession {
     const db = readDB();
     const now = new Date().toISOString();
     const session: ChatSession = {
@@ -128,6 +152,7 @@ export function createSession(title: string, folderId: string | null = null, mod
         title,
         folderId,
         model,
+        agentId,
         createdAt: now,
         updatedAt: now,
     };
@@ -184,13 +209,19 @@ export function getMessages(sessionId: string): ChatMessage[] {
     return db.messages.filter((m) => m.sessionId === sessionId);
 }
 
-export function addMessage(sessionId: string, role: 'user' | 'assistant' | 'system', content: string): ChatMessage {
+export function addMessage(
+    sessionId: string,
+    role: 'user' | 'assistant' | 'system',
+    content: string,
+    metadata: Pick<ChatMessage, 'agentId' | 'agentLabel' | 'agentVersion' | 'agentTier'> = {}
+): ChatMessage {
     const db = readDB();
     const msg: ChatMessage = {
         id: uuidv4(),
         sessionId,
         role,
         content,
+        ...metadata,
         createdAt: new Date().toISOString(),
     };
     db.messages.push(msg);

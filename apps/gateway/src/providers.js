@@ -116,7 +116,8 @@ const REASONING_MAP = {
  * no server). `messages` já pode conter a mensagem de sistema (persona do painel).
  * Modo demo devolve texto fixo quando não há chave.
  */
-export const proxyChat = async ({ messages, model, provider, reasoning, json }) => {
+export const proxyChat = async ({ messages, model, provider, reasoning, json, maxOutputTokens = 4096 }) => {
+    const outputLimit = Math.max(512, Math.min(32768, Math.round(Number(maxOutputTokens) || 4096)));
     const apiKey = await getKey(provider);
     if (!apiKey) {
         return {
@@ -138,8 +139,13 @@ export const proxyChat = async ({ messages, model, provider, reasoning, json }) 
         for (const m of rest) {
             contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] });
         }
-        const geminiBody = { contents };
-        if (json) geminiBody.generationConfig = { responseMimeType: 'application/json' };
+        const geminiBody = {
+            contents,
+            generationConfig: {
+                maxOutputTokens: outputLimit,
+                ...(json ? { responseMimeType: 'application/json' } : {}),
+            },
+        };
         // Chave no HEADER (x-goog-api-key), nunca na query string — a URL vaza em log/proxy/CDN.
         const res = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -162,11 +168,11 @@ export const proxyChat = async ({ messages, model, provider, reasoning, json }) 
     const body = { model, messages };
     if (json) body.response_format = { type: 'json_object' };
     if (isReasoningModel(model)) {
-        body.max_completion_tokens = 4096;
+        body.max_completion_tokens = outputLimit;
         if (reasoning && REASONING_MAP[reasoning]) body.reasoning_effort = REASONING_MAP[reasoning];
     } else {
         body.temperature = 0.7;
-        body.max_tokens = 4096;
+        body.max_tokens = outputLimit;
     }
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',

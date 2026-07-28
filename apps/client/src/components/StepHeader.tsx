@@ -1,6 +1,9 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils';
 import { Check } from 'lucide-react';
+import { toast } from 'sonner';
+import { useWizard } from '../context/WizardContext';
+import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 
 const STEPS = [
     { id: 1, label: 'Informações', path: '/wizard/step/1' },
@@ -12,6 +15,7 @@ const STEPS = [
 export const StepHeader = () => {
     const location = useLocation();
     const navigate = useNavigate();
+    const { adData, mediaTakes } = useWizard();
     const currentPath = location.pathname;
 
     // Only render on wizard/step pages
@@ -22,15 +26,16 @@ export const StepHeader = () => {
     const currentStep = currentStepMatch ? parseInt(currentStepMatch[1]) : 1;
 
     const handleStepClick = (stepId: number, path: string) => {
-        // Allow navigating back or to current step
-        if (stepId <= currentStep) {
-            navigate(path);
+        if (stepId > currentStep) {
+            const missing = missingBeforeStep(stepId, adData, mediaTakes);
+            if (missing.length) toast.warning(pendingWarningText(missing), { duration: 7000 });
         }
+        navigate(path);
     };
 
     return (
-        <div className="w-full pt-4 pb-0 sticky top-16 z-30 bg-background/95 backdrop-blur-sm shadow-sm border-b border-border/50">
-            <div className="max-w-4xl mx-auto px-4 pb-4 overflow-x-auto scrollbar-hide">
+        <div className="w-full border-b border-border/50 bg-background/95 pb-5 pt-2 shadow-sm backdrop-blur-sm">
+            <div className="mx-auto max-w-4xl overflow-x-auto px-4 scrollbar-hide">
                 <div className="relative min-w-[500px] flex items-start justify-between py-2">
                     {STEPS.map((step, index) => {
                         const isCompleted = step.id < currentStep;

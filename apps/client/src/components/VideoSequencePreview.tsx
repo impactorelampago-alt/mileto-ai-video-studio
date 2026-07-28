@@ -1,15 +1,19 @@
 import React, { useEffect, useRef, useCallback, useState, useMemo, forwardRef, useImperativeHandle } from 'react';
-import { Play, Pause, Volume2, VolumeX, RotateCcw, Loader2, Zap } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, RotateCcw, Loader2, Zap, VideoOff } from 'lucide-react';
 import { MediaTake, TitleHook, CaptionTrack } from '../types';
 import { cn } from '../lib/utils';
+import { API_BASE_URL } from '../lib/apiBase';
 import { useWizard } from '../context/WizardContext';
 import { DynamicTitleRenderer } from './DynamicTitleRenderer';
 import { getPlaybackRateForRemap } from '../lib/speedRemapping';
 import { toPng } from 'html-to-image';
 import { toast } from 'sonner';
+import { normalizedTakeProgress, takeMotionScale } from '../lib/takeMotion';
+import { EditableTitleOverlay } from './EditableTitleOverlay';
 
 export interface VideoSequencePreviewRef {
     seekToTime: (globalTime: number) => void;
+    getCurrentTime: () => number;
     extractFrameSync: (
         globalTime: number,
         isAlphaExport?: boolean,
@@ -27,6 +31,10 @@ export interface VideoSequencePreviewProps {
     captions?: CaptionTrack; // Add captions prop
     dynamicTitles?: TitleHook[];
     isHybridMode?: boolean; // Propaga a intenção Híbrida p/ o extrator
+    selectedTitleId?: string | null;
+    onTitleSelect?: (_id: string | null) => void;
+    onTitleTransformChange?: (_id: string, _updates: Partial<TitleHook>) => void;
+    onTitleDelete?: (_id: string) => void;
 }
 
 export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSequencePreviewProps>(
@@ -40,6 +48,10 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             captions, // Extract captions
             dynamicTitles = [],
             isHybridMode = false, // Modo Overlay-only
+            selectedTitleId = null,
+            onTitleSelect,
+            onTitleTransformChange,
+            onTitleDelete,
         },
         ref
     ) => {
@@ -48,9 +60,11 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         // Refs
         const videoRef1 = useRef<HTMLVideoElement>(null);
         const videoRef2 = useRef<HTMLVideoElement>(null);
+        const imageTakeRef = useRef<HTMLImageElement>(null);
         const transitionRef = useRef<HTMLVideoElement>(null);
         const audioMasterRef = useRef<HTMLAudioElement>(null);
         const progressIntervalRef = useRef<number>(0);
+        const motionFrameRef = useRef<number | null>(null);
         const overlayContainerRef = useRef<HTMLDivElement>(null);
 
         // State
@@ -62,16 +76,154 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const [isImageTake, setIsImageTake] = useState(false);
         const [isBuffering, setIsBuffering] = useState(false);
         const [activeVideo, setActiveVideo] = useState<1 | 2>(1);
+        const [playbackSourceOverrides, setPlaybackSourceOverrides] = useState<Record<string, string>>({});
         const [activeTransitionUrl, setActiveTransitionUrl] = useState<string | null>(null);
         const pendingSeekTimeRef = useRef<number | null>(null);
         const transitionTriggeredRef = useRef<boolean>(false);
         const progressBarRef = useRef<HTMLDivElement>(null);
         const isScrubbingRef = useRef(false);
         const wasPlayingBeforeScrubRef = useRef(false);
+        const previewRepairAttemptsRef = useRef(new Set<string>());
+        const sequenceFirstIdRef = useRef<string | null>(null);
 
         // Derived
         const currentTake = takes.length > 0 ? takes[currentTakeIndex] : null;
+        const currentMotionOrigin = currentTake
+            ? `${currentTake.motionEffect?.focalX ?? 50}% ${currentTake.motionEffect?.focalY ?? 50}%`
+            : '50% 50%';
         const allMuted = takes.length > 0 && takes.every((t) => t.muteOriginalAudio);
+        const playbackSourceFor = useCallback(
+            (take: MediaTake) => playbackSourceOverrides[take.id] || take.proxyUrl || take.url,
+            [playbackSourceOverrides]
+        );
+
+        const resetMotionTransforms = useCallback(() => {
+            for (const element of [videoRef1.current, videoRef2.current, imageTakeRef.current]) {
+                if (!element) continue;
+                element.style.transform = 'translate3d(0,0,0) scale3d(1,1,1)';
+                element.style.transformOrigin = '50% 50%';
+            }
+        }, []);
+
+        const renderMotionFrame = useCallback((element: HTMLElement, take: MediaTake, localTime: number) => {
+            const progress = normalizedTakeProgress(take, localTime);
+            const scale = takeMotionScale(take.motionEffect, progress);
+            const focalX = take.motionEffect?.focalX ?? 50;
+            const focalY = take.motionEffect?.focalY ?? 50;
+            // Escrita direta no compositor: React não arredonda nem reinicia a
+            // interpolação a cada atualização do relógio.
+            element.style.transformOrigin = `${focalX}% ${focalY}%`;
+            element.style.transform = `translate3d(0,0,0) scale3d(${scale},${scale},1)`;
+        }, []);
+
+        useEffect(() => {
+            if (motionFrameRef.current !== null) {
+                window.cancelAnimationFrame(motionFrameRef.current);
+                motionFrameRef.current = null;
+            }
+            resetMotionTransforms();
+            if (!currentTake?.motionEffect) return;
+
+            const target = currentTake.type === 'image'
+                ? imageTakeRef.current
+                : activeVideo === 1
+                  ? videoRef1.current
+                  : videoRef2.current;
+            if (!target) return;
+
+            const takeDuration = Math.max(0.001, currentTake.trim.end - currentTake.trim.start);
+            const videoTarget = currentTake.type === 'video' ? target as HTMLVideoElement : null;
+            const observedVideoTime = () => videoTarget
+                ? Math.max(0, Math.min(takeDuration, videoTarget.currentTime - currentTake.trim.start))
+                : 0;
+            // O currentTime nativo pode oscilar alguns milissegundos entre frames.
+            // Mantemos um relógio monotônico próprio e só o corrigimos de forma
+            // amortecida; saltos grandes (seek/troca de take) ainda são imediatos.
+            let smoothLocalTime = videoTarget ? observedVideoTime() : Math.max(0, currentTimeInTake);
+            let previousFrameAt = performance.now();
+            const draw = (now: number) => {
+                const elapsed = Math.max(0, Math.min(0.05, (now - previousFrameAt) / 1000));
+                previousFrameAt = now;
+
+                if (videoTarget) {
+                    const observed = observedVideoTime();
+                    if (!videoTarget.paused && videoTarget.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+                        const predicted = Math.min(
+                            takeDuration,
+                            smoothLocalTime + elapsed * Math.max(0.05, videoTarget.playbackRate || 1)
+                        );
+                        const drift = observed - predicted;
+                        smoothLocalTime = Math.abs(drift) > 0.12
+                            ? observed
+                            : Math.max(smoothLocalTime, predicted + Math.max(-0.002, Math.min(0.002, drift * 0.08)));
+                    } else {
+                        smoothLocalTime = observed;
+                    }
+                } else {
+                    smoothLocalTime = Math.min(takeDuration, smoothLocalTime + elapsed);
+                }
+
+                renderMotionFrame(target, currentTake, smoothLocalTime);
+                if (isPlaying) motionFrameRef.current = window.requestAnimationFrame(draw);
+            };
+            draw(performance.now());
+
+            return () => {
+                if (motionFrameRef.current !== null) {
+                    window.cancelAnimationFrame(motionFrameRef.current);
+                    motionFrameRef.current = null;
+                }
+            };
+            // currentTimeInTake é apenas o ponto inicial. Durante o play, o RAF
+            // lê diretamente o relógio da mídia e não deve reiniciar a cada tick.
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [activeVideo, currentTake, isImageTake, isPlaying, renderMotionFrame, resetMotionTransforms]);
+
+        useEffect(() => {
+            if (isPlaying || !currentTake?.motionEffect) return;
+            const target = currentTake.type === 'image'
+                ? imageTakeRef.current
+                : activeVideo === 1
+                  ? videoRef1.current
+                  : videoRef2.current;
+            if (target) renderMotionFrame(target, currentTake, currentTimeInTake);
+        }, [activeVideo, currentTake, currentTimeInTake, isImageTake, isPlaying, renderMotionFrame]);
+
+        const repairUnsupportedLocalVideo = useCallback(async (take: MediaTake) => {
+            if (previewRepairAttemptsRef.current.has(take.id)) return;
+            previewRepairAttemptsRef.current.add(take.id);
+            try {
+                const source = take.url || take.fileUrl || '';
+                const parsed = new URL(source, window.location.origin);
+                const marker = '/files/';
+                const markerIndex = parsed.pathname.indexOf(marker);
+                if (markerIndex < 0) throw new Error('Esta mídia não possui uma fonte local reparável.');
+                const relPath = parsed.pathname
+                    .slice(markerIndex + marker.length)
+                    .split('/')
+                    .map((segment) => decodeURIComponent(segment))
+                    .join('/');
+                setIsBuffering(true);
+                toast.info('Preparando uma versão compatível deste take…', { duration: 2500 });
+                const response = await fetch(`${API_BASE_URL}/api/files/preview-source`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ relPath }),
+                });
+                const result = await response.json();
+                if (!response.ok || !result.ok || !result.publicUrl) {
+                    throw new Error(result.message || 'Não foi possível preparar o take.');
+                }
+                const compatibleUrl = /^https?:\/\//i.test(result.publicUrl)
+                    ? result.publicUrl
+                    : `${API_BASE_URL}${result.publicUrl}`;
+                setPlaybackSourceOverrides((current) => ({ ...current, [take.id]: compatibleUrl }));
+            } catch (error) {
+                toast.error(`Este take não pôde ser reproduzido: ${(error as Error).message}`);
+            } finally {
+                setIsBuffering(false);
+            }
+        }, []);
 
         // Determine the active transition for the current take
         const currentTransition = useMemo(() => {
@@ -101,10 +253,13 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         const totalDuration = useMemo(() => {
             const takesDur = takes.reduce((acc, t) => acc + (t.trim.end - t.trim.start), 0);
-            if (takes.length === 0) return audioDuration > 0 ? audioDuration : 30;
-            // The true total duration is whichever is longer (usually the audio dictates the final length due to CTA)
-            return Math.max(takesDur, audioDuration);
-        }, [takes, audioDuration]);
+            const authoritativeAudioDuration = audioDuration > 0
+                ? audioDuration
+                : Number(adData.narrationDuration || 0);
+            if (authoritativeAudioDuration > 0) return authoritativeAudioDuration;
+            if (takes.length === 0) return 30;
+            return takesDur;
+        }, [takes, audioDuration, adData.narrationDuration]);
 
         // Calculate global time for progress bar
         const globalTime = useMemo(() => {
@@ -120,9 +275,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 time = currentTimeInTake;
             }
 
-            // If the video loops back around but audio is still running, ensure the timeline doesn't pull backward visually
-            return Math.max(time, audioTime);
-        }, [takes, currentTakeIndex, currentTimeInTake, audioTime]);
+            return Math.min(totalDuration, Math.max(time, audioTime));
+        }, [takes, currentTakeIndex, currentTimeInTake, audioTime, totalDuration]);
 
         // ─── Playback Control ───────────────────────────────────────────────
 
@@ -198,6 +352,43 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         // ─── Take Switching Logic ───────────────────────────────────────────
 
+        // Ao esvaziar e repopular a sequência, o índice antigo podia ficar fora
+        // do novo array. A mídia existia, mas o monitor permanecia vazio.
+        useEffect(() => {
+            if (takes.length === 0) {
+                stopAll();
+                sequenceFirstIdRef.current = null;
+                setCurrentTakeIndex(0);
+                setCurrentTimeInTake(0);
+                setAudioTime(0);
+                setActiveVideo(1);
+                setIsImageTake(false);
+                setIsBuffering(false);
+                setActiveTransitionUrl(null);
+                setPlaybackSourceOverrides({});
+                pendingSeekTimeRef.current = null;
+                transitionTriggeredRef.current = false;
+
+                // Remover o src é importante: apenas zerar o índice mantém o
+                // último frame decodificado desenhado pelo Chromium.
+                for (const video of [videoRef1.current, videoRef2.current, transitionRef.current]) {
+                    if (!video) continue;
+                    video.pause();
+                    video.removeAttribute('src');
+                    video.load();
+                }
+                return;
+            }
+            const sequenceChanged = sequenceFirstIdRef.current !== null && sequenceFirstIdRef.current !== takes[0].id;
+            sequenceFirstIdRef.current = takes[0].id;
+            if (sequenceChanged || currentTakeIndex >= takes.length) {
+                setCurrentTakeIndex(0);
+                setCurrentTimeInTake(0);
+                setAudioTime(0);
+                setActiveVideo(1);
+            }
+        }, [takes, currentTakeIndex, stopAll]);
+
         // When take index changes, load the new source
         useEffect(() => {
             if (!currentTake) return;
@@ -209,7 +400,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
             if (vid) {
                 // Load source logic
-                const src = currentTake.proxyUrl || currentTake.url;
+                const src = playbackSourceFor(currentTake);
                 if (!vid.src.endsWith(src)) {
                     vid.src = src;
                     vid.load();
@@ -229,12 +420,14 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     });
                 }
             }
-        }, [currentTakeIndex, takes, activeVideo]); // Dependency on 'takes' ensures update on edit
+        }, [currentTakeIndex, takes, activeVideo, playbackSourceFor]); // Dependency on 'takes' ensures update on edit
 
         // ─── Speed Curve & Time Update Loop ─────────────────────────────────
 
         useEffect(() => {
-            const checkInterval = 30; // Check ~30 times/sec (low CPU overhead)
+            // O estado de UI pode atualizar em cadência econômica; o movimento
+            // visual é controlado separadamente por requestAnimationFrame.
+            const checkInterval = 30;
 
             const tick = () => {
                 if (!isPlaying) return;
@@ -257,7 +450,19 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
                 // Sync true audio time for exact subtitle matching
                 if (audioMasterRef.current) {
-                    setAudioTime(audioMasterRef.current.currentTime);
+                    const currentAudioTime = audioMasterRef.current.currentTime;
+                    setAudioTime(currentAudioTime);
+                    // A mixagem mestre determina o fim do anúncio. Não continue
+                    // tocando takes depois que o áudio final acabar.
+                    if (audioMasterRef.current.ended || currentAudioTime >= totalDuration - 0.02) {
+                        stopAll();
+                        setCurrentTakeIndex(0);
+                        setCurrentTimeInTake(0);
+                        setAudioTime(0);
+                        setActiveVideo(1);
+                        audioMasterRef.current.currentTime = 0;
+                        return;
+                    }
                 }
 
                 // --- VIDEO SEQUENCE MODE ---
@@ -331,7 +536,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             transitionTriggeredRef.current = true;
 
                             // Transition is Overlay Video (.mp4 / .webm)
-                            const tUrl = `${import.meta.env.VITE_API_BASE_URL || ''}${currentTransition.publicUrl}`;
+                            const tUrl = `${API_BASE_URL}${currentTransition.publicUrl}`;
                             setActiveTransitionUrl(tUrl);
 
                             // Play the transition overlay
@@ -368,7 +573,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     // Preload into the next video player
                     const nextVid = activeVideo === 1 ? videoRef2.current : videoRef1.current;
                     if (nextVid && nextT && nextT.type === 'video') {
-                        const src = nextT.proxyUrl || nextT.url;
+                        const src = playbackSourceFor(nextT);
                         if (nextVid.src !== src) {
                             nextVid.src = src;
                             nextVid.load();
@@ -398,19 +603,11 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 }
             };
 
-            // Master Audio ending handling
-            if (audioMasterRef.current && audioMasterRef.current.ended && isPlaying) {
-                // If the audio has finished playing, we DO NOT kill the video playback immediately
-                // if there are still takes remaining. If takes are done, advanceTrack() will handle the stop.
-                // However, we MUST ensure the watchdog or progress loop doesn't restart it.
-                // The native HTMLAudioElement.ended property will stay true.
-            }
-
             const intervalId = setInterval(tick, checkInterval);
             progressIntervalRef.current = intervalId;
 
             return () => clearInterval(intervalId);
-        }, [isPlaying, currentTakeIndex, takes, currentTake, stopAll, activeVideo]);
+        }, [isPlaying, currentTakeIndex, takes, currentTake, stopAll, activeVideo, totalDuration, playbackSourceFor]);
 
         // ─── Audio Sync Checks (Periodic Watchdog) ──────────────────────────
         useEffect(() => {
@@ -536,6 +733,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         );
 
         useImperativeHandle(ref, () => ({
+            getCurrentTime: () => Math.max(0, Math.min(totalDuration, Math.max(globalTime, audioTime))),
             seekToTime: (globalTime: number) => {
                 if (totalDuration <= 0) return;
                 const targetGlobalTime = Math.max(0, Math.min(globalTime, totalDuration));
@@ -634,7 +832,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 // Sync audio master position for UI dependencies (captions)
                 if (audioMasterRef.current) audioMasterRef.current.currentTime = targetGlobalTime;
 
-                const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
+                // Antes caía em localhost:3000 — porta errada, o servidor é o 3301.
+                const API_BASE = API_BASE_URL;
                 const getProxiedUrl = (rawUrl: string) => {
                     if (rawUrl.startsWith('http') && !rawUrl.includes('localhost') && !rawUrl.includes('127.0.0.1')) {
                         const cleanBase = API_BASE.endsWith('/api') ? API_BASE : `${API_BASE}/api`;
@@ -659,7 +858,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     return objectUrl;
                 };
 
-                const rawSrc = take.proxyUrl || take.url;
+                const rawSrc = playbackSourceFor(take);
 
                 if (!isAlphaExport) {
                     const src = await fetchAsBlobUrl(rawSrc);
@@ -732,6 +931,25 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 canvas.height = TARGET_H;
                 const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
+                const drawMediaWithMotion = (
+                    source: CanvasImageSource,
+                    drawX: number,
+                    drawY: number,
+                    drawW: number,
+                    drawH: number
+                ) => {
+                    const progress = normalizedTakeProgress(take, targetTimeInTake);
+                    const scale = takeMotionScale(take.motionEffect, progress);
+                    const focusX = TARGET_W * ((take.motionEffect?.focalX ?? 50) / 100);
+                    const focusY = TARGET_H * ((take.motionEffect?.focalY ?? 50) / 100);
+                    ctx.save();
+                    ctx.translate(focusX, focusY);
+                    ctx.scale(scale, scale);
+                    ctx.translate(-focusX, -focusY);
+                    ctx.drawImage(source, drawX, drawY, drawW, drawH);
+                    ctx.restore();
+                };
+
                 // Background & Takes
                 if (!isAlphaExport) {
                     ctx.fillStyle = '#000000';
@@ -751,7 +969,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             const drawX = (TARGET_W - drawW) / 2;
                             const drawY = (TARGET_H - drawH) / 2;
 
-                            ctx.drawImage(vid, drawX, drawY, drawW, drawH);
+                            drawMediaWithMotion(vid, drawX, drawY, drawW, drawH);
                         }
                     } else if (take.type === 'image') {
                         const img = new Image();
@@ -774,7 +992,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             const drawX = (TARGET_W - drawW) / 2;
                             const drawY = (TARGET_H - drawH) / 2;
 
-                            ctx.drawImage(img, drawX, drawY, drawW, drawH);
+                            drawMediaWithMotion(img, drawX, drawY, drawW, drawH);
                         }
                     }
                 } else {
@@ -797,7 +1015,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             try {
                                 // Calculate how far into the transition we are
                                 const transitionProgress = halfTransition - timeRemainingInTake;
-                                const tUrl = `${import.meta.env.VITE_API_BASE_URL || ''}${activeTransition.publicUrl}`;
+                                const tUrl = `${API_BASE_URL}${activeTransition.publicUrl}`;
                                 const transitionBlobUrl = await fetchAsBlobUrl(tUrl);
 
                                 const tVid = transitionRef.current || document.createElement('video');
@@ -890,6 +1108,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             backgroundColor: 'rgba(0,0,0,0)',
                             skipFonts: false,
                             cacheBust: true, // Crucial to prevent html-to-image from caching previous captions
+                            filter: (element) => !(element instanceof HTMLElement && element.dataset.titleEditorUi === 'true'),
                         });
                         const overlayImg = new Image();
                         await new Promise<void>((res, rej) => {
@@ -915,7 +1134,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         };
 
         // Progress calculation (approximate)
-        const progressPercent = totalDuration > 0 ? (Math.max(globalTime, audioTime) / totalDuration) * 100 : 0;
+        const progressPercent = totalDuration > 0 ? (Math.min(totalDuration, Math.max(globalTime, audioTime)) / totalDuration) * 100 : 0;
 
         return (
             <div className="bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl overflow-hidden flex flex-col shadow-2xl">
@@ -953,6 +1172,20 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         if (isPlaying) pause();
                     }}
                 >
+                    {!currentTake && !isHybridMode && (
+                        <div className="absolute inset-0 z-10 grid place-items-center bg-[radial-gradient(circle_at_50%_38%,rgba(0,230,118,.08),transparent_48%)]">
+                            <div className="flex max-w-[220px] flex-col items-center gap-3 px-6 text-center">
+                                <div className="grid h-14 w-14 place-items-center rounded-2xl border border-white/8 bg-white/[0.035] text-brand-muted/55 shadow-inner">
+                                    <VideoOff className="h-6 w-6" />
+                                </div>
+                                <div>
+                                    <p className="text-xs font-black uppercase tracking-[0.16em] text-foreground/75">Monitor vazio</p>
+                                    <p className="mt-1 text-[10px] leading-relaxed text-brand-muted/55">Adicione um take para visualizar a sequência.</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Native Video Elements for Double Buffering */}
                     <video
                         ref={videoRef1}
@@ -960,12 +1193,15 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         className={cn(
                             'absolute top-0 left-0 w-full h-full object-cover', // default
                             currentTake?.objectFit === 'contain' ? 'object-contain' : 'object-cover',
-                            isHybridMode || isImageTake || activeVideo !== 1
+                            !currentTake || isHybridMode || isImageTake || activeVideo !== 1
                                 ? 'opacity-0 pointer-events-none'
                                 : 'opacity-100'
                         )}
                         style={{
-                            transitionDuration: '0ms',
+                            transformOrigin: currentMotionOrigin,
+                            willChange: currentTake?.motionEffect ? 'transform' : 'auto',
+                            backfaceVisibility: 'hidden',
+                            transformStyle: 'preserve-3d',
                         }}
                         playsInline
                         preload="auto"
@@ -979,6 +1215,11 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             if (activeVideo === 1) {
                                 setIsBuffering(false);
                                 if (isPlaying) playAudio();
+                            }
+                        }}
+                        onError={() => {
+                            if (activeVideo === 1 && currentTake?.type === 'video') {
+                                void repairUnsupportedLocalVideo(currentTake);
                             }
                         }}
                     />
@@ -989,12 +1230,15 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         className={cn(
                             'absolute top-0 left-0 w-full h-full',
                             currentTake?.objectFit === 'contain' ? 'object-contain' : 'object-cover',
-                            isHybridMode || isImageTake || activeVideo !== 2
+                            !currentTake || isHybridMode || isImageTake || activeVideo !== 2
                                 ? 'opacity-0 pointer-events-none'
                                 : 'opacity-100'
                         )}
                         style={{
-                            transitionDuration: '0ms',
+                            transformOrigin: currentMotionOrigin,
+                            willChange: currentTake?.motionEffect ? 'transform' : 'auto',
+                            backfaceVisibility: 'hidden',
+                            transformStyle: 'preserve-3d',
                         }}
                         playsInline
                         preload="auto"
@@ -1008,6 +1252,11 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             if (activeVideo === 2) {
                                 setIsBuffering(false);
                                 if (isPlaying) playAudio();
+                            }
+                        }}
+                        onError={() => {
+                            if (activeVideo === 2 && currentTake?.type === 'video') {
+                                void repairUnsupportedLocalVideo(currentTake);
                             }
                         }}
                     />
@@ -1039,12 +1288,19 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     {/* Image Element for Image Takes */}
                     {isImageTake && currentTake && (
                         <img
-                            src={currentTake.proxyUrl || currentTake.url}
+                            ref={imageTakeRef}
+                            src={playbackSourceFor(currentTake)}
                             className={cn(
                                 'w-full h-full',
                                 currentTake.objectFit === 'contain' ? 'object-contain' : 'object-cover',
                                 isHybridMode && 'opacity-0'
                             )}
+                            style={{
+                                transformOrigin: currentMotionOrigin,
+                                willChange: currentTake?.motionEffect ? 'transform' : 'auto',
+                                backfaceVisibility: 'hidden',
+                                transformStyle: 'preserve-3d',
+                            }}
                             crossOrigin="anonymous"
                             alt="Preview"
                         />
@@ -1206,24 +1462,23 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                     );
 
                                     return (
-                                        <div
+                                        <EditableTitleOverlay
                                             key={`${title.id}-${animId}`}
-                                            className="absolute inset-x-0 flex items-center justify-center pointer-events-none z-40 px-6"
-                                            style={{ top: `${title.posY}%` }}
+                                            title={title}
+                                            selected={selectedTitleId === title.id}
+                                            editingEnabled={!!onTitleTransformChange && !isHybridMode && !isExportingFrame}
+                                            onSelect={onTitleSelect}
+                                            onChange={onTitleTransformChange}
+                                            onDelete={onTitleDelete}
                                         >
-                                            <div
-                                                className="origin-center"
-                                                style={{ transform: `scale(${(title.scale ?? 1) * 0.85})` }}
-                                            >
-                                                <div className="origin-center" style={inlineStyles}>
-                                                    <DynamicTitleRenderer
-                                                        title={title}
-                                                        timeElapsed={timeElapsed}
-                                                        isHybridMode={isHybridMode || isExportingFrame}
-                                                    />
-                                                </div>
+                                            <div className="origin-center" style={inlineStyles}>
+                                                <DynamicTitleRenderer
+                                                    title={title}
+                                                    timeElapsed={timeElapsed}
+                                                    isHybridMode={isHybridMode || isExportingFrame}
+                                                />
                                             </div>
-                                        </div>
+                                        </EditableTitleOverlay>
                                     );
                                 }
                                 return null;

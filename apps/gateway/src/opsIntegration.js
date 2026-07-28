@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { config } from './config.js';
 import { pool, query } from './db.js';
 import { decryptOpsToken, encryptOpsToken, newId } from './crypto.js';
@@ -11,6 +13,14 @@ import {
     revokeToken,
     unwrapOpsData,
 } from './opsClient.js';
+import { maskEmailHint, renderOpsAuthorizationPage } from './opsAuthorizationPage.js';
+import {
+    OPS_VIEW_CONTEXT_HEADER,
+    delegationCacheKey,
+    normalizeViewContextId,
+    sanitizeViewContexts,
+} from './opsViewContext.js';
+import { normalizeOpsFolderScope } from './opsAssetScope.js';
 
 const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
 const b64u = (buffer) => Buffer.from(buffer).toString('base64url');
@@ -48,6 +58,95 @@ const validateOpsMediaUrl = (rawUrl) => {
     return mediaUrl.toString();
 };
 
+const mediaProxyTickets = new Map();
+const MEDIA_PROXY_MAX_TTL_MS = 10 * 60 * 1000;
+const MEDIA_PROXY_MAX_TICKETS = 10_000;
+
+const purgeMediaProxyTickets = () => {
+    const now = Date.now();
+    for (const [ticket, item] of mediaProxyTickets.entries()) {
+        if (item.expiresAt <= now) mediaProxyTickets.delete(ticket);
+    }
+    if (mediaProxyTickets.size <= MEDIA_PROXY_MAX_TICKETS) return;
+    const oldest = [...mediaProxyTickets.entries()]
+        .sort((left, right) => left[1].createdAt - right[1].createdAt)
+        .slice(0, mediaProxyTickets.size - MEDIA_PROXY_MAX_TICKETS);
+    for (const [ticket] of oldest) mediaProxyTickets.delete(ticket);
+};
+
+const issueMediaProxy = (rawData) => {
+    const data = rawData && typeof rawData === 'object' ? rawData : {};
+    const upstreamUrl = validateOpsMediaUrl(data.url);
+    const upstreamExpiry = data.expiresAt ? new Date(data.expiresAt).getTime() : 0;
+    const expiresAt = Math.min(
+        Date.now() + MEDIA_PROXY_MAX_TTL_MS,
+        Number.isFinite(upstreamExpiry) && upstreamExpiry > Date.now() ? upstreamExpiry : Date.now() + MEDIA_PROXY_MAX_TTL_MS
+    );
+    const ticket = crypto.randomBytes(32).toString('base64url');
+    mediaProxyTickets.set(ticket, {
+        upstreamUrl,
+        createdAt: Date.now(),
+        expiresAt,
+    });
+    purgeMediaProxyTickets();
+    return {
+        ...data,
+        url: `/v1/integrations/mileto-ops/media/${ticket}`,
+        expiresAt: new Date(expiresAt).toISOString(),
+    };
+};
+
+export const proxyMedia = async (req, res) => {
+    const ticket = String(req.params.ticket || '');
+    if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) return res.status(404).end();
+    const media = mediaProxyTickets.get(ticket);
+    if (!media || media.expiresAt <= Date.now()) {
+        mediaProxyTickets.delete(ticket);
+        return res.status(410).end();
+    }
+
+    const abortController = new AbortController();
+    const abort = () => abortController.abort();
+    req.once('aborted', abort);
+    res.once('close', abort);
+    try {
+        const range = String(req.headers.range || '');
+        const upstream = await fetch(media.upstreamUrl, {
+            method: 'GET',
+            headers: /^bytes=\d*-\d*$/i.test(range) ? { Range: range } : {},
+            redirect: 'manual',
+            signal: AbortSignal.any([abortController.signal, AbortSignal.timeout(120_000)]),
+        });
+        if ([301, 302, 303, 307, 308].includes(upstream.status)) {
+            throw httpError(502, 'ops_media_redirect_blocked', 'A entrega de mídia do Mileto Ops redirecionou para uma origem não autorizada.');
+        }
+        if ([401, 403, 404, 410].includes(upstream.status)) {
+            mediaProxyTickets.delete(ticket);
+            return res.status(410).end();
+        }
+        if (!upstream.ok && upstream.status !== 206) {
+            return res.status(upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502).end();
+        }
+        const copyHeader = (name) => {
+            const value = upstream.headers.get(name);
+            if (value && value.length <= 512 && !/[\r\n]/.test(value)) res.setHeader(name, value);
+        };
+        ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition'].forEach(copyHeader);
+        res.setHeader('Cache-Control', 'private, no-store');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.status(upstream.status);
+        if (!upstream.body) return res.end();
+        try {
+            await pipeline(Readable.fromWeb(upstream.body), res);
+        } catch (error) {
+            if (!abortController.signal.aborted) throw error;
+        }
+    } finally {
+        req.off('aborted', abort);
+        res.off('close', abort);
+    }
+};
+
 const connectionRow = async (orgId, includeRevoked = false) => {
     const clause = includeRevoked ? '' : "AND status = 'active'";
     return (
@@ -71,6 +170,19 @@ const publicConnection = (row) =>
               lastError: row.last_error || null,
           }
         : null;
+
+const markConnectionAttempt = async (orgId, status, lastError = null) => {
+    await query(
+        `INSERT INTO ops_connections (id, org_id, status, last_error, updated_at)
+         VALUES ($1,$2,$3,$4,now())
+         ON CONFLICT (org_id) DO UPDATE SET
+            status = EXCLUDED.status,
+            last_error = EXCLUDED.last_error,
+            updated_at = now()
+         WHERE ops_connections.status <> 'active'`,
+        [newId(), orgId, status, lastError]
+    );
+};
 
 const audit = async ({ req, connectionId = null, action, resourceType = null, resourceId = null, result, detail = {} }) => {
     await query(
@@ -156,7 +268,15 @@ const activeConnectionWithToken = async (orgId) => {
 
 const delegationCache = new Map();
 
-const delegatedAccess = async (orgId, aiUserId) => {
+const clearDelegationCacheForUser = (connectionId, aiUserId) => {
+    const prefix = `${connectionId}:${aiUserId}:`;
+    for (const key of delegationCache.keys()) {
+        if (key.startsWith(prefix)) delegationCache.delete(key);
+    }
+};
+
+const delegatedAccess = async (orgId, aiUserId, rawViewContextId = null) => {
+    const viewContextId = normalizeViewContextId(rawViewContextId);
     const { connection, accessToken } = await activeConnectionWithToken(orgId);
     const link = (
         await query(
@@ -167,15 +287,17 @@ const delegatedAccess = async (orgId, aiUserId) => {
     ).rows[0];
     if (!link) throw httpError(403, 'ops_user_not_linked', 'Seu usuário ainda não foi vinculado ao Mileto Ops.');
 
-    const cacheKey = `${connection.id}:${aiUserId}`;
+    const cacheKey = delegationCacheKey(connection.id, aiUserId, viewContextId);
     const cached = delegationCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now() + 30_000) {
-        return { connection, link, accessToken: cached.token };
+        return { connection, link, accessToken: cached.token, cacheKey, viewContextId };
     }
 
+    const body = { aiVideoUserId: String(aiUserId) };
+    if (viewContextId) body.viewContextId = viewContextId;
     const response = await opsApi(accessToken, '/v1/delegations', {
         method: 'POST',
-        body: JSON.stringify({ aiVideoUserId: String(aiUserId) }),
+        body: JSON.stringify(body),
     });
     const data = unwrapOpsData(response) || {};
     const token = data.accessToken || data.access_token;
@@ -184,7 +306,31 @@ const delegatedAccess = async (orgId, aiUserId) => {
         ? new Date(data.expiresAt).getTime()
         : Date.now() + Math.max(30, Number(data.expiresIn || data.expires_in || 300)) * 1000;
     delegationCache.set(cacheKey, { token, expiresAt });
-    return { connection, link, accessToken: token };
+    return { connection, link, accessToken: token, cacheKey, viewContextId };
+};
+
+const requestViewContextId = (req) => normalizeViewContextId(req.headers[OPS_VIEW_CONTEXT_HEADER]);
+
+const withDelegatedAccess = async (req, task) => {
+    const viewContextId = requestViewContextId(req);
+    const access = await delegatedAccess(req.user.orgId, req.user.id, viewContextId);
+    try {
+        return await task(access);
+    } catch (error) {
+        if (
+            [
+                'view_context_forbidden',
+                'invalid_token',
+                'connection_revoked',
+                'actor_missing',
+                'actor_unavailable',
+                'linked_profile_unavailable',
+            ].includes(error?.code)
+        ) {
+            delegationCache.delete(access.cacheKey);
+        }
+        throw error;
+    }
 };
 
 const opsPathWithQuery = (base, queryValues) => {
@@ -247,14 +393,6 @@ const requestReadyMediaIntent = async (req, res, accessToken, path, body = {}) =
     }
 };
 
-const escapeHtml = (value) =>
-    String(value || '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#039;');
-
 export const integrationStatus = async (req, res) => {
     const connection = req.user.orgId ? await connectionRow(req.user.orgId, true) : null;
     const link = connection
@@ -295,6 +433,7 @@ export const startConnection = async (req, res) => {
          VALUES ($1,$2,$3,$4,$5,$6,$7)`,
         [attemptId, req.user.orgId, req.user.id, sha256(state), encryptOpsToken(verifier), returnTo, expiresAt]
     );
+    await markConnectionAttempt(req.user.orgId, 'pending');
 
     const authorize = new URL(`${config.ops.baseUrl}/api/integrations/mileto-ai-video/authorize`);
     authorize.searchParams.set('response_type', 'code');
@@ -343,9 +482,13 @@ export const authorizationCallback = async (req, res) => {
         client.release();
     }
 
+    let authorizationContext = {};
+    let issuedTokens = null;
+    let connectionPersisted = false;
     try {
         const verifier = decryptOpsToken(attempt.code_verifier_enc);
         const tokens = await exchangeAuthorizationCode(code, verifier);
+        issuedTokens = tokens;
         const accountPayload = await opsApi(tokens.accessToken, '/v1/account');
         const account = unwrapOpsData(accountPayload) || {};
         const accountId = String(account.id || account.accountId || '');
@@ -354,14 +497,59 @@ export const authorizationCallback = async (req, res) => {
             await revokeToken(tokens.accessToken);
             throw new OpsHttpError(502, 'ops_refresh_missing', 'O Mileto Ops não devolveu refresh token rotativo.');
         }
+
+        const aiOwner = (
+            await query(
+                `SELECT u.email, u.name, o.name AS organization_name
+                 FROM users u
+                 INNER JOIN organizations o ON o.id = u.org_id
+                 WHERE u.id = $1 AND u.org_id = $2 AND u.role = 'owner' AND u.status = 'active'`,
+                [attempt.created_by, attempt.org_id]
+            )
+        ).rows[0];
+        if (!aiOwner) {
+            await Promise.all([revokeToken(tokens.accessToken), revokeToken(tokens.refreshToken)]);
+            throw new OpsHttpError(409, 'ops_owner_missing', 'Não foi possível confirmar o dono desta empresa no Mileto AI Video.');
+        }
+
+        authorizationContext = {
+            organizationName: aiOwner.organization_name,
+            accountName: account.name || account.accountName || 'Conta Mileto Ops',
+            expectedEmailHint: maskEmailHint(aiOwner.email),
+        };
+
+        const expectedOwnerFingerprint = fingerprint(aiOwner.email);
+        const opsUsers = await fetchAllOpsUsers(tokens.accessToken);
+        const matchingOwner = opsUsers.some((opsUser) => {
+            const emailFingerprint = String(
+                opsUser.emailFingerprint || fingerprint(opsUser.normalizedEmail || opsUser.email) || ''
+            ).toLowerCase();
+            const memberships = Array.isArray(opsUser.memberships) ? opsUser.memberships : [];
+            const isOwner = String(opsUser.primaryRole || '').toUpperCase() === 'DONO'
+                || memberships.some((role) => String(role).toUpperCase() === 'DONO');
+            return isOwner && emailFingerprint === expectedOwnerFingerprint;
+        });
+        if (!matchingOwner) {
+            await Promise.all([revokeToken(tokens.accessToken), revokeToken(tokens.refreshToken)]);
+            const mismatch = new OpsHttpError(
+                409,
+                'ops_owner_mismatch',
+                'A conta aberta no Mileto Ops não pertence ao dono desta empresa.'
+            );
+            mismatch.authorizationContext = authorizationContext;
+            throw mismatch;
+        }
+
         const previous = await connectionRow(attempt.org_id, true);
         if (previous?.ops_account_id && String(previous.ops_account_id) !== accountId) {
             await Promise.all([revokeToken(tokens.accessToken), revokeToken(tokens.refreshToken)]);
-            throw new OpsHttpError(
+            const mismatch = new OpsHttpError(
                 409,
                 'ops_account_mismatch',
-                'Esta organização já foi vinculada a outra conta do Mileto Ops. Solicite revisão manual.'
+                'Esta empresa já foi vinculada a outra conta do Mileto Ops.'
             );
+            mismatch.authorizationContext = authorizationContext;
+            throw mismatch;
         }
 
         const connectionId = newId();
@@ -402,16 +590,51 @@ export const authorizationCallback = async (req, res) => {
              VALUES ($1,$2,$3,$4,'ops.connection.completed','success',$5)`,
             [newId(), attempt.org_id, persistedId, attempt.created_by, { accountId }]
         );
-        res.type('html').send(`<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Mileto Ops conectado</title><body style="font-family:system-ui;background:#08110f;color:#fff;display:grid;place-items:center;min-height:100vh"><main style="max-width:540px;padding:32px;text-align:center"><h1 style="color:#25e18a">Conta conectada</h1><p>${escapeHtml(account.name || 'Mileto Ops')} foi conectada ao Mileto AI Video.</p><p>Você já pode fechar esta janela e voltar ao aplicativo.</p></main></body></html>`);
+        connectionPersisted = true;
+        res.type('html').send(
+            renderOpsAuthorizationPage({
+                kind: 'success',
+                eyebrow: 'Conexão protegida concluída',
+                title: `${aiOwner.organization_name} está conectada`,
+                message: `${account.name || 'A conta do Mileto Ops'} foi vinculada ao Mileto AI Video com a identidade do dono confirmada.`,
+                organizationName: aiOwner.organization_name,
+                accountName: account.name || account.accountName || 'Conta Mileto Ops',
+            })
+        );
     } catch (error) {
+        const errorCode = error.code || 'callback_failed';
+        if (issuedTokens && !connectionPersisted) {
+            await Promise.all([
+                revokeToken(issuedTokens.accessToken),
+                revokeToken(issuedTokens.refreshToken),
+            ]);
+        }
+        await markConnectionAttempt(attempt.org_id, 'error', errorCode).catch(() => undefined);
         await query(
             `INSERT INTO ops_audit_events
              (id, org_id, actor_user_id, action, result, detail)
              VALUES ($1,$2,$3,'ops.connection.completed','failure',$4)`,
-            [newId(), attempt.org_id, attempt.created_by, { code: error.code || 'callback_failed' }]
+            [newId(), attempt.org_id, attempt.created_by, { code: errorCode }]
         ).catch(() => undefined);
         const status = Number(error.status) || 502;
-        res.status(status).type('html').send(`<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Falha na conexão</title><body style="font-family:system-ui;background:#120909;color:#fff;display:grid;place-items:center;min-height:100vh"><main style="max-width:540px;padding:32px;text-align:center"><h1 style="color:#ff6b6b">Não foi possível conectar</h1><p>${escapeHtml(error.message || 'Falha na autenticação do Mileto Ops.')}</p><p>Volte ao Mileto AI Video e tente novamente.</p></main></body></html>`);
+        const mismatch = ['ops_owner_mismatch', 'ops_account_mismatch'].includes(errorCode);
+        const context = error.authorizationContext || authorizationContext;
+        res.status(status).type('html').send(
+            renderOpsAuthorizationPage({
+                kind: mismatch ? 'mismatch' : 'error',
+                eyebrow: mismatch ? 'Conta incompatível' : 'Conexão não concluída',
+                title: mismatch
+                    ? `Esta não é a conta de ${context.organizationName || 'sua empresa'}`
+                    : 'Não foi possível concluir a conexão',
+                message: mismatch
+                    ? 'A identidade do dono não corresponde à empresa aberta no Mileto AI Video. Nenhuma conexão foi salva e os acessos temporários foram revogados.'
+                    : error.message || 'Ocorreu uma falha ao autenticar a conta do Mileto Ops.',
+                organizationName: context.organizationName,
+                accountName: context.accountName,
+                expectedEmailHint: context.expectedEmailHint,
+                actionUrl: config.ops.baseUrl,
+            })
+        );
     }
 };
 
@@ -651,7 +874,7 @@ export const confirmUserLink = async (req, res) => {
              WHERE org_id = $1 AND (ai_user_id = $2 OR ops_profile_id = $4) AND resolved_at IS NULL`,
             [req.user.orgId, aiUserId, req.user.id, opsProfileId]
         );
-        delegationCache.delete(`${connection.id}:${aiUserId}`);
+        clearDelegationCacheForUser(connection.id, aiUserId);
         await audit({ req, connectionId: connection.id, action: 'ops.user_link.confirmed', resourceType: 'user', resourceId: String(aiUserId), result: 'success', detail: { opsProfileId } });
         res.json({ ok: true, link: row });
     } catch (error) {
@@ -677,15 +900,34 @@ export const removeUserLink = async (req, res) => {
     if (!link) return res.status(404).json({ ok: false, message: 'Vínculo não encontrado.' });
     await opsApi(accessToken, `/v1/user-links/${encodeURIComponent(String(aiUserId))}`, { method: 'DELETE' });
     await query(`UPDATE ops_user_links SET status = 'unlinked', updated_at = now() WHERE id = $1`, [link.id]);
-    delegationCache.delete(`${connection.id}:${aiUserId}`);
+    clearDelegationCacheForUser(connection.id, aiUserId);
     await audit({ req, connectionId: connection.id, action: 'ops.user_link.removed', resourceType: 'user', resourceId: String(aiUserId), result: 'success' });
     res.json({ ok: true });
 };
 
 const delegatedGet = async (req, path) => {
+    return withDelegatedAccess(req, async ({ connection, accessToken }) => {
+        const payload = await opsApi(accessToken, path);
+        return { connection, payload };
+    });
+};
+
+export const listViewContexts = async (req, res) => {
     const { connection, accessToken } = await delegatedAccess(req.user.orgId, req.user.id);
-    const payload = await opsApi(accessToken, path);
-    return { connection, payload };
+    const payload = await opsApi(accessToken, '/v1/me/view-contexts');
+    const data = sanitizeViewContexts(unwrapOpsData(payload));
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: 'ops.view_contexts.listed',
+        result: 'success',
+        detail: {
+            count: data.contexts.length,
+            canViewTeam: data.capabilities.canViewTeam,
+            canViewProfiles: data.capabilities.canViewProfiles,
+        },
+    });
+    res.json({ ok: true, data, meta: payload.meta || {} });
 };
 
 export const listCompanies = async (req, res) => {
@@ -704,8 +946,10 @@ export const listFolders = async (req, res) => {
 
 export const listAssets = async (req, res) => {
     const companyId = encodeURIComponent(String(req.params.companyId));
+    const folderId = normalizeOpsFolderScope(req.query.folderId);
     const path = opsPathWithQuery(`/v1/companies/${companyId}/assets`, {
-        folderId: req.query.folderId,
+        // v0.1.2: omitido = busca global; root = raiz real; UUID = pasta exata.
+        folderId,
         cursor: req.query.cursor,
         limit: safeLimit(req.query.limit),
         q: req.query.q,
@@ -726,15 +970,17 @@ export const getAssetUrl = async (req, res) => {
         return res.status(400).json({ ok: false, message: 'Tipo de URL inválido.' });
     }
     const assetId = encodeURIComponent(String(req.params.assetId));
-    const { connection, accessToken } = await delegatedAccess(req.user.orgId, req.user.id);
-    const payload = await requestReadyMediaIntent(
-        req,
-        res,
-        accessToken,
-        `/v1/assets/${assetId}/${kind}-url`
-    );
+    const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken }) => ({
+        connection,
+        payload: await requestReadyMediaIntent(
+            req,
+            res,
+            accessToken,
+            `/v1/assets/${assetId}/${kind}-url`
+        ),
+    }));
     await audit({ req, connectionId: connection.id, action: `ops.asset.${kind}_url`, resourceType: 'asset', resourceId: String(req.params.assetId), result: 'success' });
-    res.json({ ok: true, data: unwrapOpsData(payload), meta: payload.meta || {} });
+    res.json({ ok: true, data: issueMediaProxy(unwrapOpsData(payload)), meta: payload.meta || {} });
 };
 
 const publicReference = (row) => ({
@@ -758,8 +1004,10 @@ const publicReference = (row) => ({
 export const createReference = async (req, res) => {
     const assetId = String(req.body?.assetId || '').trim();
     if (!assetId) return res.status(400).json({ ok: false, message: 'Informe o ativo do Mileto Ops.' });
-    const { connection, accessToken } = await delegatedAccess(req.user.orgId, req.user.id);
-    const payload = await opsApi(accessToken, `/v1/assets/${encodeURIComponent(assetId)}`);
+    const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken }) => ({
+        connection,
+        payload: await opsApi(accessToken, `/v1/assets/${encodeURIComponent(assetId)}`),
+    }));
     const asset = unwrapOpsData(payload) || {};
     const companyId = String(asset.companyId || '');
     if (!companyId || !asset.id) throw httpError(502, 'ops_asset_invalid', 'O Mileto Ops devolveu um ativo inválido.');
@@ -823,15 +1071,21 @@ export const getReference = async (req, res) => {
 
 export const getReferenceDownload = async (req, res) => {
     const row = await referenceForUser(req);
-    const { connection, accessToken } = await delegatedAccess(req.user.orgId, req.user.id);
-    if (connection.id !== row.connection_id) throw httpError(409, 'ops_reference_stale', 'Esta referência pertence a outra conexão.');
-    const payload = await requestReadyMediaIntent(
-        req,
-        res,
-        accessToken,
-        `/v1/assets/${encodeURIComponent(row.ops_asset_id)}/download-url`,
-        { purpose: 'ai_video_local_cache' }
-    );
+    const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken }) => {
+        if (connection.id !== row.connection_id) {
+            throw httpError(409, 'ops_reference_stale', 'Esta referência pertence a outra conexão.');
+        }
+        return {
+            connection,
+            payload: await requestReadyMediaIntent(
+                req,
+                res,
+                accessToken,
+                `/v1/assets/${encodeURIComponent(row.ops_asset_id)}/download-url`,
+                { purpose: 'ai_video_local_cache' }
+            ),
+        };
+    });
     await audit({ req, connectionId: connection.id, action: 'ops.reference.download', resourceType: 'asset', resourceId: row.ops_asset_id, result: 'success' });
     res.json({ ok: true, reference: publicReference(row), download: unwrapOpsData(payload), meta: payload.meta || {} });
 };

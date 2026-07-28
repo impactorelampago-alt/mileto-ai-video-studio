@@ -12,6 +12,7 @@ import {
     ChevronRight,
     Sparkles,
     Trash2,
+    Search,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
@@ -94,11 +95,11 @@ const TransitionCard = ({
             )}
         >
             <div className="flex flex-col flex-1 min-w-0">
-                <div className={cn('relative h-40 w-full bg-black/50 group flex items-center justify-center', '')}>
+                <div className="relative h-44 w-full overflow-hidden bg-black group flex items-center justify-center">
                     <video
                         ref={videoRef}
                         src={`${((window as any).API_BASE_URL || 'http://localhost:3301')}${t.publicUrl}`}
-                        className="h-full w-full object-contain opacity-80 transition-opacity duration-300 group-hover:opacity-100"
+                        className="h-full w-full object-cover opacity-80 transition-all duration-500 group-hover:scale-105 group-hover:opacity-100"
                         loop
                         playsInline
                         muted={currentMuted}
@@ -111,12 +112,24 @@ const TransitionCard = ({
                     )}
                 </div>
 
-                <div className="w-full p-3 mt-auto flex items-center justify-between gap-2">
+                <div className="w-full p-3.5 mt-auto flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                        <p className="w-full truncate text-sm font-medium text-foreground" title={t.originalName}>
-                            {t.originalName}
-                        </p>
-                        <p className="mt-1 text-xs text-muted-foreground">{`${t.durationSec.toFixed(1)}s`}</p>
+                        <div className="flex items-center gap-2">
+                            <p className="w-full truncate text-sm font-semibold text-foreground" title={t.originalName}>
+                                {t.originalName}
+                            </p>
+                            {t.isBuiltIn && (
+                                <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-primary">
+                                    Incluída
+                                </span>
+                            )}
+                        </div>
+                        {t.description && (
+                            <p className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                                {t.description}
+                            </p>
+                        )}
+                        <p className="mt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{`${t.durationSec.toFixed(1)}s · overlay`}</p>
                     </div>
 
                     {!t.isBuiltIn && (
@@ -134,7 +147,7 @@ const TransitionCard = ({
                 </div>
             </div>
 
-            <div
+            {!t.isBuiltIn && <div
                 className="w-12 border-l border-border bg-background/50 flex flex-col items-center py-3 px-1"
                 onClick={(e) => e.stopPropagation()}
             >
@@ -171,7 +184,7 @@ const TransitionCard = ({
                         }
                     />
                 </div>
-            </div>
+            </div>}
         </div>
     );
 };
@@ -199,6 +212,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
     const [newCategoryName, setNewCategoryName] = useState('');
     const [isUploading, setIsUploading] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
+    const [searchQuery, setSearchQuery] = useState('');
     const [itemToDelete, setItemToDelete] = useState<TransitionAsset | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -211,8 +225,15 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                 const fetchedCategories = Array.from(
                     new Set(data.transitions.map((t: TransitionAsset) => t.category || 'Essencial'))
                 ) as string[];
-                const orderedCategories = ['Essencial', ...fetchedCategories.filter((c) => c !== 'Essencial')];
+                const preferred = ['Luz & Cinema', 'Movimento & Energia', 'Texturas & Acabamentos', 'Essencial'];
+                const orderedCategories = [
+                    ...preferred.filter((category) => fetchedCategories.includes(category)),
+                    ...fetchedCategories.filter((category) => !preferred.includes(category)),
+                ];
                 setCategories(orderedCategories);
+                setActiveCategory((current) =>
+                    orderedCategories.includes(current) ? current : (orderedCategories[0] || 'Essencial')
+                );
             }
         } catch (err) {
             console.error('Failed to load transitions', err);
@@ -391,7 +412,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-            <div className="bg-card border border-border w-full max-w-3xl rounded-lg shadow-xl flex flex-col max-h-[90vh] overflow-hidden">
+            <div className="bg-card border border-border/80 w-full max-w-6xl rounded-3xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden">
                 <div className="flex items-center justify-between p-6 border-b border-border shrink-0 bg-card z-10">
                     <div>
                         <h2 className="text-xl font-bold text-foreground">
@@ -447,10 +468,26 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                 )}
 
                 <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-4 relative">
+                    <div className="relative">
+                        <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                            value={searchQuery}
+                            onChange={(event) => setSearchQuery(event.target.value)}
+                            placeholder="Buscar por estilo, nome ou uso..."
+                            className="h-12 w-full rounded-xl border border-border bg-background/70 pl-11 pr-4 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50"
+                        />
+                    </div>
                     {/* Sanfona de Categorias */}
                     {categories.map((cat) => {
                         const isExpanded = activeCategory === cat;
-                        const catTransitions = transitions.filter((t) => (t.category || 'Essencial') === cat);
+                        const normalizedQuery = searchQuery.trim().toLocaleLowerCase('pt-BR');
+                        const catTransitions = transitions.filter((t) => {
+                            if ((t.category || 'Essencial') !== cat) return false;
+                            if (!normalizedQuery) return true;
+                            return `${t.originalName} ${t.description || ''} ${t.category || ''}`
+                                .toLocaleLowerCase('pt-BR')
+                                .includes(normalizedQuery);
+                        });
 
                         return (
                             <div
@@ -544,7 +581,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                                                 </p>
                                             </div>
                                         ) : (
-                                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                                            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                                                 {catTransitions.map((t) => (
                                                     <TransitionCard
                                                         key={t.id}

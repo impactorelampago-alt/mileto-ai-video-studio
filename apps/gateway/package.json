@@ -10,7 +10,9 @@
     "db:down": "docker compose down",
     "migrate": "node src/migrate.js",
     "migrate:ops-v01": "node src/migrateOpsV01.js",
+    "migrate:agents-v01": "node src/migrateAgentsV01.js",
     "seed": "node src/seed.js",
+    "test": "node --test test/**/*.test.js",
     "start": "node src/server.js",
     "setup": "npm run db:up && node src/migrate.js && node src/seed.js"
   },

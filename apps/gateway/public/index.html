@@ -123,13 +123,54 @@
   .banner { background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 12px; padding: 14px 18px; font-size: 13px; color: var(--ink-2); margin-bottom: 22px; }
   .banner b { color: var(--ink); }
 
+  /* Central de agentes */
+  .agent-grid { display: grid; grid-template-columns: 1fr; gap: 18px; align-items: start; }
+  .agent-card { position: relative; overflow: hidden; background: linear-gradient(145deg,rgba(22,33,31,.96),rgba(12,20,19,.98)); border: 1px solid var(--rule); border-radius: 18px; padding: 22px; box-shadow: 0 18px 50px rgba(0,0,0,.14); }
+  .agent-card::before { content: ''; position: absolute; inset: 0 0 auto; height: 2px; background: var(--grad); opacity: .8; }
+  .agent-card.is-off::before { background: var(--ink-3); opacity: .35; }
+  .agent-card-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+  .agent-identity { display: flex; gap: 13px; min-width: 0; }
+  .agent-icon { width: 42px; height: 42px; border-radius: 13px; flex: 0 0 auto; display: grid; place-items: center; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); font-size: 19px; }
+  .agent-title { font-weight: 800; font-size: 16px; letter-spacing: -.01em; }
+  .agent-role { color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+  .agent-version { display: inline-flex; margin-top: 9px; color: var(--ink-2); background: rgba(255,255,255,.035); border: 1px solid var(--rule); border-radius: 999px; padding: 3px 8px; font: 10px var(--mono); }
+  .agent-switch { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 11px; white-space: nowrap; }
+  .agent-switch input { display: none; }
+  .switch-track { width: 38px; height: 22px; border-radius: 999px; padding: 3px; background: #293431; border: 1px solid var(--rule); transition: .18s; }
+  .switch-track::after { content: ''; display: block; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-3); transition: .18s; }
+  .agent-switch input:checked + .switch-track { background: var(--accent-soft); border-color: var(--accent); }
+  .agent-switch input:checked + .switch-track::after { transform: translateX(16px); background: var(--accent); box-shadow: 0 0 10px rgba(43,190,134,.5); }
+  .agent-divider { height: 1px; background: var(--rule-soft); margin: 18px 0; }
+  .agent-fields { display: grid; grid-template-columns: 1fr 1.45fr 1fr; gap: 10px; }
+  .agent-fields.two { grid-template-columns: 1fr 1fr; margin-top: 10px; }
+  .agent-tier-stack { display: grid; gap: 10px; }
+  .agent-tier-panel { background: rgba(0,0,0,.16); border: 1px solid var(--rule); border-radius: 13px; padding: 14px; }
+  .agent-tier-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+  .agent-tier-name { color: var(--accent); font-size: 13px; font-weight: 800; }
+  .agent-tier-desc { color: var(--ink-3); font-size: 10px; }
+  .agent-tier-fields { display: grid; grid-template-columns: 1fr 1.55fr 1fr .8fr; gap: 9px; }
+  .agent-production-fields { display: grid; grid-template-columns: 1fr 1.6fr; gap: 9px; margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--rule-soft); }
+  .agent-card label { margin-top: 0; }
+  .agent-prompt { width: 100%; min-height: 190px; resize: vertical; background: var(--bg); border: 1px solid var(--rule); border-radius: 11px; padding: 13px; color: var(--ink); font: 12px/1.55 var(--mono); outline: none; }
+  .agent-prompt:focus { border-color: var(--accent); }
+  .agent-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .agent-actions .publish { margin-left: auto; }
+  .agent-test { margin-top: 14px; padding: 14px; background: rgba(0,0,0,.18); border: 1px solid var(--rule); border-radius: 12px; }
+  .agent-test textarea { width: 100%; min-height: 82px; resize: vertical; background: var(--bg); border: 1px solid var(--rule); border-radius: 9px; padding: 11px; color: var(--ink); outline: none; }
+  .agent-result { margin-top: 10px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: #07100e; border: 1px solid var(--rule); border-radius: 9px; padding: 12px; color: var(--plan); font: 11px/1.55 var(--mono); }
+  .history-row { display: grid; grid-template-columns: 1fr auto; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--rule-soft); align-items: center; }
+  .history-row:last-child { border-bottom: none; }
+  .history-main { font-size: 13px; }
+  .history-meta { color: var(--ink-3); font: 10px/1.5 var(--mono); margin-top: 3px; }
+
   .modal { position: fixed; inset: 0; display: grid; place-items: center; z-index: 60; padding: 20px; background: rgba(0,0,0,.5); }
   .modal-card { background: var(--panel); border: 1px solid var(--rule); border-radius: 16px; padding: 28px; width: 100%; max-width: 440px; max-height: 92vh; overflow-y: auto; }
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--accent); color: var(--ink); padding: 12px 20px; border-radius: 10px; font-size: 13px; z-index: 80; }
   .toast.err { border-color: var(--red); }
 
-  @media (max-width: 720px) { #app { grid-template-columns: 1fr; } .side { flex-direction: column; } }
+  @media (max-width: 900px) { .agent-tier-fields,.agent-production-fields { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 720px) { #app { grid-template-columns: 1fr; } .side { flex-direction: column; } .agent-grid { grid-template-columns: 1fr; } .agent-fields,.agent-fields.two,.agent-tier-fields,.agent-production-fields { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -161,6 +202,7 @@
           <svg class="chev" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M6 9l6 6 6-6"/></svg>
         </button>
         <div class="nav-sub">
+          <button class="nav-subitem" data-view="ia-agents">Agentes</button>
           <button class="nav-subitem" data-view="ia-api">API</button>
           <button class="nav-subitem" data-view="ia-models">Modelo de IA</button>
           <button class="nav-subitem" data-view="ia-credits">Créditos de IA</button>
@@ -188,6 +230,16 @@
     </section>
 
     <!-- IA · API -->
+    <section id="viewIaAgents" class="hidden">
+      <div class="topbar">
+        <div><h1>IA &middot; Central de Agentes</h1><div class="muted">Quatro especialistas, uma experi&ecirc;ncia Mileto. Configure, teste e publique com vers&otilde;es.</div></div>
+      </div>
+      <div class="banner">&#129504; O <b>Mileto Diretor</b> conversa com o usu&aacute;rio e coordena os especialistas. Cada agente possui <b>Mileto Lite, Mileto e Mileto Ultra</b>, com c&eacute;rebro e profundidade independentes. Prompt &amp; Vendas transforma ideias em briefings; Imagem e V&iacute;deo convertem o briefing em contratos de produ&ccedil;&atilde;o. Tudo fica somente no gateway.</div>
+      <div class="agent-grid" id="agentGrid"></div>
+      <datalist id="agentModelsOpenai"></datalist>
+      <datalist id="agentModelsGemini"></datalist>
+    </section>
+
     <section id="viewIaApi" class="hidden">
       <div class="topbar"><div><h1>IA · API</h1><div class="muted">As chaves usadas por todos os clientes. Ficam só aqui, no servidor.</div></div></div>
       <div class="banner">🔒 Estas chaves são a <b>IA universal</b>: toda geração de todos os clientes passa por elas. O cliente nunca as vê — ele paga em créditos Mileto. Guardadas <b>criptografadas</b> no banco.</div>
@@ -262,11 +314,12 @@ function logout() { token = ''; localStorage.removeItem('mileto_admin_token'); $
 $('logoutBtn').addEventListener('click', async () => { try { await api('/auth/logout', { method: 'POST' }); } catch {} logout(); });
 
 // ── Nav com sub-abas ──
-const VIEWS = { home: 'viewHome', 'ia-api': 'viewIaApi', 'ia-models': 'viewIaModels', 'ia-credits': 'viewIaCredits', 'ia-prompt': 'viewIaPrompt' };
+const VIEWS = { home: 'viewHome', 'ia-agents': 'viewIaAgents', 'ia-api': 'viewIaApi', 'ia-models': 'viewIaModels', 'ia-credits': 'viewIaCredits', 'ia-prompt': 'viewIaPrompt' };
 function showView(v) {
   Object.values(VIEWS).forEach((id) => $(id).classList.add('hidden'));
   $(VIEWS[v]).classList.remove('hidden');
   document.querySelectorAll('[data-view]').forEach((x) => x.classList.toggle('active', x.dataset.view === v));
+  if (v === 'ia-agents') loadAgents();
   if (v === 'ia-api') loadIa();
   if (v === 'ia-models') loadModels();
   if (v === 'ia-credits') loadCredits();
@@ -275,7 +328,7 @@ function showView(v) {
 $('iaParent').addEventListener('click', () => {
   const g = $('iaGroup');
   g.classList.toggle('open');
-  if (g.classList.contains('open')) showView('ia-api'); // abrir o grupo já mostra a primeira sub-aba
+  if (g.classList.contains('open')) showView('ia-agents');
 });
 document.querySelector('[data-view="home"]').addEventListener('click', () => showView('home'));
 document.querySelectorAll('.nav-subitem').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
@@ -368,6 +421,99 @@ $('newOrgBtn').addEventListener('click', () => {
 });
 
 // ── Aba IA ──
+let AGENT_CATALOG = {};
+const AGENT_ICONS = { director: '&#10022;', prompt_sales: '&#9998;', image_director: '&#9635;', video_director: '&#9654;' };
+
+function agentDraft(card) {
+  const tiers = {};
+  card.querySelectorAll('.agent-tier-panel').forEach((panel) => {
+    tiers[panel.dataset.tier] = {
+      provider: panel.querySelector('.agent-provider').value,
+      model: panel.querySelector('.agent-model').value.trim(),
+      reasoning: panel.querySelector('.agent-reasoning').value,
+      maxOutputTokens: Number(panel.querySelector('.agent-tokens').value),
+      generationProvider: panel.querySelector('.agent-gen-provider')?.value.trim() || '',
+      generationModel: panel.querySelector('.agent-gen-model')?.value.trim() || '',
+      generationCostUsd: Number(panel.querySelector('.agent-gen-cost')?.value || 0),
+    };
+  });
+  return {
+    enabled: card.querySelector('.agent-enabled').checked,
+    tiers,
+    systemPrompt: card.querySelector('.agent-prompt').value,
+  };
+}
+
+function syncAgentCard(card) {
+  card.classList.toggle('is-off', !card.querySelector('.agent-enabled').checked);
+  card.querySelectorAll('.agent-tier-panel').forEach((panel) => {
+    const provider = panel.querySelector('.agent-provider').value;
+    panel.querySelector('.agent-model').setAttribute('list', provider === 'gemini' ? 'agentModelsGemini' : 'agentModelsOpenai');
+  });
+}
+
+async function loadAgents() {
+  const data = await api('/admin/agents');
+  AGENT_CATALOG = data.catalog || {};
+  $('agentModelsOpenai').innerHTML = (AGENT_CATALOG.openai || []).map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
+  $('agentModelsGemini').innerHTML = (AGENT_CATALOG.gemini || []).map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
+  const reasonOpts = (selected) => data.reasoningLevels.map(r => `<option value="${r.id}" ${r.id===selected?'selected':''}>${esc(r.label)}</option>`).join('');
+  $('agentGrid').innerHTML = data.agents.map((a) => {
+    const c = a.config;
+    const production = ['image','video'].includes(a.kind);
+    const tierPanels = data.tiers.map((tierMeta) => {
+      const tier = c.tiers[tierMeta.id];
+      const productionFields = production ? `<div class="agent-production-fields"><div><label>Motor de produ&ccedil;&atilde;o</label><input class="agent-gen-provider" value="${esc(tier.generationProvider)}" placeholder="Ex.: seedance, gemini" /></div><div><label>Modelo de produ&ccedil;&atilde;o</label><input class="agent-gen-model" value="${esc(tier.generationModel)}" placeholder="ID exato do modelo deste n&iacute;vel" /></div><div><label>Custo m&aacute;ximo (US$ / gera&ccedil;&atilde;o)</label><input class="agent-gen-cost" type="number" min="0" max="10000" step="0.000001" value="${Number(tier.generationCostUsd || 0)}" /><div class="muted" style="font-size:10px;margin-top:4px">Obrigat&oacute;rio para ativar sem risco de subcobran&ccedil;a.</div></div></div>` : '';
+      return `<div class="agent-tier-panel" data-tier="${tierMeta.id}"><div class="agent-tier-head"><span class="agent-tier-name">${esc(tierMeta.label)}</span><span class="agent-tier-desc">${esc(tierMeta.description)}</span></div><div class="agent-tier-fields"><div><label>C&eacute;rebro</label><select class="agent-provider"><option value="openai" ${tier.provider==='openai'?'selected':''}>OpenAI</option><option value="gemini" ${tier.provider==='gemini'?'selected':''}>Google Gemini</option></select></div><div><label>Modelo</label><input class="agent-model" value="${esc(tier.model)}" /></div><div><label>Racioc&iacute;nio</label><select class="agent-reasoning">${reasonOpts(tier.reasoning)}</select></div><div><label>Sa&iacute;da m&aacute;xima</label><input class="agent-tokens" type="number" min="512" max="32768" step="256" value="${tier.maxOutputTokens}" /></div></div>${productionFields}</div>`;
+    }).join('');
+    return `<article class="agent-card ${c.enabled?'':'is-off'}" data-agent="${a.id}">
+      <div class="agent-card-head">
+        <div class="agent-identity"><div class="agent-icon">${AGENT_ICONS[a.id] || '&#10022;'}</div><div><div class="agent-title">${esc(a.label)}</div><div class="agent-role">${esc(a.description)}</div><span class="agent-version">vers&atilde;o ${c.version}${c.rollbackOf ? ' &middot; rollback de v'+c.rollbackOf : ''}</span></div></div>
+        <label class="agent-switch"><span>Ativo</span><input class="agent-enabled" type="checkbox" ${c.enabled?'checked':''}/><span class="switch-track"></span></label>
+      </div>
+      <div class="agent-divider"></div>
+      <div class="agent-tier-stack">${tierPanels}</div>
+      <label style="margin-top:14px">Prompt de sistema</label>
+      <textarea class="agent-prompt">${esc(c.systemPrompt)}</textarea>
+      <div class="agent-actions"><button class="btn btn-ghost btn-sm agent-history">Hist&oacute;rico</button><button class="btn btn-ghost btn-sm agent-toggle-test">Testar rascunho</button><button class="btn btn-sm publish agent-publish">Publicar nova vers&atilde;o</button></div>
+      <div class="agent-test hidden"><div class="muted" style="margin-bottom:8px">O teste usa este rascunho sem public&aacute;-lo.</div><div style="max-width:220px;margin-bottom:9px"><label>N&iacute;vel do teste</label><select class="agent-test-tier">${data.tiers.map(t => `<option value="${t.id}" ${t.id==='mileto'?'selected':''}>${esc(t.label)}</option>`).join('')}</select></div><textarea class="agent-test-message" placeholder="Ex.: Crie uma campanha de 15 segundos para uma &oacute;tica..."></textarea><div class="agent-actions"><button class="btn btn-sm agent-run-test">Executar teste</button></div><pre class="agent-result hidden"></pre></div>
+    </article>`;
+  }).join('');
+
+  $('agentGrid').querySelectorAll('.agent-card').forEach((card) => {
+    syncAgentCard(card);
+    card.querySelector('.agent-enabled').addEventListener('change', () => syncAgentCard(card));
+    card.querySelectorAll('.agent-provider').forEach((provider) => provider.addEventListener('change', () => syncAgentCard(card)));
+    card.querySelector('.agent-toggle-test').addEventListener('click', () => card.querySelector('.agent-test').classList.toggle('hidden'));
+    card.querySelector('.agent-publish').addEventListener('click', async (e) => {
+      const btn = e.currentTarget; btn.disabled = true;
+      try { await api(`/admin/agents/${card.dataset.agent}`, { method: 'POST', body: JSON.stringify(agentDraft(card)) }); toast('Nova vers&atilde;o publicada.'); await loadAgents(); }
+      catch (err) { toast(err.message, true); } finally { btn.disabled = false; }
+    });
+    card.querySelector('.agent-run-test').addEventListener('click', async (e) => {
+      const message = card.querySelector('.agent-test-message').value.trim();
+      if (!message) return toast('Escreva uma mensagem para testar.', true);
+      const btn = e.currentTarget, result = card.querySelector('.agent-result'); btn.disabled = true; result.classList.remove('hidden'); result.textContent = 'Executando o rascunho...';
+      try { const out = await api(`/admin/agents/${card.dataset.agent}/test`, { method: 'POST', body: JSON.stringify({ config: agentDraft(card), tier: card.querySelector('.agent-test-tier').value, message, locale: 'Português do Brasil' }) }); result.textContent = out.text + (out.demo ? '\n\n[modo demo]' : ''); }
+      catch (err) { result.textContent = err.message; } finally { btn.disabled = false; }
+    });
+    card.querySelector('.agent-history').addEventListener('click', () => openAgentHistory(card.dataset.agent, card.querySelector('.agent-title').textContent));
+  });
+}
+
+async function openAgentHistory(id, label) {
+  const { history } = await api(`/admin/agents/${id}/history`);
+  const m = document.createElement('div'); m.className = 'modal';
+  m.innerHTML = `<div class="modal-card" style="max-width:660px"><div class="topbar" style="margin-bottom:12px"><div><h2>${esc(label)}</h2><div class="muted">Vers&otilde;es publicadas e restaura&ccedil;&atilde;o segura.</div></div><button class="btn btn-ghost btn-sm history-close">Fechar</button></div><div>${history.map((h,i) => { const standard = h.tiers?.mileto || h; return `<div class="history-row"><div><div class="history-main"><b>Vers&atilde;o ${h.version}</b>${i===0?' <span class="pill ok">atual</span>':''}</div><div class="history-meta">${h.publishedAt ? new Date(h.publishedAt).toLocaleString('pt-BR') : 'configura&ccedil;&atilde;o inicial'} &middot; n&iacute;vel Mileto: ${esc(standard.provider)} / ${esc(standard.model)} &middot; ${esc(standard.reasoning)}</div></div>${i===0?'':`<button class="btn btn-ghost btn-sm" data-rollback="${h.version}">Restaurar</button>`}</div>`; }).join('')}</div></div>`;
+  document.body.appendChild(m); m.querySelector('.history-close').onclick = () => m.remove();
+  m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+  m.querySelectorAll('[data-rollback]').forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true;
+    try { await api(`/admin/agents/${id}/rollback`, { method: 'POST', body: JSON.stringify({ version: Number(b.dataset.rollback) }) }); m.remove(); toast('Vers&atilde;o restaurada como uma nova publica&ccedil;&atilde;o.'); await loadAgents(); }
+    catch (err) { b.disabled = false; toast(err.message, true); }
+  }));
+}
+
 async function loadIa() {
   const { keys, multiplier } = await api('/admin/ia');
   $('multInput').value = multiplier;

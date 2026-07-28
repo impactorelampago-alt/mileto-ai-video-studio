@@ -4,7 +4,10 @@ import {
     keyStatus, setKey, getMultiplier, setMultiplier, PROVIDERS,
     getTiers, setTier, TIERS, MODEL_CATALOG, getPrompt, setPrompt,
     CREDIT_FEATURES, getAllMultipliers, setKindMultiplier,
+    getAgents as listAgentConfigs, normalizeAgentConfig, publishAgentConfig,
+    getAgentHistory as listAgentHistory, rollbackAgentConfig,
 } from './settings.js';
+import { proxyChat } from './providers.js';
 
 /** Assentos por plano. Define quantos usuários a organização pode ter. */
 export const PLAN_SEATS = { solo: 1, business: 5, enterprise: 25 };
@@ -252,6 +255,70 @@ export const setChatPrompt = async (req, res) => {
     if (typeof prompt !== 'string') return res.status(400).json({ ok: false, message: 'Prompt inválido.' });
     await setPrompt(prompt);
     res.json({ ok: true });
+};
+
+// ── Aba IA → Agentes: cérebros especializados, prompts e versões ───────────
+
+export const getAgents = async (_req, res) => {
+    res.json({ ok: true, ...(await listAgentConfigs()) });
+};
+
+export const setAgent = async (req, res) => {
+    try {
+        const config = await publishAgentConfig(req.params.agentId || req.params.id, req.body || {}, req.user?.id || null);
+        res.json({ ok: true, config });
+    } catch (error) {
+        res.status(400).json({ ok: false, message: error.message || 'Configuração inválida.' });
+    }
+};
+
+export const getAgentHistory = async (req, res) => {
+    try {
+        res.json({ ok: true, history: await listAgentHistory(req.params.agentId || req.params.id) });
+    } catch (error) {
+        res.status(404).json({ ok: false, message: error.message || 'Agente não encontrado.' });
+    }
+};
+
+export const rollbackAgent = async (req, res) => {
+    try {
+        const config = await rollbackAgentConfig(
+            req.params.agentId || req.params.id,
+            req.body?.version,
+            req.user?.id || null
+        );
+        res.json({ ok: true, config });
+    } catch (error) {
+        res.status(400).json({ ok: false, message: error.message || 'Não foi possível restaurar a versão.' });
+    }
+};
+
+/** Testa um rascunho sem publicá-lo e sem devolver prompt/modelo ao app cliente. */
+export const testAgent = async (req, res) => {
+    try {
+        const id = req.params.agentId || req.params.id;
+        const config = normalizeAgentConfig(id, req.body?.config || {});
+        const tierId = ['lite', 'mileto', 'ultra'].includes(req.body?.tier) ? req.body.tier : 'mileto';
+        const tier = config.tiers[tierId];
+        const message = String(req.body?.message || '').trim();
+        if (!message) return res.status(400).json({ ok: false, message: 'Escreva uma mensagem para o teste.' });
+        const locale = String(req.body?.locale || 'Português do Brasil').slice(0, 80);
+        const systemPrompt = config.systemPrompt.split('{idioma}').join(locale);
+        const result = await proxyChat({
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: message.slice(0, 12000) },
+            ],
+            provider: tier.provider,
+            model: tier.model,
+            reasoning: tier.reasoning,
+            json: id !== 'director',
+            maxOutputTokens: tier.maxOutputTokens,
+        });
+        res.json({ ok: true, text: result.text, demo: result.demo, tier: tierId });
+    } catch (error) {
+        res.status(502).json({ ok: false, message: error.message || 'Falha ao testar o agente.' });
+    }
 };
 
 /** POST /admin/orgs/:id/plan — troca o plano e ajusta os assentos. */

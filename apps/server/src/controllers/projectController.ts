@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
+import { safeResolve, isSafeSegment } from '../utils/safePath';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const PROJECTS_DIR = path.join(BASE_DATA_PATH, 'data/projects');
@@ -90,14 +91,9 @@ export const listProjects = async (_req: Request, res: Response) => {
 export const deleteProject = async (req: Request, res: Response) => {
     try {
         const { projectId } = req.params;
-        if (!projectId) return res.status(400).json({ ok: false, message: 'projectId ausente' });
+        if (!isSafeSegment(projectId)) return res.status(400).json({ ok: false, message: 'projectId inválido' });
 
-        // Proteção contra path traversal
-        if (projectId.includes('..') || projectId.includes('/') || projectId.includes('\\')) {
-            return res.status(400).json({ ok: false, message: 'projectId inválido' });
-        }
-
-        const projectPath = path.join(PROJECTS_DIR, projectId);
+        const projectPath = safeResolve(PROJECTS_DIR, projectId);
         if (fs.existsSync(projectPath)) {
             fs.rmSync(projectPath, { recursive: true, force: true });
         }
@@ -113,7 +109,8 @@ export const getProjectData = async (req: Request, res: Response) => {
     try {
         const { projectId } = req.params;
         const pId = projectId || 'default';
-        const projectPath = path.join(PROJECTS_DIR, pId);
+        if (!isSafeSegment(pId)) return res.status(400).json({ ok: false, message: 'projectId inválido' });
+        const projectPath = safeResolve(PROJECTS_DIR, pId);
         const dataPath = path.join(projectPath, 'ad-data.json');
 
         if (!fs.existsSync(dataPath)) {
@@ -135,25 +132,47 @@ export const saveProjectData = async (req: Request, res: Response) => {
     try {
         const { projectId } = req.params;
         const pId = projectId || 'default';
+        if (!isSafeSegment(pId)) return res.status(400).json({ ok: false, message: 'projectId inválido' });
         const { data } = req.body;
 
         if (!data) {
             return res.status(400).json({ ok: false, message: 'No data provided' });
         }
 
-        const projectPath = path.join(PROJECTS_DIR, pId);
+        const projectPath = safeResolve(PROJECTS_DIR, pId);
         if (!fs.existsSync(projectPath)) {
             fs.mkdirSync(projectPath, { recursive: true });
         }
 
         const dataPath = path.join(projectPath, 'ad-data.json');
 
-        // Merge with existing if needed? Or overwrite?
-        // For simple persistence, overwrite is fine if we send full object.
-        // But to be safe, maybe read existing and merge?
-        // Let's overwrite for now as frontend should have full state.
+        // Respostas assíncronas podem chegar fora de ordem. Uma revisão antiga
+        // jamais deve apagar uma linha do tempo mais recente.
+        if (fs.existsSync(dataPath)) {
+            try {
+                const existing = JSON.parse(fs.readFileSync(dataPath, 'utf-8'));
+                const previousRevision = Number(existing?.saveRevision || 0);
+                const incomingRevision = Number(data?.saveRevision || 0);
+                if (previousRevision > 0 && incomingRevision > 0 && incomingRevision < previousRevision) {
+                    return res.json({ ok: true, message: 'Stale project revision ignored', stale: true });
+                }
+            } catch {
+                // A cópia anterior ainda será preservada antes da substituição.
+            }
+        }
 
-        fs.writeFileSync(dataPath, JSON.stringify(data, null, 2), 'utf-8');
+        const temporaryPath = path.join(projectPath, `ad-data.${process.pid}.${Date.now()}.tmp`);
+        const backupPath = path.join(projectPath, 'ad-data.backup.json');
+        fs.writeFileSync(temporaryPath, JSON.stringify(data, null, 2), { encoding: 'utf-8', flag: 'wx' });
+        JSON.parse(fs.readFileSync(temporaryPath, 'utf-8'));
+        if (fs.existsSync(dataPath)) fs.copyFileSync(dataPath, backupPath);
+        try {
+            fs.renameSync(temporaryPath, dataPath);
+        } catch {
+            // Fallback para versões do Windows que não substituem o destino no rename.
+            fs.copyFileSync(temporaryPath, dataPath);
+            fs.unlinkSync(temporaryPath);
+        }
 
         res.json({ ok: true, message: 'Project saved' });
     } catch (error: any) {

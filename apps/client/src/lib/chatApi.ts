@@ -1,11 +1,19 @@
-import { ChatFolder, ChatSession, ChatMessage } from '../types';
+import { ChatAgentId, ChatFolder, ChatSession, ChatMessage } from '../types';
+import { API_BASE_URL } from './apiBase';
+import { authStorage } from './authStorage';
 
-const BASE = `${import.meta.env.VITE_API_BASE_URL}/api/chat`;
+const BASE = `${API_BASE_URL}/api/chat`;
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+    // O servidor local repassa este token ao gateway (que tem a chave da IA).
+    const token = await authStorage.get();
     const res = await fetch(url, {
-        headers: { 'Content-Type': 'application/json' },
         ...options,
+        headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(options?.headers || {}),
+        },
     });
     if (!res.ok) {
         const data = await res.json().catch(() => ({ message: res.statusText }));
@@ -52,11 +60,12 @@ export async function getSessions(folderId?: string | null): Promise<ChatSession
 export async function createSession(
     title: string,
     folderId: string | null = null,
-    model: string = 'gpt-4o'
+    model: string = 'gpt-4o',
+    agentId: ChatAgentId = 'director'
 ): Promise<ChatSession> {
     const data = await request<{ session: ChatSession }>(`${BASE}/sessions`, {
         method: 'POST',
-        body: JSON.stringify({ title, folderId, model }),
+        body: JSON.stringify({ title, folderId, model, agentId }),
     });
     return data.session;
 }
@@ -100,16 +109,66 @@ export async function sendMessage(
     sessionId: string,
     content: string,
     model: string,
-    openaiKey: string,
-    geminiKey: string,
-    locale: string = 'pt-BR'
+    reasoning?: string,
+    locale: string = 'pt-BR',
+    agentId: ChatAgentId = 'director'
 ): Promise<{ userMessage: ChatMessage; assistantMessage: ChatMessage }> {
+    // `model` é o tier Mileto (mileto-lite/plus/ultra); o gateway resolve o modelo
+    // real e injeta a persona. `reasoning` só vale para o Ultra.
     const data = await request<{ userMessage: ChatMessage; assistantMessage: ChatMessage }>(`${BASE}/message`, {
         method: 'POST',
-        body: JSON.stringify({ sessionId, content, model, openaiKey, geminiKey, locale }),
+        body: JSON.stringify({ sessionId, content, model, reasoning, locale, agentId }),
     });
     return {
         userMessage: data.userMessage,
         assistantMessage: data.assistantMessage,
     };
+}
+
+export interface AiGenerationJob {
+    id: string;
+    phase: 'downloading' | 'done' | 'error';
+    percent: number;
+    step: 'processing';
+    stepPercent: number;
+    mode: 'image' | 'video';
+    title: string;
+    destination: string;
+    startedAt: number;
+    completedAt?: number;
+    source: 'ai-generation';
+    statusText?: string;
+    error?: string;
+    track?: {
+        id: string;
+        displayName: string;
+        originalName: string;
+        filePath: string;
+        publicUrl: string;
+        durationSec: number;
+        createdAt: string;
+        type: 'image' | 'video';
+    };
+}
+
+export async function startAiGeneration(payload: {
+    kind: 'image' | 'video';
+    tier: string;
+    spec: Record<string, unknown>;
+    title: string;
+    conversationId: string;
+    conversationTitle: string;
+}): Promise<AiGenerationJob> {
+    const data = await request<{ ok: true; job: AiGenerationJob }>(`${API_BASE_URL}/api/ai/generations`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    });
+    return data.job;
+}
+
+export async function getAiGeneration(id: string): Promise<AiGenerationJob> {
+    const data = await request<{ ok: true; job: AiGenerationJob }>(
+        `${API_BASE_URL}/api/ai/generations/${encodeURIComponent(id)}`
+    );
+    return data.job;
 }

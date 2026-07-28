@@ -1,8 +1,16 @@
 import { Request, Response } from 'express';
 import { getVideoMetadata, extractFrames, muxVideoAudio, getVideoEncoderArgs } from '../services/ffmpeg';
 import path from 'path';
+import os from 'os';
 import { spawn } from 'child_process';
 import fs from 'fs';
+import { isWithinRoots } from '../utils/safePath';
+
+// O export escreve no temp do SO (via IPC do Electron) e no dir de dados. Limitar a
+// GRAVAÇÃO a essas raízes impede que um caller aponte a saída do ffmpeg para um
+// arquivo sensível existente e o sobrescreva (clobber).
+const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
+const WRITE_ROOTS = [os.tmpdir(), BASE_DATA_PATH];
 
 export const uploadVideo = async (req: Request, res: Response) => {
     try {
@@ -39,7 +47,7 @@ export const uploadVideo = async (req: Request, res: Response) => {
             // Generate URL immediately (assuming successful generation or async)
             // But we will await it to ensure it exists for immediate preview
             try {
-                console.log('[Proxy] Generating proxy for:', originalPath);
+                console.log('[Proxy] Gerando versão compatível para preview.');
 
                 await new Promise<void>((resolve, _reject) => {
                     const ffmpeg = spawn('ffmpeg', [
@@ -64,7 +72,7 @@ export const uploadVideo = async (req: Request, res: Response) => {
 
                     ffmpeg.on('close', (code) => {
                         if (code === 0) {
-                            console.log('[Proxy] Success:', proxyPath);
+                            console.log('[Proxy] Preview compatível gerado.');
                             resolve();
                         } else {
                             console.error('[Proxy] FFmpeg failed with code', code);
@@ -88,7 +96,7 @@ export const uploadVideo = async (req: Request, res: Response) => {
                         console.warn('[Proxy] Generated file is too small, ignoring:', stats.size);
                     }
                 } else {
-                    console.warn('[Proxy] File not found after generation attempt:', proxyPath);
+                    console.warn('[Proxy] Arquivo de preview não encontrado após a conversão.');
                 }
             } catch (e) {
                 console.error('[Proxy] Exception:', e);
@@ -121,6 +129,9 @@ export const muxFinalExport = async (req: Request, res: Response) => {
         if (!videoPath || !audioPath || !outputPath) {
             return res.status(400).json({ ok: false, message: 'Missing paths for muxing' });
         }
+        if (!isWithinRoots(outputPath, WRITE_ROOTS)) {
+            return res.status(400).json({ ok: false, message: 'Caminho de saída não permitido.' });
+        }
 
         // Verify files exist before muxing
         const fsCheck = await import('fs');
@@ -140,9 +151,8 @@ export const muxFinalExport = async (req: Request, res: Response) => {
         const videoSize = videoExists ? fsCheck.statSync(videoPath).size : 0;
         const audioSize = audioExists ? fsCheck.statSync(audioPath).size : 0;
 
-        console.log(`[Mux] Video: ${videoPath} (existe=${videoExists}, ${(videoSize / 1024).toFixed(0)}KB)`);
-        console.log(`[Mux] Audio: ${audioPath} (existe=${audioExists}, ${(audioSize / 1024).toFixed(0)}KB)`);
-        console.log(`[Mux] Output: ${outputPath}`);
+        console.log(`[Mux] Vídeo: existe=${videoExists}, ${(videoSize / 1024).toFixed(0)}KB`);
+        console.log(`[Mux] Áudio: existe=${audioExists}, ${(audioSize / 1024).toFixed(0)}KB`);
 
         if (!videoExists) {
             return res.status(400).json({ ok: false, message: `Arquivo de vídeo não encontrado: ${videoPath}` });
@@ -167,29 +177,25 @@ export const exportHybrid = async (req: Request, res: Response) => {
         const { takes, transitionPath, audioPath, finalPath, duration, targetW, targetH } = req.body;
         let { overlayPath } = req.body;
 
-        console.log('--- [HYBRID EXPORT INITIATED] ---');
-        console.log(`Takes Count: ${takes?.length}`);
-        console.log(`Transition: ${transitionPath}`);
-        console.log(`Audio File: ${audioPath}`);
-        console.log(`Overlay File: ${overlayPath}`);
-        console.log(`Output: ${finalPath}`);
+        console.log(`[Hybrid Export] Iniciada com ${takes?.length || 0} take(s).`);
 
-        // Detailed take-level diagnostics
+        // Diagnóstico sem revelar caminhos privados do computador.
         const fsEarly = await import('fs');
         takes?.forEach((t: any, i: number) => {
             const exists = t.file_path ? fsEarly.existsSync(t.file_path) : false;
-            console.log(
-                `  Take[${i}]: file_path=${t.file_path} (exists=${exists}), speed=${t.speed}, start=${t.start}, end=${t.end}`
-            );
+            console.log(`  Take[${i}]: exists=${exists}, speed=${t.speed}, start=${t.start}, end=${t.end}`);
         });
         if (transitionPath) {
-            console.log(`  TransitionPath exists on disk: ${fsEarly.existsSync(transitionPath)}`);
+            console.log(`  Transição disponível: ${fsEarly.existsSync(transitionPath)}`);
         } else {
-            console.log(`  WARNING: TransitionPath is undefined/null/empty!`);
+            console.log('  Sem transição global.');
         }
 
         if (!takes || takes.length === 0 || !finalPath) {
             return res.status(400).json({ ok: false, message: 'Parametros Insuficientes (takes, finalPath)' });
+        }
+        if (!isWithinRoots(finalPath, WRITE_ROOTS)) {
+            return res.status(400).json({ ok: false, message: 'Caminho de saída não permitido.' });
         }
 
         const fsCheck = await import('fs');
@@ -212,22 +218,21 @@ export const exportHybrid = async (req: Request, res: Response) => {
             }
         }
 
-        console.log(`[HYBRID] Check Audio File: ${audioPath} - EXISTS: ${audioExists}`);
-        console.log(`[HYBRID] Check Overlay File: ${overlayPath} - EXISTS: ${overlayExists}`);
+        console.log(`[Hybrid Export] Áudio=${audioExists ? 'ok' : 'ausente'} overlay=${overlayExists ? 'ok' : 'ausente'}`);
 
         if (!audioExists) {
             return res
                 .status(400)
-                .json({ ok: false, message: `Áudio Mestre não encontrado no HD (Falha interna IPC): ${audioPath}` });
+                .json({ ok: false, message: 'Áudio mestre temporário não encontrado (falha interna de exportação).' });
         }
         if (!overlayExists) {
             return res
                 .status(400)
-                .json({ ok: false, message: `Vídeo Base Alpha/Tela Verde não encontrado: ${overlayPath}` });
+                .json({ ok: false, message: 'Camada temporária de títulos e legendas não encontrada.' });
         }
 
         // Call our shiny new C++ bridge implementation
-        await buildHybridVideo({
+        const exportedPath = await buildHybridVideo({
             takes,
             transitionPath,
             audioPath,
@@ -238,7 +243,16 @@ export const exportHybrid = async (req: Request, res: Response) => {
             targetH,
         });
 
-        res.json({ ok: true, message: 'Exportação Híbrida concluída puramente por Hardware.' });
+        const exportedStats = fs.existsSync(exportedPath) ? fs.statSync(exportedPath) : null;
+        if (!exportedStats?.isFile() || exportedStats.size < 1024) {
+            return res.status(500).json({ ok: false, message: 'O FFmpeg terminou sem gerar um MP4 válido.' });
+        }
+        res.json({
+            ok: true,
+            finalPath: exportedPath,
+            sizeBytes: exportedStats.size,
+            message: 'Exportação Híbrida concluída puramente por Hardware.',
+        });
     } catch (e: any) {
         console.error('[HYBRID EXPORT ERR]:', e);
         res.status(500).json({ ok: false, message: e.message || 'Erro fatídico ao construir video hibrido' });

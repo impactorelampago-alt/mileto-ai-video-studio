@@ -79,6 +79,35 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
 
 CREATE INDEX IF NOT EXISTS idx_ledger_org_time ON usage_ledger(org_id, created_at DESC);
 
+-- Jobs assíncronos de vídeo por IA. IDs/URLs do fornecedor ficam apenas no gateway.
+CREATE TABLE IF NOT EXISTS ai_generation_jobs (
+    id                 UUID PRIMARY KEY,
+    org_id             BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id            BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    agent_id           TEXT NOT NULL,
+    tier               TEXT NOT NULL,
+    media_kind         TEXT NOT NULL,
+    provider           TEXT NOT NULL,
+    model              TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'submitting',
+    provider_task_id   TEXT,
+    result_url_enc     TEXT,
+    mime_type          TEXT,
+    prompt_hash        CHAR(64) NOT NULL,
+    reserved           NUMERIC(14,4) NOT NULL DEFAULT 0,
+    provider_cost      NUMERIC(14,6) NOT NULL DEFAULT 0,
+    charged            NUMERIC(14,4) NOT NULL DEFAULT 0,
+    billing_status     TEXT NOT NULL DEFAULT 'reserved',
+    usage_units        BIGINT,
+    error_code         TEXT,
+    error_message      TEXT,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at       TIMESTAMPTZ,
+    expires_at         TIMESTAMPTZ NOT NULL DEFAULT now() + interval '7 days'
+);
+CREATE INDEX IF NOT EXISTS idx_ai_generation_jobs_org_time ON ai_generation_jobs(org_id, created_at DESC);
+
 -- Configurações da plataforma, incluindo as chaves de IA (a "IA universal").
 -- Valores de segredo ficam CRIPTOGRAFADOS. Servem a todos os usuários.
 CREATE TABLE IF NOT EXISTS settings (
@@ -158,6 +187,8 @@ CREATE TABLE IF NOT EXISTS shared_drafts (
     purge_after TIMESTAMPTZ,
     UNIQUE (org_id, id)
 );
+ALTER TABLE shared_drafts ADD COLUMN IF NOT EXISTS trashed_at TIMESTAMPTZ;
+ALTER TABLE shared_drafts ADD COLUMN IF NOT EXISTS purge_after TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_shared_drafts_org_updated ON shared_drafts(org_id, updated_at DESC) WHERE trashed_at IS NULL;
 
 -- Mantém a mídia de um rascunho viva mesmo se sua referência visível for enviada
@@ -293,7 +324,7 @@ CREATE INDEX IF NOT EXISTS idx_ops_audit_org_time ON ops_audit_events(org_id, cr
 
 /** Reset de desenvolvimento: derruba tudo e recria. NÃO usar com dados reais. */
 export const RESET = `
-DROP TABLE IF EXISTS ops_audit_events, external_media_references, ops_sync_conflicts, ops_sync_runs,
+DROP TABLE IF EXISTS ai_generation_jobs, ops_audit_events, external_media_references, ops_sync_conflicts, ops_sync_runs,
     ops_user_links, ops_authorization_attempts, ops_connections,
     shared_draft_assets, shared_drafts, media_items, shared_folders, media_blobs,
     credit_events, settings, usage_ledger, credits, tokens, users, organizations CASCADE;

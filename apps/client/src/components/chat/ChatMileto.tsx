@@ -1,4 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import {
     MessageSquare,
     X,
@@ -16,47 +18,213 @@ import {
     User,
     FolderOpen,
     GripVertical,
+    Copy,
+    Check,
+    Wand2,
+    Target,
+    Image as ImageIcon,
+    Video,
+    Sparkles,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { useWizard } from '../../context/WizardContext';
 import * as chatApi from '../../lib/chatApi';
-import { ChatFolder, ChatSession, ChatMessage } from '../../types';
+import { useWizard } from '../../context/WizardContext';
+import { ChatAgentId, ChatFolder, ChatSession, ChatMessage } from '../../types';
+import { useDownloadJobs } from '../../context/DownloadJobsContext';
 
-// ─── AI Model Options ────────────────────────────────────────────────────────
+type StructuredAgentResult = Record<string, unknown>;
 
-type ModelGroup = { group: string; models: { id: string; name: string; provider: string; badge?: string }[] };
+const parseStructuredResult = (content: string): StructuredAgentResult | null => {
+    const trimmed = (content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    if (!trimmed.startsWith('{')) return null;
+    try {
+        const value = JSON.parse(trimmed);
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    } catch {
+        return null;
+    }
+};
 
-const AI_MODEL_GROUPS: ModelGroup[] = [
+/**
+ * A resposta contém um ROTEIRO FINAL marcado pela IA (entre ===ROTEIRO=== e ===FIM===)?
+ * É o que decide se os botões Copiar/Usar aparecem — perguntas, exemplos e explicações
+ * NÃO têm o marcador, então não mostram botão.
+ */
+const hasFinalScript = (content: string): boolean => {
+    if (/===\s*ROTEIRO\s*===[\s\S]*?===\s*FIM\s*===/i.test(content || '')) return true;
+    return typeof parseStructuredResult(content)?.narration === 'string';
+};
+
+/** Remove as linhas marcadoras do texto exibido — o usuário vê o roteiro limpo. */
+const stripMarkers = (content: string): string =>
+    (content || '')
+        .replace(/^[ \t]*===\s*T[ÍI]TULO\s*===[ \t]*$/gim, 'Título do projeto:')
+        .replace(/^[ \t]*===\s*(?:ROTEIRO|FIM)\s*===[ \t]*$/gim, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+/**
+ * Extrai SÓ o(s) roteiro(s) marcado(s) (o que a IA quer que seja usado). Fallback
+ * heurístico (introdução/aviso/"---") para mensagens antigas sem marcador.
+ */
+const extractScript = (content: string): string => {
+    const structuredNarration = parseStructuredResult(content)?.narration;
+    if (typeof structuredNarration === 'string' && structuredNarration.trim()) return structuredNarration.trim();
+    const marked = [...(content || '').matchAll(/===\s*ROTEIRO\s*===\s*([\s\S]*?)\s*===\s*FIM\s*===/gi)]
+        .map((m) => m[1].trim())
+        .filter(Boolean);
+    if (marked.length) return marked.join('\n\n');
+
+    // Fallback (sem marcador): corta introdução e aviso.
+    let text = (content || '').trim();
+    text = text.replace(/\n\s*(?:[*_>#\s]|⚠️)*(?:aviso|obs\.?|observa[çc]|nota|importante)\b[\s\S]*$/i, '').trim();
+    const blocks = text
+        .split(/^\s*---\s*$/m)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    if (blocks.length >= 2) {
+        const tagged = blocks.find((b) => /\[[a-zA-Z]/.test(b));
+        return (tagged || blocks[0]).replace(/^\s*---\s*$/gm, '').trim();
+    }
+    const lines = text.split('\n');
+    const firstTag = lines.findIndex((l) => /^\s*\[[a-zA-Z]/.test(l));
+    if (firstTag > 0) return lines.slice(firstTag).join('\n').trim();
+    if (/:\s*$/.test(lines[0] || '')) return lines.slice(1).join('\n').trim();
+    return text;
+};
+
+/** Extrai o título estruturado pela IA e cria um fallback para respostas antigas. */
+const extractProjectTitle = (content: string): string => {
+    const structuredTitle = parseStructuredResult(content)?.title;
+    if (typeof structuredTitle === 'string' && structuredTitle.trim()) return structuredTitle.trim().slice(0, 60);
+    const markedTitle = (content || '').match(
+        /===\s*T[ÍI]TULO\s*===\s*([\s\S]*?)\s*===\s*ROTEIRO\s*===/i
+    )?.[1];
+    const cleanMarkedTitle = markedTitle?.replace(/\s+/g, ' ').trim();
+    if (cleanMarkedTitle) return cleanMarkedTitle.slice(0, 60);
+
+    const cleanScript = extractScript(content)
+        .replace(/\[[^\]]+\]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!cleanScript) return 'Novo projeto Mileto';
+
+    const firstSentence = cleanScript.split(/[.!?]/, 1)[0].trim();
+    const words = (firstSentence || cleanScript).split(' ').slice(0, 8).join(' ');
+    return words.slice(0, 60).trim() || 'Novo projeto Mileto';
+};
+
+type MiletoTier = 'lite' | 'mileto' | 'ultra';
+const MILETO_TIERS: { id: MiletoTier; label: string; model: string; description: string }[] = [
+    { id: 'lite', label: 'Mileto Lite', model: 'mileto-lite', description: 'Mais rápido e econômico' },
+    { id: 'mileto', label: 'Mileto', model: 'mileto-plus', description: 'Equilíbrio recomendado' },
+    { id: 'ultra', label: 'Mileto Ultra', model: 'mileto-ultra', description: 'Máxima profundidade' },
+];
+
+const CHAT_AGENTS: Array<{
+    id: ChatAgentId;
+    label: string;
+    shortLabel: string;
+    description: string;
+    accent: string;
+}> = [
     {
-        group: '⚡ Rápidos',
-        models: [
-            { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano', provider: 'openai', badge: 'Mais rápido' },
-            { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', provider: 'openai' },
-            { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai' },
-            { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', provider: 'gemini' },
-            { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'gemini' },
-        ],
+        id: 'director',
+        label: 'Mileto Diretor',
+        shortLabel: 'Diretor',
+        description: 'Coordena a ideia, o roteiro e os especialistas.',
+        accent: 'emerald',
     },
     {
-        group: '🧠 Melhores',
-        models: [
-            { id: 'gpt-4.1', name: 'GPT-4.1 Turbo', provider: 'openai', badge: 'Recomendado' },
-            { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai' },
-            { id: 'o4-mini', name: 'o4-mini', provider: 'openai', badge: 'Raciocínio' },
-            { id: 'o3-mini', name: 'o3-mini', provider: 'openai', badge: 'Raciocínio' },
-            { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'gemini', badge: 'Melhor Google' },
-        ],
+        id: 'prompt_sales',
+        label: 'Prompt e Vendas',
+        shortLabel: 'Prompt e Vendas',
+        description: 'Oferta, gatilhos éticos, roteiro e prompts de produção.',
+        accent: 'amber',
+    },
+    {
+        id: 'image_director',
+        label: 'Diretor de Imagens',
+        shortLabel: 'Imagens',
+        description: 'Direção de arte e especificações visuais consistentes.',
+        accent: 'violet',
+    },
+    {
+        id: 'video_director',
+        label: 'Diretor de Vídeos',
+        shortLabel: 'Vídeos',
+        description: 'Takes, movimentos, continuidade e storyboard.',
+        accent: 'cyan',
     },
 ];
 
-// Flat list for lookups
-const ALL_MODELS = AI_MODEL_GROUPS.flatMap((g) => g.models);
+const agentById = (id?: ChatAgentId) => CHAT_AGENTS.find((agent) => agent.id === id) || CHAT_AGENTS[0];
+
+const AgentGlyph = ({ id, className = 'w-4 h-4' }: { id: ChatAgentId; className?: string }) => {
+    if (id === 'prompt_sales') return <Target className={className} />;
+    if (id === 'image_director') return <ImageIcon className={className} />;
+    if (id === 'video_director') return <Video className={className} />;
+    return <Sparkles className={className} />;
+};
+
+const StructuredAgentResponse = ({ content }: { content: string }) => {
+    const result = parseStructuredResult(content);
+    if (!result) return <div className="whitespace-pre-wrap">{stripMarkers(content)}</div>;
+
+    const title = typeof result.title === 'string' ? result.title : 'Plano de produção';
+    const mainPrompt = [result.prompt, result.masterPrompt, result.objective]
+        .find((value) => typeof value === 'string' && value.trim()) as string | undefined;
+    const compactFields = [
+        ['Hook', result.hook],
+        ['CTA', result.cta],
+        ['Estilo', result.visualStyle || result.style],
+        ['Formato', result.aspectRatio],
+    ].filter(([, value]) => typeof value === 'string' && value.trim()) as Array<[string, string]>;
+    const triggers = Array.isArray(result.triggers) ? result.triggers.filter((item) => typeof item === 'string') : [];
+    const scenes = Array.isArray(result.scenes) ? result.scenes.length : 0;
+    const takes = Array.isArray(result.takes) ? result.takes.length : 0;
+
+    return (
+        <div className="space-y-3">
+            <div>
+                <div className="text-[10px] font-bold uppercase tracking-[.18em] text-brand-accent">Entrega especializada</div>
+                <h4 className="mt-1 text-sm font-bold text-foreground">{title}</h4>
+            </div>
+            {mainPrompt && (
+                <div className="rounded-xl border border-black/10 dark:border-white/10 bg-brand-dark/55 p-3 whitespace-pre-wrap text-xs leading-relaxed">
+                    {mainPrompt}
+                </div>
+            )}
+            {compactFields.length > 0 && (
+                <div className="grid grid-cols-2 gap-2">
+                    {compactFields.map(([label, value]) => (
+                        <div key={label} className="rounded-lg bg-black/5 dark:bg-white/5 px-2.5 py-2">
+                            <div className="text-[9px] font-bold uppercase tracking-wider text-brand-muted">{label}</div>
+                            <div className="mt-1 text-[11px] text-foreground/90">{value}</div>
+                        </div>
+                    ))}
+                </div>
+            )}
+            {(triggers.length > 0 || scenes > 0 || takes > 0) && (
+                <div className="flex flex-wrap gap-1.5">
+                    {triggers.map((trigger) => <span key={trigger} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[9px] font-semibold text-amber-200">{trigger}</span>)}
+                    {scenes > 0 && <span className="rounded-full border border-violet-400/25 bg-violet-400/10 px-2 py-1 text-[9px] font-semibold text-violet-200">{scenes} cenas</span>}
+                    {takes > 0 && <span className="rounded-full border border-cyan-400/25 bg-cyan-400/10 px-2 py-1 text-[9px] font-semibold text-cyan-200">{takes} takes</span>}
+                </div>
+            )}
+        </div>
+    );
+};
+
+const tierFromStoredModel = (model: string): MiletoTier => {
+    if (model === 'mileto-lite') return 'lite';
+    if (model === 'mileto-ultra') return 'ultra';
+    return 'mileto';
+};
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export const ChatMileto: React.FC = () => {
-    const { apiKeys } = useWizard();
-
     // ─── Window State ────────────────────────────────────────────────────────
     const [isOpen, setIsOpen] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
@@ -76,7 +244,110 @@ export const ChatMileto: React.FC = () => {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputText, setInputText] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [selectedModel, setSelectedModel] = useState('gpt-4.1');
+    // O renderer conhece somente o nível público. Cérebro, modelo, raciocínio e
+    // prompt são resolvidos pelo gateway dentro da versão ativa de cada agente.
+    const [selectedTier, setSelectedTier] = useState<MiletoTier>('mileto');
+    const [tierMenuOpen, setTierMenuOpen] = useState(false);
+    const [selectedAgentId, setSelectedAgentId] = useState<ChatAgentId>('director');
+    const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+    const selectedModel = MILETO_TIERS.find((tier) => tier.id === selectedTier)?.model || 'mileto-plus';
+    const selectedAgent = agentById(selectedAgentId);
+
+    const navigate = useNavigate();
+    const { updateAdData } = useWizard();
+    const { registerClientJob, updateClientJob } = useDownloadJobs();
+    const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+    const [generatingMessageIds, setGeneratingMessageIds] = useState<Set<string>>(new Set());
+
+    // Copia SÓ o roteiro (o bloco entre os "---" que a IA marca), não o texto de
+    // explicação nem o "Aviso" — é o que o usuário quer levar pra narração.
+    const handleCopyMessage = useCallback((msg: ChatMessage) => {
+        navigator.clipboard.writeText(extractScript(msg.content)).then(() => {
+            setCopiedMsgId(msg.id);
+            setTimeout(() => setCopiedMsgId((cur) => (cur === msg.id ? null : cur)), 1500);
+        });
+    }, []);
+
+    // Aplica o ROTEIRO da resposta direto na narração e leva o usuário pra lá.
+    const handleUseAsScript = useCallback(
+        (msg: ChatMessage) => {
+            const script = extractScript(msg.content);
+            const title = extractProjectTitle(msg.content);
+            updateAdData({ title, narrationText: script, isNarrationGenerated: false });
+            setIsOpen(false);
+            navigate('/wizard/step/1');
+            toast.success('Título e roteiro aplicados ao projeto! ✨');
+        },
+        [navigate, updateAdData]
+    );
+
+    const handleGenerateMedia = useCallback(async (msg: ChatMessage) => {
+        const spec = parseStructuredResult(msg.content);
+        const agentId = msg.agentId || selectedAgentId;
+        const kind = agentId === 'video_director' ? 'video' : agentId === 'image_director' ? 'image' : null;
+        if (!spec || !kind || generatingMessageIds.has(msg.id)) return;
+        setGeneratingMessageIds((current) => new Set(current).add(msg.id));
+        try {
+            const title = typeof spec.title === 'string'
+                ? spec.title
+                : kind === 'image' ? 'Imagem por IA' : 'Vídeo por IA';
+            const job = await chatApi.startAiGeneration({
+                kind,
+                tier: MILETO_TIERS.find((tier) => tier.id === msg.agentTier)?.model || selectedModel,
+                spec,
+                title,
+                conversationId: msg.sessionId || activeSessionId || msg.id,
+                conversationTitle: sessions.find((session) => session.id === msg.sessionId)?.title || title,
+            });
+            registerClientJob({
+                id: job.id,
+                mode: kind,
+                title,
+                destination: 'Geração por IA',
+                source: 'ai-generation',
+                statusText: job.statusText || 'Preparando geração',
+            });
+            toast.success('Geração iniciada. Você pode continuar usando o Mileto; acompanhe pelo sino.');
+
+            void (async () => {
+                try {
+                    while (true) {
+                        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+                        const next = await chatApi.getAiGeneration(job.id);
+                        updateClientJob(job.id, {
+                            phase: next.phase,
+                            percent: next.percent,
+                            stepPercent: next.stepPercent,
+                            statusText: next.statusText,
+                            completedAt: next.completedAt,
+                            error: next.error,
+                            track: next.track,
+                        });
+                        if (next.phase !== 'downloading') break;
+                    }
+                } catch (error) {
+                    updateClientJob(job.id, {
+                        phase: 'error',
+                        completedAt: Date.now(),
+                        error: error instanceof Error ? error.message : 'Não foi possível acompanhar a geração.',
+                    });
+                } finally {
+                    setGeneratingMessageIds((current) => {
+                        const next = new Set(current);
+                        next.delete(msg.id);
+                        return next;
+                    });
+                }
+            })();
+        } catch (error) {
+            setGeneratingMessageIds((current) => {
+                const next = new Set(current);
+                next.delete(msg.id);
+                return next;
+            });
+            toast.error(error instanceof Error ? error.message : 'Não foi possível iniciar a geração.');
+        }
+    }, [activeSessionId, generatingMessageIds, registerClientJob, selectedAgentId, selectedModel, sessions, updateClientJob]);
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editingText, setEditingText] = useState('');
@@ -109,6 +380,12 @@ export const ChatMileto: React.FC = () => {
 
     useEffect(() => {
         if (activeSessionId) {
+            // Sessão recém-criada NESTA ação já tem a mensagem otimista na tela; buscar
+            // do servidor devolveria [] e apagaria a bolha do usuário (race). Pula uma vez.
+            if (justCreatedSessionRef.current === activeSessionId) {
+                justCreatedSessionRef.current = null;
+                return;
+            }
             chatApi.getMessages(activeSessionId).then(setMessages).catch(console.error);
         } else {
             setMessages([]);
@@ -213,6 +490,20 @@ export const ChatMileto: React.FC = () => {
     }, []);
 
     const newChatFolderRef = useRef<string | null>(null);
+    // Marca a sessão criada dentro do próprio envio, para o efeito de carregar
+    // mensagens não sobrescrever a mensagem otimista com uma lista vazia.
+    const justCreatedSessionRef = useRef<string | null>(null);
+
+    const chooseAgent = useCallback((agentId: ChatAgentId) => {
+        if (agentId !== selectedAgentId && activeSessionId) {
+            setActiveSessionId(null);
+            setMessages([]);
+            setInputText('');
+            newChatFolderRef.current = null;
+        }
+        setSelectedAgentId(agentId);
+        setAgentMenuOpen(false);
+    }, [activeSessionId, selectedAgentId]);
 
     // Override handleSend to use the folder ref for auto-create
     const handleSendWithFolder = useCallback(async () => {
@@ -226,14 +517,21 @@ export const ChatMileto: React.FC = () => {
                 const session = await chatApi.createSession(
                     inputText.substring(0, 40) + (inputText.length > 40 ? '...' : ''),
                     targetFolder,
-                    selectedModel
+                    selectedModel,
+                    selectedAgentId
                 );
                 setSessions((prev) => [session, ...prev]);
                 sessionId = session.id;
+                justCreatedSessionRef.current = session.id;
                 setActiveSessionId(session.id);
                 newChatFolderRef.current = null;
             } catch (err) {
-                console.error(err);
+                // Antes isto era um `return` mudo: o texto ficava na caixa e o
+                // usuário não tinha nenhuma pista do que aconteceu.
+                console.error('Falha ao criar sessão de chat:', err);
+                toast.error(
+                    'Não foi possível iniciar a conversa. Verifique se o servidor local está rodando.'
+                );
                 return;
             }
         }
@@ -257,9 +555,9 @@ export const ChatMileto: React.FC = () => {
                 sessionId,
                 userContent,
                 selectedModel,
-                apiKeys.openai,
-                apiKeys.gemini,
-                locale
+                'equilibrado',
+                locale,
+                selectedAgentId
             );
             setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id).concat([userMessage, assistantMessage]));
         } catch (err: unknown) {
@@ -275,7 +573,7 @@ export const ChatMileto: React.FC = () => {
         } finally {
             setIsLoading(false);
         }
-    }, [inputText, isLoading, activeSessionId, selectedModel, apiKeys]);
+    }, [inputText, isLoading, activeSessionId, selectedAgentId, selectedModel]);
 
     // ─── Inline Folder Creation ──────────────────────────────────────────────
     const handleCreateFolder = useCallback(() => {
@@ -342,7 +640,8 @@ export const ChatMileto: React.FC = () => {
 
     const selectSession = useCallback((session: ChatSession) => {
         setActiveSessionId(session.id);
-        setSelectedModel(session.model);
+        setSelectedTier(tierFromStoredModel(session.model));
+        setSelectedAgentId(session.agentId || 'director');
         newChatFolderRef.current = null;
     }, []);
 
@@ -383,7 +682,7 @@ export const ChatMileto: React.FC = () => {
             {!s.folderId && (
                 <GripVertical className="w-3 h-3 text-slate-600 cursor-grab shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
             )}
-            <MessageSquare className="w-3 h-3 shrink-0" />
+            <AgentGlyph id={s.agentId || 'director'} className="w-3 h-3 shrink-0" />
             {editingId === s.id ? (
                 <input
                     autoFocus
@@ -432,7 +731,7 @@ export const ChatMileto: React.FC = () => {
                     !isBtnDraggingState && 'transition-all duration-300'
                 )}
                 style={{ left: btnPos.x, top: btnPos.y }}
-                title="Chat Mileto"
+                title="Mileto Diretor"
             >
                 <MessageSquare className="w-6 h-6 text-[#0a0f12]" />
             </div>
@@ -452,26 +751,13 @@ export const ChatMileto: React.FC = () => {
             {/* ─── Header ─────────────────────────────────────────────────── */}
             <div className="flex items-center justify-between px-4 py-3 bg-brand-card/80 backdrop-blur-md border-b border-black/10 dark:border-white/10 shrink-0">
                 <div className="flex items-center gap-2.5">
-                    <MessageSquare className="w-5 h-5 text-brand-accent" />
-                    <span className="text-sm font-bold text-foreground tracking-widest uppercase">Chat Mileto</span>
+                    <AgentGlyph id={selectedAgentId} className="w-5 h-5 text-brand-accent" />
+                    <div>
+                        <span className="block text-sm font-bold text-foreground tracking-widest uppercase">{selectedAgent.label}</span>
+                        <span className="block text-[9px] uppercase tracking-[.18em] text-brand-muted">Equipe Mileto IA</span>
+                    </div>
                 </div>
                 <div className="flex items-center gap-1">
-                    <select
-                        value={selectedModel}
-                        onChange={(e) => setSelectedModel(e.target.value)}
-                        className="text-xs bg-brand-dark text-brand-accent border border-black/10 dark:border-white/10 rounded px-2 py-1.5 outline-none hover:border-brand-accent/50 cursor-pointer font-medium tracking-wide transition-colors"
-                    >
-                        {AI_MODEL_GROUPS.map((group) => (
-                            <optgroup key={group.group} label={group.group}>
-                                {group.models.map((m) => (
-                                    <option key={m.id} value={m.id}>
-                                        {m.name}
-                                        {m.badge ? ` (${m.badge})` : ''}
-                                    </option>
-                                ))}
-                            </optgroup>
-                        ))}
-                    </select>
                     <button
                         onClick={() => setIsFullscreen(!isFullscreen)}
                         className="p-1.5 rounded hover:bg-black/10 dark:bg-white/10 text-slate-400 hover:text-foreground transition-colors"
@@ -690,12 +976,32 @@ export const ChatMileto: React.FC = () => {
                                     <MessageSquare className="w-8 h-8 text-brand-accent" />
                                 </div>
                                 <h3 className="text-lg font-bold text-foreground tracking-widest uppercase">
-                                    Chat Mileto
+                                    {selectedAgent.label}
                                 </h3>
                                 <p className="text-xs text-brand-muted text-center max-w-[250px] leading-relaxed">
-                                    Seu assistente de IA integrado. Escreva prompts, gere ideias de roteiros, e peça
-                                    ajuda com qualquer coisa!
+                                    {selectedAgent.description}
                                 </p>
+                                <div className="grid w-full max-w-xl grid-cols-2 gap-2 px-4 pt-3">
+                                    {CHAT_AGENTS.map((agent) => (
+                                        <button
+                                            key={agent.id}
+                                            type="button"
+                                            onClick={() => chooseAgent(agent.id)}
+                                            className={cn(
+                                                'rounded-xl border p-3 text-left transition-all',
+                                                selectedAgentId === agent.id
+                                                    ? 'border-brand-accent/50 bg-brand-accent/10 shadow-[0_0_20px_rgba(0,230,118,.08)]'
+                                                    : 'border-black/10 dark:border-white/10 bg-brand-card/50 hover:border-brand-accent/30 hover:bg-brand-card'
+                                            )}
+                                        >
+                                            <span className="flex items-center gap-2 text-[11px] font-bold text-foreground">
+                                                <AgentGlyph id={agent.id} className="h-3.5 w-3.5 text-brand-accent" />
+                                                {agent.shortLabel}
+                                            </span>
+                                            <span className="mt-1.5 block text-[9px] leading-relaxed text-brand-muted">{agent.description}</span>
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
                         )}
 
@@ -706,18 +1012,80 @@ export const ChatMileto: React.FC = () => {
                             >
                                 {msg.role === 'assistant' && (
                                     <div className="w-8 h-8 rounded-full bg-linear-to-br from-brand-lime to-brand-accent flex items-center justify-center shrink-0 mt-0.5 shadow-[0_0_10px_rgba(0,230,118,0.2)]">
-                                        <Bot className="w-4 h-4 text-[#0a0f12]" />
+                                        <AgentGlyph id={msg.agentId || selectedAgentId} className="w-4 h-4 text-[#0a0f12]" />
                                     </div>
                                 )}
                                 <div
                                     className={cn(
-                                        'max-w-[80%] px-4 py-3 text-[13px] leading-relaxed whitespace-pre-wrap',
+                                        'max-w-[80%] px-4 py-3 text-[13px] leading-relaxed flex flex-col',
                                         msg.role === 'user'
                                             ? 'bg-brand-accent/10 text-foreground border border-brand-accent/30 rounded-2xl rounded-br-sm shadow-[0_4px_20px_rgba(0,230,118,0.05)]'
                                             : 'bg-brand-card/50 text-foreground/90 border border-black/5 dark:border-white/5 rounded-2xl rounded-bl-sm shadow-xl'
                                     )}
                                 >
-                                    {msg.content}
+                                    {msg.role === 'assistant' && (
+                                        <div className="mb-2 text-[9px] font-bold uppercase tracking-[.16em] text-brand-muted">
+                                            {msg.agentLabel || agentById(msg.agentId || selectedAgentId).label}
+                                        </div>
+                                    )}
+                                    {msg.role === 'assistant'
+                                        ? <StructuredAgentResponse content={msg.content} />
+                                        : <div className="whitespace-pre-wrap">{msg.content}</div>}
+
+                                    {/* Copiar/Usar SÓ quando a resposta traz um roteiro final marcado */}
+                                    {msg.role === 'assistant' && hasFinalScript(msg.content) && (
+                                            <div className="flex items-center gap-2 mt-2.5 pt-2 border-t border-black/5 dark:border-white/5">
+                                                <button
+                                                    onClick={() => handleCopyMessage(msg)}
+                                                    className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand-muted hover:text-foreground transition-colors"
+                                                    title="Copiar resposta"
+                                                >
+                                                    {copiedMsgId === msg.id ? (
+                                                        <>
+                                                            <Check className="w-3 h-3 text-brand-accent" /> Copiado
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Copy className="w-3 h-3" /> Copiar
+                                                        </>
+                                                    )}
+                                                </button>
+                                                <button
+                                                    onClick={() => handleUseAsScript(msg)}
+                                                    className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand-accent hover:text-brand-lime transition-colors"
+                                                    title="Usar este título e roteiro no projeto"
+                                                >
+                                                    <Wand2 className="w-3 h-3" /> Usar no projeto
+                                                </button>
+                                            </div>
+                                        )}
+                                    {msg.role === 'assistant'
+                                        && parseStructuredResult(msg.content)
+                                        && ['image_director', 'video_director'].includes(msg.agentId || selectedAgentId)
+                                        && (
+                                            <div className="mt-3 flex items-center gap-2 border-t border-black/5 dark:border-white/5 pt-2.5">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleGenerateMedia(msg)}
+                                                    disabled={generatingMessageIds.has(msg.id)}
+                                                    className="inline-flex items-center gap-1.5 rounded-lg border border-brand-accent/30 bg-brand-accent/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-brand-accent transition hover:bg-brand-accent/15 disabled:cursor-wait disabled:opacity-60"
+                                                >
+                                                    {generatingMessageIds.has(msg.id)
+                                                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                        : (msg.agentId || selectedAgentId) === 'video_director'
+                                                            ? <Video className="h-3.5 w-3.5" />
+                                                            : <ImageIcon className="h-3.5 w-3.5" />}
+                                                    {generatingMessageIds.has(msg.id)
+                                                        ? 'Iniciando...'
+                                                        : (msg.agentId || selectedAgentId) === 'video_director'
+                                                            ? 'Aprovar e gerar vídeo'
+                                                            : 'Aprovar e gerar imagem'}
+                                                </button>
+                                                <span className="text-[9px] leading-relaxed text-brand-muted">
+                                                    O resultado será salvo somente no seu computador.
+                                                </span>
+                                            </div>
+                                        )}
                                 </div>
                                 {msg.role === 'user' && (
                                     <div className="w-8 h-8 rounded-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 flex items-center justify-center shrink-0 mt-0.5">
@@ -730,7 +1098,7 @@ export const ChatMileto: React.FC = () => {
                         {isLoading && (
                             <div className="flex gap-2.5 justify-start">
                                 <div className="w-8 h-8 rounded-full bg-linear-to-br from-brand-lime to-brand-accent flex items-center justify-center shrink-0 shadow-[0_0_10px_rgba(0,230,118,0.2)]">
-                                    <Bot className="w-4 h-4 text-[#0a0f12]" />
+                                    <AgentGlyph id={selectedAgentId} className="w-4 h-4 text-[#0a0f12]" />
                                 </div>
                                 <div className="bg-brand-card/50 border border-black/5 dark:border-white/5 rounded-2xl rounded-bl-sm px-4 py-3 shadow-xl">
                                     <div className="flex gap-1.5">
@@ -788,11 +1156,96 @@ export const ChatMileto: React.FC = () => {
                                 )}
                             </button>
                         </div>
-                        <p className="text-[10px] text-brand-muted mt-2 text-center uppercase tracking-widest font-semibold flex items-center justify-center gap-2">
-                            <span>M: {ALL_MODELS.find((m) => m.id === selectedModel)?.name || selectedModel}</span>
-                            <span className="w-1 h-1 rounded-full bg-brand-muted"></span>
-                            <span>Enter ↵</span>
-                        </p>
+
+                        <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+                            <div className="relative">
+                                <button
+                                    type="button"
+                                    onClick={() => setAgentMenuOpen((open) => !open)}
+                                    className="flex items-center gap-2 rounded-lg border border-brand-accent/20 bg-brand-accent/5 px-2.5 py-1.5 text-[10px] font-bold text-brand-accent hover:border-brand-accent/45 transition-colors"
+                                    title="Escolher o especialista desta conversa"
+                                >
+                                    <AgentGlyph id={selectedAgentId} className="h-3 w-3" />
+                                    {selectedAgent.shortLabel}
+                                    <ChevronDown className={cn('h-3 w-3 transition-transform', agentMenuOpen && 'rotate-180')} />
+                                </button>
+                                {agentMenuOpen && (
+                                    <>
+                                        <div className="fixed inset-0 z-40" onClick={() => setAgentMenuOpen(false)} />
+                                        <div className="absolute bottom-full left-0 z-50 mb-2 w-72 overflow-hidden rounded-xl border border-black/10 dark:border-white/10 bg-brand-card shadow-2xl">
+                                            <div className="border-b border-black/5 dark:border-white/5 px-3 py-2 text-[9px] font-bold uppercase tracking-[.18em] text-brand-muted">
+                                                Equipe de agentes
+                                            </div>
+                                            {CHAT_AGENTS.map((agent) => (
+                                                <button
+                                                    type="button"
+                                                    key={agent.id}
+                                                    onClick={() => chooseAgent(agent.id)}
+                                                    className={cn(
+                                                        'flex w-full gap-2.5 border-l-2 px-3 py-2.5 text-left transition-colors',
+                                                        selectedAgentId === agent.id
+                                                            ? 'border-brand-accent bg-brand-accent/10'
+                                                            : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5'
+                                                    )}
+                                                >
+                                                    <AgentGlyph id={agent.id} className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-accent" />
+                                                    <span>
+                                                        <span className="flex items-center gap-1.5 text-xs font-bold text-foreground">
+                                                            {agent.label}
+                                                            {selectedAgentId === agent.id && <Check className="h-3 w-3 text-brand-accent" />}
+                                                        </span>
+                                                        <span className="mt-0.5 block text-[9px] leading-relaxed text-brand-muted">{agent.description}</span>
+                                                    </span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                            <div className="relative">
+                                <button
+                                    type="button"
+                                    onClick={() => setTierMenuOpen((open) => !open)}
+                                    className="flex items-center gap-1.5 rounded-lg border border-black/10 dark:border-white/10 bg-brand-dark/60 px-2.5 py-1.5 text-[10px] font-bold text-foreground hover:border-brand-accent/40 transition-colors"
+                                    title="Este nível vale para todos os agentes acionados nesta conversa"
+                                >
+                                    {MILETO_TIERS.find((tier) => tier.id === selectedTier)?.label}
+                                    <ChevronDown className={cn('w-3 h-3 text-brand-accent transition-transform', tierMenuOpen && 'rotate-180')} />
+                                </button>
+                                {tierMenuOpen && (
+                                    <>
+                                        <div className="fixed inset-0 z-40" onClick={() => setTierMenuOpen(false)} />
+                                        <div className="absolute bottom-full left-0 z-50 mb-2 w-56 overflow-hidden rounded-xl border border-black/10 dark:border-white/10 bg-brand-card shadow-2xl">
+                                            {MILETO_TIERS.map((tier) => (
+                                                <button
+                                                    type="button"
+                                                    key={tier.id}
+                                                    onClick={() => {
+                                                        setSelectedTier(tier.id);
+                                                        setTierMenuOpen(false);
+                                                    }}
+                                                    className={cn(
+                                                        'w-full border-l-2 px-3 py-2.5 text-left transition-colors',
+                                                        selectedTier === tier.id
+                                                            ? 'border-brand-accent bg-brand-accent/10'
+                                                            : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5'
+                                                    )}
+                                                >
+                                                    <span className={cn('flex items-center gap-1.5 text-xs font-bold', selectedTier === tier.id ? 'text-brand-accent' : 'text-foreground')}>
+                                                        {tier.label}
+                                                        {selectedTier === tier.id && <Check className="w-3 h-3" />}
+                                                    </span>
+                                                    <span className="mt-0.5 block text-[10px] text-brand-muted">{tier.description}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                            <span className="text-[10px] text-brand-muted uppercase tracking-widest font-semibold ml-auto">
+                                Enter ↵
+                            </span>
+                        </div>
                     </div>
                 </div>
             </div>
