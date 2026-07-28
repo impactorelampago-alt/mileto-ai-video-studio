@@ -43,8 +43,18 @@ function initAutoUpdater() {
 
     autoUpdater.on('checking-for-update', () => sendUpdateStatus({ type: 'checking' }));
     autoUpdater.on('update-available', (info) => sendUpdateStatus({ type: 'available', version: info.version }));
-    autoUpdater.on('update-not-available', (info) => sendUpdateStatus({ type: 'not-available', version: info.version }));
-    autoUpdater.on('download-progress', (p) => sendUpdateStatus({ type: 'progress', percent: p.percent, transferred: p.transferred, total: p.total, bytesPerSecond: p.bytesPerSecond }));
+    autoUpdater.on('update-not-available', (info) =>
+        sendUpdateStatus({ type: 'not-available', version: info.version })
+    );
+    autoUpdater.on('download-progress', (p) =>
+        sendUpdateStatus({
+            type: 'progress',
+            percent: p.percent,
+            transferred: p.transferred,
+            total: p.total,
+            bytesPerSecond: p.bytesPerSecond,
+        })
+    );
     autoUpdater.on('update-downloaded', (info) => sendUpdateStatus({ type: 'downloaded', version: info.version }));
     autoUpdater.on('error', (err) => sendUpdateStatus({ type: 'error', message: (err && err.message) || String(err) }));
     return autoUpdater;
@@ -81,9 +91,7 @@ function startServer() {
 
     const args = isDev ? ['--require', 'ts-node/register', serverEntry] : [serverEntry];
 
-    const serverCwd = isDev
-        ? path.join(appPath, '../server')
-        : path.join(process.resourcesPath, 'server');
+    const serverCwd = isDev ? path.join(appPath, '../server') : path.join(process.resourcesPath, 'server');
     const builtInTransitionsPath = isDev
         ? path.join(appPath, '../server/public/transitions/builtins')
         : path.join(process.resourcesPath, 'server/public/transitions/builtins');
@@ -285,7 +293,8 @@ app.whenReady().then(() => {
             } catch {
                 return {
                     ok: false,
-                    message: 'O servidor interno ainda está desatualizado. Feche completamente o Mileto e abra novamente.',
+                    message:
+                        'O servidor interno ainda está desatualizado. Feche completamente o Mileto e abra novamente.',
                 };
             }
             return result;
@@ -312,7 +321,10 @@ app.whenReady().then(() => {
             return {
                 ok: true,
                 currentVersion: app.getVersion(),
-                updateInfo: result && result.updateInfo ? { version: result.updateInfo.version, releaseDate: result.updateInfo.releaseDate } : null,
+                updateInfo:
+                    result && result.updateInfo
+                        ? { version: result.updateInfo.version, releaseDate: result.updateInfo.releaseDate }
+                        : null,
             };
         } catch (err) {
             return { ok: false, message: err.message || String(err) };
@@ -359,7 +371,7 @@ app.whenReady().then(() => {
         }
     });
 
-    ipcMain.handle('export-chunk-txt', async (event, { filePath, buffer, frameIndex }) => {
+    ipcMain.handle('export-chunk-txt', async (event, { filePath, buffer, frameIndex, extension = 'png' }) => {
         try {
             const seqDir = filePath.replace(/\.txt$/, '_seq');
 
@@ -369,7 +381,8 @@ app.whenReady().then(() => {
 
             if (!fs.existsSync(seqDir)) fs.mkdirSync(seqDir, { recursive: true });
 
-            const framePath = path.join(seqDir, `${frameIndex}.png`);
+            const safeExtension = extension === 'webp' ? 'webp' : 'png';
+            const framePath = path.join(seqDir, `${frameIndex}.${safeExtension}`);
             fs.writeFileSync(framePath, Buffer.from(buffer));
 
             if (frameIndex === 0) {
@@ -381,6 +394,45 @@ app.whenReady().then(() => {
             throw err;
         }
     });
+
+    ipcMain.handle('export-finalize-sequence', async (_event, { filePath, frameCount, fps, extension = 'png' }) => {
+        const safeFrameCount = Math.max(1, Math.floor(Number(frameCount) || 0));
+        const safeFps = [24, 30, 60].includes(Number(fps)) ? Number(fps) : 30;
+        const safeExtension = extension === 'webp' ? 'webp' : 'png';
+        fs.writeFileSync(
+            filePath,
+            JSON.stringify({
+                version: 2,
+                sparse: true,
+                frameCount: safeFrameCount,
+                fps: safeFps,
+                extension: safeExtension,
+            }),
+            'utf8'
+        );
+        return true;
+    });
+
+    ipcMain.handle(
+        'export-repeat-frame',
+        async (_event, { filePath, sourceFrameIndex, startFrameIndex, count, extension = 'png' }) => {
+            const seqDir = filePath.replace(/\.txt$/, '_seq');
+            const safeExtension = extension === 'webp' ? 'webp' : 'png';
+            const sourcePath = path.join(seqDir, `${sourceFrameIndex}.${safeExtension}`);
+            if (!fs.existsSync(sourcePath)) throw new Error('Quadro-base da exportação não encontrado.');
+
+            const total = Math.max(0, Math.floor(Number(count) || 0));
+            for (let offset = 0; offset < total; offset++) {
+                const framePath = path.join(seqDir, `${startFrameIndex + offset}.${safeExtension}`);
+                try {
+                    await fs.promises.link(sourcePath, framePath);
+                } catch {
+                    await fs.promises.copyFile(sourcePath, framePath);
+                }
+            }
+            return true;
+        }
+    );
 
     ipcMain.handle('export-audio', async (event, { filePath, buffer }) => {
         return new Promise((resolve, reject) => {
@@ -400,6 +452,16 @@ app.whenReady().then(() => {
         if (canceled || filePaths.length === 0) return { canceled: true };
         authorizedExportDirs.add(path.resolve(filePaths[0]));
         return { canceled: false, folderPath: filePaths[0] };
+    });
+
+    ipcMain.handle('export-authorize-folder', async (_event, folderPath) => {
+        if (!folderPath) return { ok: false, message: 'Pasta de destino ausente.' };
+        const resolvedFolder = path.resolve(folderPath);
+        if (!fs.existsSync(resolvedFolder) || !fs.statSync(resolvedFolder).isDirectory()) {
+            return { ok: false, message: 'A pasta de destino não existe mais.' };
+        }
+        authorizedExportDirs.add(resolvedFolder);
+        return { ok: true, folderPath: resolvedFolder };
     });
 
     ipcMain.handle('export-save-dialog', async (event, { defaultName }) => {
@@ -458,6 +520,14 @@ app.whenReady().then(() => {
                 try {
                     fs.unlinkSync(p);
                 } catch (e) {}
+            }
+            if (typeof p === 'string' && p.endsWith('.txt')) {
+                const seqDir = p.replace(/\.txt$/, '_seq');
+                if (fs.existsSync(seqDir)) {
+                    try {
+                        fs.rmSync(seqDir, { recursive: true, force: true });
+                    } catch (e) {}
+                }
             }
         });
         return true;

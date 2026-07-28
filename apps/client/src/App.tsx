@@ -8,6 +8,7 @@ import { SHOW_DEBUG_FEATURES } from './context/WizardContext';
 import { useAuth } from './context/AuthContext';
 import { LoginScreen } from './components/LoginScreen';
 import { DownloadJobsProvider } from './context/DownloadJobsContext';
+import { ExportJobsProvider } from './context/ExportJobsContext';
 
 const Home = lazy(() => import('./pages/Home').then((m) => ({ default: m.Home })));
 const Downloads = lazy(() => import('./pages/Downloads').then((m) => ({ default: m.Downloads })));
@@ -41,35 +42,37 @@ function App() {
         <DebugProvider>
             <HashRouter>
                 <DownloadJobsProvider>
-                    <Suspense
-                        fallback={
-                            <div className="flex h-screen w-full items-center justify-center text-foreground/50">
-                                Carregando interface...
-                            </div>
-                        }
-                    >
-                        <Routes>
-                            <Route path="/" element={<MainLayout />}>
-                                <Route index element={<Home />} />
-                                <Route path="files" element={<Downloads />} />
-                                <Route path="downloads" element={<DownloadQueue />} />
-                                <Route path="account" element={<Account />} />
-                                <Route path="integrations" element={<Integrations />} />
-                                <Route path="wizard/step/1" element={<Step1 />} />
-                                <Route path="wizard/step/2" element={<Step2 />} />
-                                <Route path="wizard/step/3" element={<Step3 />} />
-                                <Route path="wizard/step/4" element={<Step4 />} />
-                                {/* Legacy paths → redirect to new wizard paths */}
-                                <Route path="step/1" element={<Navigate to="/wizard/step/1" replace />} />
-                                <Route path="step/2" element={<Navigate to="/wizard/step/2" replace />} />
-                                <Route path="step/3" element={<Navigate to="/wizard/step/3" replace />} />
-                                <Route path="step/4" element={<Navigate to="/wizard/step/4" replace />} />
-                            </Route>
-                        </Routes>
-                    </Suspense>
-                    {/* Chat flutuante: fora das ROTAS (aparece em todas), mas DENTRO do
+                    <ExportJobsProvider>
+                        <Suspense
+                            fallback={
+                                <div className="flex h-screen w-full items-center justify-center text-foreground/50">
+                                    Carregando interface...
+                                </div>
+                            }
+                        >
+                            <Routes>
+                                <Route path="/" element={<MainLayout />}>
+                                    <Route index element={<Home />} />
+                                    <Route path="files" element={<Downloads />} />
+                                    <Route path="downloads" element={<DownloadQueue />} />
+                                    <Route path="account" element={<Account />} />
+                                    <Route path="integrations" element={<Integrations />} />
+                                    <Route path="wizard/step/1" element={<Step1 />} />
+                                    <Route path="wizard/step/2" element={<Step2 />} />
+                                    <Route path="wizard/step/3" element={<Step3 />} />
+                                    <Route path="wizard/step/4" element={<Step4 />} />
+                                    {/* Legacy paths → redirect to new wizard paths */}
+                                    <Route path="step/1" element={<Navigate to="/wizard/step/1" replace />} />
+                                    <Route path="step/2" element={<Navigate to="/wizard/step/2" replace />} />
+                                    <Route path="step/3" element={<Navigate to="/wizard/step/3" replace />} />
+                                    <Route path="step/4" element={<Navigate to="/wizard/step/4" replace />} />
+                                </Route>
+                            </Routes>
+                        </Suspense>
+                        {/* Chat flutuante: fora das ROTAS (aparece em todas), mas DENTRO do
                         HashRouter — ele usa useNavigate() para aplicar o roteiro e ir ao Step 1. */}
-                    <ChatMileto />
+                        <ChatMileto />
+                    </ExportJobsProvider>
                 </DownloadJobsProvider>
             </HashRouter>
             {SHOW_DEBUG_FEATURES && <DebugPanel />}

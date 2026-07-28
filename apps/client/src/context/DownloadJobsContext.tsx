@@ -29,6 +29,7 @@ export interface DownloadJobSnapshot {
     source?: 'download' | 'editor-import' | 'ai-generation' | 'export';
     statusText?: string;
     cancellable?: boolean;
+    outputPath?: string;
 }
 
 export interface InternetDownloadRequest {
@@ -38,12 +39,14 @@ export interface InternetDownloadRequest {
     audioBitrate: number;
     destination: string;
     title?: string;
+    onComplete?: (track: DownloadJobTrack) => void;
 }
 
 interface RegisterJobDetails {
     mode: DownloadJobSnapshot['mode'];
     title?: string;
     destination: string;
+    onComplete?: (track: DownloadJobTrack) => void;
 }
 
 interface RegisterClientJobDetails extends RegisterJobDetails {
@@ -61,6 +64,7 @@ interface DownloadJobsContextValue {
     updateClientJob: (jobId: string, patch: Partial<DownloadJobSnapshot>) => void;
     enqueueInternetDownloads: (requests: InternetDownloadRequest[]) => number;
     cancelJob: (jobId: string) => Promise<void>;
+    clearHistory: () => Promise<number>;
 }
 
 const DownloadJobsContext = createContext<DownloadJobsContextValue | null>(null);
@@ -72,6 +76,7 @@ export const DownloadJobsProvider = ({ children }: { children: React.ReactNode }
     const pendingInternetRef = useRef<Array<{ clientJobId: string; request: InternetDownloadRequest }>>([]);
     const pumpingInternetRef = useRef(false);
     const knownPhasesRef = useRef(new Map<string, DownloadJobSnapshot['phase']>());
+    const completionCallbacksRef = useRef(new Map<string, (track: DownloadJobTrack) => void>());
     const initializedRef = useRef(false);
 
     const applyJobs = useCallback((nextJobs: DownloadJobSnapshot[]) => {
@@ -81,14 +86,17 @@ export const DownloadJobsProvider = ({ children }: { children: React.ReactNode }
                 if (previousPhase === 'downloading' && job.phase === 'done') {
                     toast.success(`“${job.track?.displayName || job.title || 'Download'}” foi concluído.`);
                     if (job.track) {
+                        completionCallbacksRef.current.get(job.id)?.(job.track);
                         window.dispatchEvent(new CustomEvent('mileto:download-complete', { detail: job.track }));
                     }
+                    completionCallbacksRef.current.delete(job.id);
                 } else if (
                     previousPhase === 'downloading' &&
                     job.phase === 'error' &&
                     job.error !== 'Download cancelado.'
                 ) {
                     toast.error(job.error || 'Um download falhou.');
+                    completionCallbacksRef.current.delete(job.id);
                 }
             }
         }
@@ -136,32 +144,38 @@ export const DownloadJobsProvider = ({ children }: { children: React.ReactNode }
         };
     }, [refresh]);
 
-    const registerJob = useCallback((jobId: string, details: RegisterJobDetails) => {
-        knownPhasesRef.current.set(jobId, 'downloading');
-        initializedRef.current = true;
-        setServerJobs((current) => {
-            if (current.some((job) => job.id === jobId)) return current;
-            const nextJobs: DownloadJobSnapshot[] = [
-                {
-                    id: jobId,
-                    phase: 'downloading',
-                    percent: 0,
-                    step: 'downloading',
-                    stepPercent: 0,
-                    mode: details.mode,
-                    title: details.title,
-                    destination: details.destination,
-                    startedAt: Date.now(),
-                    source: 'download',
-                    cancellable: true,
-                },
-                ...current,
-            ];
-            jobsRef.current = nextJobs;
-            return nextJobs;
-        });
-        void refresh();
-    }, [refresh]);
+    const registerJob = useCallback(
+        (jobId: string, details: RegisterJobDetails) => {
+            if (details.onComplete) {
+                completionCallbacksRef.current.set(jobId, details.onComplete);
+            }
+            knownPhasesRef.current.set(jobId, 'downloading');
+            initializedRef.current = true;
+            setServerJobs((current) => {
+                if (current.some((job) => job.id === jobId)) return current;
+                const nextJobs: DownloadJobSnapshot[] = [
+                    {
+                        id: jobId,
+                        phase: 'downloading',
+                        percent: 0,
+                        step: 'downloading',
+                        stepPercent: 0,
+                        mode: details.mode,
+                        title: details.title,
+                        destination: details.destination,
+                        startedAt: Date.now(),
+                        source: 'download',
+                        cancellable: true,
+                    },
+                    ...current,
+                ];
+                jobsRef.current = nextJobs;
+                return nextJobs;
+            });
+            void refresh();
+        },
+        [refresh]
+    );
 
     const registerClientJob = useCallback((details: RegisterClientJobDetails) => {
         const id = details.id || `client-${crypto.randomUUID()}`;
@@ -184,16 +198,18 @@ export const DownloadJobsProvider = ({ children }: { children: React.ReactNode }
     }, []);
 
     const updateClientJob = useCallback((jobId: string, patch: Partial<DownloadJobSnapshot>) => {
-        setClientJobs((current) => current.map((job) => {
-            if (job.id !== jobId) return job;
-            const next = { ...job, ...patch };
-            if (job.phase === 'downloading' && next.phase === 'done') {
-                toast.success(`“${next.title || 'Atividade'}” foi concluída.`);
-            } else if (job.phase === 'downloading' && next.phase === 'error') {
-                toast.error(next.error || 'Uma atividade falhou.');
-            }
-            return next;
-        }));
+        setClientJobs((current) =>
+            current.map((job) => {
+                if (job.id !== jobId) return job;
+                const next = { ...job, ...patch };
+                if (job.phase === 'downloading' && next.phase === 'done') {
+                    toast.success(`“${next.title || 'Atividade'}” foi concluída.`);
+                } else if (job.phase === 'downloading' && next.phase === 'error') {
+                    toast.error(next.error || 'Uma atividade falhou.');
+                }
+                return next;
+            })
+        );
     }, []);
 
     const pumpInternetDownloads = useCallback(async () => {
@@ -236,6 +252,7 @@ export const DownloadJobsProvider = ({ children }: { children: React.ReactNode }
                     mode: pending.request.mode,
                     title: pending.request.title,
                     destination: pending.request.destination,
+                    onComplete: pending.request.onComplete,
                 });
             }
         } finally {
@@ -243,32 +260,35 @@ export const DownloadJobsProvider = ({ children }: { children: React.ReactNode }
         }
     }, [registerJob, updateClientJob]);
 
-    const enqueueInternetDownloads = useCallback((requests: InternetDownloadRequest[]) => {
-        const accepted = requests.slice(0, 50);
-        if (!accepted.length) return 0;
+    const enqueueInternetDownloads = useCallback(
+        (requests: InternetDownloadRequest[]) => {
+            const accepted = requests.slice(0, 50);
+            if (!accepted.length) return 0;
 
-        const placeholders = accepted.map((request) => {
-            const clientJobId = `internet-queue-${crypto.randomUUID()}`;
-            pendingInternetRef.current.push({ clientJobId, request });
-            return {
-                id: clientJobId,
-                phase: 'downloading' as const,
-                percent: 0,
-                step: 'downloading' as const,
-                stepPercent: 0,
-                mode: request.mode,
-                title: request.title,
-                destination: request.destination,
-                startedAt: Date.now(),
-                source: 'download' as const,
-                statusText: 'Aguardando vaga na fila',
-                cancellable: false,
-            };
-        });
-        setClientJobs((current) => [...placeholders, ...current]);
-        window.setTimeout(() => void pumpInternetDownloads(), 0);
-        return accepted.length;
-    }, [pumpInternetDownloads]);
+            const placeholders = accepted.map((request) => {
+                const clientJobId = `internet-queue-${crypto.randomUUID()}`;
+                pendingInternetRef.current.push({ clientJobId, request });
+                return {
+                    id: clientJobId,
+                    phase: 'downloading' as const,
+                    percent: 0,
+                    step: 'downloading' as const,
+                    stepPercent: 0,
+                    mode: request.mode,
+                    title: request.title,
+                    destination: request.destination,
+                    startedAt: Date.now(),
+                    source: 'download' as const,
+                    statusText: 'Aguardando vaga na fila',
+                    cancellable: false,
+                };
+            });
+            setClientJobs((current) => [...placeholders, ...current]);
+            window.setTimeout(() => void pumpInternetDownloads(), 0);
+            return accepted.length;
+        },
+        [pumpInternetDownloads]
+    );
 
     useEffect(() => {
         const timer = window.setInterval(() => {
@@ -280,17 +300,41 @@ export const DownloadJobsProvider = ({ children }: { children: React.ReactNode }
     useEffect(() => {
         const timer = window.setInterval(() => {
             const cutoff = Date.now() - 30 * 60 * 1000;
-            setClientJobs((current) => current.filter((job) => job.phase === 'downloading' || (job.completedAt || job.startedAt) >= cutoff));
+            setClientJobs((current) =>
+                current.filter((job) => job.phase === 'downloading' || (job.completedAt || job.startedAt) >= cutoff)
+            );
         }, 60_000);
         return () => window.clearInterval(timer);
     }, []);
 
-    const cancelJob = useCallback(async (jobId: string) => {
-        const response = await fetch(`${API}/api/download/${jobId}`, { method: 'DELETE' });
-        const data = (await response.json()) as { ok: boolean; message?: string };
-        if (!response.ok || !data.ok) throw new Error(data.message || 'Não foi possível cancelar o download.');
-        toast.success('Download cancelado.');
-        await refresh();
+    const cancelJob = useCallback(
+        async (jobId: string) => {
+            const response = await fetch(`${API}/api/download/${jobId}`, { method: 'DELETE' });
+            const data = (await response.json()) as { ok: boolean; message?: string };
+            if (!response.ok || !data.ok) throw new Error(data.message || 'Não foi possível cancelar o download.');
+            toast.success('Download cancelado.');
+            await refresh();
+        },
+        [refresh]
+    );
+
+    const clearHistory = useCallback(async () => {
+        const response = await fetch(`${API}/api/download/jobs/history`, { method: 'DELETE' });
+        const data = (await response.json().catch(() => ({}))) as {
+            ok?: boolean;
+            removed?: number;
+            message?: string;
+        };
+        if (!response.ok || !data.ok) {
+            throw new Error(data.message || 'Não foi possível limpar o histórico.');
+        }
+
+        setClientJobs((current) => current.filter((job) => job.phase === 'downloading'));
+        knownPhasesRef.current = new Map(
+            [...knownPhasesRef.current.entries()].filter(([, phase]) => phase === 'downloading')
+        );
+        const remainingServerJobs = await refresh();
+        return Number(data.removed || 0) + remainingServerJobs.filter((job) => job.phase !== 'downloading').length;
     }, [refresh]);
 
     const jobs = useMemo(
@@ -298,16 +342,20 @@ export const DownloadJobsProvider = ({ children }: { children: React.ReactNode }
         [clientJobs, serverJobs]
     );
 
-    const value = useMemo<DownloadJobsContextValue>(() => ({
-        jobs,
-        activeCount: jobs.filter((job) => job.phase === 'downloading').length,
-        refresh,
-        registerJob,
-        registerClientJob,
-        updateClientJob,
-        enqueueInternetDownloads,
-        cancelJob,
-    }), [cancelJob, enqueueInternetDownloads, jobs, refresh, registerClientJob, registerJob, updateClientJob]);
+    const value = useMemo<DownloadJobsContextValue>(
+        () => ({
+            jobs,
+            activeCount: jobs.filter((job) => job.phase === 'downloading').length,
+            refresh,
+            registerJob,
+            registerClientJob,
+            updateClientJob,
+            enqueueInternetDownloads,
+            cancelJob,
+            clearHistory,
+        }),
+        [cancelJob, clearHistory, enqueueInternetDownloads, jobs, refresh, registerClientJob, registerJob, updateClientJob]
+    );
 
     return <DownloadJobsContext.Provider value={value}>{children}</DownloadJobsContext.Provider>;
 };

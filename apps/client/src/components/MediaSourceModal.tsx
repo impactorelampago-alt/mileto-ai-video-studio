@@ -135,7 +135,9 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
     const { addMediaTakes } = useWizard();
     const { registerClientJob, updateClientJob } = useDownloadJobs();
     const category = kind === 'video' ? 'Vídeos' : 'Imagens';
-    const [path, setPath] = useState(category);
+    const homePath = scope === 'local' ? '' : category;
+    const homeLabel = scope === 'local' ? 'Meu computador' : category;
+    const [path, setPath] = useState(homePath);
     const [listing, setListing] = useState<SharedListing | null>(null);
     const [loading, setLoading] = useState(false);
     const [selectionMode, setSelectionMode] = useState(false);
@@ -163,11 +165,13 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
     }, [kind, scope]);
 
     useEffect(() => {
-        void load(category);
-    }, [category, load]);
+        void load(homePath);
+    }, [homePath, load]);
 
     const breadcrumbs = useMemo(() => path.split('/').filter(Boolean), [path]);
-    const rootPath = path === 'Geração por IA' || path.startsWith('Geração por IA/') ? 'Geração por IA' : category;
+    const homeParts = useMemo(() => homePath.split('/').filter(Boolean), [homePath]);
+    const visibleBreadcrumbs = useMemo(() => breadcrumbs.slice(homeParts.length), [breadcrumbs, homeParts.length]);
+    const aiLibraryActive = path === 'Geração por IA' || path.startsWith('Geração por IA/');
     const selectedFiles = useMemo(
         () => (listing?.files || []).filter((file) => selectedIds.has(file.id || file.relPath)),
         [listing?.files, selectedIds]
@@ -332,9 +336,9 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
         <div className="flex h-full min-h-0 flex-col">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/7 px-5 py-3">
                 <div className="flex min-w-0 items-center gap-1 text-xs">
-                    <button onClick={() => void load(rootPath)} className="rounded-lg px-2 py-1.5 font-bold text-brand-lime hover:bg-brand-lime/10">{rootPath}</button>
-                    {breadcrumbs.slice(1).map((part, index) => {
-                        const target = breadcrumbs.slice(0, index + 2).join('/');
+                    <button onClick={() => void load(homePath)} className="rounded-lg px-2 py-1.5 font-bold text-brand-lime hover:bg-brand-lime/10">{homeLabel}</button>
+                    {visibleBreadcrumbs.map((part, index) => {
+                        const target = breadcrumbs.slice(0, homeParts.length + index + 1).join('/');
                         return (
                             <span key={target} className="flex min-w-0 items-center gap-1">
                                 <ChevronRight className="h-3.5 w-3.5 text-brand-muted" />
@@ -347,17 +351,17 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
                     {scope === 'local' && (
                         <button
                             type="button"
-                            onClick={() => void load(path === 'Geração por IA' ? category : 'Geração por IA')}
+                            onClick={() => void load(aiLibraryActive ? homePath : 'Geração por IA')}
                             className={cn(
                                 'inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-[10px] font-black transition',
-                                path === 'Geração por IA'
+                                aiLibraryActive
                                     ? 'border-violet-400/30 bg-violet-400/10 text-violet-200'
                                     : 'border-white/10 bg-white/[0.035] text-foreground/70 hover:border-violet-400/25 hover:text-violet-200'
                             )}
                             title="Abrir mídias criadas pelos agentes"
                         >
                             <Sparkles className="h-3.5 w-3.5" />
-                            {path === 'Geração por IA' ? `Voltar para ${category}` : 'Geração por IA'}
+                            {aiLibraryActive ? `Voltar para ${homeLabel}` : 'Geração por IA'}
                         </button>
                     )}
                     {scope === 'local' && (

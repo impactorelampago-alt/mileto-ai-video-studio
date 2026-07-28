@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useCallback, useState, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { flushSync } from 'react-dom';
 import { Play, Pause, Volume2, VolumeX, RotateCcw, Loader2, Zap, VideoOff } from 'lucide-react';
-import { MediaTake, TitleHook, CaptionTrack } from '../types';
+import { AdData, CaptionStyle, MediaTake, TitleHook, CaptionTrack } from '../types';
 import { cn } from '../lib/utils';
 import { API_BASE_URL } from '../lib/apiBase';
 import { useWizard } from '../context/WizardContext';
 import { DynamicTitleRenderer } from './DynamicTitleRenderer';
 import { getPlaybackRateForRemap } from '../lib/speedRemapping';
-import { toPng } from 'html-to-image';
+import { getFontEmbedCSS, toCanvas } from 'html-to-image';
 import { toast } from 'sonner';
 import { normalizedTakeProgress, takeMotionScale } from '../lib/takeMotion';
 import { EditableTitleOverlay } from './EditableTitleOverlay';
@@ -35,6 +36,9 @@ export interface VideoSequencePreviewProps {
     onTitleSelect?: (_id: string | null) => void;
     onTitleTransformChange?: (_id: string, _updates: Partial<TitleHook>) => void;
     onTitleDelete?: (_id: string) => void;
+    adDataOverride?: AdData;
+    captionStyleOverride?: CaptionStyle | null;
+    debugModeOverride?: boolean;
 }
 
 export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSequencePreviewProps>(
@@ -52,10 +56,16 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             onTitleSelect,
             onTitleTransformChange,
             onTitleDelete,
+            adDataOverride,
+            captionStyleOverride,
+            debugModeOverride,
         },
         ref
     ) => {
-        const { captionStyle, adData, isDebugMode } = useWizard();
+        const wizard = useWizard();
+        const captionStyle = captionStyleOverride === undefined ? wizard.captionStyle : captionStyleOverride;
+        const adData = adDataOverride || wizard.adData;
+        const isDebugMode = debugModeOverride ?? wizard.isDebugMode;
 
         // Refs
         const videoRef1 = useRef<HTMLVideoElement>(null);
@@ -65,7 +75,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const audioMasterRef = useRef<HTMLAudioElement>(null);
         const progressIntervalRef = useRef<number>(0);
         const motionFrameRef = useRef<number | null>(null);
+        const motionVideoFrameRef = useRef<number | null>(null);
         const overlayContainerRef = useRef<HTMLDivElement>(null);
+        const overlayFontCssRef = useRef<string | null>(null);
 
         // State
         const [isPlaying, setIsPlaying] = useState(false);
@@ -121,71 +133,101 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 window.cancelAnimationFrame(motionFrameRef.current);
                 motionFrameRef.current = null;
             }
+            const previousVideo = currentTake?.type === 'video'
+                ? activeVideo === 1 ? videoRef1.current : videoRef2.current
+                : null;
+            const previousVideoWithFrames = previousVideo as (HTMLVideoElement & {
+                cancelVideoFrameCallback?: (handle: number) => void;
+            }) | null;
+            if (motionVideoFrameRef.current !== null) {
+                previousVideoWithFrames?.cancelVideoFrameCallback?.(motionVideoFrameRef.current);
+                motionVideoFrameRef.current = null;
+            }
             resetMotionTransforms();
             if (!currentTake?.motionEffect) return;
 
-            const target = currentTake.type === 'image'
-                ? imageTakeRef.current
-                : activeVideo === 1
-                  ? videoRef1.current
-                  : videoRef2.current;
+            const target =
+                currentTake.type === 'image'
+                    ? imageTakeRef.current
+                    : activeVideo === 1
+                      ? videoRef1.current
+                      : videoRef2.current;
             if (!target) return;
 
-            const takeDuration = Math.max(0.001, currentTake.trim.end - currentTake.trim.start);
-            const videoTarget = currentTake.type === 'video' ? target as HTMLVideoElement : null;
-            const observedVideoTime = () => videoTarget
-                ? Math.max(0, Math.min(takeDuration, videoTarget.currentTime - currentTake.trim.start))
-                : 0;
-            // O currentTime nativo pode oscilar alguns milissegundos entre frames.
-            // Mantemos um relógio monotônico próprio e só o corrigimos de forma
-            // amortecida; saltos grandes (seek/troca de take) ainda são imediatos.
-            let smoothLocalTime = videoTarget ? observedVideoTime() : Math.max(0, currentTimeInTake);
-            let previousFrameAt = performance.now();
-            const draw = (now: number) => {
-                const elapsed = Math.max(0, Math.min(0.05, (now - previousFrameAt) / 1000));
-                previousFrameAt = now;
+            const videoTarget = currentTake.type === 'video' ? (target as HTMLVideoElement) : null;
+            if (videoTarget) {
+                type VideoFrameMetadataLite = { mediaTime: number };
+                const framedVideo = videoTarget as HTMLVideoElement & {
+                    requestVideoFrameCallback?: (
+                        callback: (_now: number, metadata: VideoFrameMetadataLite) => void
+                    ) => number;
+                    cancelVideoFrameCallback?: (handle: number) => void;
+                };
+                const drawPresentedFrame = (_now: number, metadata: VideoFrameMetadataLite) => {
+                    const localTime = Math.max(0, metadata.mediaTime - currentTake.trim.start);
+                    renderMotionFrame(videoTarget, currentTake, localTime);
+                    if (isPlaying && framedVideo.requestVideoFrameCallback) {
+                        motionVideoFrameRef.current = framedVideo.requestVideoFrameCallback(drawPresentedFrame);
+                    }
+                };
 
-                if (videoTarget) {
-                    const observed = observedVideoTime();
-                    if (!videoTarget.paused && videoTarget.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-                        const predicted = Math.min(
-                            takeDuration,
-                            smoothLocalTime + elapsed * Math.max(0.05, videoTarget.playbackRate || 1)
-                        );
-                        const drift = observed - predicted;
-                        smoothLocalTime = Math.abs(drift) > 0.12
-                            ? observed
-                            : Math.max(smoothLocalTime, predicted + Math.max(-0.002, Math.min(0.002, drift * 0.08)));
-                    } else {
-                        smoothLocalTime = observed;
+                // O zoom muda junto com o quadro efetivamente apresentado pelo decoder.
+                // Isso elimina a disputa entre o relógio de 60 Hz da tela e vídeos de 24/30 fps.
+                if (framedVideo.requestVideoFrameCallback) {
+                    renderMotionFrame(videoTarget, currentTake, Math.max(0, videoTarget.currentTime - currentTake.trim.start));
+                    if (isPlaying) {
+                        motionVideoFrameRef.current = framedVideo.requestVideoFrameCallback(drawPresentedFrame);
                     }
                 } else {
-                    smoothLocalTime = Math.min(takeDuration, smoothLocalTime + elapsed);
+                    const drawFallback = () => {
+                        renderMotionFrame(
+                            videoTarget,
+                            currentTake,
+                            Math.max(0, videoTarget.currentTime - currentTake.trim.start)
+                        );
+                        if (isPlaying) motionFrameRef.current = window.requestAnimationFrame(drawFallback);
+                    };
+                    drawFallback();
                 }
-
-                renderMotionFrame(target, currentTake, smoothLocalTime);
-                if (isPlaying) motionFrameRef.current = window.requestAnimationFrame(draw);
-            };
-            draw(performance.now());
+            } else {
+                const takeDuration = Math.max(0.001, currentTake.trim.end - currentTake.trim.start);
+                let localTime = Math.max(0, currentTimeInTake);
+                let previousFrameAt = performance.now();
+                const drawImageFrame = (now: number) => {
+                    const elapsed = Math.max(0, Math.min(0.05, (now - previousFrameAt) / 1000));
+                    previousFrameAt = now;
+                    localTime = Math.min(takeDuration, localTime + elapsed);
+                    renderMotionFrame(target, currentTake, localTime);
+                    if (isPlaying) motionFrameRef.current = window.requestAnimationFrame(drawImageFrame);
+                };
+                drawImageFrame(previousFrameAt);
+            }
 
             return () => {
                 if (motionFrameRef.current !== null) {
                     window.cancelAnimationFrame(motionFrameRef.current);
                     motionFrameRef.current = null;
                 }
+                if (motionVideoFrameRef.current !== null) {
+                    const framedVideo = videoTarget as (HTMLVideoElement & {
+                        cancelVideoFrameCallback?: (handle: number) => void;
+                    }) | null;
+                    framedVideo?.cancelVideoFrameCallback?.(motionVideoFrameRef.current);
+                    motionVideoFrameRef.current = null;
+                }
             };
-            // currentTimeInTake é apenas o ponto inicial. Durante o play, o RAF
-            // lê diretamente o relógio da mídia e não deve reiniciar a cada tick.
-            // eslint-disable-next-line react-hooks/exhaustive-deps
+            // currentTimeInTake é apenas o ponto inicial. Durante o play, o callback
+            // acompanha os quadros apresentados e não reinicia a cada tick da interface.
         }, [activeVideo, currentTake, isImageTake, isPlaying, renderMotionFrame, resetMotionTransforms]);
 
         useEffect(() => {
             if (isPlaying || !currentTake?.motionEffect) return;
-            const target = currentTake.type === 'image'
-                ? imageTakeRef.current
-                : activeVideo === 1
-                  ? videoRef1.current
-                  : videoRef2.current;
+            const target =
+                currentTake.type === 'image'
+                    ? imageTakeRef.current
+                    : activeVideo === 1
+                      ? videoRef1.current
+                      : videoRef2.current;
             if (target) renderMotionFrame(target, currentTake, currentTimeInTake);
         }, [activeVideo, currentTake, currentTimeInTake, isImageTake, isPlaying, renderMotionFrame]);
 
@@ -253,9 +295,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         const totalDuration = useMemo(() => {
             const takesDur = takes.reduce((acc, t) => acc + (t.trim.end - t.trim.start), 0);
-            const authoritativeAudioDuration = audioDuration > 0
-                ? audioDuration
-                : Number(adData.narrationDuration || 0);
+            const authoritativeAudioDuration =
+                audioDuration > 0 ? audioDuration : Number(adData.narrationDuration || 0);
             if (authoritativeAudioDuration > 0) return authoritativeAudioDuration;
             if (takes.length === 0) return 30;
             return takesDur;
@@ -810,10 +851,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 }
 
                 // Force local react states immediately so UI might catch up if needed
-                if (isAlphaExport && !isExportingFrame) setIsExportingFrame(true);
-                setCurrentTakeIndex(targetTakeIndex);
-                setCurrentTimeInTake(targetTimeInTake);
-                setAudioTime(targetGlobalTime);
+                flushSync(() => {
+                    if (isAlphaExport && !isExportingFrame) setIsExportingFrame(true);
+                    setCurrentTakeIndex(targetTakeIndex);
+                    setCurrentTimeInTake(targetTimeInTake);
+                    setAudioTime(targetGlobalTime);
+                });
 
                 const take = takes[targetTakeIndex];
                 if (!take) return null;
@@ -907,9 +950,17 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                 await new Promise<void>((resolve) => {
                                     let done = false;
                                     vidAny.requestVideoFrameCallback(() => {
-                                        if (!done) { done = true; resolve(); }
+                                        if (!done) {
+                                            done = true;
+                                            resolve();
+                                        }
                                     });
-                                    setTimeout(() => { if (!done) { done = true; resolve(); } }, 100);
+                                    setTimeout(() => {
+                                        if (!done) {
+                                            done = true;
+                                            resolve();
+                                        }
+                                    }, 100);
                                 });
                             } else {
                                 await new Promise((r) => setTimeout(r, 20));
@@ -921,7 +972,6 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 }
 
                 // Short breath for React to re-render overlays (captions/titles) with new audioTime
-                await new Promise((r) => setTimeout(r, 10));
 
                 // Use auto-detected target resolution from caller (matches output) — fallback 1080×1920
                 const TARGET_W = targetWArg && targetWArg > 0 ? targetWArg : 1080;
@@ -1093,9 +1143,11 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         const scaleRatio = TARGET_W / clientW;
 
                         // Give React an extra moment to fully flush the DOM unmounts (prevents ghost text)
-                        await new Promise((r) => setTimeout(r, 60));
+                        if (overlayFontCssRef.current === null) {
+                            overlayFontCssRef.current = await getFontEmbedCSS(node).catch(() => '');
+                        }
 
-                        const overlayDataUrl = await toPng(node, {
+                        const overlayCanvas = await toCanvas(node, {
                             width: TARGET_W,
                             height: TARGET_H,
                             pixelRatio: 1,
@@ -1107,16 +1159,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             },
                             backgroundColor: 'rgba(0,0,0,0)',
                             skipFonts: false,
-                            cacheBust: true, // Crucial to prevent html-to-image from caching previous captions
-                            filter: (element) => !(element instanceof HTMLElement && element.dataset.titleEditorUi === 'true'),
+                            fontEmbedCSS: overlayFontCssRef.current || undefined,
+                            cacheBust: false,
+                            filter: (element) =>
+                                !(element instanceof HTMLElement && element.dataset.titleEditorUi === 'true'),
                         });
-                        const overlayImg = new Image();
-                        await new Promise<void>((res, rej) => {
-                            overlayImg.onload = () => res();
-                            overlayImg.onerror = rej;
-                            overlayImg.src = overlayDataUrl;
-                        });
-                        ctx.drawImage(overlayImg, 0, 0, TARGET_W, TARGET_H);
+                        ctx.drawImage(overlayCanvas, 0, 0, TARGET_W, TARGET_H);
                     } catch (overlayErr) {
                         console.warn('[DOMCapture] Falha ao capturar overlays (texto/legenda):', overlayErr);
                     }
@@ -1134,7 +1182,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         };
 
         // Progress calculation (approximate)
-        const progressPercent = totalDuration > 0 ? (Math.min(totalDuration, Math.max(globalTime, audioTime)) / totalDuration) * 100 : 0;
+        const progressPercent =
+            totalDuration > 0 ? (Math.min(totalDuration, Math.max(globalTime, audioTime)) / totalDuration) * 100 : 0;
 
         return (
             <div className="bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl overflow-hidden flex flex-col shadow-2xl">
@@ -1179,8 +1228,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                     <VideoOff className="h-6 w-6" />
                                 </div>
                                 <div>
-                                    <p className="text-xs font-black uppercase tracking-[0.16em] text-foreground/75">Monitor vazio</p>
-                                    <p className="mt-1 text-[10px] leading-relaxed text-brand-muted/55">Adicione um take para visualizar a sequência.</p>
+                                    <p className="text-xs font-black uppercase tracking-[0.16em] text-foreground/75">
+                                        Monitor vazio
+                                    </p>
+                                    <p className="mt-1 text-[10px] leading-relaxed text-brand-muted/55">
+                                        Adicione um take para visualizar a sequência.
+                                    </p>
                                 </div>
                             </div>
                         </div>
@@ -1466,7 +1519,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                             key={`${title.id}-${animId}`}
                                             title={title}
                                             selected={selectedTitleId === title.id}
-                                            editingEnabled={!!onTitleTransformChange && !isHybridMode && !isExportingFrame}
+                                            editingEnabled={
+                                                !!onTitleTransformChange && !isHybridMode && !isExportingFrame
+                                            }
                                             onSelect={onTitleSelect}
                                             onChange={onTitleTransformChange}
                                             onDelete={onTitleDelete}
@@ -1491,7 +1546,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                     src={adData.customOverlayUrl}
                                     alt="Overlay Img"
                                     className="max-w-[70%] max-h-[15vh] object-contain drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]"
-                                    crossOrigin="anonymous" 
+                                    crossOrigin="anonymous"
                                 />
                             </div>
                         )}

@@ -143,13 +143,18 @@ export interface GatewayChatPayload {
     agentId?: 'director' | 'prompt_sales' | 'image_director' | 'video_director';
 }
 
-export const gatewayChat = async (token: string, payload: GatewayChatPayload): Promise<GatewayChatResult> => {
+export const gatewayChat = async (
+    token: string,
+    payload: GatewayChatPayload,
+    signal?: AbortSignal
+): Promise<GatewayChatResult> => {
     const res = await fetchWithTimeout(
         `${GATEWAY_URL}/v1/chat`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
             body: JSON.stringify(payload),
+            signal,
         },
         CHAT_GATEWAY_TIMEOUT_MS
     );

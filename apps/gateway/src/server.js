@@ -10,6 +10,7 @@ import { estimateUnits, priceOf, reserve, settle, release, getBalance } from './
 import { resolveTier, getSystemPrompt, resolveAgent } from './settings.js';
 import { agentRequiresStrictJsonOutput } from './agentDefaults.js';
 import { CHAT_SCRIPT_OUTPUT_CONTRACT } from './defaultPrompt.js';
+import { ensureNarrationSalesVoiceDirection, userRequestedCleanNarration } from './narrationDirection.js';
 import * as admin from './admin.js';
 import * as account from './account.js';
 import * as shared from './shared.js';
@@ -261,6 +262,11 @@ app.post(
                 maxOutputTokens,
                 signal: upstreamController.signal,
             });
+            if (selectedAgent?.id === 'prompt_sales') {
+                result.text = ensureNarrationSalesVoiceDirection(result.text, {
+                    allowClean: userRequestedCleanNarration(messages),
+                });
+            }
             providerFinished = true;
         } catch (e) {
             providerFinished = true;

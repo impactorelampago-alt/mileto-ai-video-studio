@@ -174,7 +174,7 @@ import { buildHybridVideo } from '../services/ffmpeg';
 
 export const exportHybrid = async (req: Request, res: Response) => {
     try {
-        const { takes, transitionPath, audioPath, finalPath, duration, targetW, targetH } = req.body;
+        const { takes, transitionPath, audioPath, finalPath, duration, targetW, targetH, outputFps } = req.body;
         let { overlayPath } = req.body;
 
         console.log(`[Hybrid Export] Iniciada com ${takes?.length || 0} take(s).`);
@@ -218,7 +218,9 @@ export const exportHybrid = async (req: Request, res: Response) => {
             }
         }
 
-        console.log(`[Hybrid Export] Áudio=${audioExists ? 'ok' : 'ausente'} overlay=${overlayExists ? 'ok' : 'ausente'}`);
+        console.log(
+            `[Hybrid Export] Áudio=${audioExists ? 'ok' : 'ausente'} overlay=${overlayExists ? 'ok' : 'ausente'}`
+        );
 
         if (!audioExists) {
             return res
@@ -241,6 +243,7 @@ export const exportHybrid = async (req: Request, res: Response) => {
             duration,
             targetW,
             targetH,
+            outputFps,
         });
 
         const exportedStats = fs.existsSync(exportedPath) ? fs.statSync(exportedPath) : null;

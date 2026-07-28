@@ -240,3 +240,27 @@ export function deleteMessage(id: string): boolean {
     writeDB(db);
     return true;
 }
+
+/**
+ * Remove uma mensagem e todas as mensagens seguintes da mesma conversa.
+ *
+ * Esse recorte permite que o usuário edite o último turno e regenere a resposta
+ * sem deixar a versão antiga escondida no contexto enviado à IA.
+ */
+export function truncateMessagesFrom(sessionId: string, messageId: string): ChatMessage[] | null {
+    const db = readDB();
+    const sessionMessages = db.messages.filter((message) => message.sessionId === sessionId);
+    const targetIndex = sessionMessages.findIndex((message) => message.id === messageId);
+    if (targetIndex === -1 || sessionMessages[targetIndex].role !== 'user') return null;
+
+    const removedIds = new Set(sessionMessages.slice(targetIndex).map((message) => message.id));
+    db.messages = db.messages.filter((message) => !removedIds.has(message.id));
+
+    const remaining = db.messages.filter((message) => message.sessionId === sessionId);
+    const session = db.sessions.find((item) => item.id === sessionId);
+    if (session) {
+        session.updatedAt = remaining.at(-1)?.createdAt || session.createdAt;
+    }
+    writeDB(db);
+    return remaining;
+}

@@ -31,6 +31,8 @@ import { ExportModal } from '../components/ExportModal';
 import { PREMIUM_TITLE_GROUPS, PREMIUM_TITLE_MODELS } from '../lib/premiumTitleModels';
 import { missingForCompletion, pendingWarningText } from '../lib/workflowWarnings';
 
+const EMPTY_TITLES: TitleHook[] = [];
+
 export const Step4 = () => {
     const { adData, updateAdData, mediaTakes, isDebugMode, setIsDebugMode } = useWizard();
     const [isGenerating, setIsGenerating] = useState(false);
@@ -45,7 +47,108 @@ export const Step4 = () => {
     const [showExportModal, setShowExportModal] = useState(false);
     const previewRef = useRef<VideoSequencePreviewRef>(null);
 
-    const titles = adData.dynamicTitles || [];
+    const titles = adData.dynamicTitles || EMPTY_TITLES;
+    const titleStateRef = useRef<TitleHook[]>(titles);
+    const titleHistoryRef = useRef<{
+        undo: TitleHook[][];
+        redo: TitleHook[][];
+        pendingBase: TitleHook[] | null;
+        timer: ReturnType<typeof setTimeout> | null;
+        restoring: boolean;
+    }>({ undo: [], redo: [], pendingBase: null, timer: null, restoring: false });
+
+    const cloneTitles = useCallback((items: TitleHook[]) => items.map((title) => ({ ...title })), []);
+
+    const flushPendingTitleHistory = useCallback(() => {
+        const history = titleHistoryRef.current;
+        if (history.timer) clearTimeout(history.timer);
+        history.timer = null;
+        if (!history.pendingBase) return;
+        history.undo.push(history.pendingBase);
+        if (history.undo.length > 60) history.undo.shift();
+        history.pendingBase = null;
+    }, []);
+
+    useEffect(() => {
+        const history = titleHistoryRef.current;
+        const previous = titleStateRef.current;
+        titleStateRef.current = titles;
+
+        if (history.restoring) {
+            history.restoring = false;
+            return;
+        }
+        if (previous === titles) return;
+
+        if (!history.pendingBase) history.pendingBase = cloneTitles(previous);
+        history.redo = [];
+        if (history.timer) clearTimeout(history.timer);
+        history.timer = setTimeout(flushPendingTitleHistory, 450);
+    }, [cloneTitles, flushPendingTitleHistory, titles]);
+
+    useEffect(
+        () => () => {
+            const timer = titleHistoryRef.current.timer;
+            if (timer) clearTimeout(timer);
+        },
+        []
+    );
+
+    const restoreTitleSnapshot = useCallback(
+        (snapshot: TitleHook[]) => {
+            const restored = cloneTitles(snapshot);
+            titleHistoryRef.current.restoring = true;
+            titleStateRef.current = restored;
+            updateAdData({ dynamicTitles: restored });
+            setSelectedTitleId((current) =>
+                current && restored.some((title) => title.id === current) ? current : (restored[0]?.id ?? null)
+            );
+        },
+        [cloneTitles, updateAdData]
+    );
+
+    const undoTitleChange = useCallback(() => {
+        flushPendingTitleHistory();
+        const history = titleHistoryRef.current;
+        const previous = history.undo.pop();
+        if (!previous) return;
+        history.redo.push(cloneTitles(titleStateRef.current));
+        restoreTitleSnapshot(previous);
+    }, [cloneTitles, flushPendingTitleHistory, restoreTitleSnapshot]);
+
+    const redoTitleChange = useCallback(() => {
+        flushPendingTitleHistory();
+        const history = titleHistoryRef.current;
+        const next = history.redo.pop();
+        if (!next) return;
+        history.undo.push(cloneTitles(titleStateRef.current));
+        restoreTitleSnapshot(next);
+    }, [cloneTitles, flushPendingTitleHistory, restoreTitleSnapshot]);
+
+    useEffect(() => {
+        const handleHistoryShortcut = (event: KeyboardEvent) => {
+            if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+            const target = event.target as HTMLElement | null;
+            const isNativeEditor =
+                target instanceof HTMLInputElement ||
+                target instanceof HTMLTextAreaElement ||
+                target instanceof HTMLSelectElement ||
+                !!target?.isContentEditable;
+            if (isNativeEditor) return;
+
+            const key = event.key.toLocaleLowerCase('pt-BR');
+            if (key === 'z') {
+                event.preventDefault();
+                if (event.shiftKey) redoTitleChange();
+                else undoTitleChange();
+            } else if (key === 'y') {
+                event.preventDefault();
+                redoTitleChange();
+            }
+        };
+        window.addEventListener('keydown', handleHistoryShortcut);
+        return () => window.removeEventListener('keydown', handleHistoryShortcut);
+    }, [redoTitleChange, undoTitleChange]);
 
     // Initialize selectedTitleId when titles are loaded or generated
     useEffect(() => {
@@ -64,8 +167,9 @@ export const Step4 = () => {
         const toastId = toast.loading('Lendo roteiro e gerando ganchos de atenção com IA...');
 
         try {
+            const apiBaseUrl = (window as Window & { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
             const res = await axios.post(
-                `${((window as any).API_BASE_URL || 'http://localhost:3301') || 'http://localhost:3301'}/api/video/generate-titles`,
+                `${apiBaseUrl}/api/video/generate-titles`,
                 {
                     script: adData.narrationText,
                     captions: adData.captions,
@@ -98,10 +202,7 @@ export const Step4 = () => {
         previewRef.current?.seekToTime(time);
     }, []);
 
-    const currentPreviewTime = useCallback(
-        () => Math.max(0, previewRef.current?.getCurrentTime() ?? 0),
-        []
-    );
+    const currentPreviewTime = useCallback(() => Math.max(0, previewRef.current?.getCurrentTime() ?? 0), []);
 
     const handleOpenExport = () => {
         const missing = missingForCompletion(adData, mediaTakes);
@@ -136,7 +237,7 @@ export const Step4 = () => {
 
     const updateTitleTransform = (id: string, updates: Partial<TitleHook>) => {
         updateAdData({
-            dynamicTitles: titles.map((title) => title.id === id ? { ...title, ...updates } : title),
+            dynamicTitles: titles.map((title) => (title.id === id ? { ...title, ...updates } : title)),
         });
     };
 
@@ -233,7 +334,9 @@ export const Step4 = () => {
                             updateAdData({ dynamicTitles: [...titles, newTitle] });
                             setSelectedTitleId(newTitle.id);
                             handleTargetTime(startSec);
-                            toast.success(`Título criado em ${startSec.toFixed(1)}s. Dê dois cliques nele para editar.`);
+                            toast.success(
+                                `Título criado em ${startSec.toFixed(1)}s. Dê dois cliques nele para editar.`
+                            );
                         }}
                         className="w-full py-3 border-2 border-dashed border-brand-accent/30 hover:border-brand-accent/60 hover:bg-brand-accent/5 text-brand-accent font-bold rounded-2xl text-[12px] uppercase tracking-wider transition-all flex items-center justify-center gap-2 mt-1"
                     >
@@ -507,15 +610,26 @@ export const Step4 = () => {
                                                     Edite no preview
                                                 </p>
                                                 <p className="mt-1 text-[8px] leading-relaxed text-brand-muted">
-                                                    Arraste para mover. Puxe os cantos para redimensionar.
+                                                    Arraste o meio para mover. As laterais reorganizam as linhas; topo e base ajustam o tamanho.
                                                 </p>
                                                 <div className="mt-2 flex items-center gap-1 rounded-md bg-black/25 px-2 py-1 font-mono text-[8px] text-brand-lime/80">
-                                                    <Scaling className="h-3 w-3" /> {(title.scale ?? 1).toFixed(2)}x
+                                                    <Scaling className="h-3 w-3" /> L{' '}
+                                                    {title.textBoxWidthPct
+                                                        ? `${title.textBoxWidthPct.toFixed(0)}%`
+                                                        : 'auto'}{' '}
+                                                    · T {(title.scale ?? 1).toFixed(2)}
                                                 </div>
                                                 <button
                                                     onClick={(event) => {
                                                         event.stopPropagation();
-                                                        updateTitle(title.id, { posX: 50, posY: 30, scale: 1 });
+                                                        updateTitle(title.id, {
+                                                            posX: 50,
+                                                            posY: 30,
+                                                            scale: 1,
+                                                            scaleX: 1,
+                                                            scaleY: 1,
+                                                            textBoxWidthPct: undefined,
+                                                        });
                                                     }}
                                                     className="mt-2 text-[8px] font-black uppercase tracking-wider text-brand-muted transition hover:text-brand-lime"
                                                 >
@@ -810,103 +924,130 @@ export const Step4 = () => {
                                         </div>
 
                                         <div className="grid gap-3">
-                                            {PREMIUM_TITLE_MODELS.filter((model) => model.group === group).map((model) => {
-                                                const isSelected = selectedTitle?.styleId === model.id;
-                                                const mockTitle: TitleHook = {
-                                                    ...(selectedTitle || {
-                                                        id: 'mock',
-                                                        startSec: 0,
-                                                        durationSec: 3,
-                                                        isActive: true,
-                                                        posY: 30,
-                                                        scale: 1,
-                                                    }),
-                                                    text: model.sample,
-                                                    styleId: model.id,
-                                                    animationId: 'none',
-                                                    primaryColor: isSelected
-                                                        ? selectedTitle?.primaryColor || model.primaryColor
-                                                        : model.primaryColor,
-                                                    secondaryColor: isSelected
-                                                        ? selectedTitle?.secondaryColor || model.secondaryColor
-                                                        : model.secondaryColor,
-                                                    fontFamily: isSelected
-                                                        ? selectedTitle?.fontFamily || model.fontFamily
-                                                        : model.fontFamily,
-                                                };
+                                            {PREMIUM_TITLE_MODELS.filter((model) => model.group === group).map(
+                                                (model) => {
+                                                    const isSelected = selectedTitle?.styleId === model.id;
+                                                    const mockTitle: TitleHook = {
+                                                        ...(selectedTitle || {
+                                                            id: 'mock',
+                                                            startSec: 0,
+                                                            durationSec: 3,
+                                                            isActive: true,
+                                                            posY: 30,
+                                                            scale: 1,
+                                                        }),
+                                                        text: model.sample,
+                                                        styleId: model.id,
+                                                        animationId: 'none',
+                                                        primaryColor: isSelected
+                                                            ? selectedTitle?.primaryColor || model.primaryColor
+                                                            : model.primaryColor,
+                                                        secondaryColor: isSelected
+                                                            ? selectedTitle?.secondaryColor || model.secondaryColor
+                                                            : model.secondaryColor,
+                                                        fontFamily: isSelected
+                                                            ? selectedTitle?.fontFamily || model.fontFamily
+                                                            : model.fontFamily,
+                                                    };
 
-                                                return (
-                                                    <button
-                                                        key={model.id}
-                                                        onClick={() =>
-                                                            selectedTitle &&
-                                                            updateTitle(selectedTitle.id, {
-                                                                styleId: model.id,
-                                                                animationId: 'none',
-                                                                primaryColor: model.primaryColor,
-                                                                secondaryColor: model.secondaryColor,
-                                                                fontFamily: model.fontFamily,
-                                                            })
-                                                        }
-                                                        className={cn(
-                                                            'group/model relative min-h-40 overflow-hidden rounded-2xl border bg-background text-left shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-2xl',
-                                                            isSelected && selectedTitle
-                                                                ? 'border-amber-300/65 ring-1 ring-amber-300/15'
-                                                                : 'border-white/8 hover:border-amber-300/25',
-                                                            !selectedTitle && 'cursor-not-allowed opacity-60'
-                                                        )}
-                                                        disabled={!selectedTitle}
-                                                    >
-                                                        <div className="flex items-start justify-between gap-3 border-b border-white/6 bg-white/[.025] px-3.5 py-3">
-                                                            <div className="min-w-0">
-                                                                <div className="flex items-center gap-2">
-                                                                    <span className="truncate text-[11px] font-black uppercase tracking-wider text-foreground">
-                                                                        {model.name}
-                                                                    </span>
-                                                                    {isSelected && selectedTitle && (
-                                                                        <CheckCircle2 className="h-4 w-4 shrink-0 text-amber-300" />
-                                                                    )}
+                                                    return (
+                                                        <button
+                                                            key={model.id}
+                                                            onClick={() =>
+                                                                selectedTitle &&
+                                                                updateTitle(selectedTitle.id, {
+                                                                    styleId: model.id,
+                                                                    animationId: 'none',
+                                                                    primaryColor: model.primaryColor,
+                                                                    secondaryColor: model.secondaryColor,
+                                                                    fontFamily: model.fontFamily,
+                                                                })
+                                                            }
+                                                            className={cn(
+                                                                'group/model relative min-h-40 overflow-hidden rounded-2xl border bg-background text-left shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-2xl',
+                                                                isSelected && selectedTitle
+                                                                    ? 'border-amber-300/65 ring-1 ring-amber-300/15'
+                                                                    : 'border-white/8 hover:border-amber-300/25',
+                                                                !selectedTitle && 'cursor-not-allowed opacity-60'
+                                                            )}
+                                                            disabled={!selectedTitle}
+                                                        >
+                                                            <div className="flex items-start justify-between gap-3 border-b border-white/6 bg-white/[.025] px-3.5 py-3">
+                                                                <div className="min-w-0">
+                                                                    <div className="flex items-center gap-2">
+                                                                        <span className="truncate text-[11px] font-black uppercase tracking-wider text-foreground">
+                                                                            {model.name}
+                                                                        </span>
+                                                                        {isSelected && selectedTitle && (
+                                                                            <CheckCircle2 className="h-4 w-4 shrink-0 text-amber-300" />
+                                                                        )}
+                                                                    </div>
+                                                                    <p className="mt-1 line-clamp-2 text-[9px] leading-relaxed text-brand-muted">
+                                                                        {model.description}
+                                                                    </p>
                                                                 </div>
-                                                                <p className="mt-1 line-clamp-2 text-[9px] leading-relaxed text-brand-muted">
-                                                                    {model.description}
-                                                                </p>
+                                                                <div className="flex shrink-0 gap-1">
+                                                                    <span
+                                                                        className="h-3.5 w-3.5 rounded-full border border-white/20"
+                                                                        style={{ backgroundColor: model.primaryColor }}
+                                                                    />
+                                                                    <span
+                                                                        className="h-3.5 w-3.5 rounded-full border border-white/20"
+                                                                        style={{
+                                                                            backgroundColor: model.secondaryColor,
+                                                                        }}
+                                                                    />
+                                                                </div>
                                                             </div>
-                                                            <div className="flex shrink-0 gap-1">
-                                                                <span className="h-3.5 w-3.5 rounded-full border border-white/20" style={{ backgroundColor: model.primaryColor }} />
-                                                                <span className="h-3.5 w-3.5 rounded-full border border-white/20" style={{ backgroundColor: model.secondaryColor }} />
-                                                            </div>
-                                                        </div>
 
-                                                        <div className="flex h-24 w-full items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_center,rgba(255,255,255,.06),transparent_70%)] px-2">
-                                                            <div className="origin-center scale-[0.36]">
-                                                                <DynamicTitleRenderer title={mockTitle} previewMode />
+                                                            <div className="flex h-24 w-full items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_center,rgba(255,255,255,.06),transparent_70%)] px-2">
+                                                                <div className="origin-center scale-[0.36]">
+                                                                    <DynamicTitleRenderer
+                                                                        title={mockTitle}
+                                                                        previewMode
+                                                                    />
+                                                                </div>
                                                             </div>
-                                                        </div>
 
-                                                        {isSelected && selectedTitle && (
-                                                            <div
-                                                                className="absolute bottom-2.5 right-2.5 z-20 flex items-center gap-1.5 rounded-xl border border-white/10 bg-brand-dark/95 p-1.5 shadow-xl backdrop-blur-md"
-                                                                onClick={(event) => event.stopPropagation()}
-                                                            >
-                                                                <input
-                                                                    type="color"
-                                                                    value={selectedTitle.primaryColor || model.primaryColor}
-                                                                    onChange={(event) => updateTitle(selectedTitle.id, { primaryColor: event.target.value })}
-                                                                    className="h-5 w-5 cursor-pointer rounded border-0 bg-transparent p-0"
-                                                                    title="Cor de destaque"
-                                                                />
-                                                                <input
-                                                                    type="color"
-                                                                    value={selectedTitle.secondaryColor || model.secondaryColor}
-                                                                    onChange={(event) => updateTitle(selectedTitle.id, { secondaryColor: event.target.value })}
-                                                                    className="h-5 w-5 cursor-pointer rounded border-0 bg-transparent p-0"
-                                                                    title="Cor do texto"
-                                                                />
-                                                            </div>
-                                                        )}
-                                                    </button>
-                                                );
-                                            })}
+                                                            {isSelected && selectedTitle && (
+                                                                <div
+                                                                    className="absolute bottom-2.5 right-2.5 z-20 flex items-center gap-1.5 rounded-xl border border-white/10 bg-brand-dark/95 p-1.5 shadow-xl backdrop-blur-md"
+                                                                    onClick={(event) => event.stopPropagation()}
+                                                                >
+                                                                    <input
+                                                                        type="color"
+                                                                        value={
+                                                                            selectedTitle.primaryColor ||
+                                                                            model.primaryColor
+                                                                        }
+                                                                        onChange={(event) =>
+                                                                            updateTitle(selectedTitle.id, {
+                                                                                primaryColor: event.target.value,
+                                                                            })
+                                                                        }
+                                                                        className="h-5 w-5 cursor-pointer rounded border-0 bg-transparent p-0"
+                                                                        title="Cor de destaque"
+                                                                    />
+                                                                    <input
+                                                                        type="color"
+                                                                        value={
+                                                                            selectedTitle.secondaryColor ||
+                                                                            model.secondaryColor
+                                                                        }
+                                                                        onChange={(event) =>
+                                                                            updateTitle(selectedTitle.id, {
+                                                                                secondaryColor: event.target.value,
+                                                                            })
+                                                                        }
+                                                                        className="h-5 w-5 cursor-pointer rounded border-0 bg-transparent p-0"
+                                                                        title="Cor do texto"
+                                                                    />
+                                                                </div>
+                                                            )}
+                                                        </button>
+                                                    );
+                                                }
+                                            )}
                                         </div>
                                     </section>
                                 ))}
@@ -1059,14 +1200,20 @@ export const Step4 = () => {
                                     <div className="flex items-center justify-between bg-background border border-black/10 dark:border-white/10 rounded-xl p-3">
                                         <div className="flex items-center gap-3">
                                             <div className="w-12 h-12 bg-black/5 dark:bg-white/5 rounded-lg flex items-center justify-center overflow-hidden">
-                                                <img src={adData.customOverlayUrl} alt="Custom Overlay" className="max-w-full max-h-full object-contain" />
+                                                <img
+                                                    src={adData.customOverlayUrl}
+                                                    alt="Custom Overlay"
+                                                    className="max-w-full max-h-full object-contain"
+                                                />
                                             </div>
                                             <div>
                                                 <p className="text-sm font-bold text-foreground">Imagem Carregada</p>
-                                                <p className="text-xs text-brand-muted">A imagem será mantida fixa durante o vídeo.</p>
+                                                <p className="text-xs text-brand-muted">
+                                                    A imagem será mantida fixa durante o vídeo.
+                                                </p>
                                             </div>
                                         </div>
-                                        <button 
+                                        <button
                                             onClick={() => updateAdData({ customOverlayUrl: undefined })}
                                             className="p-2 text-brand-muted hover:text-red-500 bg-black/5 hover:bg-red-500/10 rounded-lg transition-colors"
                                         >
@@ -1074,10 +1221,14 @@ export const Step4 = () => {
                                         </button>
                                     </div>
                                 ) : (
-                                    <label className={cn(
-                                        "flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-xl cursor-pointer transition-colors",
-                                        isUploadingImage ? "opacity-50 border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5" : "border-blue-400/30 hover:border-blue-400 hover:bg-blue-400/5 bg-background"
-                                    )}>
+                                    <label
+                                        className={cn(
+                                            'flex flex-col items-center justify-center w-full h-32 border-2 border-dashed rounded-xl cursor-pointer transition-colors',
+                                            isUploadingImage
+                                                ? 'opacity-50 border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5'
+                                                : 'border-blue-400/30 hover:border-blue-400 hover:bg-blue-400/5 bg-background'
+                                        )}
+                                    >
                                         <div className="flex flex-col items-center justify-center pt-5 pb-6">
                                             {isUploadingImage ? (
                                                 <div className="animate-spin w-6 h-6 border-2 border-blue-400/30 border-t-blue-400 rounded-full mb-2" />
@@ -1087,12 +1238,14 @@ export const Step4 = () => {
                                             <p className="font-bold text-sm text-foreground">
                                                 {isUploadingImage ? 'Enviando...' : 'Clique para enviar imagem'}
                                             </p>
-                                            <p className="text-xs text-brand-muted mt-1 uppercase tracking-wider font-semibold">PNG SEM FUNDO RECOMENDADO</p>
+                                            <p className="text-xs text-brand-muted mt-1 uppercase tracking-wider font-semibold">
+                                                PNG SEM FUNDO RECOMENDADO
+                                            </p>
                                         </div>
-                                        <input 
-                                            type="file" 
-                                            className="hidden" 
-                                            accept="image/png, image/jpeg, image/webp" 
+                                        <input
+                                            type="file"
+                                            className="hidden"
+                                            accept="image/png, image/jpeg, image/webp"
                                             disabled={isUploadingImage}
                                             onChange={async (e) => {
                                                 const file = e.target.files?.[0];
@@ -1197,10 +1350,8 @@ export const Step4 = () => {
                 {showExportModal && (
                     <ExportModal
                         onClose={() => setShowExportModal(false)}
-                        previewRef={previewRef}
                         mediaTakes={mediaTakes}
                         masterAudioUrl={adData.masterAudioUrl || adData.narrationAudioUrl || undefined}
-                        isHybridMode={true} // Ativando Pipeline Nativo (FFmpeg) oficializado
                         transitionPath={adData.transitionPath || adData.globalTransition?.filePath}
                     />
                 )}

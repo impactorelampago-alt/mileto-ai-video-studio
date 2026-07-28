@@ -41,13 +41,15 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
     const secondary = title.secondaryColor || '#ffffff'; // Default white
 
     // Helper logic to split first word for specific styles
-    const firstSpaceIdx = text.indexOf(' ');
+    const firstSpaceIdx = text.search(/\s/);
     const firstWord = firstSpaceIdx !== -1 ? text.substring(0, firstSpaceIdx) : text;
     const restOfText = firstSpaceIdx !== -1 ? text.substring(firstSpaceIdx) : '';
     const words = text.trim().split(/\s+/).filter(Boolean);
     const midpoint = Math.max(1, Math.ceil(words.length / 2));
-    const firstLine = words.slice(0, midpoint).join(' ');
-    const secondLine = words.slice(midpoint).join(' ');
+    const manualLines = text.replace(/\r\n?/g, '\n').split('\n');
+    const hasManualBreaks = manualLines.length > 1;
+    const firstLine = hasManualBreaks ? manualLines[0] : words.slice(0, midpoint).join(' ');
+    const secondLine = hasManualBreaks ? manualLines.slice(1).join('\n') : words.slice(midpoint).join(' ');
 
     const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
     const easeOutCubic = (value: number) => 1 - Math.pow(1 - clamp01(value), 3);
@@ -62,9 +64,7 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
         const raw = (timeElapsed - delay) / duration;
         return back ? easeOutBack(raw) : easeOutCubic(raw);
     };
-    const exitOpacity = previewMode
-        ? 1
-        : clamp01((Math.max(0, title.durationSec - timeElapsed)) / 0.3);
+    const exitOpacity = previewMode ? 1 : clamp01(Math.max(0, title.durationSec - timeElapsed) / 0.3);
     const motionStyle = (
         kind: 'rise' | 'drop' | 'left' | 'right' | 'pop',
         delay = 0,
@@ -414,7 +414,7 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                     />
                 </div>
             );
-            
+
         case 'neon-cyber':
             return (
                 <div className={cn('relative flex flex-col items-center', className)}>
@@ -423,7 +423,7 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                         style={{
                             color: secondary,
                             fontFamily: title.fontFamily || 'Press Start 2P, Impact',
-                            textShadow: `0 0 10px ${primary}, 0 0 20px ${primary}, 0 0 40px ${primary}`
+                            textShadow: `0 0 10px ${primary}, 0 0 20px ${primary}, 0 0 40px ${primary}`,
                         }}
                     >
                         {text}
@@ -433,8 +433,14 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'glassmorphism':
             return (
-                <div className={cn('relative p-6 rounded-3xl border border-white/20 shadow-2xl', className)}
-                     style={{ backgroundColor: `${primary}40`, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' }}>
+                <div
+                    className={cn('relative p-6 rounded-3xl border border-white/20 shadow-2xl', className)}
+                    style={{
+                        backgroundColor: `${primary}40`,
+                        backdropFilter: 'blur(16px)',
+                        WebkitBackdropFilter: 'blur(16px)',
+                    }}
+                >
                     <h2
                         className="text-3xl md:text-4xl font-semibold tracking-wide text-center"
                         style={{ color: secondary, fontFamily: title.fontFamily || 'Inter' }}
@@ -446,8 +452,10 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'cinema-wide':
             return (
-                <div className={cn('relative w-full flex justify-center py-2', className)}
-                     style={{ backgroundColor: primary }}>
+                <div
+                    className={cn('relative w-full flex justify-center py-2', className)}
+                    style={{ backgroundColor: primary }}
+                >
                     <h2
                         className="text-2xl md:text-3xl font-medium tracking-[0.3em] uppercase text-center"
                         style={{ color: secondary, fontFamily: title.fontFamily || 'Helvetica' }}
@@ -540,7 +548,10 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                             {text}
                         </h2>
                     </div>
-                    <div className="mx-auto mt-3 h-1.5 rounded-full" style={{ backgroundColor: primary, width: `${lineProgress(0.18) * 78}%` }} />
+                    <div
+                        className="mx-auto mt-3 h-1.5 rounded-full"
+                        style={{ backgroundColor: primary, width: `${lineProgress(0.18) * 78}%` }}
+                    />
                 </div>
             );
 
@@ -555,7 +566,11 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                         <Star className="absolute -right-4 -top-4 h-9 w-9 rotate-12 fill-white text-white drop-shadow-lg" />
                         <h2
                             className="max-w-[440px] text-center text-3xl font-black uppercase leading-none tracking-[-0.04em] md:text-5xl"
-                            style={{ color: secondary, fontFamily: fontStack('Archivo Black'), textShadow: '0 3px 0 rgba(0,0,0,.28)' }}
+                            style={{
+                                color: secondary,
+                                fontFamily: fontStack('Archivo Black'),
+                                textShadow: '0 3px 0 rgba(0,0,0,.28)',
+                            }}
                         >
                             {text}
                         </h2>
@@ -565,14 +580,21 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-marker-swipe':
             return (
-                <div className={cn('relative max-w-[500px] px-4 py-3 text-center', className)} style={motionStyle('rise', 0, 0.45)}>
+                <div
+                    className={cn('relative max-w-[500px] px-4 py-3 text-center', className)}
+                    style={motionStyle('rise', 0, 0.45)}
+                >
                     <div
                         className="absolute bottom-2 left-1/2 h-[52%] -translate-x-1/2 -rotate-1 -skew-x-6 rounded-sm"
                         style={{ backgroundColor: primary, width: `${lineProgress(0.08, 0.55) * 100}%`, opacity: 0.92 }}
                     />
                     <h2
                         className="relative text-3xl font-black uppercase leading-[.96] tracking-[-0.035em] md:text-5xl"
-                        style={{ color: secondary, fontFamily: fontStack('League Spartan'), textShadow: '0 3px 14px rgba(0,0,0,.85)' }}
+                        style={{
+                            color: secondary,
+                            fontFamily: fontStack('League Spartan'),
+                            textShadow: '0 3px 14px rgba(0,0,0,.85)',
+                        }}
                     >
                         {text}
                     </h2>
@@ -582,7 +604,10 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
         case 'premium-split-block':
             return (
                 <div className={cn('flex max-w-[500px] flex-col items-start gap-1.5', className)}>
-                    <div className="max-w-full -skew-x-6 bg-black px-5 py-2 shadow-xl" style={motionStyle('left', 0, 0.4)}>
+                    <div
+                        className="max-w-full -skew-x-6 bg-black px-5 py-2 shadow-xl"
+                        style={motionStyle('left', 0, 0.4)}
+                    >
                         <span
                             className="block skew-x-6 text-3xl font-black uppercase leading-none tracking-tight md:text-5xl"
                             style={{ color: secondary, fontFamily: fontStack('Anton') }}
@@ -591,7 +616,10 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                         </span>
                     </div>
                     {secondLine && (
-                        <div className="max-w-full -skew-x-6 px-5 py-2 shadow-xl" style={{ backgroundColor: primary, ...motionStyle('right', 0.13, 0.42) }}>
+                        <div
+                            className="max-w-full -skew-x-6 px-5 py-2 shadow-xl"
+                            style={{ backgroundColor: primary, ...motionStyle('right', 0.13, 0.42) }}
+                        >
                             <span
                                 className="block skew-x-6 text-2xl font-black uppercase leading-none tracking-tight md:text-4xl"
                                 style={{ color: '#07110D', fontFamily: fontStack('Anton') }}
@@ -605,7 +633,10 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-outline-echo':
             return (
-                <div className={cn('relative min-w-[330px] py-8 text-center', className)} style={motionStyle('pop', 0, 0.48)}>
+                <div
+                    className={cn('relative min-w-[330px] py-8 text-center', className)}
+                    style={motionStyle('pop', 0, 0.48)}
+                >
                     {[3, 2, 1].map((level) => (
                         <span
                             key={level}
@@ -624,7 +655,11 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                     ))}
                     <h2
                         className="relative text-4xl font-black uppercase leading-none tracking-[-0.05em] md:text-6xl"
-                        style={{ color: secondary, fontFamily: fontStack('Archivo Black'), textShadow: '0 8px 25px rgba(0,0,0,.7)' }}
+                        style={{
+                            color: secondary,
+                            fontFamily: fontStack('Archivo Black'),
+                            textShadow: '0 8px 25px rgba(0,0,0,.7)',
+                        }}
                     >
                         {text}
                     </h2>
@@ -633,34 +668,59 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-creator-caption':
             return (
-                <div className={cn('relative max-w-[500px] overflow-hidden rounded-2xl border border-white/15 bg-black/85 p-1 shadow-2xl', className)} style={motionStyle('rise', 0, 0.42)}>
+                <div
+                    className={cn(
+                        'relative max-w-[500px] overflow-hidden rounded-2xl border border-white/15 bg-black/85 p-1 shadow-2xl',
+                        className
+                    )}
+                    style={motionStyle('rise', 0, 0.42)}
+                >
                     <div className="flex items-center gap-2 px-4 pb-2 pt-3 text-[9px] font-black uppercase tracking-[.24em] text-white/55">
-                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: primary, boxShadow: `0 0 12px ${primary}` }} />
+                        <span
+                            className="h-2 w-2 rounded-full"
+                            style={{ backgroundColor: primary, boxShadow: `0 0 12px ${primary}` }}
+                        />
                         Ponto de vista
                     </div>
                     <div className="rounded-xl bg-white/[.07] px-5 py-4">
-                        <h2 className="text-2xl font-black leading-tight md:text-4xl" style={{ color: secondary, fontFamily: fontStack('DM Sans') }}>
+                        <h2
+                            className="text-2xl font-black leading-tight md:text-4xl"
+                            style={{ color: secondary, fontFamily: fontStack('DM Sans') }}
+                        >
                             {text}
                         </h2>
                     </div>
-                    <div className="h-1 origin-left rounded-full" style={{ backgroundColor: primary, transform: `scaleX(${lineProgress(0.15)})` }} />
+                    <div
+                        className="h-1 origin-left rounded-full"
+                        style={{ backgroundColor: primary, transform: `scaleX(${lineProgress(0.15)})` }}
+                    />
                 </div>
             );
 
         case 'premium-sale-spotlight':
             return (
-                <div className={cn('relative max-w-[510px] pt-4 text-center', className)} style={motionStyle('pop', 0, 0.48)}>
+                <div
+                    className={cn('relative max-w-[510px] pt-4 text-center', className)}
+                    style={motionStyle('pop', 0, 0.48)}
+                >
                     <div
                         className="absolute left-1/2 top-0 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border-2 border-white bg-black px-3 py-1 text-[10px] font-black uppercase tracking-widest"
                         style={{ color: primary }}
                     >
                         <BadgePercent className="h-3.5 w-3.5" /> Oferta especial
                     </div>
-                    <div className="relative overflow-hidden rounded-[22px] border-4 border-white px-7 pb-5 pt-7 shadow-[0_16px_40px_rgba(0,0,0,.5)]" style={{ backgroundColor: primary }}>
+                    <div
+                        className="relative overflow-hidden rounded-[22px] border-4 border-white px-7 pb-5 pt-7 shadow-[0_16px_40px_rgba(0,0,0,.5)]"
+                        style={{ backgroundColor: primary }}
+                    >
                         <div className="absolute -right-10 -top-16 h-36 w-36 rounded-full bg-white/25 blur-2xl" />
                         <h2
                             className="relative text-3xl font-black uppercase leading-[.94] tracking-[-0.045em] md:text-5xl"
-                            style={{ color: secondary, fontFamily: fontStack('Archivo Black'), textShadow: '0 4px 0 rgba(0,0,0,.22)' }}
+                            style={{
+                                color: secondary,
+                                fontFamily: fontStack('Archivo Black'),
+                                textShadow: '0 4px 0 rgba(0,0,0,.22)',
+                            }}
                         >
                             {text}
                         </h2>
@@ -677,8 +737,13 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                     >
                         <span className="absolute left-4 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-black/50 ring-2 ring-white/45" />
                         <div>
-                            <p className="text-[9px] font-black uppercase tracking-[.25em] text-black/55">Condição especial</p>
-                            <h2 className="mt-0.5 text-3xl font-black uppercase leading-none md:text-5xl" style={{ color: secondary, fontFamily: fontStack('League Spartan') }}>
+                            <p className="text-[9px] font-black uppercase tracking-[.25em] text-black/55">
+                                Condição especial
+                            </p>
+                            <h2
+                                className="mt-0.5 text-3xl font-black uppercase leading-none md:text-5xl"
+                                style={{ color: secondary, fontFamily: fontStack('League Spartan') }}
+                            >
                                 {text}
                             </h2>
                         </div>
@@ -689,15 +754,30 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
         case 'premium-urgency-pulse':
             return (
                 <div
-                    className={cn('relative flex max-w-[500px] items-center gap-4 rounded-2xl border-2 bg-black/90 px-5 py-4 shadow-2xl', className)}
-                    style={{ borderColor: primary, boxShadow: `0 0 ${16 + pulse * 18}px ${primary}44`, ...motionStyle('pop', 0, 0.45) }}
+                    className={cn(
+                        'relative flex max-w-[500px] items-center gap-4 rounded-2xl border-2 bg-black/90 px-5 py-4 shadow-2xl',
+                        className
+                    )}
+                    style={{
+                        borderColor: primary,
+                        boxShadow: `0 0 ${16 + pulse * 18}px ${primary}44`,
+                        ...motionStyle('pop', 0, 0.45),
+                    }}
                 >
-                    <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl" style={{ backgroundColor: `${primary}25`, color: primary }}>
+                    <div
+                        className="grid h-12 w-12 shrink-0 place-items-center rounded-xl"
+                        style={{ backgroundColor: `${primary}25`, color: primary }}
+                    >
                         <Clock3 className="h-7 w-7" />
                     </div>
                     <div>
-                        <p className="text-[9px] font-black uppercase tracking-[.28em]" style={{ color: primary }}>Acaba em breve</p>
-                        <h2 className="mt-1 text-2xl font-black uppercase leading-none md:text-4xl" style={{ color: secondary, fontFamily: fontStack('Anton') }}>
+                        <p className="text-[9px] font-black uppercase tracking-[.28em]" style={{ color: primary }}>
+                            Acaba em breve
+                        </p>
+                        <h2
+                            className="mt-1 text-2xl font-black uppercase leading-none md:text-4xl"
+                            style={{ color: secondary, fontFamily: fontStack('Anton') }}
+                        >
                             {text}
                         </h2>
                     </div>
@@ -706,13 +786,24 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-coupon-ticket':
             return (
-                <div className={cn('relative rounded-2xl border-2 border-dashed p-2 shadow-2xl', className)} style={{ borderColor: primary, ...motionStyle('rise', 0, 0.44) }}>
-                    <div className="relative flex min-w-[360px] items-center gap-4 overflow-hidden rounded-xl px-5 py-4" style={{ backgroundColor: primary }}>
+                <div
+                    className={cn('relative rounded-2xl border-2 border-dashed p-2 shadow-2xl', className)}
+                    style={{ borderColor: primary, ...motionStyle('rise', 0, 0.44) }}
+                >
+                    <div
+                        className="relative flex min-w-[360px] items-center gap-4 overflow-hidden rounded-xl px-5 py-4"
+                        style={{ backgroundColor: primary }}
+                    >
                         <BadgePercent className="h-9 w-9 shrink-0" style={{ color: secondary }} />
                         <div className="h-11 border-l-2 border-dashed border-black/25" />
                         <div>
-                            <p className="text-[8px] font-black uppercase tracking-[.28em] text-black/50">Use no checkout</p>
-                            <h2 className="mt-1 text-2xl font-black uppercase leading-none md:text-4xl" style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}>
+                            <p className="text-[8px] font-black uppercase tracking-[.28em] text-black/50">
+                                Use no checkout
+                            </p>
+                            <h2
+                                className="mt-1 text-2xl font-black uppercase leading-none md:text-4xl"
+                                style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}
+                            >
                                 {text}
                             </h2>
                         </div>
@@ -722,13 +813,27 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-benefit-badge':
             return (
-                <div className={cn('relative flex max-w-[500px] items-center gap-4 rounded-full border border-white/20 bg-black/85 py-3 pl-3 pr-6 shadow-2xl', className)} style={motionStyle('left', 0, 0.42)}>
-                    <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full" style={{ backgroundColor: primary }}>
+                <div
+                    className={cn(
+                        'relative flex max-w-[500px] items-center gap-4 rounded-full border border-white/20 bg-black/85 py-3 pl-3 pr-6 shadow-2xl',
+                        className
+                    )}
+                    style={motionStyle('left', 0, 0.42)}
+                >
+                    <div
+                        className="grid h-12 w-12 shrink-0 place-items-center rounded-full"
+                        style={{ backgroundColor: primary }}
+                    >
                         <CheckCircle2 className="h-7 w-7" style={{ color: secondary }} />
                     </div>
                     <div>
-                        <p className="text-[8px] font-black uppercase tracking-[.25em] text-white/45">Benefício confirmado</p>
-                        <h2 className="mt-0.5 text-2xl font-black leading-none md:text-4xl" style={{ color: secondary, fontFamily: fontStack('DM Sans') }}>
+                        <p className="text-[8px] font-black uppercase tracking-[.25em] text-white/45">
+                            Benefício confirmado
+                        </p>
+                        <h2
+                            className="mt-0.5 text-2xl font-black leading-none md:text-4xl"
+                            style={{ color: secondary, fontFamily: fontStack('DM Sans') }}
+                        >
                             {text}
                         </h2>
                     </div>
@@ -737,12 +842,27 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-product-launch':
             return (
-                <div className={cn('relative max-w-[520px] overflow-hidden rounded-3xl border border-white/20 bg-[#080A10]/90 px-7 py-6 text-left shadow-2xl', className)} style={motionStyle('rise', 0, 0.48)}>
-                    <div className="absolute inset-y-0 right-0 w-2/3 opacity-35 blur-2xl" style={{ background: `radial-gradient(circle at right, ${primary}, transparent 66%)` }} />
-                    <div className="relative flex items-center gap-2 text-[9px] font-black uppercase tracking-[.28em]" style={{ color: primary }}>
+                <div
+                    className={cn(
+                        'relative max-w-[520px] overflow-hidden rounded-3xl border border-white/20 bg-[#080A10]/90 px-7 py-6 text-left shadow-2xl',
+                        className
+                    )}
+                    style={motionStyle('rise', 0, 0.48)}
+                >
+                    <div
+                        className="absolute inset-y-0 right-0 w-2/3 opacity-35 blur-2xl"
+                        style={{ background: `radial-gradient(circle at right, ${primary}, transparent 66%)` }}
+                    />
+                    <div
+                        className="relative flex items-center gap-2 text-[9px] font-black uppercase tracking-[.28em]"
+                        style={{ color: primary }}
+                    >
                         <Sparkles className="h-4 w-4" /> Nova geração
                     </div>
-                    <h2 className="relative mt-3 text-3xl font-bold uppercase leading-[.95] tracking-[-0.04em] md:text-5xl" style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}>
+                    <h2
+                        className="relative mt-3 text-3xl font-bold uppercase leading-[.95] tracking-[-0.04em] md:text-5xl"
+                        style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}
+                    >
                         {text}
                     </h2>
                     <div className="relative mt-4 flex items-center gap-2 text-[9px] font-bold uppercase tracking-[.18em] text-white/50">
@@ -753,28 +873,58 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-luxury-editorial':
             return (
-                <div className={cn('relative min-w-[390px] px-8 py-6 text-center', className)} style={motionStyle('rise', 0, 0.55)}>
-                    <div className="mx-auto mb-4 h-px origin-center" style={{ backgroundColor: primary, width: `${lineProgress(0.05) * 70}%` }} />
-                    <div className="mb-2 flex items-center justify-center gap-2 text-[8px] font-semibold uppercase tracking-[.45em]" style={{ color: primary }}>
+                <div
+                    className={cn('relative min-w-[390px] px-8 py-6 text-center', className)}
+                    style={motionStyle('rise', 0, 0.55)}
+                >
+                    <div
+                        className="mx-auto mb-4 h-px origin-center"
+                        style={{ backgroundColor: primary, width: `${lineProgress(0.05) * 70}%` }}
+                    />
+                    <div
+                        className="mb-2 flex items-center justify-center gap-2 text-[8px] font-semibold uppercase tracking-[.45em]"
+                        style={{ color: primary }}
+                    >
                         <Crown className="h-3.5 w-3.5" /> Edição exclusiva
                     </div>
-                    <h2 className="max-w-[470px] text-3xl font-semibold italic leading-tight md:text-5xl" style={{ color: secondary, fontFamily: fontStack('Playfair Display'), textShadow: '0 8px 28px rgba(0,0,0,.75)' }}>
+                    <h2
+                        className="max-w-[470px] text-3xl font-semibold italic leading-tight md:text-5xl"
+                        style={{
+                            color: secondary,
+                            fontFamily: fontStack('Playfair Display'),
+                            textShadow: '0 8px 28px rgba(0,0,0,.75)',
+                        }}
+                    >
                         {text}
                     </h2>
-                    <div className="mx-auto mt-4 h-px origin-center" style={{ backgroundColor: primary, width: `${lineProgress(0.18) * 42}%` }} />
+                    <div
+                        className="mx-auto mt-4 h-px origin-center"
+                        style={{ backgroundColor: primary, width: `${lineProgress(0.18) * 42}%` }}
+                    />
                 </div>
             );
 
         case 'premium-swiss-modern':
             return (
-                <div className={cn('flex max-w-[520px] items-stretch bg-white text-black shadow-2xl', className)} style={motionStyle('left', 0, 0.48)}>
-                    <div className="flex w-16 shrink-0 flex-col justify-between p-3" style={{ backgroundColor: primary }}>
+                <div
+                    className={cn('flex max-w-[520px] items-stretch bg-white text-black shadow-2xl', className)}
+                    style={motionStyle('left', 0, 0.48)}
+                >
+                    <div
+                        className="flex w-16 shrink-0 flex-col justify-between p-3"
+                        style={{ backgroundColor: primary }}
+                    >
                         <span className="text-[9px] font-black uppercase tracking-widest">M / 01</span>
                         <ArrowUpRight className="h-5 w-5" />
                     </div>
                     <div className="px-5 py-4 text-left">
-                        <p className="text-[8px] font-bold uppercase tracking-[.32em] text-black/45">Ideia em destaque</p>
-                        <h2 className="mt-2 max-w-[420px] text-2xl font-black uppercase leading-[.95] tracking-[-0.04em] md:text-4xl" style={{ fontFamily: fontStack('DM Sans') }}>
+                        <p className="text-[8px] font-bold uppercase tracking-[.32em] text-black/45">
+                            Ideia em destaque
+                        </p>
+                        <h2
+                            className="mt-2 max-w-[420px] text-2xl font-black uppercase leading-[.95] tracking-[-0.04em] md:text-4xl"
+                            style={{ fontFamily: fontStack('DM Sans') }}
+                        >
                             {text}
                         </h2>
                     </div>
@@ -783,13 +933,25 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-glass-prism':
             return (
-                <div className={cn('relative max-w-[520px] overflow-hidden rounded-[26px] border border-white/25 bg-black/55 px-7 py-6 shadow-2xl backdrop-blur-xl', className)} style={motionStyle('pop', 0, 0.5)}>
-                    <div className="absolute -left-16 -top-20 h-44 w-44 rounded-full blur-3xl" style={{ backgroundColor: `${primary}80` }} />
+                <div
+                    className={cn(
+                        'relative max-w-[520px] overflow-hidden rounded-[26px] border border-white/25 bg-black/55 px-7 py-6 shadow-2xl backdrop-blur-xl',
+                        className
+                    )}
+                    style={motionStyle('pop', 0, 0.5)}
+                >
+                    <div
+                        className="absolute -left-16 -top-20 h-44 w-44 rounded-full blur-3xl"
+                        style={{ backgroundColor: `${primary}80` }}
+                    />
                     <div className="absolute -bottom-20 -right-14 h-44 w-44 rounded-full bg-fuchsia-500/35 blur-3xl" />
                     <div className="relative flex items-center gap-2 text-[8px] font-black uppercase tracking-[.3em] text-white/55">
                         <span className="h-1.5 w-10 rounded-full" style={{ backgroundColor: primary }} /> Perspectiva
                     </div>
-                    <h2 className="relative mt-3 text-3xl font-bold leading-tight tracking-[-0.035em] md:text-5xl" style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}>
+                    <h2
+                        className="relative mt-3 text-3xl font-bold leading-tight tracking-[-0.035em] md:text-5xl"
+                        style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}
+                    >
                         {text}
                     </h2>
                 </div>
@@ -797,13 +959,34 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-cinema-chapter':
             return (
-                <div className={cn('min-w-[420px] max-w-[560px] text-center', className)} style={motionStyle('rise', 0, 0.58)}>
+                <div
+                    className={cn('min-w-[420px] max-w-[560px] text-center', className)}
+                    style={motionStyle('rise', 0, 0.58)}
+                >
                     <div className="mb-3 flex items-center justify-center gap-3">
-                        <span className="h-px flex-1 origin-right" style={{ backgroundColor: primary, transform: `scaleX(${lineProgress(0.05)})` }} />
-                        <span className="text-[8px] font-semibold uppercase tracking-[.45em]" style={{ color: primary }}>Capítulo um</span>
-                        <span className="h-px flex-1 origin-left" style={{ backgroundColor: primary, transform: `scaleX(${lineProgress(0.05)})` }} />
+                        <span
+                            className="h-px flex-1 origin-right"
+                            style={{ backgroundColor: primary, transform: `scaleX(${lineProgress(0.05)})` }}
+                        />
+                        <span
+                            className="text-[8px] font-semibold uppercase tracking-[.45em]"
+                            style={{ color: primary }}
+                        >
+                            Capítulo um
+                        </span>
+                        <span
+                            className="h-px flex-1 origin-left"
+                            style={{ backgroundColor: primary, transform: `scaleX(${lineProgress(0.05)})` }}
+                        />
                     </div>
-                    <h2 className="text-3xl font-medium uppercase leading-tight tracking-[.12em] md:text-5xl" style={{ color: secondary, fontFamily: fontStack('Montserrat'), textShadow: '0 8px 30px rgba(0,0,0,.8)' }}>
+                    <h2
+                        className="text-3xl font-medium uppercase leading-tight tracking-[.12em] md:text-5xl"
+                        style={{
+                            color: secondary,
+                            fontFamily: fontStack('Montserrat'),
+                            textShadow: '0 8px 30px rgba(0,0,0,.8)',
+                        }}
+                    >
                         {text}
                     </h2>
                 </div>
@@ -811,16 +994,31 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-magazine-stack':
             return (
-                <div className={cn('relative max-w-[500px] border-l-[7px] px-5 py-2 text-left', className)} style={{ borderColor: primary, ...motionStyle('left', 0, 0.48) }}>
+                <div
+                    className={cn('relative max-w-[500px] border-l-[7px] px-5 py-2 text-left', className)}
+                    style={{ borderColor: primary, ...motionStyle('left', 0, 0.48) }}
+                >
                     <div className="mb-2 flex items-center gap-2 text-[8px] font-black uppercase tracking-[.32em] text-white/55">
-                        <span className="rounded-full px-2 py-1" style={{ backgroundColor: primary, color: '#08090C' }}>Em pauta</span>
+                        <span className="rounded-full px-2 py-1" style={{ backgroundColor: primary, color: '#08090C' }}>
+                            Em pauta
+                        </span>
                         Mileto Journal
                     </div>
-                    <h2 className="text-4xl font-black uppercase leading-[.82] tracking-[-0.025em] md:text-6xl" style={{ color: secondary, fontFamily: fontStack('Bebas Neue'), textShadow: '0 8px 24px rgba(0,0,0,.7)' }}>
+                    <h2
+                        className="text-4xl font-black uppercase leading-[.82] tracking-[-0.025em] md:text-6xl"
+                        style={{
+                            color: secondary,
+                            fontFamily: fontStack('Bebas Neue'),
+                            textShadow: '0 8px 24px rgba(0,0,0,.7)',
+                        }}
+                    >
                         {firstLine || text}
                     </h2>
                     {secondLine && (
-                        <h3 className="mt-1 text-3xl font-black uppercase leading-none tracking-tight md:text-5xl" style={{ color: primary, fontFamily: fontStack('Bebas Neue') }}>
+                        <h3
+                            className="mt-1 text-3xl font-black uppercase leading-none tracking-tight md:text-5xl"
+                            style={{ color: primary, fontFamily: fontStack('Bebas Neue') }}
+                        >
                             {secondLine}
                         </h3>
                     )}
@@ -829,8 +1027,14 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'premium-chrome-future':
             return (
-                <div className={cn('relative max-w-[520px] px-5 py-4 text-center', className)} style={motionStyle('pop', 0, 0.52)}>
-                    <div className="mb-2 flex items-center justify-center gap-2 text-[8px] font-black uppercase tracking-[.35em]" style={{ color: primary }}>
+                <div
+                    className={cn('relative max-w-[520px] px-5 py-4 text-center', className)}
+                    style={motionStyle('pop', 0, 0.52)}
+                >
+                    <div
+                        className="mb-2 flex items-center justify-center gap-2 text-[8px] font-black uppercase tracking-[.35em]"
+                        style={{ color: primary }}
+                    >
                         <Sparkles className="h-3.5 w-3.5" /> Future series
                     </div>
                     <h2
@@ -844,7 +1048,13 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                     >
                         {text}
                     </h2>
-                    <div className="mx-auto mt-3 h-[2px] rounded-full" style={{ background: `linear-gradient(90deg, transparent, ${primary}, transparent)`, width: `${lineProgress(0.2) * 88}%` }} />
+                    <div
+                        className="mx-auto mt-3 h-[2px] rounded-full"
+                        style={{
+                            background: `linear-gradient(90deg, transparent, ${primary}, transparent)`,
+                            width: `${lineProgress(0.2) * 88}%`,
+                        }}
+                    />
                 </div>
             );
 

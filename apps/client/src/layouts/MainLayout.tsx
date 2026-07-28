@@ -13,6 +13,7 @@ import {
     LogOut,
     Music,
     RefreshCw,
+    Trash2,
     User,
     Wallet,
     XCircle,
@@ -42,7 +43,7 @@ export const MainLayout = () => {
     const progressToastId = useRef<string | number | null>(null);
     const { saveProject } = useWizard();
     const { user, logout } = useAuth();
-    const { activeCount, jobs } = useDownloadJobs();
+    const { activeCount, jobs, clearHistory } = useDownloadJobs();
     const prevPathRef = useRef<string>(location.pathname);
     const downloadPanelRef = useRef<HTMLDivElement | null>(null);
 
@@ -165,20 +166,30 @@ export const MainLayout = () => {
             return activeDifference || b.startedAt - a.startedAt;
         })
         .slice(0, 4);
+    const finishedNotificationCount = jobs.filter((job) => job.phase !== 'downloading').length;
+
+    const clearNotificationHistory = async () => {
+        try {
+            await clearHistory();
+            toast.success('Histórico de notificações apagado.');
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Não foi possível limpar o histórico.');
+        }
+    };
 
     return (
         <div className="flex h-screen bg-background text-foreground font-sans overflow-hidden transition-colors duration-300">
             {/* Sidebar Lateral - Visível na Home e na aba Arquivos */}
-            {(location.pathname === '/' || location.pathname === '/files' || location.pathname === '/downloads' || location.pathname === '/account' || location.pathname === '/integrations') && (
+            {(location.pathname === '/' ||
+                location.pathname === '/files' ||
+                location.pathname === '/downloads' ||
+                location.pathname === '/account' ||
+                location.pathname === '/integrations') && (
                 <aside className="w-[260px] flex-shrink-0 bg-[#0a0f12] border-r border-border/50 flex flex-col justify-between py-6 z-40 relative transition-all">
-                    
                     {/* Parte Superior */}
                     <div className="flex flex-col gap-10 px-6">
                         {/* Logo Lockup */}
-                        <div
-                            onClick={() => navigate('/')}
-                            className="flex items-center gap-3 cursor-pointer group"
-                        >
+                        <div onClick={() => navigate('/')} className="flex items-center gap-3 cursor-pointer group">
                             <div className="relative flex items-center justify-center">
                                 <div className="absolute inset-0 rounded-full bg-brand-lime/20 blur-xl group-hover:bg-brand-accent/30 transition-all duration-700 opacity-0 group-hover:opacity-100"></div>
                                 <img
@@ -296,16 +307,18 @@ export const MainLayout = () => {
                             <span className="text-xs font-semibold">Tema</span>
                             <ThemeToggle />
                         </div>
-                        
+
                         <button
                             onClick={handleCheckUpdates}
                             disabled={isCheckingUpdate}
                             className="flex items-center gap-3 text-muted-foreground hover:text-foreground transition-colors group disabled:opacity-60 disabled:cursor-wait"
                         >
-                            <RefreshCw className={cn(
-                                'w-4 h-4 transition-transform duration-500',
-                                isCheckingUpdate ? 'animate-spin' : 'group-hover:rotate-180'
-                            )} />
+                            <RefreshCw
+                                className={cn(
+                                    'w-4 h-4 transition-transform duration-500',
+                                    isCheckingUpdate ? 'animate-spin' : 'group-hover:rotate-180'
+                                )}
+                            />
                             <span className="text-xs font-semibold">
                                 {isCheckingUpdate ? 'Verificando...' : 'Verificar Atualizações'}
                             </span>
@@ -382,29 +395,50 @@ export const MainLayout = () => {
                                                 : 'Nenhuma atividade em andamento'}
                                         </p>
                                     </div>
-                                    {activeCount > 0 && <span className="h-2 w-2 animate-pulse rounded-full bg-brand-lime" />}
+                                    <div className="flex items-center gap-2">
+                                        {finishedNotificationCount > 0 && (
+                                            <button
+                                                type="button"
+                                                onClick={() => void clearNotificationHistory()}
+                                                title="Apagar notificações finalizadas"
+                                                className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 text-brand-muted transition-colors hover:border-red-500/20 hover:bg-red-500/10 hover:text-red-300"
+                                            >
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                            </button>
+                                        )}
+                                        {activeCount > 0 && (
+                                            <span className="h-2 w-2 animate-pulse rounded-full bg-brand-lime" />
+                                        )}
+                                    </div>
                                 </div>
 
                                 <div className="max-h-80 overflow-y-auto">
                                     {notificationJobs.length === 0 ? (
                                         <div className="flex flex-col items-center gap-2 px-5 py-8 text-center text-brand-muted">
                                             <Bell className="h-7 w-7 opacity-40" />
-                                            <p className="text-xs">Downloads, importações e gerações aparecerão aqui.</p>
+                                            <p className="text-xs">
+                                                Downloads, importações, gerações e exportações aparecerão aqui.
+                                            </p>
                                         </div>
                                     ) : (
                                         <div className="divide-y divide-white/5">
                                             {notificationJobs.map((job) => {
-                                                const progress = Math.max(0, Math.min(100, Number(job.percent || job.stepPercent || 0)));
+                                                const progress = Math.max(
+                                                    0,
+                                                    Math.min(100, Number(job.percent || job.stepPercent || 0))
+                                                );
                                                 return (
                                                     <div key={job.id} className="flex gap-3 px-4 py-3">
-                                                        <div className={cn(
-                                                            'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                                                            job.phase === 'downloading'
-                                                                ? 'bg-brand-accent/10 text-brand-accent'
-                                                                : job.phase === 'done'
-                                                                  ? 'bg-brand-lime/10 text-brand-lime'
-                                                                  : 'bg-red-500/10 text-red-400'
-                                                        )}>
+                                                        <div
+                                                            className={cn(
+                                                                'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                                                                job.phase === 'downloading'
+                                                                    ? 'bg-brand-accent/10 text-brand-accent'
+                                                                    : job.phase === 'done'
+                                                                      ? 'bg-brand-lime/10 text-brand-lime'
+                                                                      : 'bg-red-500/10 text-red-400'
+                                                            )}
+                                                        >
                                                             {job.phase === 'downloading' ? (
                                                                 <Loader2 className="h-4 w-4 animate-spin" />
                                                             ) : job.phase === 'done' ? (
@@ -423,29 +457,65 @@ export const MainLayout = () => {
                                                                     <Music className="h-3 w-3 shrink-0 text-brand-muted" />
                                                                 )}
                                                                 <p className="truncate text-xs font-bold text-foreground">
-                                                                    {job.track?.displayName || job.title || 'Preparando download...'}
+                                                                    {job.track?.displayName ||
+                                                                        job.title ||
+                                                                        'Preparando download...'}
                                                                 </p>
                                                             </div>
                                                             {job.phase === 'downloading' ? (
                                                                 <div className="mt-2">
                                                                     <div className="mb-1 flex justify-between text-[9px] text-brand-muted">
-                                                                        <span>{job.statusText || (job.step === 'processing' ? 'Processando' : 'Baixando')}</span>
+                                                                        <span>
+                                                                            {job.statusText ||
+                                                                                (job.step === 'processing'
+                                                                                    ? 'Processando'
+                                                                                    : 'Baixando')}
+                                                                        </span>
                                                                         <span>{Math.round(progress)}%</span>
                                                                     </div>
                                                                     <div className="h-1.5 overflow-hidden rounded-full bg-white/5">
                                                                         <div
                                                                             className="h-full bg-linear-to-r from-brand-lime to-brand-accent transition-all duration-500"
-                                                                            style={{ width: `${Math.max(2, progress)}%` }}
+                                                                            style={{
+                                                                                width: `${Math.max(2, progress)}%`,
+                                                                            }}
                                                                         />
                                                                     </div>
                                                                 </div>
                                                             ) : (
-                                                                <p className={cn(
-                                                                    'mt-1 text-[10px]',
-                                                                    job.phase === 'done' ? 'text-brand-lime' : 'text-red-400'
-                                                                )}>
-                                                                    {job.phase === 'done' ? 'Concluído' : job.error || 'Falhou'}
-                                                                </p>
+                                                                <>
+                                                                    <p
+                                                                        className={cn(
+                                                                            'mt-1 text-[10px]',
+                                                                            job.phase === 'done'
+                                                                                ? 'text-brand-lime'
+                                                                                : 'text-red-400'
+                                                                        )}
+                                                                    >
+                                                                        {job.phase === 'done'
+                                                                            ? 'Concluído'
+                                                                            : job.error || 'Falhou'}
+                                                                    </p>
+                                                                    {job.phase === 'done' && job.outputPath && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => {
+                                                                                const { ipcRenderer } = (
+                                                                                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                                                                    window as any
+                                                                                ).require('electron');
+                                                                                void ipcRenderer.invoke(
+                                                                                    'export-show-in-folder',
+                                                                                    job.outputPath
+                                                                                );
+                                                                            }}
+                                                                            className="mt-1 inline-flex items-center gap-1 rounded-md px-2 py-1 text-[9px] font-black text-brand-lime hover:bg-brand-lime/10"
+                                                                        >
+                                                                            <FolderOpen className="h-3 w-3" /> Abrir
+                                                                            pasta
+                                                                        </button>
+                                                                    )}
+                                                                </>
                                                             )}
                                                         </div>
                                                     </div>
@@ -478,7 +548,7 @@ export const MainLayout = () => {
                 {/* Área de Scroll com Background */}
                 <main className="flex-1 overflow-y-auto relative w-full flex flex-col">
                     <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,var(--tw-gradient-stops))] from-primary/5 via-background to-background pointer-events-none opacity-40"></div>
-                    
+
                     <div className="w-full max-w-[1400px] mx-auto p-6 md:p-10 relative flex-1 flex flex-col">
                         <Outlet />
                     </div>

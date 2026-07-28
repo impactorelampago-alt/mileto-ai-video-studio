@@ -9,6 +9,7 @@ import {
     Image as ImageIcon,
     Loader2,
     Music,
+    Trash2,
     X,
     XCircle,
 } from 'lucide-react';
@@ -35,9 +36,12 @@ const statusLabel = (job: DownloadJobSnapshot) => {
 
 export const DownloadQueue = () => {
     const navigate = useNavigate();
-    const { jobs, activeCount, cancelJob } = useDownloadJobs();
+    const { jobs, activeCount, cancelJob, clearHistory } = useDownloadJobs();
     const [filter, setFilter] = useState<Filter>('all');
     const [cancellingId, setCancellingId] = useState<string | null>(null);
+    const [isConfirmingClear, setIsConfirmingClear] = useState(false);
+    const [isClearing, setIsClearing] = useState(false);
+    const finishedCount = jobs.filter((job) => job.phase !== 'downloading').length;
 
     const filteredJobs = useMemo(() => jobs.filter((job) => {
         if (filter === 'active') return job.phase === 'downloading';
@@ -53,6 +57,19 @@ export const DownloadQueue = () => {
             toast.error(error instanceof Error ? error.message : 'Não foi possível cancelar.');
         } finally {
             setCancellingId(null);
+        }
+    };
+
+    const clearFinished = async () => {
+        setIsClearing(true);
+        try {
+            await clearHistory();
+            setIsConfirmingClear(false);
+            toast.success('Histórico de atividades apagado.');
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Não foi possível limpar o histórico.');
+        } finally {
+            setIsClearing(false);
         }
     };
 
@@ -73,7 +90,17 @@ export const DownloadQueue = () => {
                     </p>
                 </div>
 
-                <div className="flex rounded-xl border border-white/10 bg-background p-1">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                    {finishedCount > 0 && (
+                        <button
+                            type="button"
+                            onClick={() => setIsConfirmingClear(true)}
+                            className="inline-flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-xs font-black text-red-300 transition-colors hover:bg-red-500/10"
+                        >
+                            <Trash2 className="h-3.5 w-3.5" /> Limpar histórico
+                        </button>
+                    )}
+                    <div className="flex rounded-xl border border-white/10 bg-background p-1">
                     {([
                         ['all', 'Todos'],
                         ['active', 'Em andamento'],
@@ -92,8 +119,46 @@ export const DownloadQueue = () => {
                             {label}
                         </button>
                     ))}
+                    </div>
                 </div>
             </div>
+
+            {isConfirmingClear && (
+                <div className="rounded-2xl border border-red-500/20 bg-linear-to-r from-red-500/10 via-background to-background p-4 shadow-lg">
+                    <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+                        <div className="flex items-start gap-3">
+                            <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-2.5 text-red-300">
+                                <Trash2 className="h-4 w-4" />
+                            </div>
+                            <div>
+                                <p className="text-sm font-black text-foreground">Apagar atividades finalizadas?</p>
+                                <p className="mt-1 text-xs text-brand-muted">
+                                    {finishedCount} {finishedCount === 1 ? 'registro será removido' : 'registros serão removidos'} da página e do sino. Tarefas em andamento continuam normalmente.
+                                </p>
+                            </div>
+                        </div>
+                        <div className="flex gap-2 self-end sm:self-auto">
+                            <button
+                                type="button"
+                                onClick={() => setIsConfirmingClear(false)}
+                                disabled={isClearing}
+                                className="rounded-xl border border-white/10 px-3 py-2 text-xs font-bold text-brand-muted hover:bg-white/5"
+                            >
+                                Manter
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => void clearFinished()}
+                                disabled={isClearing}
+                                className="inline-flex items-center gap-2 rounded-xl bg-red-500 px-3 py-2 text-xs font-black text-white hover:bg-red-400 disabled:opacity-50"
+                            >
+                                {isClearing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                                Apagar histórico
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="min-h-[420px] overflow-hidden rounded-2xl border border-black/5 bg-background dark:border-white/5">
                 {filteredJobs.length === 0 ? (

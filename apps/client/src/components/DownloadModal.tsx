@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
+    AlertTriangle,
     CheckCircle2,
     Download,
     Film,
@@ -11,6 +12,7 @@ import {
     ListPlus,
     Loader2,
     Music,
+    RefreshCw,
     Search,
     Video,
     Trash2,
@@ -21,7 +23,7 @@ import { toast } from 'sonner';
 import { API_BASE_URL as API } from '../lib/apiBase';
 import { cn } from '../lib/utils';
 import type { MusicTrack } from '../types';
-import { useDownloadJobs } from '../context/DownloadJobsContext';
+import { useDownloadJobs, type DownloadJobTrack } from '../context/DownloadJobsContext';
 
 interface DownloadedMedia extends MusicTrack {
     type: 'audio' | 'video';
@@ -184,6 +186,17 @@ const formatDestinationLabel = (destination: string) =>
               .join(' / ')
         : 'Arquivos (raiz)';
 
+const formatLinkHost = (url: string) => {
+    try {
+        return new URL(url).hostname.replace(/^www\./, '');
+    } catch {
+        return 'Link informado';
+    }
+};
+
+const isMediaCompatible = (media: InspectedMedia | undefined, mode: DownloadMode) =>
+    Boolean(media && (mode === 'video' ? media.hasVideo : media.hasAudio));
+
 const fallbackFolderOptions = (destination: string): DownloadFolderOption[] => {
     const values = ['', destination, 'Imagens', 'Músicas', 'Vídeos'].filter(
         (value, index, all) => all.indexOf(value) === index
@@ -237,6 +250,11 @@ export const DownloadModal = ({
     useEffect(() => {
         onDownloadedRef.current = onDownloaded;
     }, [onDownloaded]);
+
+    const deliverCompletedDownload = useCallback((track: DownloadJobTrack) => {
+        if (track.type === 'image') return;
+        onDownloadedRef.current(track as DownloadedMedia);
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -428,6 +446,7 @@ export const DownloadModal = ({
             audioBitrate: selectedBitrate,
             destination,
             title: item.media?.title,
+            onComplete: deliverCompletedDownload,
         })));
         setIsBatchStarting(false);
         if (!queued) return;
@@ -438,11 +457,38 @@ export const DownloadModal = ({
             toast.warning(`${skipped} ${skipped === 1 ? 'link foi ignorado' : 'links foram ignorados'} por erro ou formato incompatível.`);
         }
         onClose();
-    }, [batchItems, destination, enqueueInternetDownloads, mode, onClose, selectedBitrate, selectedQuality]);
+    }, [batchItems, deliverCompletedDownload, destination, enqueueInternetDownloads, mode, onClose, selectedBitrate, selectedQuality]);
 
     const removeBatchItem = useCallback((id: string) => {
         setBatchItems((current) => current.filter((item) => item.id !== id));
     }, []);
+
+    const retryBatchItem = useCallback(async (id: string) => {
+        const item = batchItems.find((candidate) => candidate.id === id);
+        if (!item) return;
+        setBatchItems((current) => current.map((candidate) =>
+            candidate.id === id
+                ? { ...candidate, status: 'inspecting', media: undefined, error: undefined }
+                : candidate
+        ));
+        try {
+            const inspected = await inspectMediaUrl(item.url, allowVideo);
+            setBatchItems((current) => current.map((candidate) =>
+                candidate.id === id ? { ...candidate, status: 'ready', media: inspected, error: undefined } : candidate
+            ));
+        } catch (error) {
+            setBatchItems((current) => current.map((candidate) =>
+                candidate.id === id
+                    ? {
+                        ...candidate,
+                        status: 'error',
+                        media: undefined,
+                        error: error instanceof Error ? error.message : 'Não foi possível analisar este link.',
+                    }
+                    : candidate
+            ));
+        }
+    }, [allowVideo, batchItems]);
 
     const handleStart = useCallback(async () => {
         if (!media) return;
@@ -471,14 +517,20 @@ export const DownloadModal = ({
                 throw new Error(data.message || 'Não foi possível iniciar o download.');
             }
             setJobId(data.jobId);
-            registerJob(data.jobId, { mode, title: media.title, destination });
-            toast.success('Download iniciado. Você pode fechar esta janela e continuar usando o Mileto.');
+            registerJob(data.jobId, {
+                mode,
+                title: media.title,
+                destination,
+                onComplete: deliverCompletedDownload,
+            });
+            toast.success('Download enviado para o sino. Você pode continuar usando o Mileto.');
+            onClose();
         } catch (error) {
             setErrorStage('download');
             setErrorMsg(error instanceof Error ? error.message : 'Não foi possível iniciar o download.');
             setPhase('error');
         }
-    }, [destination, media, mode, registerJob, selectedBitrate, selectedQuality, url]);
+    }, [deliverCompletedDownload, destination, media, mode, onClose, registerJob, selectedBitrate, selectedQuality, url]);
 
     const resetInspection = useCallback(() => {
         setMedia(null);
@@ -541,15 +593,19 @@ export const DownloadModal = ({
     const selectedVideoOption = media?.videoOptions.find((option) => option.quality === selectedQuality);
     const parsedBatchCount = Math.min(parseBatchLinks(batchText).length, MAX_BATCH_LINKS);
     const readyBatchItems = batchItems.filter((item) => item.status === 'ready' && item.media);
-    const compatibleBatchCount = readyBatchItems.filter((item) =>
-        mode === 'video' ? item.media?.hasVideo : item.media?.hasAudio
-    ).length;
+    const compatibleBatchCount = readyBatchItems.filter((item) => isMediaCompatible(item.media, mode)).length;
+    const incompatibleBatchCount = readyBatchItems.length - compatibleBatchCount;
+    const batchErrorCount = batchItems.filter((item) => item.status === 'error').length;
+    const batchInspectingCount = batchItems.filter((item) => item.status === 'inspecting').length;
+    const batchSettledCount = batchItems.length - batchInspectingCount;
+    const batchProgress = batchItems.length ? Math.round((batchSettledCount / batchItems.length) * 100) : 0;
+    const isBatchBusy = isBatchInspecting || batchInspectingCount > 0 || isBatchStarting;
 
     return createPortal(
-        <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
             <div className={cn(
-                'relative z-101 flex max-h-[92vh] w-full flex-col overflow-hidden rounded-3xl border border-brand-accent/30 bg-brand-dark/95 shadow-[0_0_50px_rgba(0,230,118,0.15)] ring-1 ring-white/5',
-                inputMode === 'batch' ? 'max-w-4xl' : 'max-w-2xl'
+                'relative flex max-h-[94vh] w-full flex-col overflow-hidden rounded-3xl border border-brand-accent/30 bg-brand-dark/95 shadow-[0_0_50px_rgba(0,230,118,0.15)] ring-1 ring-white/5',
+                inputMode === 'batch' ? 'h-[94vh] max-w-6xl' : 'max-w-2xl'
             )}>
                 <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] bg-size-[20px_20px] opacity-20" />
 
@@ -577,7 +633,10 @@ export const DownloadModal = ({
                     </button>
                 </div>
 
-                <div className="relative z-10 flex flex-col gap-5 overflow-y-auto p-6 sm:p-8">
+                <div className={cn(
+                    'relative z-10 flex flex-col gap-5 p-5 sm:p-6',
+                    inputMode === 'batch' ? 'min-h-0 flex-1 overflow-y-auto lg:overflow-hidden' : 'overflow-y-auto'
+                )}>
                     {phase !== 'downloading' && phase !== 'done' && (
                         <div className="grid grid-cols-2 rounded-xl border border-white/10 bg-black/20 p-1">
                             <button
@@ -676,243 +735,208 @@ export const DownloadModal = ({
                     )}
 
                     {inputMode === 'batch' && (
-                        <>
-                            <div className="flex items-center gap-3">
-                                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-brand-lime/20 bg-brand-lime/10 text-brand-lime">
-                                    <ListPlus className="h-5 w-5" />
-                                </div>
-                                <div>
-                                    <p className="text-sm font-bold text-foreground">Baixar vários links</p>
-                                    <p className="text-[11px] text-brand-muted">
-                                        Cole até {MAX_BATCH_LINKS} links. O Mileto analisa três por vez e organiza os downloads no sino.
-                                    </p>
-                                </div>
-                            </div>
-
-                            <div className="flex flex-col gap-2.5">
-                                <div className="flex items-center justify-between gap-3">
-                                    <label
-                                        htmlFor="media-download-batch"
-                                        className="text-[10px] font-bold uppercase tracking-widest text-brand-lime"
-                                    >
-                                        Links da mídia · um por linha
-                                    </label>
-                                    <span className="text-[10px] font-mono text-brand-muted">
+                        <div className="grid min-h-0 flex-1 gap-5 lg:grid-cols-[minmax(320px,0.82fr)_minmax(0,1.45fr)]">
+                            <section className="flex min-h-[360px] flex-col rounded-2xl border border-white/10 bg-black/20 p-4 sm:p-5 lg:min-h-0">
+                                <div className="mb-4 flex items-start gap-3">
+                                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-brand-lime/30 bg-brand-lime/10 text-xs font-black text-brand-lime">1</span>
+                                    <div className="min-w-0">
+                                        <p className="text-sm font-bold text-foreground">Cole os links</p>
+                                        <p className="mt-0.5 text-[11px] leading-relaxed text-brand-muted">
+                                            Um por linha. Duplicados são removidos automaticamente.
+                                        </p>
+                                    </div>
+                                    <span className="ml-auto shrink-0 rounded-full bg-white/5 px-2.5 py-1 font-mono text-[10px] text-brand-muted">
                                         {parsedBatchCount}/{MAX_BATCH_LINKS}
                                     </span>
                                 </div>
+
                                 <textarea
                                     id="media-download-batch"
+                                    aria-label="Links da mídia, um por linha"
                                     value={batchText}
                                     onChange={(event) => setBatchText(event.target.value)}
                                     placeholder={'https://youtube.com/watch?v=...\nhttps://instagram.com/reel/...\nhttps://outro-site.com/video/...'}
-                                    rows={6}
                                     autoFocus
-                                    disabled={isBatchInspecting || isBatchStarting}
-                                    className="w-full resize-y rounded-2xl border border-white/10 bg-black/25 px-4 py-3 font-mono text-xs leading-6 text-foreground outline-none transition-colors placeholder:text-brand-muted/40 focus:border-brand-lime/50 disabled:opacity-60"
+                                    disabled={isBatchBusy}
+                                    className="min-h-52 w-full flex-1 resize-none rounded-2xl border border-white/10 bg-brand-dark/80 px-4 py-3 font-mono text-xs leading-6 text-foreground outline-none transition-colors placeholder:text-brand-muted/35 focus:border-brand-lime/50 disabled:opacity-60"
                                 />
-                            </div>
 
-                            <button
-                                onClick={() => void handleBatchInspect()}
-                                disabled={!parsedBatchCount || isBatchInspecting || isBatchStarting}
-                                className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-lime px-5 py-3 text-sm font-bold text-[#0a0f12] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                                {isBatchInspecting ? (
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                    <Search className="h-4 w-4" />
-                                )}
-                                {isBatchInspecting
-                                    ? `Analisando ${batchItems.length} links...`
-                                    : batchItems.length
-                                      ? 'Analisar novamente'
-                                      : 'Analisar todos os links'}
-                            </button>
+                                <div className="mt-3 flex items-center justify-between gap-3 text-[10px] text-brand-muted">
+                                    <span>Até 3 análises simultâneas</span>
+                                    {batchItems.length > 0 && <span>{batchSettledCount} de {batchItems.length} concluídos</span>}
+                                </div>
 
-                            {batchItems.length > 0 && (
-                                <>
-                                    <div className="grid gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 md:grid-cols-3">
+                                <button
+                                    onClick={() => void handleBatchInspect()}
+                                    disabled={!parsedBatchCount || isBatchBusy}
+                                    className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-lime px-5 py-3 text-sm font-black text-[#0a0f12] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                    {isBatchBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                                    {isBatchBusy
+                                        ? `Analisando ${batchSettledCount}/${batchItems.length}`
+                                        : batchItems.length ? 'Analisar novamente' : 'Analisar links'}
+                                </button>
+                            </section>
+
+                            <section className="flex min-h-[520px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-brand-card/35 lg:min-h-0">
+                                <div className="shrink-0 border-b border-white/10 p-4 sm:p-5">
+                                    <div className="mb-4 flex items-start justify-between gap-3">
+                                        <div className="flex items-start gap-3">
+                                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-brand-accent/30 bg-brand-accent/10 text-xs font-black text-brand-accent">2</span>
+                                            <div>
+                                                <p className="text-sm font-bold text-foreground">Configure e revise</p>
+                                                <p className="mt-0.5 text-[11px] text-brand-muted">A configuração será aplicada somente aos itens compatíveis.</p>
+                                            </div>
+                                        </div>
+                                        {batchItems.length > 0 && (
+                                            <button
+                                                onClick={() => {
+                                                    setBatchItems([]);
+                                                    setBatchText('');
+                                                }}
+                                                disabled={isBatchBusy}
+                                                className="shrink-0 rounded-lg px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-brand-muted hover:bg-red-500/10 hover:text-red-400 disabled:opacity-40"
+                                            >
+                                                Limpar
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    <div className="grid gap-3 md:grid-cols-3">
                                         {allowVideo ? (
                                             <div>
-                                                <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-brand-muted">
-                                                    Formato do lote
-                                                </p>
+                                                <p className="mb-2 text-[9px] font-bold uppercase tracking-widest text-brand-muted">Formato</p>
                                                 <div className="grid grid-cols-2 rounded-xl border border-white/10 bg-brand-dark p-1">
                                                     <button
                                                         onClick={() => setMode('video')}
-                                                        className={cn(
-                                                            'rounded-lg px-2 py-2 text-[11px] font-bold',
-                                                            mode === 'video' ? 'bg-brand-accent/15 text-brand-accent' : 'text-brand-muted'
-                                                        )}
-                                                    >
-                                                        Vídeo
-                                                    </button>
+                                                        className={cn('rounded-lg px-2 py-2 text-[11px] font-bold transition-colors', mode === 'video' ? 'bg-brand-accent/15 text-brand-accent' : 'text-brand-muted hover:text-foreground')}
+                                                    >Vídeo</button>
                                                     <button
                                                         onClick={() => setMode('audio')}
-                                                        className={cn(
-                                                            'rounded-lg px-2 py-2 text-[11px] font-bold',
-                                                            mode === 'audio' ? 'bg-brand-lime/15 text-brand-lime' : 'text-brand-muted'
-                                                        )}
-                                                    >
-                                                        MP3
-                                                    </button>
+                                                        className={cn('rounded-lg px-2 py-2 text-[11px] font-bold transition-colors', mode === 'audio' ? 'bg-brand-lime/15 text-brand-lime' : 'text-brand-muted hover:text-foreground')}
+                                                    >MP3</button>
                                                 </div>
                                             </div>
                                         ) : (
                                             <div>
-                                                <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-brand-muted">
-                                                    Formato do lote
-                                                </p>
-                                                <div className="rounded-xl border border-brand-lime/20 bg-brand-lime/10 px-3 py-2.5 text-xs font-bold text-brand-lime">
-                                                    Música MP3
-                                                </div>
+                                                <p className="mb-2 text-[9px] font-bold uppercase tracking-widest text-brand-muted">Formato</p>
+                                                <div className="rounded-xl border border-brand-lime/20 bg-brand-lime/10 px-3 py-2.5 text-xs font-bold text-brand-lime">Música MP3</div>
                                             </div>
                                         )}
 
                                         <div>
-                                            <label
-                                                htmlFor="batch-download-quality"
-                                                className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-brand-muted"
-                                            >
-                                                Qualidade
-                                            </label>
+                                            <label htmlFor="batch-download-quality" className="mb-2 block text-[9px] font-bold uppercase tracking-widest text-brand-muted">Qualidade</label>
                                             {mode === 'video' ? (
-                                                <select
-                                                    id="batch-download-quality"
-                                                    value={selectedQuality}
-                                                    onChange={(event) => setSelectedQuality(event.target.value)}
-                                                    className="w-full rounded-xl border border-white/10 bg-brand-dark px-3 py-2.5 text-xs text-foreground outline-none"
-                                                >
+                                                <select id="batch-download-quality" value={selectedQuality} onChange={(event) => setSelectedQuality(event.target.value)} className="w-full rounded-xl border border-white/10 bg-brand-dark px-3 py-2.5 text-xs text-foreground outline-none">
                                                     <option value="best">Melhor disponível</option>
                                                     <option value="1080">Até 1080p</option>
                                                     <option value="720">Até 720p</option>
                                                     <option value="480">Até 480p</option>
                                                 </select>
                                             ) : (
-                                                <select
-                                                    id="batch-download-quality"
-                                                    value={selectedBitrate}
-                                                    onChange={(event) => setSelectedBitrate(Number(event.target.value))}
-                                                    className="w-full rounded-xl border border-white/10 bg-brand-dark px-3 py-2.5 text-xs text-foreground outline-none"
-                                                >
-                                                    {[128, 192, 256, 320].map((bitrate) => (
-                                                        <option key={bitrate} value={bitrate}>{bitrate} kbps</option>
-                                                    ))}
+                                                <select id="batch-download-quality" value={selectedBitrate} onChange={(event) => setSelectedBitrate(Number(event.target.value))} className="w-full rounded-xl border border-white/10 bg-brand-dark px-3 py-2.5 text-xs text-foreground outline-none">
+                                                    {[128, 192, 256, 320].map((bitrate) => <option key={bitrate} value={bitrate}>{bitrate} kbps</option>)}
                                                 </select>
                                             )}
                                         </div>
 
                                         <div>
-                                            <label
-                                                htmlFor="batch-download-destination"
-                                                className="mb-2 block text-[10px] font-bold uppercase tracking-widest text-brand-muted"
-                                            >
-                                                Salvar o lote em
-                                            </label>
-                                            <select
-                                                id="batch-download-destination"
-                                                value={destination}
-                                                onChange={(event) => setDestination(event.target.value)}
-                                                className="w-full rounded-xl border border-white/10 bg-brand-dark px-3 py-2.5 text-xs text-foreground outline-none"
-                                            >
-                                                {folderOptions.map((option) => (
-                                                    <option key={option.value || '__batch_root__'} value={option.value}>
-                                                        {option.label}
-                                                    </option>
-                                                ))}
+                                            <label htmlFor="batch-download-destination" className="mb-2 block text-[9px] font-bold uppercase tracking-widest text-brand-muted">Salvar em</label>
+                                            <select id="batch-download-destination" value={destination} onChange={(event) => setDestination(event.target.value)} className="w-full rounded-xl border border-white/10 bg-brand-dark px-3 py-2.5 text-xs text-foreground outline-none">
+                                                {folderOptions.map((option) => <option key={option.value || '__batch_root__'} value={option.value}>{option.label}</option>)}
                                             </select>
                                         </div>
                                     </div>
+                                </div>
 
-                                    <div className="flex items-center justify-between gap-3">
-                                        <div>
-                                            <p className="text-xs font-bold text-foreground">Resultado da análise</p>
-                                            <p className="mt-0.5 text-[10px] text-brand-muted">
-                                                {compatibleBatchCount} prontos para {mode === 'video' ? 'vídeo' : 'MP3'} ·{' '}
-                                                {batchItems.filter((item) => item.status === 'error').length} com erro
-                                            </p>
+                                {batchItems.length === 0 ? (
+                                    <div className="flex flex-1 flex-col items-center justify-center px-8 py-12 text-center">
+                                        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/5">
+                                            <ListPlus className="h-6 w-6 text-brand-muted" />
                                         </div>
-                                        <button
-                                            onClick={() => {
-                                                setBatchItems([]);
-                                                setBatchText('');
-                                            }}
-                                            disabled={isBatchInspecting}
-                                            className="text-[10px] font-bold uppercase tracking-wider text-brand-muted hover:text-red-400 disabled:opacity-40"
-                                        >
-                                            Limpar lote
-                                        </button>
+                                        <p className="text-sm font-bold text-foreground">Os resultados aparecerão aqui</p>
+                                        <p className="mt-2 max-w-sm text-[11px] leading-relaxed text-brand-muted">Você verá quais links estão prontos, quais são incompatíveis e quais precisam ser tentados novamente.</p>
                                     </div>
-
-                                    <div className="grid max-h-72 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
-                                        {batchItems.map((item, index) => (
-                                            <div
-                                                key={item.id}
-                                                className={cn(
-                                                    'flex min-w-0 items-center gap-3 rounded-xl border px-3 py-2.5',
-                                                    item.status === 'error'
-                                                        ? 'border-red-500/25 bg-red-500/5'
-                                                        : item.status === 'ready'
-                                                          ? 'border-brand-lime/20 bg-brand-lime/5'
-                                                          : 'border-white/10 bg-black/20'
-                                                )}
-                                            >
-                                                <div className="flex h-12 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white/5">
-                                                    {item.media?.thumbnail ? (
-                                                        <img src={item.media.thumbnail} alt="" className="h-full w-full object-cover" />
-                                                    ) : item.status === 'inspecting' ? (
-                                                        <Loader2 className="h-5 w-5 animate-spin text-brand-accent" />
-                                                    ) : item.status === 'error' ? (
-                                                        <XCircle className="h-5 w-5 text-red-400" />
-                                                    ) : (
-                                                        <Film className="h-5 w-5 text-brand-muted" />
-                                                    )}
-                                                </div>
-                                                <div className="min-w-0 flex-1">
-                                                    <p className="truncate text-xs font-bold text-foreground">
-                                                        {item.media?.title || `Link ${index + 1}`}
-                                                    </p>
-                                                    <p className={cn(
-                                                        'mt-1 line-clamp-2 text-[10px]',
-                                                        item.status === 'error' ? 'text-red-300' : 'text-brand-muted'
-                                                    )}>
-                                                        {item.status === 'inspecting'
-                                                            ? 'Analisando formatos...'
-                                                            : item.error || `${item.media?.source || 'Site'} · ${formatDuration(item.media?.durationSec || 0)}`}
-                                                    </p>
-                                                </div>
-                                                <button
-                                                    onClick={() => removeBatchItem(item.id)}
-                                                    disabled={isBatchInspecting || isBatchStarting}
-                                                    aria-label="Remover do lote"
-                                                    className="shrink-0 rounded-lg p-2 text-brand-muted hover:bg-red-500/10 hover:text-red-400 disabled:opacity-30"
-                                                >
-                                                    <Trash2 className="h-3.5 w-3.5" />
-                                                </button>
+                                ) : (
+                                    <>
+                                        <div className="shrink-0 border-b border-white/10 px-4 py-3 sm:px-5">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <span className="rounded-full border border-brand-lime/20 bg-brand-lime/10 px-2.5 py-1 text-[10px] font-bold text-brand-lime">{compatibleBatchCount} prontos</span>
+                                                {batchInspectingCount > 0 && <span className="rounded-full border border-brand-accent/20 bg-brand-accent/10 px-2.5 py-1 text-[10px] font-bold text-brand-accent">{batchInspectingCount} analisando</span>}
+                                                {incompatibleBatchCount > 0 && <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-[10px] font-bold text-amber-300">{incompatibleBatchCount} sem {mode === 'video' ? 'vídeo' : 'áudio'}</span>}
+                                                {batchErrorCount > 0 && <span className="rounded-full border border-red-500/20 bg-red-500/10 px-2.5 py-1 text-[10px] font-bold text-red-300">{batchErrorCount} falharam</span>}
+                                                <span className="ml-auto text-[10px] font-mono text-brand-muted">{batchProgress}%</span>
                                             </div>
-                                        ))}
-                                    </div>
-
-                                    <div className="flex flex-col gap-2 rounded-2xl border border-brand-accent/20 bg-brand-accent/5 p-4 sm:flex-row sm:items-center sm:justify-between">
-                                        <div>
-                                            <p className="text-xs font-bold text-brand-accent">Fila em segundo plano</p>
-                                            <p className="mt-1 text-[10px] text-brand-muted">
-                                                Até cinco downloads rodam juntos; os demais aguardam e aparecem no sino.
-                                            </p>
+                                            <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/5">
+                                                <div className="h-full rounded-full bg-linear-to-r from-brand-lime to-brand-accent transition-[width] duration-300" style={{ width: `${batchProgress}%` }} />
+                                            </div>
                                         </div>
-                                        <button
-                                            onClick={handleBatchStart}
-                                            disabled={!compatibleBatchCount || isBatchInspecting || isBatchStarting}
-                                            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-lime px-5 py-3 text-xs font-black text-[#0a0f12] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
-                                        >
-                                            {isBatchStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                                            Baixar {compatibleBatchCount} {compatibleBatchCount === 1 ? 'link' : 'links'}
-                                        </button>
-                                    </div>
-                                </>
-                            )}
-                        </>
+
+                                        <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
+                                            <div className="grid gap-2 xl:grid-cols-2">
+                                                {batchItems.map((item, index) => {
+                                                    const compatible = item.status === 'ready' && isMediaCompatible(item.media, mode);
+                                                    const incompatible = item.status === 'ready' && !compatible;
+                                                    return (
+                                                        <div
+                                                            key={item.id}
+                                                            className={cn(
+                                                                'flex min-w-0 items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors',
+                                                                item.status === 'error' ? 'border-red-500/25 bg-red-500/5'
+                                                                    : incompatible ? 'border-amber-400/20 bg-amber-400/5'
+                                                                      : compatible ? 'border-brand-lime/20 bg-brand-lime/5'
+                                                                        : 'border-white/10 bg-black/20'
+                                                            )}
+                                                        >
+                                                            <div className="flex h-12 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white/5">
+                                                                {item.media?.thumbnail ? <img src={item.media.thumbnail} alt="" className="h-full w-full object-cover" />
+                                                                    : item.status === 'inspecting' ? <Loader2 className="h-5 w-5 animate-spin text-brand-accent" />
+                                                                      : item.status === 'error' ? <XCircle className="h-5 w-5 text-red-400" />
+                                                                        : incompatible ? <AlertTriangle className="h-5 w-5 text-amber-300" />
+                                                                          : <Film className="h-5 w-5 text-brand-muted" />}
+                                                            </div>
+                                                            <div className="min-w-0 flex-1">
+                                                                <div className="flex items-center gap-2">
+                                                                    <p className="truncate text-xs font-bold text-foreground">{item.media?.title || formatLinkHost(item.url) || `Link ${index + 1}`}</p>
+                                                                    {compatible && <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-brand-lime" />}
+                                                                </div>
+                                                                <p className={cn('mt-1 truncate text-[9px]', item.status === 'error' ? 'text-red-300' : incompatible ? 'text-amber-300' : 'text-brand-muted')} title={item.error || item.url}>
+                                                                    {item.status === 'inspecting' ? 'Analisando formatos...'
+                                                                        : item.error || (incompatible
+                                                                            ? `Este link não oferece ${mode === 'video' ? 'vídeo' : 'áudio'}`
+                                                                            : `${item.media?.source || formatLinkHost(item.url)} · ${formatDuration(item.media?.durationSec || 0)}`)}
+                                                                </p>
+                                                            </div>
+                                                            <div className="flex shrink-0 items-center gap-1">
+                                                                {item.status === 'error' && (
+                                                                    <button onClick={() => void retryBatchItem(item.id)} disabled={isBatchBusy} aria-label="Tentar analisar novamente" title="Tentar novamente" className="rounded-lg p-2 text-brand-muted hover:bg-brand-accent/10 hover:text-brand-accent disabled:opacity-30">
+                                                                        <RefreshCw className="h-3.5 w-3.5" />
+                                                                    </button>
+                                                                )}
+                                                                <button onClick={() => removeBatchItem(item.id)} disabled={isBatchBusy} aria-label="Remover do lote" title="Remover" className="rounded-lg p-2 text-brand-muted hover:bg-red-500/10 hover:text-red-400 disabled:opacity-30">
+                                                                    <Trash2 className="h-3.5 w-3.5" />
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+
+                                        <div className="flex shrink-0 flex-col gap-3 border-t border-white/10 bg-brand-dark/70 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                                            <div>
+                                                <p className="text-xs font-bold text-brand-accent">Fila em segundo plano</p>
+                                                <p className="mt-1 text-[10px] text-brand-muted">Até cinco rodam juntos; você pode fechar o modal e continuar usando o Mileto.</p>
+                                            </div>
+                                            <button onClick={handleBatchStart} disabled={!compatibleBatchCount || isBatchBusy} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-lime px-5 py-3 text-xs font-black text-[#0a0f12] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40">
+                                                {isBatchStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                                                Baixar {compatibleBatchCount} {compatibleBatchCount === 1 ? 'arquivo' : 'arquivos'}
+                                            </button>
+                                        </div>
+                                    </>
+                                )}
+                            </section>
+                        </div>
                     )}
 
                     {inputMode === 'single' && showOptions && media && (

@@ -33,6 +33,7 @@ router.patch('/chat/sessions/:id/move', chatController.moveSession);
 router.delete('/chat/sessions/:id', chatController.deleteSession);
 
 router.get('/chat/sessions/:sessionId/messages', chatController.getMessages);
+router.delete('/chat/sessions/:sessionId/messages/from/:messageId', chatController.truncateMessagesFrom);
 router.post('/chat/message', chatController.sendMessage);
 
 // Geração pelos agentes: execução continua no servidor local e termina na pasta local Geração por IA.
@@ -88,6 +89,7 @@ router.post('/download/inspect', downloadController.inspectDownload);
 router.post('/download/start', downloadController.startDownload);
 router.post('/download/ops', downloadController.startOpsDownload);
 router.get('/download/jobs', downloadController.listDownloadJobs);
+router.delete('/download/jobs/history', downloadController.clearDownloadHistory);
 router.delete('/download/:jobId', downloadController.cancelDownload);
 router.get('/download/status/:jobId', downloadController.getDownloadStatus);
 

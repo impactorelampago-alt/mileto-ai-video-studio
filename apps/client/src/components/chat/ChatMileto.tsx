@@ -13,6 +13,7 @@ import {
     ChevronDown,
     ChevronRight,
     Send,
+    Square,
     Loader2,
     Bot,
     User,
@@ -62,6 +63,45 @@ const stripMarkers = (content: string): string =>
         .replace(/^[ \t]*===\s*(?:ROTEIRO|FIM)\s*===[ \t]*$/gim, '')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
+
+const parseMarkedNarration = (content: string): {
+    title: string;
+    narration: string;
+    before: string;
+    after: string;
+} | null => {
+    const match = (content || '').match(
+        /===\s*T[ÍI]TULO\s*===\s*([\s\S]*?)\s*===\s*ROTEIRO\s*===\s*([\s\S]*?)\s*===\s*FIM\s*===/i
+    );
+    if (!match || typeof match.index !== 'number') return null;
+    const end = match.index + match[0].length;
+    return {
+        title: match[1].trim(),
+        narration: match[2].trim(),
+        before: content.slice(0, match.index).trim(),
+        after: content.slice(end).trim(),
+    };
+};
+
+const FISH_AUDIO_TAG_PATTERN = /(\[[a-z][a-z ]*\])/gi;
+
+const getFishAudioTagCount = (narration: string): number =>
+    (narration.match(FISH_AUDIO_TAG_PATTERN) || []).length;
+
+const renderNarrationWithFishTags = (narration: string): React.ReactNode[] =>
+    narration.split(FISH_AUDIO_TAG_PATTERN).map((part, index) =>
+        /^\[[a-z][a-z ]*\]$/i.test(part) ? (
+            <span
+                key={`fish-tag-${index}`}
+                className="mx-0.5 inline-flex translate-y-[-1px] items-center rounded-md border border-cyan-400/30 bg-cyan-400/10 px-1.5 py-0.5 font-mono text-[10px] font-bold leading-none text-cyan-300"
+                title="Direção de voz do Fish Audio"
+            >
+                {part}
+            </span>
+        ) : (
+            <React.Fragment key={`fish-text-${index}`}>{part}</React.Fragment>
+        )
+    );
 
 /**
  * Extrai SÓ o(s) roteiro(s) marcado(s) (o que a IA quer que seja usado). Fallback
@@ -239,7 +279,53 @@ const RichChatText = ({ content }: { content: string }) => {
 
 const StructuredAgentResponse = ({ content }: { content: string }) => {
     const result = parseStructuredResult(content);
-    if (!result) return <RichChatText content={stripMarkers(content)} />;
+    if (!result) {
+        const markedNarration = parseMarkedNarration(content);
+        if (!markedNarration) return <RichChatText content={stripMarkers(content)} />;
+        const fishTagCount = getFishAudioTagCount(markedNarration.narration);
+
+        return (
+            <div className="space-y-3">
+                {markedNarration.before && <RichChatText content={markedNarration.before} />}
+                <div
+                    className={cn(
+                        'overflow-hidden rounded-2xl border shadow-[0_12px_35px_rgba(0,230,118,0.08)]',
+                        fishTagCount > 0
+                            ? 'border-brand-accent/35 bg-brand-accent/[.055]'
+                            : 'border-amber-400/35 bg-amber-400/[.055]'
+                    )}
+                >
+                    <div className="flex items-center justify-between gap-3 border-b border-brand-accent/20 bg-brand-accent/[.075] px-4 py-3">
+                        <div>
+                            <div className="text-[9px] font-black uppercase tracking-[.18em] text-brand-accent">
+                                Texto que vai para a narração
+                            </div>
+                            <div className="mt-1 text-xs font-bold text-foreground">{markedNarration.title}</div>
+                        </div>
+                        <span
+                            className={cn(
+                                'shrink-0 rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-wider',
+                                fishTagCount > 0
+                                    ? 'border-cyan-400/25 bg-cyan-400/10 text-cyan-300'
+                                    : 'border-amber-400/25 bg-amber-400/10 text-amber-300'
+                            )}
+                        >
+                            {fishTagCount > 0 ? `Fish Audio S2 · ${fishTagCount} tags` : 'Sem direção de voz'}
+                        </span>
+                    </div>
+                    <div className="whitespace-pre-wrap px-4 py-4 text-[13px] leading-6 text-foreground">
+                        {renderNarrationWithFishTags(markedNarration.narration)}
+                    </div>
+                </div>
+                {markedNarration.after && (
+                    <div className="rounded-xl border border-black/5 bg-black/[.025] px-3 py-2 dark:border-white/5 dark:bg-white/[.025]">
+                        <div className="mb-1 text-[9px] font-bold uppercase tracking-[.16em] text-brand-muted">Notas da estratégia</div>
+                        <RichChatText content={markedNarration.after} />
+                    </div>
+                )}
+            </div>
+        );
+    }
 
     const title = typeof result.title === 'string' ? result.title : 'Plano de produção';
     const mainPrompt = [result.prompt, result.masterPrompt, result.objective]
@@ -314,6 +400,7 @@ export const ChatMileto: React.FC = () => {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputText, setInputText] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
     // O renderer conhece somente o nível público. Cérebro, modelo, raciocínio e
     // prompt são resolvidos pelo gateway dentro da versão ativa de cada agente.
     const [selectedTier, setSelectedTier] = useState<MiletoTier>('mileto');
@@ -432,6 +519,9 @@ export const ChatMileto: React.FC = () => {
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const activeRequestRef = useRef<AbortController | null>(null);
+
+    useEffect(() => () => activeRequestRef.current?.abort(), []);
 
     // ─── Initialize button position ──────────────────────────────────────────
     useEffect(() => {
@@ -551,13 +641,19 @@ export const ChatMileto: React.FC = () => {
 
     // ─── Chat Actions ────────────────────────────────────────────────────────
 
+    const stopActiveResponse = useCallback(() => {
+        activeRequestRef.current?.abort();
+    }, []);
+
     const handleNewChat = useCallback((folderId?: string | null) => {
+        stopActiveResponse();
         setActiveSessionId(null);
         setMessages([]);
         setInputText('');
+        setEditingMessageId(null);
         // If creating inside a folder, we'll store the target folder for the next auto-created session
         newChatFolderRef.current = folderId || null;
-    }, []);
+    }, [stopActiveResponse]);
 
     const newChatFolderRef = useRef<string | null>(null);
     // Marca a sessão criada dentro do próprio envio, para o efeito de carregar
@@ -566,14 +662,26 @@ export const ChatMileto: React.FC = () => {
 
     const chooseAgent = useCallback((agentId: ChatAgentId) => {
         if (agentId !== selectedAgentId && activeSessionId) {
+            stopActiveResponse();
             setActiveSessionId(null);
             setMessages([]);
             setInputText('');
+            setEditingMessageId(null);
             newChatFolderRef.current = null;
         }
         setSelectedAgentId(agentId);
         setAgentMenuOpen(false);
-    }, [activeSessionId, selectedAgentId]);
+    }, [activeSessionId, selectedAgentId, stopActiveResponse]);
+
+    const handleEditLastMessage = useCallback((message: ChatMessage) => {
+        if (isLoading || message.role !== 'user') return;
+        setEditingMessageId(message.id);
+        setInputText(message.content);
+        window.setTimeout(() => {
+            textareaRef.current?.focus();
+            textareaRef.current?.setSelectionRange(message.content.length, message.content.length);
+        }, 0);
+    }, [isLoading]);
 
     // Override handleSend to use the folder ref for auto-create
     const handleSendWithFolder = useCallback(async () => {
@@ -607,8 +715,22 @@ export const ChatMileto: React.FC = () => {
         }
 
         const userContent = inputText.trim();
-        setInputText('');
         setIsLoading(true);
+
+        if (editingMessageId && sessionId) {
+            try {
+                const remaining = await chatApi.truncateMessagesFrom(sessionId, editingMessageId);
+                setMessages(remaining);
+                setEditingMessageId(null);
+            } catch (err) {
+                console.error('Falha ao preparar a reescrita:', err);
+                toast.error('Não foi possível editar esta mensagem. Tente novamente.');
+                setIsLoading(false);
+                return;
+            }
+        }
+
+        setInputText('');
 
         const tempUserMsg: ChatMessage = {
             id: 'temp-user-' + Date.now(),
@@ -619,6 +741,9 @@ export const ChatMileto: React.FC = () => {
         };
         setMessages((prev) => [...prev, tempUserMsg]);
 
+        const requestController = new AbortController();
+        activeRequestRef.current = requestController;
+
         try {
             const locale = navigator.language || 'pt-BR';
             const { userMessage, assistantMessage } = await chatApi.sendMessage(
@@ -627,10 +752,21 @@ export const ChatMileto: React.FC = () => {
                 selectedModel,
                 'equilibrado',
                 locale,
-                selectedAgentId
+                selectedAgentId,
+                requestController.signal
             );
             setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id).concat([userMessage, assistantMessage]));
         } catch (err: unknown) {
+            if ((err as Error)?.name === 'AbortError' || requestController.signal.aborted) {
+                try {
+                    const persisted = await chatApi.getMessages(sessionId);
+                    setMessages(persisted);
+                } catch (refreshErr) {
+                    console.error('Falha ao atualizar a conversa interrompida:', refreshErr);
+                }
+                toast.info('Resposta interrompida. Você pode editar sua última mensagem e tentar novamente.');
+                return;
+            }
             const axErr = err as { response?: { data?: { message?: string } }; message?: string };
             const errorMsg: ChatMessage = {
                 id: 'error-' + Date.now(),
@@ -641,9 +777,12 @@ export const ChatMileto: React.FC = () => {
             };
             setMessages((prev) => [...prev, errorMsg]);
         } finally {
-            setIsLoading(false);
+            if (activeRequestRef.current === requestController) {
+                activeRequestRef.current = null;
+                setIsLoading(false);
+            }
         }
-    }, [inputText, isLoading, activeSessionId, selectedAgentId, selectedModel]);
+    }, [inputText, isLoading, activeSessionId, selectedAgentId, selectedModel, editingMessageId]);
 
     // ─── Inline Folder Creation ──────────────────────────────────────────────
     const handleCreateFolder = useCallback(() => {
@@ -709,11 +848,14 @@ export const ChatMileto: React.FC = () => {
     }, []);
 
     const selectSession = useCallback((session: ChatSession) => {
+        stopActiveResponse();
         setActiveSessionId(session.id);
         setSelectedTier(tierFromStoredModel(session.model));
         setSelectedAgentId(session.agentId || 'director');
+        setEditingMessageId(null);
+        setInputText('');
         newChatFolderRef.current = null;
-    }, []);
+    }, [stopActiveResponse]);
 
     const toggleFolderExpand = (id: string) => {
         setExpandedFolders((prev) => {
@@ -812,6 +954,7 @@ export const ChatMileto: React.FC = () => {
     const windowStyle: React.CSSProperties = isFullscreen
         ? { position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', zIndex: 9999, borderRadius: 0 }
         : { position: 'fixed', top: 0, right: 0, width: '50vw', height: '100vh', zIndex: 9999 };
+    const lastUserMessageId = [...messages].reverse().find((message) => message.role === 'user')?.id;
 
     return (
         <div
@@ -1102,6 +1245,19 @@ export const ChatMileto: React.FC = () => {
                                         ? <StructuredAgentResponse content={msg.content} />
                                         : <div className="whitespace-pre-wrap">{msg.content}</div>}
 
+                                    {msg.role === 'user' && msg.id === lastUserMessageId && !isLoading && (
+                                        <div className="mt-2 flex justify-end border-t border-brand-accent/10 pt-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => handleEditLastMessage(msg)}
+                                                className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wider text-brand-muted transition-colors hover:text-brand-accent"
+                                                title="Editar esta mensagem e refazer a resposta"
+                                            >
+                                                <Edit3 className="h-3 w-3" /> Editar e refazer
+                                            </button>
+                                        </div>
+                                    )}
+
                                     {/* Copiar/Usar SÓ quando a resposta traz um roteiro final marcado */}
                                     {msg.role === 'assistant' && hasFinalScript(msg.content) && (
                                             <div className="flex items-center gap-2 mt-2.5 pt-2 border-t border-black/5 dark:border-white/5">
@@ -1194,13 +1350,31 @@ export const ChatMileto: React.FC = () => {
 
                     {/* Input Area */}
                     <div className="bg-brand-card/80 backdrop-blur-xl border-t border-black/5 dark:border-white/5 p-4 z-10 shrink-0">
+                        {editingMessageId && !isLoading && (
+                            <div className="mb-2.5 flex items-center justify-between gap-3 rounded-xl border border-brand-accent/25 bg-brand-accent/[.06] px-3 py-2">
+                                <div className="flex min-w-0 items-center gap-2 text-[10px] font-bold text-brand-accent">
+                                    <Edit3 className="h-3.5 w-3.5 shrink-0" />
+                                    <span className="truncate">Editando sua última mensagem — a resposta seguinte será refeita.</span>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setEditingMessageId(null);
+                                        setInputText('');
+                                    }}
+                                    className="shrink-0 text-[9px] font-black uppercase tracking-wider text-brand-muted hover:text-foreground"
+                                >
+                                    Cancelar
+                                </button>
+                            </div>
+                        )}
                         <div className="flex items-end gap-2.5">
                             <textarea
                                 ref={textareaRef}
                                 value={inputText}
                                 onChange={(e) => setInputText(e.target.value)}
                                 onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                    if (e.key === 'Enter' && !e.shiftKey && !isLoading) {
                                         e.preventDefault();
                                         handleSendWithFolder();
                                     }
@@ -1210,17 +1384,20 @@ export const ChatMileto: React.FC = () => {
                                 className="flex-1 bg-brand-dark/50 border border-black/10 dark:border-white/10 rounded-xl px-4 py-3 text-[13px] text-foreground placeholder-brand-muted outline-none focus:border-brand-accent/50 focus:bg-brand-dark shadow-inner resize-none custom-scrollbar transition-all"
                             />
                             <button
-                                onClick={handleSendWithFolder}
-                                disabled={!inputText.trim() || isLoading}
+                                onClick={isLoading ? stopActiveResponse : handleSendWithFolder}
+                                disabled={!isLoading && !inputText.trim()}
                                 className={cn(
                                     'p-3 rounded-xl transition-all duration-300 shrink-0 border',
-                                    inputText.trim() && !isLoading
+                                    isLoading
+                                        ? 'border-red-400/40 bg-red-500/15 text-red-300 shadow-[0_0_15px_rgba(248,113,113,0.15)] hover:bg-red-500/25'
+                                        : inputText.trim()
                                         ? 'bg-brand-accent hover:bg-brand-accent/80 hover:scale-105 border-brand-accent text-[#0a0f12] shadow-[0_0_15px_rgba(0,230,118,0.4)]'
                                         : 'bg-black/5 dark:bg-white/5 border-transparent text-brand-muted cursor-not-allowed'
                                 )}
+                                title={isLoading ? 'Parar resposta' : editingMessageId ? 'Salvar edição e refazer resposta' : 'Enviar mensagem'}
                             >
                                 {isLoading ? (
-                                    <Loader2 className="w-5 h-5 animate-spin" />
+                                    <Square className="h-4 w-4 fill-current" />
                                 ) : (
                                     <Send className="w-5 h-5 ml-0.5" />
                                 )}

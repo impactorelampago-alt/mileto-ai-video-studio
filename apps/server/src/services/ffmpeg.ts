@@ -37,9 +37,18 @@ const testEncoder = (enc: string): boolean => {
         execFileSync(
             resolveFfmpegExe(),
             [
-                '-hide_banner', '-loglevel', 'error',
-                '-f', 'lavfi', '-i', 'color=c=black:s=64x64:d=0.1',
-                '-c:v', enc, '-f', 'null', '-',
+                '-hide_banner',
+                '-loglevel',
+                'error',
+                '-f',
+                'lavfi',
+                '-i',
+                'color=c=black:s=64x64:d=0.1',
+                '-c:v',
+                enc,
+                '-f',
+                'null',
+                '-',
             ],
             { timeout: 10000, stdio: 'pipe' }
         );
@@ -59,7 +68,8 @@ const detectBestEncoder = (): HwEncoder => {
     let listed = '';
     try {
         listed = execFileSync(resolveFfmpegExe(), ['-hide_banner', '-encoders'], {
-            encoding: 'utf8', timeout: 5000,
+            encoding: 'utf8',
+            timeout: 5000,
         });
     } catch (err) {
         console.warn('[FFmpeg] Falha ao listar encoders, usando libx264:', err);
@@ -94,33 +104,50 @@ export const getVideoEncoderArgs = (opts: EncoderArgsOpts = {}): string[] => {
     if (enc === 'h264_nvenc') {
         const nvPreset = speed === 'ultrafast' ? 'p1' : speed === 'veryfast' ? 'p2' : 'p4';
         return [
-            '-c:v', 'h264_nvenc',
-            '-preset', nvPreset,
-            '-rc', 'vbr',
-            '-cq', String(q),
-            '-b:v', '0',
-            '-pix_fmt', 'yuv420p',
+            '-c:v',
+            'h264_nvenc',
+            '-preset',
+            nvPreset,
+            '-rc',
+            'vbr',
+            '-cq',
+            String(q),
+            '-b:v',
+            '0',
+            '-pix_fmt',
+            'yuv420p',
         ];
     }
     if (enc === 'h264_qsv') {
         const qsvPreset = speed === 'ultrafast' ? 'veryfast' : speed;
         return [
-            '-c:v', 'h264_qsv',
-            '-preset', qsvPreset,
-            '-global_quality', String(q),
-            '-look_ahead', '0',
-            '-pix_fmt', 'nv12',
+            '-c:v',
+            'h264_qsv',
+            '-preset',
+            qsvPreset,
+            '-global_quality',
+            String(q),
+            '-look_ahead',
+            '0',
+            '-pix_fmt',
+            'nv12',
         ];
     }
     if (enc === 'h264_amf') {
         const amfQuality = speed === 'fast' ? 'balanced' : 'speed';
         return [
-            '-c:v', 'h264_amf',
-            '-quality', amfQuality,
-            '-rc', 'cqp',
-            '-qp_i', String(q),
-            '-qp_p', String(q),
-            '-pix_fmt', 'yuv420p',
+            '-c:v',
+            'h264_amf',
+            '-quality',
+            amfQuality,
+            '-rc',
+            'cqp',
+            '-qp_i',
+            String(q),
+            '-qp_p',
+            String(q),
+            '-pix_fmt',
+            'yuv420p',
         ];
     }
     return ['-c:v', 'libx264', '-preset', speed, '-crf', String(q), '-pix_fmt', 'yuv420p'];
@@ -296,6 +323,7 @@ export interface HybridParams {
     duration?: number; // Optional flag to hard-truncate the rendered output (e.g. 5s tests)
     targetW?: number; // Resolução-alvo fornecida pelo cliente (mesma usada para capturar o overlay)
     targetH?: number;
+    outputFps?: number;
 }
 
 export const buildHybridVideo = async (params: HybridParams): Promise<string> => {
@@ -323,7 +351,10 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                         if (meta.height < minH) minH = meta.height;
                     }
                 } catch (err) {
-                    console.warn('[FFmpeg Hybrid] ffprobe falhou em um take:', err instanceof Error ? err.message : String(err));
+                    console.warn(
+                        '[FFmpeg Hybrid] ffprobe falhou em um take:',
+                        err instanceof Error ? err.message : String(err)
+                    );
                 }
             }
             if (Number.isFinite(minW) && Number.isFinite(minH)) {
@@ -337,10 +368,12 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
 
     return new Promise((resolve, reject) => {
         const { takes, transitionPath, audioPath, overlayPath, outputPath, duration } = params;
+        const outputFps = [24, 30, 60].includes(Number(params.outputFps)) ? Number(params.outputFps) : 30;
 
         let actualOverlayInput = overlayPath;
         let tempOverlayDir = '';
         let isImageSequence = false;
+        let isSparseSequence = false;
 
         if (overlayPath.endsWith('.txt')) {
             isImageSequence = true;
@@ -351,14 +384,63 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                 return reject(new Error('Falha catastrófica: Os frames nativos sumiram antes do Muxing.'));
             }
 
-            const framesNoDisco = fs.readdirSync(tempOverlayDir).filter(
-                (f: string) => f.endsWith('.webp') || f.endsWith('.png')
-            ).length;
-            console.log(`[FFmpeg Hybrid] Montando vídeo Híbrido com ${framesNoDisco} títulos Alpha em Disco.`);
+            const sequenceFiles = fs
+                .readdirSync(tempOverlayDir)
+                .filter((f: string) => f.endsWith('.webp') || f.endsWith('.png'));
+            console.log(`[FFmpeg Hybrid] Montando vídeo Híbrido com ${sequenceFiles.length} quadros alpha únicos.`);
 
-            // Detect frame extension (webp preferred, png fallback for legacy sessions)
-            const hasWebp = fs.readdirSync(tempOverlayDir).some((f: string) => f.endsWith('.webp'));
-            actualOverlayInput = path.join(tempOverlayDir, hasWebp ? '%d.webp' : '%d.png');
+            try {
+                const metadata = JSON.parse(fs.readFileSync(overlayPath, 'utf8')) as {
+                    version?: number;
+                    sparse?: boolean;
+                    frameCount?: number;
+                    fps?: number;
+                    extension?: string;
+                };
+                if (metadata.version === 2 && metadata.sparse && Number(metadata.frameCount) > 0) {
+                    const sparseFps = Number(metadata.fps) > 0 ? Number(metadata.fps) : outputFps;
+                    const extension = metadata.extension === 'webp' ? 'webp' : 'png';
+                    const sparseFrames = sequenceFiles
+                        .filter((fileName) => fileName.endsWith(`.${extension}`) && /^\d+\./.test(fileName))
+                        .map((fileName) => ({
+                            fileName,
+                            frameIndex: Number(fileName.slice(0, fileName.indexOf('.'))),
+                        }))
+                        .filter((frame) => Number.isFinite(frame.frameIndex))
+                        .sort((a, b) => a.frameIndex - b.frameIndex);
+
+                    if (!sparseFrames.length) throw new Error('A sequência alpha não contém quadros válidos.');
+
+                    const totalFrames = Math.max(Number(metadata.frameCount), sparseFrames.at(-1)!.frameIndex + 1);
+                    const concatLines = ['ffconcat version 1.0'];
+                    sparseFrames.forEach((frame, index) => {
+                        const nextFrameIndex = sparseFrames[index + 1]?.frameIndex ?? totalFrames;
+                        const durationSeconds = Math.max(1, nextFrameIndex - frame.frameIndex) / sparseFps;
+                        concatLines.push(`file '${frame.fileName}'`);
+                        concatLines.push(`duration ${durationSeconds.toFixed(9)}`);
+                    });
+                    concatLines.push(`file '${sparseFrames.at(-1)!.fileName}'`);
+
+                    actualOverlayInput = path.join(tempOverlayDir, 'frames.ffconcat');
+                    fs.writeFileSync(actualOverlayInput, `${concatLines.join('\n')}\n`, 'utf8');
+                    isSparseSequence = true;
+                    console.log(
+                        `[FFmpeg Hybrid] Sequência esparsa: ${sparseFrames.length} imagens para ${totalFrames} quadros finais.`
+                    );
+                }
+            } catch (error) {
+                const marker = fs.readFileSync(overlayPath, 'utf8').trim();
+                if (marker.startsWith('{')) {
+                    return reject(error instanceof Error ? error : new Error('Índice esparso da exportação inválido.'));
+                }
+                console.warn('[FFmpeg Hybrid] Índice esparso indisponível; usando sequência legada.', error);
+            }
+
+            if (!isSparseSequence) {
+                // Detect frame extension (webp preferred, png fallback for legacy sessions)
+                const hasWebp = sequenceFiles.some((f: string) => f.endsWith('.webp'));
+                actualOverlayInput = path.join(tempOverlayDir, hasWebp ? '%d.webp' : '%d.png');
+            }
         }
 
         // ─── BUILD FFMPEG ARGS DIRECTLY (bypass fluent-ffmpeg) ───
@@ -394,14 +476,21 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         currentInputIndex++;
 
         const overlayIdx = currentInputIndex;
-        if (isImageSequence) {
-            args.push('-framerate', '30', '-f', 'image2', '-i', actualOverlayInput);
+        if (isSparseSequence) {
+            args.push('-f', 'concat', '-safe', '0', '-i', actualOverlayInput);
+        } else if (isImageSequence) {
+            args.push('-framerate', String(outputFps), '-f', 'image2', '-i', actualOverlayInput);
         } else {
             args.push('-i', actualOverlayInput);
         }
 
         // ─── BUILD COMPLEX FILTERGRAPH ───
-        console.log('[FFmpeg Hybrid Direct] Transição:', transitionPath ? 'configurada' : 'ausente', '| transIdx:', transIdx);
+        console.log(
+            '[FFmpeg Hybrid Direct] Transição:',
+            transitionPath ? 'configurada' : 'ausente',
+            '| transIdx:',
+            transIdx
+        );
         takes.forEach((t, i) =>
             console.log(`  Take[${i}]: speed=${t.speed}, start=${t.start}, end=${t.end}, type=${t.type}`)
         );
@@ -441,10 +530,17 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             const trimStr =
                 take.type === 'video' ? `trim=start=${take.start}:duration=${rawDuration},setpts=${setptsExpr},` : '';
             const isContain = take.objectFit === 'contain';
-            const scaleBase = `scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=${isContain ? 'decrease' : 'increase'}`;
+            // O movimento precisa de resolução intermediária. Aplicar o zoom depois
+            // de reduzir para 720x1280 quantiza escala/recorte em pixels inteiros e
+            // produz a vibração percebida. Em 2x, cada passo inteiro vale meio pixel
+            // na saída; o Lanczos consolida o quadro somente no final.
+            const motionFactor = take.motionEffect ? 2 : 1;
+            const workingW = Math.max(2, Math.round((TARGET_W * motionFactor) / 2) * 2);
+            const workingH = Math.max(2, Math.round((TARGET_H * motionFactor) / 2) * 2);
+            const scaleBase = `scale=${workingW}:${workingH}:force_original_aspect_ratio=${isContain ? 'decrease' : 'increase'}`;
             const fitFilter = isContain
-                ? `pad=${TARGET_W}:${TARGET_H}:(ow-iw)/2:(oh-ih)/2:color=black`
-                : `crop=${TARGET_W}:${TARGET_H}`;
+                ? `pad=${workingW}:${workingH}:(ow-iw)/2:(oh-ih)/2:color=black`
+                : `crop=${workingW}:${workingH}`;
             const scaleStr = `${scaleBase},${fitFilter},setsar=1`;
             let motionStr = '';
             if (take.motionEffect) {
@@ -452,20 +548,19 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                 const amount = Math.min(0.35, Math.max(0.02, Number(effect.intensity) || 0.12));
                 const motionDuration = Math.max(0.001, physicalDuration);
                 const p = `min(max(t/${motionDuration.toFixed(6)},0),1)`;
-                const motionProgress = effect.type === 'zoom-in-out'
-                    ? `(if(lt(${p},0.5),2*(${p}),2*(1-(${p}))))`
-                    : `(${p})`;
-                const eased = effect.easing === 'smooth'
-                    ? `((${motionProgress})*(${motionProgress})*(3-2*(${motionProgress})))`
-                    : motionProgress;
-                const zoom = effect.type === 'zoom-out'
-                    ? `(1+${amount.toFixed(6)}*(1-${eased}))`
-                    : `(1+${amount.toFixed(6)}*${eased})`;
+                const motionProgress =
+                    effect.type === 'zoom-in-out' ? `(if(lt(${p},0.5),2*(${p}),2*(1-(${p}))))` : `(${p})`;
+                const eased =
+                    effect.easing === 'smooth'
+                        ? `((${motionProgress})*(${motionProgress})*(3-2*(${motionProgress})))`
+                        : motionProgress;
+                const zoom =
+                    effect.type === 'zoom-out'
+                        ? `(1+${amount.toFixed(6)}*(1-${eased}))`
+                        : `(1+${amount.toFixed(6)}*${eased})`;
                 const focalX = Math.min(1, Math.max(0, (Number(effect.focalX) || 50) / 100));
                 const focalY = Math.min(1, Math.max(0, (Number(effect.focalY) || 50) / 100));
-                // Fixar o arredondamento do recorte evita alternância subpixel
-                // entre frames, percebida como vibração no vídeo exportado.
-                motionStr = `,scale=w='trunc(iw*${zoom}/2)*2':h='trunc(ih*${zoom}/2)*2':eval=frame,crop=${TARGET_W}:${TARGET_H}:x='floor((in_w-out_w)*${focalX.toFixed(4)})':y='floor((in_h-out_h)*${focalY.toFixed(4)})'`;
+                motionStr = `,format=yuv444p,scale=w='ceil(iw*${zoom})':h='ceil(ih*${zoom})':eval=frame:flags=bicubic,crop=${workingW}:${workingH}:x='(in_w-out_w)*${focalX.toFixed(4)}':y='(in_h-out_h)*${focalY.toFixed(4)}',scale=${TARGET_W}:${TARGET_H}:flags=lanczos,format=yuv420p`;
             }
 
             filterGraph += `[${index}:v]${trimStr}${scaleStr}${motionStr}[v${index}];`;
@@ -520,7 +615,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         // Se o overlay foi gravado no mesmo TARGET, o scale é no-op. Caso contrário,
         // encaixa (decrease) e preenche com transparente, evitando deformação das legendas.
         filterGraph += `[${overlayIdx}:v]scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=decrease,pad=${TARGET_W}:${TARGET_H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,colorchannelmixer=aa=1.0[alphaT];`;
-        filterGraph += `${currentBase}[alphaT]overlay=eof_action=pass,fps=30[finalVideo]`;
+        filterGraph += `${currentBase}[alphaT]overlay=eof_action=pass,fps=${outputFps}[finalVideo]`;
 
         console.log('══════════════════════════════════════════════');
         console.log('[FFmpeg Hybrid Direct] FILTERGRAPH COMPLETO:');
@@ -546,7 +641,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         // Ensure the destination directory exists (FFmpeg fails if it doesn't)
         const outputDir = path.dirname(outputPath);
         if (!fs.existsSync(outputDir)) {
-                    console.log('[FFmpeg Hybrid Direct] Criando diretório temporário de saída.');
+            console.log('[FFmpeg Hybrid Direct] Criando diretório temporário de saída.');
             fs.mkdirSync(outputDir, { recursive: true });
         }
 

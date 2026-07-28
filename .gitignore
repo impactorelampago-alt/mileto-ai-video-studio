@@ -21,7 +21,12 @@ apps/server/music/
 apps/server/voice_samples/
 apps/server/data/
 apps/server/public/mixes/
+apps/server/public/frames/
+apps/server/public/narrations/
 apps/server/public/transitions/
+apps/server/preview-cache/
+apps/server/ops-cache/
+apps/server/temp/
 apps/server/src/public/
 apps/server/files/
 apps/server/test_upload.js

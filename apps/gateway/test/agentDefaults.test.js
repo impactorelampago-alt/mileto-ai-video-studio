@@ -7,6 +7,9 @@ import {
     DEFAULT_AGENT_CONFIGS,
     LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1,
     NARRATION_SALES_SYSTEM_PROMPT_V3,
+    NARRATION_SALES_SYSTEM_PROMPT_V4,
+    NARRATION_SALES_SYSTEM_PROMPT_V5,
+    NARRATION_SALES_SYSTEM_PROMPT_V6,
     PROMPT_SALES_SYSTEM_PROMPT_V2,
     agentRequiresStrictJsonOutput,
     upgradeBundledAgentSystemPrompt,
@@ -55,27 +58,49 @@ test('cada agente oferece Mileto Lite, Mileto e Mileto Ultra', () => {
     assert.deepEqual(AGENT_TIERS.map((tier) => tier.label), ['Mileto Lite', 'Mileto', 'Mileto Ultra']);
 });
 
-test('Narração e Vendas v3 conduz briefing, confirmação e narração final', () => {
+test('Narração e Vendas v6 preserva liberdade, exige direção Fish Audio e escolhe gatilhos com base factual', () => {
     const prompt = DEFAULT_AGENT_CONFIGS.prompt_sales.systemPrompt;
-    assert.equal(prompt, NARRATION_SALES_SYSTEM_PROMPT_V3);
-    assert.match(prompt, /versao="3"/);
-    assert.match(prompt, /ETAPA 1 — DIAGNÓSTICO/);
-    assert.match(prompt, /cidade, bairro ou região é informação prioritária/);
-    assert.match(prompt, /Posso gerar a narração agora\?/);
-    assert.match(prompt, /Somente depois de uma confirmação explícita/);
+    assert.equal(prompt, NARRATION_SALES_SYSTEM_PROMPT_V6);
+    assert.match(prompt, /versao="6"/);
+    assert.match(prompt, /pontos de controle, não um roteiro rígido/);
+    assert.match(prompt, /Faça de zero a cinco perguntas por rodada/);
+    assert.match(prompt, /blogueiro\/UGC, varejo elétrico, rodeio\/evento, anúncio de rádio/);
+    assert.match(prompt, /Uma narração comercial final sem nenhuma tag é uma resposta incompleta/);
+    assert.match(prompt, /Textos menores podem usar menos, mas nunca zero por padrão/);
+    assert.match(prompt, /\[angry\].*\[sad\].*\[embarrassed\].*\[excited\]/s);
+    assert.match(prompt, /\[emphasis\].*\[whispering\].*\[soft\].*\[breathy\]/s);
+    assert.match(prompt, /\[laughing\].*\[chuckling\].*\[moaning\].*\[clear throat\]/s);
+    assert.match(prompt, /\[pause\].*\[long pause\]/s);
     assert.match(prompt, /===ROTEIRO===/);
-    assert.match(prompt, /Não entregue nessa etapa narração, roteiro completo, hooks, storyboard/);
-    assert.match(prompt, /Não use tabelas, JSON, blocos gigantes/);
+    assert.match(prompt, /Nunca coloque explicação dentro de ===ROTEIRO===/);
+    assert.match(prompt, /Não use tabelas, JSON ou relatórios extensos/);
+    assert.match(prompt, /urgência temporal: data, horário ou encerramento real/);
+    assert.match(prompt, /escassez de quantidade: estoque, lote ou unidades realmente limitadas/);
+    assert.match(prompt, /um gatilho principal e um ou dois de apoio/);
+    assert.match(prompt, /Avalie silenciosamente ao menos três aberturas diferentes/);
+    assert.match(prompt, /Toda prova, escassez, urgência, autoridade, garantia e comparação tem base no briefing/);
 });
 
 test('migra somente prompts distribuídos pelo produto e preserva personalizações do Super Admin', () => {
     assert.equal(
         upgradeBundledAgentSystemPrompt('prompt_sales', LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1),
-        NARRATION_SALES_SYSTEM_PROMPT_V3
+        NARRATION_SALES_SYSTEM_PROMPT_V6
     );
     assert.equal(
         upgradeBundledAgentSystemPrompt('prompt_sales', PROMPT_SALES_SYSTEM_PROMPT_V2),
-        NARRATION_SALES_SYSTEM_PROMPT_V3
+        NARRATION_SALES_SYSTEM_PROMPT_V6
+    );
+    assert.equal(
+        upgradeBundledAgentSystemPrompt('prompt_sales', NARRATION_SALES_SYSTEM_PROMPT_V3),
+        NARRATION_SALES_SYSTEM_PROMPT_V6
+    );
+    assert.equal(
+        upgradeBundledAgentSystemPrompt('prompt_sales', NARRATION_SALES_SYSTEM_PROMPT_V4),
+        NARRATION_SALES_SYSTEM_PROMPT_V6
+    );
+    assert.equal(
+        upgradeBundledAgentSystemPrompt('prompt_sales', NARRATION_SALES_SYSTEM_PROMPT_V5),
+        NARRATION_SALES_SYSTEM_PROMPT_V6
     );
     const customPrompt = `${LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1}\n<!-- personalizado -->`;
     assert.equal(upgradeBundledAgentSystemPrompt('prompt_sales', customPrompt), customPrompt);

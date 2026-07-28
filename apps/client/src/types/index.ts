@@ -232,6 +232,9 @@ export interface TitleHook {
     posY: number; // Vertical position percentage (0-100), default 30
     posX?: number; // Horizontal position percentage (0-100), default 50
     scale?: number; // Size/zoom multiplier (e.g. 0.5 to 2.0), default 1.0
+    scaleX?: number; // Independent horizontal size multiplier, default 1.0
+    scaleY?: number; // Independent vertical size multiplier, default 1.0
+    textBoxWidthPct?: number; // Text composition width as a percentage of the video frame
     styleId?: string; // e.g., 'neo-pop', 'solid-ribbon', 'gradient-glow'
     primaryColor?: string; // Primary text or accent color
     secondaryColor?: string; // Secondary background or text color

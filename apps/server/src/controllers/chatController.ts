@@ -159,9 +159,30 @@ export const getMessages = async (req: Request, res: Response) => {
     }
 };
 
+export const truncateMessagesFrom = async (req: Request, res: Response) => {
+    try {
+        const { sessionId, messageId } = req.params;
+        const messages = chatService.truncateMessagesFrom(sessionId, messageId);
+        if (!messages) {
+            res.status(404).json({ ok: false, message: 'Mensagem de usuário não encontrada.' });
+            return;
+        }
+        res.json({ ok: true, messages });
+    } catch (err: unknown) {
+        res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'Unknown error' });
+    }
+};
+
 // ─── Send Message & Get AI Response ──────────────────────────────────────────
 
 export const sendMessage = async (req: Request, res: Response) => {
+    const upstreamController = new AbortController();
+    const cancelUpstream = () => {
+        if (!res.writableEnded) upstreamController.abort();
+    };
+    req.once('aborted', cancelUpstream);
+    res.once('close', cancelUpstream);
+
     try {
         const { sessionId, content, model, reasoning, locale } = req.body;
 
@@ -217,10 +238,16 @@ export const sendMessage = async (req: Request, res: Response) => {
                 model: model || 'mileto-plus',
                 reasoning,
                 locale: locale || 'pt-BR',
-            });
+            }, upstreamController.signal);
             assistantContent = result.text || 'Sem resposta do assistente.';
             assistantAgent = result.agent;
         } catch (apiErr: unknown) {
+            if (upstreamController.signal.aborted || (apiErr instanceof GatewayHttpError && apiErr.status === 499)) {
+                if (!res.headersSent && !res.destroyed) {
+                    res.status(499).json({ ok: false, message: 'Resposta interrompida pelo usuário.' });
+                }
+                return;
+            }
             if (apiErr instanceof GatewayHttpError) {
                 assistantContent =
                     apiErr.status === 402
@@ -249,5 +276,8 @@ export const sendMessage = async (req: Request, res: Response) => {
         if (!res.headersSent) {
             res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'Unexpected error' });
         }
+    } finally {
+        req.off('aborted', cancelUpstream);
+        res.off('close', cancelUpstream);
     }
 };

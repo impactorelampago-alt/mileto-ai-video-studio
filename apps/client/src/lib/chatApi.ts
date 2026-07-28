@@ -105,19 +105,29 @@ export async function getMessages(sessionId: string): Promise<ChatMessage[]> {
     return data.messages;
 }
 
+export async function truncateMessagesFrom(sessionId: string, messageId: string): Promise<ChatMessage[]> {
+    const data = await request<{ messages: ChatMessage[] }>(
+        `${BASE}/sessions/${sessionId}/messages/from/${messageId}`,
+        { method: 'DELETE' }
+    );
+    return data.messages;
+}
+
 export async function sendMessage(
     sessionId: string,
     content: string,
     model: string,
     reasoning?: string,
     locale: string = 'pt-BR',
-    agentId: ChatAgentId = 'director'
+    agentId: ChatAgentId = 'director',
+    signal?: AbortSignal
 ): Promise<{ userMessage: ChatMessage; assistantMessage: ChatMessage }> {
     // `model` é o tier Mileto (mileto-lite/plus/ultra); o gateway resolve o modelo
     // real e injeta a persona. `reasoning` só vale para o Ultra.
     const data = await request<{ userMessage: ChatMessage; assistantMessage: ChatMessage }>(`${BASE}/message`, {
         method: 'POST',
         body: JSON.stringify({ sessionId, content, model, reasoning, locale, agentId }),
+        signal,
     });
     return {
         userMessage: data.userMessage,

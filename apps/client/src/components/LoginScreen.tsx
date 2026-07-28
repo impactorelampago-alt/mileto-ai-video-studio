@@ -1,6 +1,7 @@
 import { useState, FormEvent } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { GatewayError } from '../lib/gateway';
+import logoImg from '../../public/logo.png';
 
 /**
  * Porta de entrada do app: sem sessão válida, nada mais é renderizado.
@@ -42,7 +43,7 @@ export function LoginScreen() {
             />
             <div className="relative w-full max-w-sm">
                 <div className="mb-8 flex flex-col items-center text-center">
-                    <img src="/logo.png" alt="Mileto AI Video" className="mb-4 h-16 w-auto" />
+                    <img src={logoImg} alt="Mileto AI Video" className="mb-4 h-16 w-auto" />
                     <h1 className="text-xl font-semibold text-foreground">Mileto AI Video</h1>
                     <p className="mt-1 text-sm text-foreground/50">Entre com sua conta para começar a criar.</p>
                 </div>

@@ -1,7 +1,10 @@
+import { API_BASE_URL } from '../apiBase';
+
 export class DOMCaptureEngine {
     private videoPath: string | null = null;
     private audioPath: string | null = null;
     private frameCount = 0;
+    private readonly frameExtension = 'webp';
 
     // Fallback Properties for FFmpeg Image Sequence
     private usePngSequenceFallback = true;
@@ -64,7 +67,7 @@ export class DOMCaptureEngine {
 
             // Extrai frame como PNG direto pra um array buffer nativo
             const blob = await new Promise<Blob | null>((resolve) => {
-                this.fallbackCanvas!.toBlob(resolve, 'image/png');
+                this.fallbackCanvas!.toBlob(resolve, 'image/webp', 0.96);
             });
 
             if (blob) {
@@ -78,6 +81,7 @@ export class DOMCaptureEngine {
                     filePath: this.videoPath,
                     buffer: uint8View,
                     frameIndex: this.frameCount,
+                    extension: this.frameExtension,
                 });
             }
         }
@@ -85,6 +89,15 @@ export class DOMCaptureEngine {
         // Libera o Event Loop para o React (sem travar o limite de FPS)
         await new Promise((r) => setTimeout(r, 0));
         this.frameCount++;
+    }
+
+    async repeatLastFrame(count: number) {
+        const repetitions = Math.max(0, Math.floor(count));
+        if (!repetitions || this.frameCount <= 0) return;
+
+        // Registra apenas a duração do último quadro. Legendas permanecem idênticas
+        // entre duas palavras e não precisam passar novamente por HTML, canvas e encoder.
+        this.frameCount += repetitions;
     }
 
     /**
@@ -104,9 +117,8 @@ export class DOMCaptureEngine {
 
             // If it's a relative path starting with /, prepend the correct backend API URL if not available
             if (masterAudioUrl.startsWith('/')) {
-                const API_BASE = ((window as any).API_BASE_URL || 'http://localhost:3301') || 'http://localhost:3000';
                 // Remove trailing slash from base if present
-                const cleanBase = API_BASE.replace(/\/$/, '');
+                const cleanBase = API_BASE_URL.replace(/\/$/, '');
                 fetchUrl = `${cleanBase}${masterAudioUrl}`;
             }
 
@@ -116,7 +128,6 @@ export class DOMCaptureEngine {
                 response = await fetch(fetchUrl);
             } catch (netErr) {
                 console.error(`[DOMCapture] Erro de Rede ao baixar áudio: ${netErr}`);
-                // eslint-disable-next-line
                 throw new Error(`Falha de rede ao acessar áudio: ${fetchUrl} - ${netErr}`);
             }
 
@@ -204,20 +215,23 @@ export class DOMCaptureEngine {
         fileName?: string,
         outputPath?: string
     ): Promise<{ videoPath: string | null; audioPath: string | null } | string | null> {
-        // Em fallback PNG Sequence, o vídeo gravado é só o arquivo TXT cheio de base64. O Mux vai descobrir.
-        await new Promise((r) => setTimeout(r, 500));
+        // Finaliza o índice da sequência esparsa antes do FFmpeg começar a leitura.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const { ipcRenderer } = (window as any).require('electron');
+        await ipcRenderer.invoke('export-finalize-sequence', {
+            filePath: this.videoPath,
+            frameCount: this.frameCount,
+            fps: this.fps,
+            extension: this.frameExtension,
+        });
 
         try {
             await this.saveAudio(masterAudioUrl);
         } catch (audioErr) {
             console.error('[DOMCapture] Erro ao salvar áudio:', audioErr);
             // Don't block export - fall back to silent
-            alert(`[ERRO ÁUDIO] Falha ao baixar: ${audioErr}\nO vídeo será exportado sem áudio.`);
             await this.saveAudio(); // silent fallback
         }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const { ipcRenderer } = (window as any).require('electron');
 
         let destinationPath: string;
 

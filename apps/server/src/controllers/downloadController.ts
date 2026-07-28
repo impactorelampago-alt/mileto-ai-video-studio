@@ -8,6 +8,11 @@ import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import fetch from 'node-fetch';
 import { isSafeRemoteUrl, safeResolve } from '../utils/safePath';
+import {
+    isUnsupportedYtDlpUrl,
+    resolveEmbeddedHtmlMedia,
+    ResolvedHtmlMedia,
+} from '../services/htmlMediaResolver';
 import { FILES_ROOT, registerFile } from './fileExplorerController';
 
 // Binários empacotados pelo Electron. Em desenvolvimento, usa o PATH como fallback.
@@ -112,7 +117,19 @@ interface YtDlpMetadata {
     filesize_approx?: number;
 }
 
+interface ResolvedDownloadSource {
+    mediaUrl: string;
+    referer?: string;
+    title?: string;
+    thumbnail?: string;
+    metadata: YtDlpMetadata;
+    expiresAt: number;
+}
+
 const jobs = new Map<string, DownloadJob>();
+const resolvedSourceCache = new Map<string, ResolvedDownloadSource>();
+const RESOLVED_SOURCE_TTL_MS = 15 * 60 * 1000;
+const MAX_RESOLVED_SOURCE_CACHE = 200;
 
 function validateUrl(value: unknown): string {
     if (typeof value !== 'string' || !value.trim()) {
@@ -258,6 +275,74 @@ function runYtDlp(args: string[], timeoutMs: number): Promise<{ stdout: string; 
         });
     });
 }
+
+const inspectWithYtDlp = async (url: string, referer?: string): Promise<YtDlpMetadata> => {
+    const args = [
+        ...YTDLP_COMMON_ARGS,
+        '--dump-single-json',
+        '--skip-download',
+        '--no-playlist',
+        '--no-warnings',
+        '--socket-timeout',
+        '20',
+    ];
+    if (referer) args.push('--add-header', `Referer:${referer}`);
+    args.push(url);
+    const { stdout } = await runYtDlp(args, INSPECT_TIMEOUT_MS);
+    return JSON.parse(stdout) as YtDlpMetadata;
+};
+
+const rememberResolvedSource = (originalUrl: string, source: Omit<ResolvedDownloadSource, 'expiresAt'>) => {
+    if (resolvedSourceCache.size >= MAX_RESOLVED_SOURCE_CACHE) {
+        const oldest = resolvedSourceCache.keys().next().value as string | undefined;
+        if (oldest) resolvedSourceCache.delete(oldest);
+    }
+    const resolved = { ...source, expiresAt: Date.now() + RESOLVED_SOURCE_TTL_MS };
+    resolvedSourceCache.set(originalUrl, resolved);
+    return resolved;
+};
+
+const cachedResolvedSource = (url: string): ResolvedDownloadSource | undefined => {
+    const cached = resolvedSourceCache.get(url);
+    if (!cached) return undefined;
+    if (cached.expiresAt <= Date.now()) {
+        resolvedSourceCache.delete(url);
+        return undefined;
+    }
+    return cached;
+};
+
+const mergeEmbeddedMetadata = (metadata: YtDlpMetadata, embedded: ResolvedHtmlMedia, originalUrl: string) => ({
+    ...metadata,
+    title: embedded.title || metadata.title,
+    thumbnail: embedded.thumbnail || metadata.thumbnail,
+    webpage_url: originalUrl,
+    extractor: 'html-player',
+    extractor_key: 'Player HTML',
+});
+
+const resolveDownloadSource = async (url: string): Promise<ResolvedDownloadSource> => {
+    const cached = cachedResolvedSource(url);
+    if (cached) return cached;
+
+    try {
+        const metadata = await inspectWithYtDlp(url);
+        return rememberResolvedSource(url, { mediaUrl: url, metadata });
+    } catch (error) {
+        if (!isUnsupportedYtDlpUrl(error)) throw error;
+
+        const embedded = await resolveEmbeddedHtmlMedia(url);
+        const directMetadata = await inspectWithYtDlp(embedded.mediaUrl, embedded.referer);
+        const metadata = mergeEmbeddedMetadata(directMetadata, embedded, url);
+        return rememberResolvedSource(url, {
+            mediaUrl: embedded.mediaUrl,
+            referer: embedded.referer,
+            title: embedded.title,
+            thumbnail: embedded.thumbnail,
+            metadata,
+        });
+    }
+};
 
 function formatQualityLabel(height: number): string {
     if (height >= 4320) return `${height}p · 8K`;
@@ -414,18 +499,7 @@ function scheduleJobCleanup(jobId: string): void {
 export const inspectDownload = async (req: Request, res: Response) => {
     try {
         const url = validateUrl(req.body?.url);
-        const args = [
-            ...YTDLP_COMMON_ARGS,
-            '--dump-single-json',
-            '--skip-download',
-            '--no-playlist',
-            '--no-warnings',
-            '--socket-timeout',
-            '20',
-            url,
-        ];
-        const { stdout } = await runYtDlp(args, INSPECT_TIMEOUT_MS);
-        const metadata = JSON.parse(stdout) as YtDlpMetadata;
+        const { metadata } = await resolveDownloadSource(url);
         if (metadata.entries && !metadata.title) {
             throw new Error('Cole o link de um vídeo específico, não o link de uma playlist.');
         }
@@ -458,7 +532,7 @@ export const inspectDownload = async (req: Request, res: Response) => {
 };
 
 // POST /api/download/start { url, mode, quality?, audioBitrate?, destination? }
-export const startDownload = (req: Request, res: Response) => {
+export const startDownload = async (req: Request, res: Response) => {
     try {
         const url = validateUrl(req.body?.url);
         const mode: DownloadMode = req.body?.mode === 'video' ? 'video' : 'audio';
@@ -482,6 +556,8 @@ export const startDownload = (req: Request, res: Response) => {
                 .json({ ok: false, message: 'Há muitos downloads em andamento. Aguarde um deles terminar.' });
         }
 
+        const source = await resolveDownloadSource(url);
+
         const jobId = uuidv4();
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-dl-'));
         const job: DownloadJob = {
@@ -492,6 +568,7 @@ export const startDownload = (req: Request, res: Response) => {
             stepPercent: 0,
             mode,
             destination,
+            title: source.title || source.metadata.title,
             startedAt: Date.now(),
         };
         jobs.set(jobId, job);
@@ -513,6 +590,7 @@ export const startDownload = (req: Request, res: Response) => {
             '--print',
             'before_dl:meta:%(title)s',
         ];
+        if (source.referer) args.push('--add-header', `Referer:${source.referer}`);
 
         if (mode === 'audio') {
             args.push('-x', '--audio-format', 'mp3', '--audio-quality', `${requestedBitrate}K`);
@@ -524,7 +602,7 @@ export const startDownload = (req: Request, res: Response) => {
             args.push('-f', selector, '--merge-output-format', 'mp4', '--recode-video', 'mp4');
         }
         if (FFMPEG_DIR) args.push('--ffmpeg-location', FFMPEG_DIR);
-        args.push('--output', path.join(tmpDir, '%(title).180B.%(ext)s'), url);
+        args.push('--output', path.join(tmpDir, '%(title).180B.%(ext)s'), source.mediaUrl);
 
         const child = spawn(YTDLP_BIN, args, { shell: false, windowsHide: true });
         job.process = child;
@@ -829,4 +907,16 @@ export const listDownloadJobs = (_req: Request, res: Response) => {
         jobs: items,
         activeCount: items.filter((job) => job.phase === 'downloading').length,
     });
+};
+
+// DELETE /api/download/jobs/history — remove apenas atividades já encerradas.
+// Downloads ativos continuam visíveis e não são interrompidos.
+export const clearDownloadHistory = (_req: Request, res: Response) => {
+    let removed = 0;
+    for (const [jobId, job] of jobs.entries()) {
+        if (job.phase === 'downloading') continue;
+        jobs.delete(jobId);
+        removed += 1;
+    }
+    res.json({ ok: true, removed });
 };
