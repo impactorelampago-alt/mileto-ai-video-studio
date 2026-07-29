@@ -1,5 +1,6 @@
 import express from 'express';
 import multer from 'multer';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { config } from './config.js';
@@ -23,6 +24,10 @@ app.use(express.json({ limit: '10mb' }));
 
 // Upload de áudio das legendas em memória (limite do Whisper = 25MB).
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+const opsExportUpload = multer({
+    storage: multer.diskStorage({ destination: os.tmpdir() }),
+    limits: { fileSize: Number(process.env.OPS_EXPORT_MAX_BYTES || 512 * 1024 * 1024) },
+});
 
 /** Envolve handler/middleware async para que rejeições virem o error-middleware (Express 4 não faz isso). */
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -442,6 +447,7 @@ app.get('/v1/integrations/mileto-ops/view-contexts', authed, asyncHandler(opsInt
 app.get('/v1/integrations/mileto-ops/companies', authed, asyncHandler(opsIntegration.listCompanies));
 app.get('/v1/integrations/mileto-ops/companies/:companyId/folders', authed, asyncHandler(opsIntegration.listFolders));
 app.get('/v1/integrations/mileto-ops/companies/:companyId/assets', authed, asyncHandler(opsIntegration.listAssets));
+app.post('/v1/integrations/mileto-ops/companies/:companyId/assets/export', authed, opsExportUpload.single('file'), asyncHandler(opsIntegration.uploadExport));
 app.get('/v1/integrations/mileto-ops/assets/:assetId', authed, asyncHandler(opsIntegration.getAsset));
 app.post('/v1/integrations/mileto-ops/assets/:assetId/:kind-url', authed, asyncHandler(opsIntegration.getAssetUrl));
 app.post('/v1/integrations/mileto-ops/references', authed, asyncHandler(opsIntegration.createReference));
@@ -478,10 +484,15 @@ app.get('/', (_req, res) => res.redirect('/admin-ui/'));
 app.use((err, req, res, next) => {
     console.error('[gateway] erro não tratado:', err && err.message ? err.message : err);
     if (res.headersSent) return;
-    res.status(Number(err?.status) || 500).json({
+    const status = err?.code === 'LIMIT_FILE_SIZE'
+        ? 413
+        : Number(err?.status) || 500;
+    res.status(status).json({
         ok: false,
-        code: err?.code || undefined,
-        message: Number(err?.status) ? err.message : 'Erro interno no servidor.',
+        code: err?.code === 'LIMIT_FILE_SIZE' ? 'ops_export_too_large' : err?.code || undefined,
+        message: err?.code === 'LIMIT_FILE_SIZE'
+            ? 'O MP4 excede o limite de 512 MB para exportação ao Mileto Ops.'
+            : Number(err?.status) ? err.message : 'Erro interno no servidor.',
         requestId: err?.requestId || undefined,
     });
 });

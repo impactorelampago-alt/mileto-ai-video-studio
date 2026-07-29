@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { config } from './config.js';
@@ -32,6 +33,10 @@ const normalizeEmail = (value) => String(value || '')
     .toLowerCase();
 const fingerprint = (value) => (normalizeEmail(value) ? sha256(normalizeEmail(value)) : null);
 
+// Algumas versoes do Ops retornam emailFingerprint junto do e-mail normalizado,
+// mas o fingerprint pode ter sido gerado por outro esquema. Nunca devemos
+// descartar o e-mail normalizado nesse caso: testamos ambos localmente e
+// mantemos somente hashes na sincronizacao.
 const opsEmailFingerprints = (opsUser) => {
     const values = new Set();
     const supplied = String(opsUser?.emailFingerprint || '').trim().toLowerCase();
@@ -47,6 +52,13 @@ const opsEmailFingerprints = (opsUser) => {
     return [...values];
 };
 const safeLimit = (value, fallback = 50) => Math.min(100, Math.max(1, Number(value) || fallback));
+const hashFile = (filePath) => new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const input = fs.createReadStream(filePath);
+    input.on('error', reject);
+    input.on('data', (chunk) => hash.update(chunk));
+    input.on('end', () => resolve(hash.digest('hex')));
+});
 
 const httpError = (status, code, message) => Object.assign(new Error(message), { status, code });
 
@@ -987,6 +999,67 @@ export const listAssets = async (req, res) => {
     });
     const { payload } = await delegatedGet(req, path);
     res.json({ ok: true, data: unwrapOpsData(payload), meta: payload.meta || {} });
+};
+
+// O renderer nunca recebe a URL/grant temporário do Ops. Ele envia o MP4 ao
+// servidor local, que o encaminha ao gateway; só aqui a intenção é criada,
+// os bytes são transferidos e a conclusão é confirmada.
+export const uploadExport = async (req, res) => {
+    const file = req.file;
+    const companyId = String(req.params.companyId || '').trim();
+    const folderId = req.body?.folderId ? String(req.body.folderId) : null;
+    try {
+        if (!file || !companyId) throw httpError(400, 'invalid_upload_request', 'Informe o vídeo e a empresa de destino.');
+        if (!/^video\//i.test(String(file.mimetype || '')) || !/\.mp4$/i.test(String(file.originalname || ''))) {
+            throw httpError(400, 'invalid_upload_request', 'A exportação precisa ser um arquivo MP4.');
+        }
+
+        const checksum = await hashFile(file.path);
+        const idempotencyKey = crypto.randomUUID();
+        const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken }) => {
+        const intentPayload = {
+            folderId,
+            fileName: String(file.originalname).slice(0, 180),
+            mimeType: 'video/mp4',
+            sizeBytes: file.size,
+            checksum: { algorithm: 'sha256', value: checksum },
+            origin: 'mileto_ai_video',
+        };
+        const intentResponse = await opsApi(
+            accessToken,
+            `/v1/companies/${encodeURIComponent(companyId)}/assets/upload-intents`,
+            { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(intentPayload) }
+        );
+        const intent = unwrapOpsData(intentResponse) || {};
+        if (!intent.deduplicated) {
+            const upload = intent.upload || {};
+            if (!upload.url || String(upload.method || 'PUT').toUpperCase() !== 'PUT') {
+                throw httpError(502, 'ops_upload_intent_invalid', 'O Mileto Ops não preparou o envio do vídeo.');
+            }
+            const uploadResponse = await fetch(String(upload.url), {
+                method: 'PUT',
+                headers: { ...(upload.requiredHeaders || {}), 'Content-Length': String(file.size) },
+                body: fs.createReadStream(file.path),
+                duplex: 'half',
+                redirect: 'manual',
+                signal: AbortSignal.timeout(15 * 60 * 1000),
+            });
+            if (!uploadResponse.ok) {
+                throw httpError(502, 'ops_upload_failed', 'O Mileto Ops não aceitou os bytes do vídeo.');
+            }
+        }
+        const completeResponse = await opsApi(accessToken, `/v1/assets/upload-intents/${encodeURIComponent(String(intent.uploadId))}/complete`, {
+            method: 'POST',
+            headers: { 'Idempotency-Key': idempotencyKey },
+            body: JSON.stringify({ sizeBytes: file.size, checksum: { algorithm: 'sha256', value: checksum } }),
+        });
+        return { connection, payload: completeResponse };
+        });
+        await audit({ req, connectionId: connection.id, action: 'ops.asset.exported', resourceType: 'company', resourceId: companyId, result: 'success', detail: { folderId, sizeBytes: file.size } });
+        res.json({ ok: true, data: unwrapOpsData(payload) });
+    } finally {
+        if (file?.path) await fs.promises.unlink(file.path).catch(() => undefined);
+    }
 };
 
 export const getAsset = async (req, res) => {

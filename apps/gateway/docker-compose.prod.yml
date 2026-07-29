@@ -44,6 +44,7 @@ services:
       OPS_REDIRECT_URI: ${OPS_REDIRECT_URI:?OPS_REDIRECT_URI obrigatorio}
       OPS_TOKEN_ENCRYPTION_KEY: ${OPS_TOKEN_ENCRYPTION_KEY:?OPS_TOKEN_ENCRYPTION_KEY obrigatorio}
       OPS_SCOPES: ${OPS_SCOPES:?OPS_SCOPES obrigatorio}
+      OPS_EXPORT_MAX_BYTES: ${OPS_EXPORT_MAX_BYTES:-536870912}
     ports:
       - '127.0.0.1:4000:4000' # só local — o OpenResty faz o proxy público
     healthcheck:
