@@ -25,8 +25,27 @@ import { normalizeOpsFolderScope } from './opsAssetScope.js';
 const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
 const b64u = (buffer) => Buffer.from(buffer).toString('base64url');
 const pkceChallenge = (verifier) => b64u(crypto.createHash('sha256').update(String(verifier)).digest());
-const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+const normalizeEmail = (value) => String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .toLowerCase();
 const fingerprint = (value) => (normalizeEmail(value) ? sha256(normalizeEmail(value)) : null);
+
+const opsEmailFingerprints = (opsUser) => {
+    const values = new Set();
+    const supplied = String(opsUser?.emailFingerprint || '').trim().toLowerCase();
+    if (/^[a-f0-9]{64}$/.test(supplied)) values.add(supplied);
+    else {
+        const derived = fingerprint(supplied);
+        if (derived) values.add(derived);
+    }
+    for (const value of [opsUser?.normalizedEmail, opsUser?.email]) {
+        const derived = fingerprint(value);
+        if (derived) values.add(derived);
+    }
+    return [...values];
+};
 const safeLimit = (value, fallback = 50) => Math.min(100, Math.max(1, Number(value) || fallback));
 
 const httpError = (status, code, message) => Object.assign(new Error(message), { status, code });
@@ -521,13 +540,10 @@ export const authorizationCallback = async (req, res) => {
         const expectedOwnerFingerprint = fingerprint(aiOwner.email);
         const opsUsers = await fetchAllOpsUsers(tokens.accessToken);
         const matchingOwner = opsUsers.some((opsUser) => {
-            const emailFingerprint = String(
-                opsUser.emailFingerprint || fingerprint(opsUser.normalizedEmail || opsUser.email) || ''
-            ).toLowerCase();
             const memberships = Array.isArray(opsUser.memberships) ? opsUser.memberships : [];
             const isOwner = String(opsUser.primaryRole || '').toUpperCase() === 'DONO'
                 || memberships.some((role) => String(role).toUpperCase() === 'DONO');
-            return isOwner && emailFingerprint === expectedOwnerFingerprint;
+            return isOwner && opsEmailFingerprints(opsUser).includes(expectedOwnerFingerprint);
         });
         if (!matchingOwner) {
             await Promise.all([revokeToken(tokens.accessToken), revokeToken(tokens.refreshToken)]);
@@ -666,7 +682,20 @@ const fetchAllOpsUsers = async (accessToken) => {
     const users = [];
     let cursor = '';
     for (let page = 0; page < 100; page += 1) {
-        const response = await opsApi(accessToken, opsPathWithQuery('/v1/users', { cursor, limit: 100 }));
+        let response;
+        let lastError;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+                response = await opsApi(accessToken, opsPathWithQuery('/v1/users', { cursor, limit: 100 }));
+                break;
+            } catch (error) {
+                lastError = error;
+                const transient = [502, 503, 504].includes(Number(error?.status));
+                if (!transient || attempt === 2) throw error;
+                await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
+            }
+        }
+        if (!response) throw lastError;
         const data = unwrapOpsData(response);
         const rows = Array.isArray(data) ? data : Array.isArray(data?.users) ? data.users : [];
         users.push(...rows);
@@ -706,10 +735,12 @@ export const syncUsers = async (req, res) => {
         for (const opsUser of opsUsers) {
             const opsProfileId = String(opsUser.id || opsUser.opsProfileId || '');
             if (!opsProfileId || linkedOps.has(opsProfileId)) continue;
-            const emailFingerprint = String(
-                opsUser.emailFingerprint || fingerprint(opsUser.normalizedEmail || opsUser.email) || ''
-            ).toLowerCase();
-            const candidates = emailFingerprint ? aiByHash.get(emailFingerprint) || [] : [];
+            const emailFingerprints = opsEmailFingerprints(opsUser);
+            const candidatesById = new Map();
+            for (const emailFingerprint of emailFingerprints) {
+                for (const candidate of aiByHash.get(emailFingerprint) || []) candidatesById.set(String(candidate.id), candidate);
+            }
+            const candidates = [...candidatesById.values()];
             const kind = candidates.length === 1 ? 'unique_match' : candidates.length > 1 ? 'ambiguous' : 'ops_only';
             const aiUser = candidates.length === 1 ? candidates[0] : null;
             if (aiUser) matchedAi.add(String(aiUser.id));
@@ -723,7 +754,7 @@ export const syncUsers = async (req, res) => {
                 opsProfileId,
                 opsName: opsUser.name || null,
                 opsRole: opsUser.primaryRole || null,
-                emailFingerprint: emailFingerprint || null,
+                emailFingerprint: aiUser ? fingerprint(aiUser.email) : emailFingerprints[0] || null,
             });
         }
 
@@ -731,7 +762,7 @@ export const syncUsers = async (req, res) => {
             if (linkedAi.has(String(aiUser.id)) || matchedAi.has(String(aiUser.id))) continue;
             const hash = fingerprint(aiUser.email);
             const existsInOps = opsUsers.some(
-                (opsUser) => String(opsUser.emailFingerprint || fingerprint(opsUser.normalizedEmail || opsUser.email) || '') === hash
+                (opsUser) => opsEmailFingerprints(opsUser).includes(hash)
             );
             if (!existsInOps) {
                 suggestions.push({
