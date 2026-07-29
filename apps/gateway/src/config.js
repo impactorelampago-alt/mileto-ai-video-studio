@@ -53,7 +53,7 @@ export const config = {
         tokenEncryptionKey: process.env.OPS_TOKEN_ENCRYPTION_KEY || '',
         scopes: String(
             process.env.OPS_SCOPES ||
-                'account.read users.read user_links.write companies.read assets.read assets.stream assets.download'
+                'account.read users.read user_links.write companies.read assets.read assets.stream assets.download assets.write'
         )
             .split(/\s+/)
             .filter(Boolean),
