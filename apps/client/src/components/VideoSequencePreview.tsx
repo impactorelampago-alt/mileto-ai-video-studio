@@ -70,12 +70,17 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         // Refs
         const videoRef1 = useRef<HTMLVideoElement>(null);
         const videoRef2 = useRef<HTMLVideoElement>(null);
-        const imageTakeRef = useRef<HTMLImageElement>(null);
+        const motionLayerRef1 = useRef<HTMLDivElement>(null);
+        const motionLayerRef2 = useRef<HTMLDivElement>(null);
+        const motionImageLayerRef = useRef<HTMLDivElement>(null);
+        const motionCanvasRef1 = useRef<HTMLCanvasElement>(null);
+        const motionCanvasRef2 = useRef<HTMLCanvasElement>(null);
         const transitionRef = useRef<HTMLVideoElement>(null);
         const audioMasterRef = useRef<HTMLAudioElement>(null);
         const progressIntervalRef = useRef<number>(0);
-        const motionFrameRef = useRef<number | null>(null);
-        const motionVideoFrameRef = useRef<number | null>(null);
+        const motionAnimationRef = useRef<Animation | null>(null);
+        const advancingRef = useRef(false);
+        const bufferingAudioPauseTimerRef = useRef<number | null>(null);
         const overlayContainerRef = useRef<HTMLDivElement>(null);
         const overlayFontCssRef = useRef<string | null>(null);
 
@@ -87,9 +92,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const [audioTime, setAudioTime] = useState(0); // True audio time for subtitles
         const [isImageTake, setIsImageTake] = useState(false);
         const [isBuffering, setIsBuffering] = useState(false);
+        const [showBufferingSpinner, setShowBufferingSpinner] = useState(false);
         const [activeVideo, setActiveVideo] = useState<1 | 2>(1);
         const [playbackSourceOverrides, setPlaybackSourceOverrides] = useState<Record<string, string>>({});
         const [activeTransitionUrl, setActiveTransitionUrl] = useState<string | null>(null);
+        const [canvasReadyTakeId, setCanvasReadyTakeId] = useState<string | null>(null);
+        const [canvasFallbackTakeId, setCanvasFallbackTakeId] = useState<string | null>(null);
         const pendingSeekTimeRef = useRef<number | null>(null);
         const transitionTriggeredRef = useRef<boolean>(false);
         const progressBarRef = useRef<HTMLDivElement>(null);
@@ -100,9 +108,58 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         // Derived
         const currentTake = takes.length > 0 ? takes[currentTakeIndex] : null;
+        // A configuração de movimento é intencionalmente reduzida a valores
+        // primitivos. O estado do projeto pode ser salvo/reidratado enquanto o
+        // preview toca, trocando a referência do take sem que o zoom tenha mudado.
+        // Recriar a animação nessa situação fazia o compositor voltar alguns
+        // milissegundos e era percebido como uma tremedeira.
+        const currentMotion = useMemo(() => {
+            if (!currentTake?.motionEffect) return null;
+            const effect = currentTake.motionEffect;
+            return {
+                takeId: currentTake.id,
+                mediaType: currentTake.type,
+                trimStart: currentTake.trim.start,
+                trimEnd: currentTake.trim.end,
+                effect: {
+                    type: effect.type,
+                    intensity: effect.intensity,
+                    focalX: effect.focalX,
+                    focalY: effect.focalY,
+                    easing: effect.easing,
+                },
+            };
+        }, [
+            currentTake?.id,
+            currentTake?.type,
+            currentTake?.trim.start,
+            currentTake?.trim.end,
+            currentTake?.motionEffect?.type,
+            currentTake?.motionEffect?.intensity,
+            currentTake?.motionEffect?.focalX,
+            currentTake?.motionEffect?.focalY,
+            currentTake?.motionEffect?.easing,
+        ]);
         const currentMotionOrigin = currentTake
             ? `${currentTake.motionEffect?.focalX ?? 50}% ${currentTake.motionEffect?.focalY ?? 50}%`
             : '50% 50%';
+        const currentTakeId = currentTake?.id ?? null;
+        const currentObjectFit = currentTake?.objectFit ?? 'cover';
+        // Vídeos nativos podem usar uma superfície de hardware separada no
+        // Chromium/Electron. Escalar essa superfície durante a reprodução é o
+        // que causa a vibração percebida no preview. Para takes com movimento,
+        // apresentamos os frames em uma textura canvas e deixamos o <video>
+        // invisível atuar apenas como decoder/relógio. A exportação continua
+        // usando a sua pipeline própria, sem depender deste canvas.
+        const shouldUseCanvasMotionPreview = Boolean(
+            currentMotion && currentMotion.mediaType === 'video' && !isHybridMode
+        );
+        const isCanvasMotionPreviewReady = Boolean(
+            shouldUseCanvasMotionPreview &&
+                currentTakeId &&
+                canvasReadyTakeId === currentTakeId &&
+                canvasFallbackTakeId !== currentTakeId
+        );
         const allMuted = takes.length > 0 && takes.every((t) => t.muteOriginalAudio);
         const playbackSourceFor = useCallback(
             (take: MediaTake) => playbackSourceOverrides[take.id] || take.proxyUrl || take.url,
@@ -110,126 +167,246 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         );
 
         const resetMotionTransforms = useCallback(() => {
-            for (const element of [videoRef1.current, videoRef2.current, imageTakeRef.current]) {
+            motionAnimationRef.current?.cancel();
+            motionAnimationRef.current = null;
+            for (const element of [motionLayerRef1.current, motionLayerRef2.current, motionImageLayerRef.current]) {
                 if (!element) continue;
                 element.style.transform = 'translate3d(0,0,0) scale3d(1,1,1)';
                 element.style.transformOrigin = '50% 50%';
             }
         }, []);
 
-        const renderMotionFrame = useCallback((element: HTMLElement, take: MediaTake, localTime: number) => {
-            const progress = normalizedTakeProgress(take, localTime);
-            const scale = takeMotionScale(take.motionEffect, progress);
-            const focalX = take.motionEffect?.focalX ?? 50;
-            const focalY = take.motionEffect?.focalY ?? 50;
-            // Escrita direta no compositor: React não arredonda nem reinicia a
-            // interpolação a cada atualização do relógio.
-            element.style.transformOrigin = `${focalX}% ${focalY}%`;
-            element.style.transform = `translate3d(0,0,0) scale3d(${scale},${scale},1)`;
-        }, []);
-
         useEffect(() => {
-            if (motionFrameRef.current !== null) {
-                window.cancelAnimationFrame(motionFrameRef.current);
-                motionFrameRef.current = null;
+            if (!currentMotion) {
+                resetMotionTransforms();
+                return;
             }
-            const previousVideo = currentTake?.type === 'video'
-                ? activeVideo === 1 ? videoRef1.current : videoRef2.current
-                : null;
-            const previousVideoWithFrames = previousVideo as (HTMLVideoElement & {
-                cancelVideoFrameCallback?: (handle: number) => void;
-            }) | null;
-            if (motionVideoFrameRef.current !== null) {
-                previousVideoWithFrames?.cancelVideoFrameCallback?.(motionVideoFrameRef.current);
-                motionVideoFrameRef.current = null;
-            }
-            resetMotionTransforms();
-            if (!currentTake?.motionEffect) return;
 
             const target =
-                currentTake.type === 'image'
-                    ? imageTakeRef.current
+                currentMotion.mediaType === 'image'
+                    ? motionImageLayerRef.current
                     : activeVideo === 1
-                      ? videoRef1.current
-                      : videoRef2.current;
+                      ? motionLayerRef1.current
+                      : motionLayerRef2.current;
             if (!target) return;
 
-            const videoTarget = currentTake.type === 'video' ? (target as HTMLVideoElement) : null;
-            if (videoTarget) {
-                type VideoFrameMetadataLite = { mediaTime: number };
-                const framedVideo = videoTarget as HTMLVideoElement & {
-                    requestVideoFrameCallback?: (
-                        callback: (_now: number, metadata: VideoFrameMetadataLite) => void
-                    ) => number;
-                    cancelVideoFrameCallback?: (handle: number) => void;
-                };
-                const drawPresentedFrame = (_now: number, metadata: VideoFrameMetadataLite) => {
-                    const localTime = Math.max(0, metadata.mediaTime - currentTake.trim.start);
-                    renderMotionFrame(videoTarget, currentTake, localTime);
-                    if (isPlaying && framedVideo.requestVideoFrameCallback) {
-                        motionVideoFrameRef.current = framedVideo.requestVideoFrameCallback(drawPresentedFrame);
-                    }
-                };
-
-                // O zoom muda junto com o quadro efetivamente apresentado pelo decoder.
-                // Isso elimina a disputa entre o relógio de 60 Hz da tela e vídeos de 24/30 fps.
-                if (framedVideo.requestVideoFrameCallback) {
-                    renderMotionFrame(videoTarget, currentTake, Math.max(0, videoTarget.currentTime - currentTake.trim.start));
-                    if (isPlaying) {
-                        motionVideoFrameRef.current = framedVideo.requestVideoFrameCallback(drawPresentedFrame);
-                    }
-                } else {
-                    const drawFallback = () => {
-                        renderMotionFrame(
-                            videoTarget,
-                            currentTake,
-                            Math.max(0, videoTarget.currentTime - currentTake.trim.start)
-                        );
-                        if (isPlaying) motionFrameRef.current = window.requestAnimationFrame(drawFallback);
-                    };
-                    drawFallback();
-                }
-            } else {
-                const takeDuration = Math.max(0.001, currentTake.trim.end - currentTake.trim.start);
-                let localTime = Math.max(0, currentTimeInTake);
-                let previousFrameAt = performance.now();
-                const drawImageFrame = (now: number) => {
-                    const elapsed = Math.max(0, Math.min(0.05, (now - previousFrameAt) / 1000));
-                    previousFrameAt = now;
-                    localTime = Math.min(takeDuration, localTime + elapsed);
-                    renderMotionFrame(target, currentTake, localTime);
-                    if (isPlaying) motionFrameRef.current = window.requestAnimationFrame(drawImageFrame);
-                };
-                drawImageFrame(previousFrameAt);
+            // Trocar de take pode deixar uma animação pausada na camada que
+            // acabou de sair. Ela não é visível, mas precisa ser cancelada antes
+            // de criar a animação da nova camada.
+            motionAnimationRef.current?.cancel();
+            motionAnimationRef.current = null;
+            for (const element of [motionLayerRef1.current, motionLayerRef2.current, motionImageLayerRef.current]) {
+                if (!element || element === target) continue;
+                element.style.transform = 'translate3d(0,0,0) scale3d(1,1,1)';
+                element.style.transformOrigin = '50% 50%';
             }
 
-            return () => {
-                if (motionFrameRef.current !== null) {
-                    window.cancelAnimationFrame(motionFrameRef.current);
-                    motionFrameRef.current = null;
-                }
-                if (motionVideoFrameRef.current !== null) {
-                    const framedVideo = videoTarget as (HTMLVideoElement & {
-                        cancelVideoFrameCallback?: (handle: number) => void;
-                    }) | null;
-                    framedVideo?.cancelVideoFrameCallback?.(motionVideoFrameRef.current);
-                    motionVideoFrameRef.current = null;
-                }
+            const effect = currentMotion.effect;
+            const durationMs = Math.max(1, (currentMotion.trimEnd - currentMotion.trimStart) * 1000);
+
+            const easing = effect.easing === 'smooth' ? 'cubic-bezier(0.4, 0, 0.2, 1)' : 'linear';
+            const transformAt = (progress: number) => {
+                const scale = Math.round(takeMotionScale(effect, progress) * 1_000_000) / 1_000_000;
+                return `translate3d(0,0,0) scale3d(${scale},${scale},1)`;
             };
-            // currentTimeInTake é apenas o ponto inicial. Durante o play, o callback
-            // acompanha os quadros apresentados e não reinicia a cada tick da interface.
-        }, [activeVideo, currentTake, isImageTake, isPlaying, renderMotionFrame, resetMotionTransforms]);
+            const keyframes: Keyframe[] =
+                effect.type === 'zoom-in-out'
+                    ? [
+                          { transform: transformAt(0), offset: 0, easing },
+                          { transform: transformAt(0.5), offset: 0.5, easing },
+                          { transform: transformAt(1), offset: 1 },
+                      ]
+                    : [
+                          { transform: transformAt(0), offset: 0, easing },
+                          { transform: transformAt(1), offset: 1 },
+                      ];
+
+            // O <video> nativo fica imóvel. A transformação acontece nesta camada
+            // HTML externa para evitar arredondamento da superfície do decoder e
+            // manter a interpolação integralmente no compositor do Chromium.
+            target.style.transformOrigin = `${effect.focalX ?? 50}% ${effect.focalY ?? 50}%`;
+            target.style.transform = 'translate3d(0,0,0) scale3d(1,1,1)';
+            const animation = target.animate(keyframes, {
+                duration: durationMs,
+                fill: 'both',
+                iterations: 1,
+            });
+            const activeMedia = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+            const mediaLocalTime =
+                currentMotion.mediaType === 'video' && activeMedia
+                    ? Math.max(0, activeMedia.currentTime - currentMotion.trimStart)
+                    : currentTimeInTake;
+            animation.currentTime = Math.min(durationMs, Math.max(0, mediaLocalTime * 1000));
+            // A animação sempre nasce pausada. O efeito abaixo é o único
+            // lugar que dá play/pause nela, para que um evento de buffer não a
+            // recrie nem reinicie durante a reprodução.
+            animation.pause();
+            motionAnimationRef.current = animation;
+
+            return () => {
+                animation.cancel();
+                if (motionAnimationRef.current === animation) motionAnimationRef.current = null;
+            };
+        }, [activeVideo, currentMotion, resetMotionTransforms]);
+
+        // Controle de reprodução separado da criação da animação. Assim o
+        // zoom é pausado no buffer e retomado na mesma posição, sem saltar para
+        // o primeiro quadro a cada mudança de estado do player.
+        useEffect(() => {
+            if (!currentMotion) return;
+            const animation = motionAnimationRef.current;
+            if (!animation) return;
+            const activeMedia = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+            animation.playbackRate =
+                currentMotion.mediaType === 'video' && activeMedia && Number.isFinite(activeMedia.playbackRate)
+                    ? activeMedia.playbackRate
+                    : 1;
+            if (isPlaying && !isBuffering) animation.play();
+            else animation.pause();
+        }, [activeVideo, currentMotion, isBuffering, isPlaying]);
 
         useEffect(() => {
-            if (isPlaying || !currentTake?.motionEffect) return;
-            const target =
-                currentTake.type === 'image'
-                    ? imageTakeRef.current
-                    : activeVideo === 1
-                      ? videoRef1.current
-                      : videoRef2.current;
-            if (target) renderMotionFrame(target, currentTake, currentTimeInTake);
-        }, [activeVideo, currentTake, currentTimeInTake, isImageTake, isPlaying, renderMotionFrame]);
+            if (isPlaying || !currentMotion) return;
+            const animation = motionAnimationRef.current;
+            if (!animation) return;
+            const durationMs = Math.max(1, (currentMotion.trimEnd - currentMotion.trimStart) * 1000);
+            animation.currentTime = Math.min(durationMs, Math.max(0, currentTimeInTake * 1000));
+        }, [currentMotion, currentTimeInTake, isPlaying]);
+
+        // A troca entre takes já usa double buffering. O Chromium ainda emite
+        // "waiting" por poucos milissegundos ao promover o próximo decoder,
+        // mas mostrar o spinner nesse intervalo cria um flash desagradável.
+        // Só revelamos o indicador se a espera passar de 280 ms — uma espera
+        // real continua comunicada, enquanto a pré-carga normal fica invisível.
+        useEffect(() => {
+            if (!isBuffering || !isPlaying || isImageTake || isHybridMode) {
+                setShowBufferingSpinner(false);
+                return;
+            }
+            const timeoutId = window.setTimeout(() => setShowBufferingSpinner(true), 280);
+            return () => window.clearTimeout(timeoutId);
+        }, [isBuffering, isHybridMode, isImageTake, isPlaying]);
+
+        // Converte somente a apresentação do preview com zoom para canvas.
+        // requestVideoFrameCallback mantém o desenho alinhado aos frames já
+        // decodificados; não há setState por frame nem escrita de transform
+        // durante a reprodução.
+        useEffect(() => {
+            if (
+                !currentTakeId ||
+                !currentMotion ||
+                currentMotion.mediaType !== 'video' ||
+                isHybridMode ||
+                canvasFallbackTakeId === currentTakeId
+            ) {
+                return;
+            }
+
+            const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+            const canvas = activeVideo === 1 ? motionCanvasRef1.current : motionCanvasRef2.current;
+            if (!video || !canvas) return;
+
+            let cancelled = false;
+            let videoFrameCallbackId: number | null = null;
+            let animationFrameId: number | null = null;
+
+            const drawFrame = () => {
+                if (cancelled || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return false;
+                if (!video.videoWidth || !video.videoHeight) return false;
+
+                // clientWidth/clientHeight usam a caixa de layout, não a caixa
+                // já transformada pelo zoom. Medir getBoundingClientRect aqui
+                // faria o canvas ser redimensionado a cada frame e recriaria a
+                // textura — exatamente o tipo de tremor que queremos evitar.
+                const layoutWidth = canvas.clientWidth;
+                const layoutHeight = canvas.clientHeight;
+                if (!layoutWidth || !layoutHeight) return false;
+
+                const deviceScale = Math.min(window.devicePixelRatio || 1, 2);
+                const targetWidth = Math.max(1, Math.round(layoutWidth * deviceScale));
+                const targetHeight = Math.max(1, Math.round(layoutHeight * deviceScale));
+                if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+                    canvas.width = targetWidth;
+                    canvas.height = targetHeight;
+                }
+
+                const context = canvas.getContext('2d', { alpha: false });
+                if (!context) return false;
+
+                try {
+                    context.setTransform(1, 0, 0, 1, 0, 0);
+                    context.fillStyle = '#05090b';
+                    context.fillRect(0, 0, targetWidth, targetHeight);
+                    context.imageSmoothingEnabled = true;
+                    context.imageSmoothingQuality = 'high';
+
+                    const scale =
+                        currentObjectFit === 'contain'
+                            ? Math.min(targetWidth / video.videoWidth, targetHeight / video.videoHeight)
+                            : Math.max(targetWidth / video.videoWidth, targetHeight / video.videoHeight);
+                    const drawWidth = video.videoWidth * scale;
+                    const drawHeight = video.videoHeight * scale;
+                    context.drawImage(
+                        video,
+                        (targetWidth - drawWidth) / 2,
+                        (targetHeight - drawHeight) / 2,
+                        drawWidth,
+                        drawHeight
+                    );
+                    setCanvasReadyTakeId((readyTakeId) => (readyTakeId === currentTakeId ? readyTakeId : currentTakeId));
+                    return true;
+                } catch {
+                    // Se uma fonte externa não permitir drawImage, preservamos o
+                    // vídeo nativo como fallback em vez de ocultar o preview.
+                    setCanvasFallbackTakeId(currentTakeId);
+                    return false;
+                }
+            };
+
+            const scheduleNextFrame = () => {
+                if (cancelled) return;
+                if ('requestVideoFrameCallback' in video) {
+                    videoFrameCallbackId = video.requestVideoFrameCallback(() => {
+                        drawFrame();
+                        scheduleNextFrame();
+                    });
+                    return;
+                }
+                animationFrameId = window.requestAnimationFrame(() => {
+                    drawFrame();
+                    scheduleNextFrame();
+                });
+            };
+
+            const drawWhenReady = () => {
+                drawFrame();
+            };
+            video.addEventListener('loadeddata', drawWhenReady);
+            video.addEventListener('canplay', drawWhenReady);
+            video.addEventListener('seeked', drawWhenReady);
+            video.addEventListener('resize', drawWhenReady);
+            drawFrame();
+            scheduleNextFrame();
+
+            return () => {
+                cancelled = true;
+                if (videoFrameCallbackId !== null && 'cancelVideoFrameCallback' in video) {
+                    video.cancelVideoFrameCallback(videoFrameCallbackId);
+                }
+                if (animationFrameId !== null) window.cancelAnimationFrame(animationFrameId);
+                video.removeEventListener('loadeddata', drawWhenReady);
+                video.removeEventListener('canplay', drawWhenReady);
+                video.removeEventListener('seeked', drawWhenReady);
+                video.removeEventListener('resize', drawWhenReady);
+            };
+        }, [
+            activeVideo,
+            canvasFallbackTakeId,
+            currentMotion,
+            currentObjectFit,
+            currentTakeId,
+            isHybridMode,
+        ]);
 
         const repairUnsupportedLocalVideo = useCallback(async (take: MediaTake) => {
             if (previewRepairAttemptsRef.current.has(take.id)) return;
@@ -351,13 +528,40 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             }
         }, [masterAudioUrl]);
 
+        // Eventos `waiting` de poucos frames são normais ao trocar o decoder
+        // pré-carregado. Só interrompemos a faixa mestre se a espera for real.
+        const cancelDeferredAudioPause = useCallback(() => {
+            if (bufferingAudioPauseTimerRef.current !== null) {
+                window.clearTimeout(bufferingAudioPauseTimerRef.current);
+                bufferingAudioPauseTimerRef.current = null;
+            }
+        }, []);
+
+        const beginBuffering = useCallback(() => {
+            setIsBuffering(true);
+            if (bufferingAudioPauseTimerRef.current !== null) return;
+            bufferingAudioPauseTimerRef.current = window.setTimeout(() => {
+                bufferingAudioPauseTimerRef.current = null;
+                pauseAudio();
+            }, 280);
+        }, [pauseAudio]);
+
+        const finishBuffering = useCallback(() => {
+            cancelDeferredAudioPause();
+            setIsBuffering(false);
+            if (isPlaying) playAudio();
+        }, [cancelDeferredAudioPause, isPlaying, playAudio]);
+
+        useEffect(() => cancelDeferredAudioPause, [cancelDeferredAudioPause]);
+
         const stopAll = useCallback(() => {
             setIsPlaying(false);
             const vid = activeVideo === 1 ? videoRef1.current : videoRef2.current;
             if (vid) vid.pause();
+            cancelDeferredAudioPause();
             pauseAudio();
             clearInterval(progressIntervalRef.current);
-        }, [pauseAudio, activeVideo]);
+        }, [cancelDeferredAudioPause, pauseAudio, activeVideo]);
 
         const play = useCallback(() => {
             setIsPlaying(true);
@@ -382,6 +586,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             setActiveVideo(1); // Reset to first video player
             setActiveTransitionUrl(null);
             transitionTriggeredRef.current = false;
+            advancingRef.current = false;
             pendingSeekTimeRef.current = null;
             if (videoRef1.current) videoRef1.current.currentTime = takes[0]?.trim.start || 0;
             if (transitionRef.current) {
@@ -409,6 +614,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 setPlaybackSourceOverrides({});
                 pendingSeekTimeRef.current = null;
                 transitionTriggeredRef.current = false;
+                advancingRef.current = false;
 
                 // Remover o src é importante: apenas zerar o índice mantém o
                 // último frame decodificado desenhado pelo Chromium.
@@ -429,6 +635,35 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 setActiveVideo(1);
             }
         }, [takes, currentTakeIndex, stopAll]);
+
+        // Mantém o próximo take carregado e já posicionado no primeiro quadro.
+        // O player invisível deixa de começar o download somente depois do corte.
+        useEffect(() => {
+            const nextTake = takes[currentTakeIndex + 1];
+            const standbyVideo = activeVideo === 1 ? videoRef2.current : videoRef1.current;
+            if (!standbyVideo || !nextTake || nextTake.type !== 'video') return;
+
+            const src = playbackSourceFor(nextTake);
+            const seekToFirstFrame = () => {
+                if (standbyVideo.readyState < HTMLMediaElement.HAVE_METADATA) return;
+                if (Math.abs(standbyVideo.currentTime - nextTake.trim.start) > 0.015) {
+                    standbyVideo.currentTime = nextTake.trim.start;
+                }
+            };
+
+            standbyVideo.pause();
+            standbyVideo.muted = true;
+            standbyVideo.playbackRate = 1;
+            if (standbyVideo.getAttribute('src') !== src) {
+                standbyVideo.setAttribute('src', src);
+                standbyVideo.load();
+            }
+
+            if (standbyVideo.readyState >= HTMLMediaElement.HAVE_METADATA) seekToFirstFrame();
+            else standbyVideo.addEventListener('loadedmetadata', seekToFirstFrame, { once: true });
+
+            return () => standbyVideo.removeEventListener('loadedmetadata', seekToFirstFrame);
+        }, [activeVideo, currentTakeIndex, playbackSourceFor, takes]);
 
         // When take index changes, load the new source
         useEffect(() => {
@@ -467,7 +702,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         useEffect(() => {
             // O estado de UI pode atualizar em cadência econômica; o movimento
-            // visual é controlado separadamente por requestAnimationFrame.
+            // visual é controlado separadamente pelo compositor do navegador.
             const checkInterval = 30;
 
             const tick = () => {
@@ -605,28 +840,96 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             };
 
             const advanceTrack = () => {
+                if (advancingRef.current) return;
                 const isEndOfTakes = currentTakeIndex >= takes.length - 1;
 
                 if (!isEndOfTakes) {
                     const nextIndex = currentTakeIndex + 1;
                     const nextT = takes[nextIndex];
 
-                    // Preload into the next video player
                     const nextVid = activeVideo === 1 ? videoRef2.current : videoRef1.current;
                     if (nextVid && nextT && nextT.type === 'video') {
                         const src = playbackSourceFor(nextT);
-                        if (nextVid.src !== src) {
-                            nextVid.src = src;
+                        if (nextVid.getAttribute('src') !== src) {
+                            nextVid.setAttribute('src', src);
                             nextVid.load();
                         }
-                        nextVid.currentTime = nextT.trim.start;
-                        nextVid.muted = !!nextT.muteOriginalAudio;
-                        nextVid.playbackRate = 1;
-                        if (isPlaying) {
-                            nextVid.play().catch((e) => {
-                                if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') console.error(e);
-                            });
+
+                        const isPrepared = () =>
+                            nextVid.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+                            !nextVid.seeking &&
+                            Math.abs(nextVid.currentTime - nextT.trim.start) < 0.12;
+                        let startedPresentation = false;
+                        const finishSwap = () => {
+                            const currentVid = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+                            currentVid?.pause();
+                            nextVid.muted = !!nextT.muteOriginalAudio;
+                            nextVid.playbackRate = 1;
+                            setActiveVideo((prev) => (prev === 1 ? 2 : 1));
+                            setCurrentTakeIndex(nextIndex);
+                            setCurrentTimeInTake(0);
+                            finishBuffering();
+                            advancingRef.current = false;
+                            if (isPlaying) {
+                                nextVid.play().catch((e) => {
+                                    if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') console.error(e);
+                                });
+                            }
+                        };
+
+                        // Se a rede ainda não entregou o quadro, segura o último frame
+                        // do take atual em vez de revelar o fundo preto do monitor.
+                        // Caminho quente: o primeiro quadro do próximo take já
+                        // está no buffer. Não pausamos a narração nem esperamos
+                        // outro callback do decoder para tornar o take visível.
+                        if (isPrepared()) {
+                            advancingRef.current = true;
+                            startedPresentation = true;
+                            finishSwap();
+                            return;
                         }
+
+                        // Recuperação: só pausa a faixa mestre se a mídia
+                        // realmente demorar, evitando um engasgo artificial em
+                        // pré-cargas que terminam em poucos milissegundos.
+                        advancingRef.current = true;
+                        beginBuffering();
+                        const seekWhenPossible = () => {
+                            if (nextVid.readyState >= HTMLMediaElement.HAVE_METADATA) {
+                                nextVid.currentTime = nextT.trim.start;
+                            }
+                        };
+                        const presentPreparedFrame = () => {
+                            if (!advancingRef.current || startedPresentation || !isPrepared()) return;
+                            startedPresentation = true;
+                            nextVid.muted = !!nextT.muteOriginalAudio;
+                            nextVid.playbackRate = 1;
+                            cleanup();
+                            finishSwap();
+                        };
+                        const onReady = () => {
+                            presentPreparedFrame();
+                        };
+                        const timeoutId = window.setTimeout(() => {
+                            cleanup();
+                            advancingRef.current = false;
+                            finishBuffering();
+                            toast.error('O próximo take ainda não ficou pronto. Tente reproduzir novamente.');
+                        }, 8000);
+                        const cleanup = () => {
+                            window.clearTimeout(timeoutId);
+                            nextVid.removeEventListener('loadedmetadata', seekWhenPossible);
+                            nextVid.removeEventListener('seeked', onReady);
+                            nextVid.removeEventListener('canplay', onReady);
+                            nextVid.removeEventListener('loadeddata', onReady);
+                        };
+                        nextVid.addEventListener('loadedmetadata', seekWhenPossible);
+                        nextVid.addEventListener('seeked', onReady);
+                        nextVid.addEventListener('canplay', onReady);
+                        nextVid.addEventListener('loadeddata', onReady);
+                        seekWhenPossible();
+                        presentPreparedFrame();
+                        return;
                     }
 
                     // Swap active video and update index
@@ -648,7 +951,18 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             progressIntervalRef.current = intervalId;
 
             return () => clearInterval(intervalId);
-        }, [isPlaying, currentTakeIndex, takes, currentTake, stopAll, activeVideo, totalDuration, playbackSourceFor]);
+        }, [
+            isPlaying,
+            currentTakeIndex,
+            takes,
+            currentTake,
+            stopAll,
+            activeVideo,
+            totalDuration,
+            playbackSourceFor,
+            beginBuffering,
+            finishBuffering,
+        ]);
 
         // ─── Audio Sync Checks (Periodic Watchdog) ──────────────────────────
         useEffect(() => {
@@ -1240,12 +1554,10 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     )}
 
                     {/* Native Video Elements for Double Buffering */}
-                    <video
-                        ref={videoRef1}
-                        crossOrigin="anonymous"
+                    <div
+                        ref={motionLayerRef1}
                         className={cn(
-                            'absolute top-0 left-0 w-full h-full object-cover', // default
-                            currentTake?.objectFit === 'contain' ? 'object-contain' : 'object-cover',
+                            'absolute inset-0 h-full w-full',
                             !currentTake || isHybridMode || isImageTake || activeVideo !== 1
                                 ? 'opacity-0 pointer-events-none'
                                 : 'opacity-100'
@@ -1255,34 +1567,55 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             willChange: currentTake?.motionEffect ? 'transform' : 'auto',
                             backfaceVisibility: 'hidden',
                             transformStyle: 'preserve-3d',
+                            contain: 'layout paint',
+                            isolation: 'isolate',
                         }}
-                        playsInline
-                        preload="auto"
-                        onWaiting={() => {
-                            if (activeVideo === 1) {
-                                setIsBuffering(true);
-                                pauseAudio();
-                            }
-                        }}
-                        onPlaying={() => {
-                            if (activeVideo === 1) {
-                                setIsBuffering(false);
-                                if (isPlaying) playAudio();
-                            }
-                        }}
-                        onError={() => {
-                            if (activeVideo === 1 && currentTake?.type === 'video') {
-                                void repairUnsupportedLocalVideo(currentTake);
-                            }
-                        }}
-                    />
+                    >
+                        <canvas
+                            ref={motionCanvasRef1}
+                            aria-hidden="true"
+                            className={cn(
+                                'pointer-events-none absolute inset-0 z-[1] h-full w-full transition-none',
+                                isCanvasMotionPreviewReady && activeVideo === 1 ? 'opacity-100' : 'opacity-0'
+                            )}
+                            style={{ display: 'block', backfaceVisibility: 'hidden', transform: 'translate3d(0,0,0)' }}
+                        />
+                        <video
+                            ref={videoRef1}
+                            crossOrigin="anonymous"
+                            className={cn(
+                                'absolute inset-0 h-full w-full',
+                                currentTake?.objectFit === 'contain' ? 'object-contain' : 'object-cover'
+                            )}
+                            style={{
+                                display: 'block',
+                                backfaceVisibility: 'hidden',
+                                opacity: isCanvasMotionPreviewReady && activeVideo === 1 ? 0 : 1,
+                            }}
+                            playsInline
+                            preload="auto"
+                            onWaiting={() => {
+                                if (activeVideo === 1) {
+                                    beginBuffering();
+                                }
+                            }}
+                            onPlaying={() => {
+                                if (activeVideo === 1) {
+                                    finishBuffering();
+                                }
+                            }}
+                            onError={() => {
+                                if (activeVideo === 1 && currentTake?.type === 'video') {
+                                    void repairUnsupportedLocalVideo(currentTake);
+                                }
+                            }}
+                        />
+                    </div>
 
-                    <video
-                        ref={videoRef2}
-                        crossOrigin="anonymous"
+                    <div
+                        ref={motionLayerRef2}
                         className={cn(
-                            'absolute top-0 left-0 w-full h-full',
-                            currentTake?.objectFit === 'contain' ? 'object-contain' : 'object-cover',
+                            'absolute inset-0 h-full w-full',
                             !currentTake || isHybridMode || isImageTake || activeVideo !== 2
                                 ? 'opacity-0 pointer-events-none'
                                 : 'opacity-100'
@@ -1292,27 +1625,50 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             willChange: currentTake?.motionEffect ? 'transform' : 'auto',
                             backfaceVisibility: 'hidden',
                             transformStyle: 'preserve-3d',
+                            contain: 'layout paint',
+                            isolation: 'isolate',
                         }}
-                        playsInline
-                        preload="auto"
-                        onWaiting={() => {
-                            if (activeVideo === 2) {
-                                setIsBuffering(true);
-                                pauseAudio();
-                            }
-                        }}
-                        onPlaying={() => {
-                            if (activeVideo === 2) {
-                                setIsBuffering(false);
-                                if (isPlaying) playAudio();
-                            }
-                        }}
-                        onError={() => {
-                            if (activeVideo === 2 && currentTake?.type === 'video') {
-                                void repairUnsupportedLocalVideo(currentTake);
-                            }
-                        }}
-                    />
+                    >
+                        <canvas
+                            ref={motionCanvasRef2}
+                            aria-hidden="true"
+                            className={cn(
+                                'pointer-events-none absolute inset-0 z-[1] h-full w-full transition-none',
+                                isCanvasMotionPreviewReady && activeVideo === 2 ? 'opacity-100' : 'opacity-0'
+                            )}
+                            style={{ display: 'block', backfaceVisibility: 'hidden', transform: 'translate3d(0,0,0)' }}
+                        />
+                        <video
+                            ref={videoRef2}
+                            crossOrigin="anonymous"
+                            className={cn(
+                                'absolute inset-0 h-full w-full',
+                                currentTake?.objectFit === 'contain' ? 'object-contain' : 'object-cover'
+                            )}
+                            style={{
+                                display: 'block',
+                                backfaceVisibility: 'hidden',
+                                opacity: isCanvasMotionPreviewReady && activeVideo === 2 ? 0 : 1,
+                            }}
+                            playsInline
+                            preload="auto"
+                            onWaiting={() => {
+                                if (activeVideo === 2) {
+                                    beginBuffering();
+                                }
+                            }}
+                            onPlaying={() => {
+                                if (activeVideo === 2) {
+                                    finishBuffering();
+                                }
+                            }}
+                            onError={() => {
+                                if (activeVideo === 2 && currentTake?.type === 'video') {
+                                    void repairUnsupportedLocalVideo(currentTake);
+                                }
+                            }}
+                        />
+                    </div>
 
                     {/* Transition Overlay (Ghost Player) */}
                     <video
@@ -1332,31 +1688,37 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     />
 
                     {/* Buffering Spinner */}
-                    {isBuffering && isPlaying && !isImageTake && !isHybridMode && (
-                        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+                    {showBufferingSpinner && (
+                        <div className="absolute inset-0 z-20 flex items-center justify-center bg-transparent">
                             <Loader2 className="w-8 h-8 text-primary animate-spin" />
                         </div>
                     )}
 
                     {/* Image Element for Image Takes */}
                     {isImageTake && currentTake && (
-                        <img
-                            ref={imageTakeRef}
-                            src={playbackSourceFor(currentTake)}
-                            className={cn(
-                                'w-full h-full',
-                                currentTake.objectFit === 'contain' ? 'object-contain' : 'object-cover',
-                                isHybridMode && 'opacity-0'
-                            )}
+                        <div
+                            ref={motionImageLayerRef}
+                            className={cn('h-full w-full', isHybridMode && 'opacity-0')}
                             style={{
                                 transformOrigin: currentMotionOrigin,
                                 willChange: currentTake?.motionEffect ? 'transform' : 'auto',
                                 backfaceVisibility: 'hidden',
                                 transformStyle: 'preserve-3d',
+                                contain: 'layout paint',
+                                isolation: 'isolate',
                             }}
-                            crossOrigin="anonymous"
-                            alt="Preview"
-                        />
+                        >
+                            <img
+                                src={playbackSourceFor(currentTake)}
+                                className={cn(
+                                    'h-full w-full',
+                                    currentTake.objectFit === 'contain' ? 'object-contain' : 'object-cover'
+                                )}
+                                style={{ display: 'block', backfaceVisibility: 'hidden' }}
+                                crossOrigin="anonymous"
+                                alt="Preview"
+                            />
+                        </div>
                     )}
 
                     {/* Hidden Audio Elements */}

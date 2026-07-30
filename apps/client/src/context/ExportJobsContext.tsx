@@ -5,6 +5,7 @@ import type { AdData, CaptionStyle, CaptionTrack, MediaTake, TitleHook } from '.
 import { VideoSequencePreview, type VideoSequencePreviewRef } from '../components/VideoSequencePreview';
 import { useDownloadJobs } from './DownloadJobsContext';
 import { useWizard } from './WizardContext';
+import { localAuthHeaders } from '../lib/serverAuth';
 
 export interface BackgroundExportRequest {
     fileName: string;
@@ -18,6 +19,7 @@ export interface BackgroundExportRequest {
     adData: AdData;
     captionStyle: CaptionStyle | null;
     projectId: string;
+    destination: { kind: 'local' | 'shared' | 'ops'; folderPath?: string; companyId?: string; opsFolderId?: string | null; viewContextId?: string | null };
 }
 
 interface ExportJobsContextValue {
@@ -178,11 +180,10 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                 }
 
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const path = (window as any).require('path');
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const os = (window as any).require('os');
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const path = (window as any).require('path');
                 const safeName = activeExport.fileName.replace(/[\\/:*?"<>|]/g, '_');
-                const fullOutputPath = path.join(activeExport.outputFolder, `${safeName}.mp4`);
                 const tempFinalPath = path.join(os.tmpdir(), `mileto-final-${Date.now()}-${crypto.randomUUID()}.mp4`);
                 temporaryExportPaths = [finishResult.videoPath, finishResult.audioPath, tempFinalPath];
 
@@ -215,17 +216,48 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                 const result = await response.json();
                 if (!response.ok || !result.ok) throw new Error(result.message || 'Falha ao montar o vídeo final.');
 
-                updateProgress(96, 'Salvando o MP4 na pasta escolhida');
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const { ipcRenderer } = (window as any).require('electron');
-                const committed = await ipcRenderer.invoke('export-commit', {
-                    sourcePath: result.finalPath || result.outputPath || tempFinalPath,
-                    destinationPath: fullOutputPath,
-                });
-                if (!committed?.ok || !committed?.destinationPath) {
-                    throw new Error(committed?.message || 'O vídeo foi renderizado, mas não pôde ser salvo.');
+                updateProgress(96, 'Enviando o MP4 ao destino escolhido');
+                const sourcePath = result.finalPath || result.outputPath || tempFinalPath;
+                const fileName = `${safeName}.mp4`;
+                let outputPath = activeExport.outputFolder;
+                if (activeExport.destination.kind === 'local') {
+                    const response = await fetch(`${API_BASE_URL}/api/files/import-export`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sourcePath, parent: activeExport.destination.folderPath || 'Vídeos', name: fileName }),
+                    });
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) throw new Error(data.message || 'Não foi possível salvar na biblioteca local.');
+                    outputPath = `Biblioteca local › ${activeExport.destination.folderPath || 'Vídeos'}`;
+                } else if (activeExport.destination.kind === 'shared') {
+                    const response = await fetch(`${API_BASE_URL}/api/shared/files/import-local`, {
+                        method: 'POST',
+                        headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ backendPath: sourcePath, name: fileName, parent: activeExport.destination.folderPath || 'Vídeos' }),
+                    });
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) throw new Error(data.message || 'Não foi possível enviar ao ambiente compartilhado.');
+                    outputPath = `Compartilhado › ${activeExport.destination.folderPath || 'Vídeos'}`;
+                } else {
+                    const response = await fetch(`${API_BASE_URL}/api/ops/exports/upload`, {
+                        method: 'POST',
+                        headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json', ...(activeExport.destination.viewContextId ? { 'X-Ops-View-Context': activeExport.destination.viewContextId } : {}) },
+                        body: JSON.stringify({ sourcePath, fileName, companyId: activeExport.destination.companyId, folderId: activeExport.destination.opsFolderId || '' }),
+                    });
+                    const responseText = await response.text();
+                    let data: { ok?: boolean; message?: string };
+                    try {
+                        data = responseText ? JSON.parse(responseText) : {};
+                    } catch {
+                        throw new Error(
+                            'O servidor local do Mileto ainda não foi atualizado para enviar vídeos ao Ops. Feche e abra o Mileto novamente e tente exportar de novo.'
+                        );
+                    }
+                    if (!response.ok || !data.ok) throw new Error(data.message || 'Não foi possível enviar ao Mileto Ops.');
+                    outputPath = 'Mileto Ops';
                 }
 
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const { ipcRenderer } = (window as any).require('electron');
                 await ipcRenderer.invoke('export-cleanup', { paths: temporaryExportPaths });
                 temporaryExportPaths = [];
                 updateClientJob(activeExport.jobId, {
@@ -234,7 +266,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                     stepPercent: 100,
                     completedAt: Date.now(),
                     statusText: 'Vídeo exportado e salvo',
-                    outputPath: committed.destinationPath,
+                    outputPath,
                 });
 
                 if (currentProjectIdRef.current === activeExport.projectId) {

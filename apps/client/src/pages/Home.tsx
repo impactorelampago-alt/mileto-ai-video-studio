@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Wand2, Scissors, Clock, Trash2, CheckCircle2, Loader2, HardDrive, Users, Share2 } from 'lucide-react';
+import { ArrowRight, Wand2, Scissors, Clock, Trash2, CheckCircle2, Loader2, HardDrive, Users, Share2, Pencil, Film, Check, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
@@ -14,9 +14,34 @@ interface DraftSummary {
     mediaCount: number;
     duration: number;
     author?: string | null;
+    cover?: { url: string; type: 'image' | 'video' } | null;
 }
 
 const API_BASE = (window as unknown as { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
+
+type UnknownRecord = Record<string, unknown>;
+
+const isRecord = (value: unknown): value is UnknownRecord => typeof value === 'object' && value !== null;
+
+const resolveCoverUrl = (value: string): string => {
+    if (/^https?:\/\//i.test(value) || value.startsWith('data:')) return value;
+    return `${API_BASE}${value.startsWith('/') ? value : `/${value}`}`;
+};
+
+const getSharedDraftCover = (data: UnknownRecord): { url: string; type: 'image' | 'video' } | null => {
+    const takes = Array.isArray(data.mediaTakes) ? data.mediaTakes.filter(isRecord) : [];
+    const take = takes.find((entry) => entry.type === 'image' || entry.type === 'video');
+    if (!take) return null;
+
+    const rawUrl = [take.proxyUrl, take.fileUrl, take.url].find(
+        (candidate): candidate is string =>
+            typeof candidate === 'string' &&
+            candidate.trim().length > 0 &&
+            (/^https?:\/\//i.test(candidate) || candidate.startsWith('/') || candidate.startsWith('data:'))
+    );
+    if (!rawUrl) return null;
+    return { url: resolveCoverUrl(rawUrl), type: take.type === 'image' ? 'image' : 'video' };
+};
 
 const formatRelative = (iso: string | null): string => {
     if (!iso) return 'Data desconhecida';
@@ -43,45 +68,105 @@ const formatDuration = (sec: number): string => {
 
 export const Home = () => {
     const navigate = useNavigate();
-    const { startNewDraft, loadDraft, publishDraftToShared, projectId, draftScope } = useWizard();
+    const { startNewDraft, loadDraft, publishDraftToShared, projectId, draftScope, updateAdData } = useWizard();
     const [drafts, setDrafts] = useState<DraftSummary[]>([]);
     const [loadingDrafts, setLoadingDrafts] = useState(true);
     const [resumingId, setResumingId] = useState<string | null>(null);
     const [sharingId, setSharingId] = useState<string | null>(null);
     const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const [editingTitle, setEditingTitle] = useState('');
+    const [renamingId, setRenamingId] = useState<string | null>(null);
     const [scope, setScope] = useState<'local' | 'shared'>('local');
     const [newDraftTitle, setNewDraftTitle] = useState('');
 
-    const refreshDrafts = useCallback(async () => {
+    const refreshDrafts = useCallback(async (): Promise<boolean> => {
         setLoadingDrafts(true);
         try {
             if (scope === 'shared') {
                 const json = await gatewayApi.sharedDrafts();
-                setDrafts(json.drafts.map((draft) => ({
-                    projectId: draft.id,
-                    title: draft.title,
-                    updatedAt: draft.updatedAt,
-                    exported: false,
-                    mediaCount: 0,
-                    duration: 0,
-                    author: draft.authorName || draft.authorEmail || null,
-                })));
-                return;
+                const hydratedDrafts = await Promise.all(json.drafts.map(async (draft) => {
+                    let data: UnknownRecord | null = null;
+                    try {
+                        const detail = await gatewayApi.sharedDraft(draft.id);
+                        data = detail.ok && isRecord(detail.data) ? detail.data : null;
+                    } catch {
+                        // Uma capa ausente nÃ£o deve impedir que o rascunho apareÃ§a.
+                    }
+                    const takes = data && Array.isArray(data.mediaTakes) ? data.mediaTakes.filter(isRecord) : [];
+                    const duration = takes.reduce((total, take) => {
+                        const trim = isRecord(take.trim) ? take.trim : null;
+                        const start = typeof trim?.start === 'number' ? trim.start : 0;
+                        const end = typeof trim?.end === 'number' ? trim.end : 0;
+                        return total + Math.max(0, end - start);
+                    }, 0);
+                    let cover = data ? getSharedDraftCover(data) : null;
+                    // Rascunhos compartilhados guardam a referência segura da mídia,
+                    // não a URL temporária. Resolve somente a primeira capa visual.
+                    if (!cover) {
+                        const firstVisual = takes.find((take) => take.type === 'image' || take.type === 'video');
+                        const sharedAssetId = typeof firstVisual?.sharedAssetId === 'string' ? firstVisual.sharedAssetId : null;
+                        if (sharedAssetId) {
+                            try {
+                                const asset = await gatewayApi.sharedAsset(sharedAssetId);
+                                if (asset.publicUrl && (asset.type === 'image' || asset.type === 'video')) {
+                                    cover = { url: resolveCoverUrl(asset.publicUrl), type: asset.type };
+                                }
+                            } catch {
+                                // A miniatura é complementar; nunca bloqueia a lista de rascunhos.
+                            }
+                        }
+                    }
+                    const projectTitle = data && isRecord(data.adData) && typeof data.adData.title === 'string'
+                        ? data.adData.title.trim()
+                        : '';
+                    return {
+                        projectId: draft.id,
+                        title: projectTitle || draft.title,
+                        updatedAt: draft.updatedAt,
+                        exported: data?.exported === true,
+                        mediaCount: takes.length,
+                        duration,
+                        cover,
+                        author: draft.authorName || draft.authorEmail || null,
+                    };
+                }));
+                setDrafts(hydratedDrafts);
+                return true;
             }
             const res = await fetch(`${API_BASE}/api/projects`);
             const json = await res.json();
             if (json.ok && Array.isArray(json.drafts)) {
                 setDrafts(json.drafts);
+                return true;
             }
+            return false;
         } catch (err) {
             console.error('Failed to load drafts', err);
+            return false;
         } finally {
             setLoadingDrafts(false);
         }
     }, [scope]);
 
     useEffect(() => {
-        refreshDrafts();
+        let cancelled = false;
+        let retryTimer: number | undefined;
+
+        // O Electron cria a janela antes do servidor local terminar de abrir.
+        // Sem nova tentativa, a Home fica vazia até o usuário trocar de página.
+        const loadWithRetry = async (attempt: number) => {
+            const loaded = await refreshDrafts();
+            if (!loaded && !cancelled && attempt < 6) {
+                retryTimer = window.setTimeout(() => void loadWithRetry(attempt + 1), 800);
+            }
+        };
+
+        void loadWithRetry(0);
+        return () => {
+            cancelled = true;
+            if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+        };
     }, [refreshDrafts]);
 
     const handleNewProject = () => {
@@ -113,6 +198,80 @@ export const Home = () => {
             return;
         }
         navigate(`/wizard/step/${lastStep}`);
+    };
+
+    const beginRename = (event: React.MouseEvent, draft: DraftSummary) => {
+        event.stopPropagation();
+        setEditingId(draft.projectId);
+        setEditingTitle(draft.title === 'Rascunho sem tÃ­tulo' ? '' : draft.title);
+    };
+
+    const cancelRename = (event?: React.SyntheticEvent) => {
+        event?.stopPropagation();
+        setEditingId(null);
+        setEditingTitle('');
+    };
+
+    const handleRename = async (event: React.SyntheticEvent, id: string) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const title = editingTitle.trim();
+        if (!title) {
+            toast.error('Informe um tÃ­tulo para o rascunho.');
+            return;
+        }
+        if (renamingId) return;
+
+        setRenamingId(id);
+        try {
+            let existingData: UnknownRecord;
+            if (scope === 'shared') {
+                const result = await gatewayApi.sharedDraft(id);
+                if (!result.ok || !isRecord(result.data)) throw new Error('NÃ£o foi possÃ­vel abrir o rascunho compartilhado.');
+                existingData = result.data;
+            } else {
+                const response = await fetch(`${API_BASE}/api/projects/${id}`);
+                const result = await response.json() as { ok?: boolean; data?: unknown; message?: string };
+                if (!response.ok || !result.ok || !isRecord(result.data)) {
+                    throw new Error(result.message || 'NÃ£o foi possÃ­vel abrir o rascunho local.');
+                }
+                existingData = result.data;
+            }
+
+            const existingAdData = isRecord(existingData.adData) ? existingData.adData : {};
+            const nextData: UnknownRecord = {
+                ...existingData,
+                title,
+                adData: { ...existingAdData, title },
+                updatedAt: new Date().toISOString(),
+                // Maior que uma revisÃ£o normal de autosave, evitando que uma
+                // gravaÃ§Ã£o atrasada volte com o nome antigo.
+                saveRevision: Date.now() * 1000,
+            };
+
+            if (scope === 'shared') {
+                await gatewayApi.saveSharedDraft(id, title, nextData);
+            } else {
+                const response = await fetch(`${API_BASE}/api/projects/${id}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data: nextData }),
+                });
+                const result = await response.json() as { ok?: boolean; message?: string };
+                if (!response.ok || !result.ok) throw new Error(result.message || 'NÃ£o foi possÃ­vel salvar o novo tÃ­tulo.');
+            }
+
+            setDrafts((previous) => previous.map((draft) => (
+                draft.projectId === id ? { ...draft, title, updatedAt: nextData.updatedAt as string } : draft
+            )));
+            if (projectId === id && draftScope === scope) updateAdData({ title });
+            cancelRename();
+            toast.success('TÃ­tulo do rascunho atualizado.');
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'NÃ£o foi possÃ­vel renomear o rascunho.');
+        } finally {
+            setRenamingId(null);
+        }
     };
 
     const handleDelete = async (e: React.MouseEvent, id: string) => {
@@ -252,6 +411,8 @@ export const Home = () => {
                             const isLoading = resumingId === d.projectId;
                             const isSharing = sharingId === d.projectId;
                             const isDeleting = deletingId === d.projectId;
+                            const isEditing = editingId === d.projectId;
+                            const isRenaming = renamingId === d.projectId;
                             return (
                                 <div
                                     key={d.projectId}
@@ -259,27 +420,108 @@ export const Home = () => {
                                     tabIndex={0}
                                     onClick={() => handleResume(d.projectId)}
                                     onKeyDown={(e) => {
-                                        if (e.key === 'Enter' || e.key === ' ') handleResume(d.projectId);
+                                        if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                                            e.preventDefault();
+                                            void handleResume(d.projectId);
+                                        }
                                     }}
                                     className={cn(
-                                        'group relative rounded-2xl border border-border bg-card p-5 text-left transition-all cursor-pointer hover:border-brand-lime/50 hover:-translate-y-0.5 hover:shadow-[0_0_30px_rgba(0,230,118,0.08)]',
+                                        'group relative flex min-h-[166px] overflow-hidden rounded-2xl border border-border bg-card text-left transition-all cursor-pointer hover:border-brand-lime/50 hover:-translate-y-0.5 hover:shadow-[0_0_30px_rgba(0,230,118,0.08)]',
                                         isLoading && 'opacity-60 pointer-events-none'
                                     )}
                                 >
-                                    <div className="flex items-start justify-between gap-2 mb-3">
-                                        <h4 className="text-sm font-bold text-foreground line-clamp-2 leading-tight flex-1">
-                                            {d.title}
-                                        </h4>
-                                        <button
-                                            type="button"
-                                            onClick={(e) => handleDelete(e, d.projectId)}
-                                            disabled={!!deletingId}
-                                            className="shrink-0 p-1.5 rounded-lg text-muted-foreground/60 hover:text-red-400 hover:bg-red-500/10 transition-colors opacity-0 group-hover:opacity-100"
-                                            title="Excluir rascunho"
-                                            aria-label="Excluir rascunho"
-                                        >
-                                            {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                                        </button>
+                                    <div className="relative aspect-[9/16] w-[82px] shrink-0 overflow-hidden bg-black sm:w-[96px]" aria-hidden="true">
+                                        {d.cover?.type === 'image' ? (
+                                            <img
+                                                src={d.cover.url}
+                                                alt=""
+                                                className="h-full w-full object-contain"
+                                            />
+                                        ) : d.cover?.type === 'video' ? (
+                                            <video
+                                                src={`${d.cover.url}#t=0.001`}
+                                                preload="metadata"
+                                                muted
+                                                playsInline
+                                                onLoadedMetadata={(event) => {
+                                                    // Solicita um frame real do vídeo para a capa, sem iniciar reprodução.
+                                                    event.currentTarget.currentTime = 0.001;
+                                                }}
+                                                className="h-full w-full object-contain"
+                                            />
+                                        ) : (
+                                            <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-foreground/15 to-black">
+                                                <Film className="h-6 w-6 text-muted-foreground/70" />
+                                            </div>
+                                        )}
+                                        <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-transparent to-card/20" />
+                                    </div>
+                                    <div className="min-w-0 flex flex-1 flex-col p-4">
+                                        <div className="mb-3 flex items-start justify-between gap-2">
+                                        {isEditing ? (
+                                            <form
+                                                className="flex min-w-0 flex-1 items-center gap-1"
+                                                onClick={(event) => event.stopPropagation()}
+                                                onSubmit={(event) => void handleRename(event, d.projectId)}
+                                            >
+                                                <input
+                                                    autoFocus
+                                                    value={editingTitle}
+                                                    onChange={(event) => setEditingTitle(event.target.value)}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === 'Escape') cancelRename(event);
+                                                    }}
+                                                    aria-label="Título do rascunho"
+                                                    className="min-w-0 flex-1 rounded-lg border border-brand-lime/50 bg-background px-2 py-1 text-sm font-bold text-foreground outline-none focus:border-brand-lime"
+                                                />
+                                                <button
+                                                    type="submit"
+                                                    disabled={isRenaming}
+                                                    className="rounded-lg p-1.5 text-brand-lime transition-colors hover:bg-brand-lime/10 disabled:opacity-50"
+                                                    title="Salvar título"
+                                                    aria-label="Salvar título"
+                                                >
+                                                    {isRenaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={cancelRename}
+                                                    disabled={isRenaming}
+                                                    className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+                                                    title="Cancelar"
+                                                    aria-label="Cancelar edição"
+                                                >
+                                                    <X className="h-3.5 w-3.5" />
+                                                </button>
+                                            </form>
+                                        ) : (
+                                            <h4 className="text-sm font-bold text-foreground line-clamp-2 leading-tight flex-1">
+                                                {d.title}
+                                            </h4>
+                                        )}
+                                        {!isEditing && (
+                                            <div className="flex shrink-0 items-center gap-0.5 opacity-70 transition-opacity hover:opacity-100 focus-within:opacity-100">
+                                                <button
+                                                    type="button"
+                                                    onClick={(event) => beginRename(event, d)}
+                                                    className="rounded-lg p-1.5 text-muted-foreground/60 transition-colors hover:bg-brand-lime/10 hover:text-brand-lime"
+                                                    title="Editar título"
+                                                    aria-label="Editar título"
+                                                >
+                                                    <Pencil className="h-3.5 w-3.5" />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={(event) => handleDelete(event, d.projectId)}
+                                                    disabled={!!deletingId}
+                                                    className="rounded-lg p-1.5 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-400 disabled:opacity-50"
+                                                    title="Excluir rascunho"
+                                                    aria-label="Excluir rascunho"
+                                                >
+                                                    {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
 
                                     <div className="flex items-center gap-3 text-[11px] text-muted-foreground font-medium">
@@ -339,6 +581,7 @@ export const Home = () => {
                                             </span>
                                         </div>
                                     </div>
+                                </div>
                                 </div>
                             );
                         })}

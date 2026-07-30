@@ -8,6 +8,19 @@ type ChatAgentId = (typeof CHAT_AGENT_IDS)[number];
 const normalizeAgentId = (value: unknown): ChatAgentId =>
     CHAT_AGENT_IDS.includes(value as ChatAgentId) ? (value as ChatAgentId) : 'director';
 
+// A geração é um trabalho do servidor, não da janela de chat. Recolher o painel
+// ou navegar pelo app não deve descartar uma resposta que já está em andamento.
+const activeResponseControllers = new Map<string, AbortController>();
+
+const canRespond = (req: Request, res: Response) =>
+    !req.destroyed && !res.destroyed && !res.writableEnded && !res.headersSent;
+
+const respond = (req: Request, res: Response, status: number, payload: unknown) => {
+    if (canRespond(req, res)) {
+        res.status(status).json(payload);
+    }
+};
+
 const SCRIPT_OUTPUT_INSTRUCTION = `<INSTRUCAO_DE_FORMATO_DO_APP>
 Responda ao pedido do usuário imediatamente anterior.
 Se a resposta contiver um roteiro final pronto para uso, gere também um título curto e use exatamente:
@@ -139,6 +152,10 @@ export const moveSession = async (req: Request, res: Response) => {
 
 export const deleteSession = async (req: Request, res: Response) => {
     try {
+        // Apagar uma conversa é uma ação explícita: neste caso, a resposta em
+        // andamento também deve parar para não recriar conteúdo após a exclusão.
+        activeResponseControllers.get(req.params.id)?.abort();
+        activeResponseControllers.delete(req.params.id);
         if (!chatService.deleteSession(req.params.id)) {
             res.status(404).json({ ok: false, message: 'Session not found' });
             return;
@@ -175,25 +192,43 @@ export const truncateMessagesFrom = async (req: Request, res: Response) => {
 
 // ─── Send Message & Get AI Response ──────────────────────────────────────────
 
-export const sendMessage = async (req: Request, res: Response) => {
-    const upstreamController = new AbortController();
-    const cancelUpstream = () => {
-        if (!res.writableEnded) upstreamController.abort();
-    };
-    req.once('aborted', cancelUpstream);
-    res.once('close', cancelUpstream);
+export const getResponseStatus = async (req: Request, res: Response) => {
+    try {
+        res.json({ ok: true, active: activeResponseControllers.has(req.params.sessionId) });
+    } catch (err: unknown) {
+        res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'Unknown error' });
+    }
+};
 
+export const cancelResponse = async (req: Request, res: Response) => {
+    const controller = activeResponseControllers.get(req.params.sessionId);
+    if (controller && !controller.signal.aborted) {
+        controller.abort();
+        res.json({ ok: true, cancelled: true });
+        return;
+    }
+    res.json({ ok: true, cancelled: false });
+};
+
+export const sendMessage = async (req: Request, res: Response) => {
+    let responseController: AbortController | null = null;
+    let responseSessionId: string | null = null;
     try {
         const { sessionId, content, model, reasoning, locale } = req.body;
+        responseSessionId = typeof sessionId === 'string' ? sessionId : null;
 
         if (!sessionId || !content) {
-            res.status(400).json({ ok: false, message: 'sessionId and content are required' });
+            respond(req, res, 400, { ok: false, message: 'sessionId and content are required' });
             return;
         }
 
         const session = chatService.getSession(sessionId);
         if (!session) {
-            res.status(404).json({ ok: false, message: 'Conversa não encontrada.' });
+            respond(req, res, 404, { ok: false, message: 'Conversa não encontrada.' });
+            return;
+        }
+        if (activeResponseControllers.has(sessionId)) {
+            respond(req, res, 409, { ok: false, message: 'Já existe uma resposta sendo preparada nesta conversa.' });
             return;
         }
         const agentId = normalizeAgentId(req.body?.agentId || session.agentId);
@@ -206,7 +241,7 @@ export const sendMessage = async (req: Request, res: Response) => {
                 'assistant',
                 '⚠️ Sessão expirada. Entre novamente para conversar com o assistente.'
             );
-            res.json({ ok: true, userMessage: userMsg, assistantMessage: errMsg });
+            respond(req, res, 200, { ok: true, userMessage: userMsg, assistantMessage: errMsg });
             return;
         }
 
@@ -231,21 +266,37 @@ export const sendMessage = async (req: Request, res: Response) => {
 
         let assistantContent = '';
         let assistantAgent: { id: string; label: string; version: number; tier: 'lite' | 'mileto' | 'ultra' } | undefined;
+        const controller = new AbortController();
+        responseController = controller;
+        activeResponseControllers.set(sessionId, controller);
         try {
-            const result = await gatewayChat(token, {
+            let result = await gatewayChat(token, {
                 messages: historyForGateway,
                 agentId,
                 model: model || 'mileto-plus',
                 reasoning,
                 locale: locale || 'pt-BR',
-            }, upstreamController.signal);
-            assistantContent = result.text || 'Sem resposta do assistente.';
+            }, controller.signal);
+
+            // Respostas 200 sem conteúdo não são úteis: repetimos uma única vez
+            // antes de registrar uma falha legível, em vez de salvar texto vazio.
+            if (!result.text?.trim()) {
+                result = await gatewayChat(token, {
+                    messages: historyForGateway,
+                    agentId,
+                    model: model || 'mileto-plus',
+                    reasoning,
+                    locale: locale || 'pt-BR',
+                }, controller.signal);
+            }
+            if (!result.text?.trim()) {
+                throw new GatewayHttpError(502, 'O agente não devolveu texto na resposta.');
+            }
+            assistantContent = result.text.trim();
             assistantAgent = result.agent;
         } catch (apiErr: unknown) {
-            if (upstreamController.signal.aborted || (apiErr instanceof GatewayHttpError && apiErr.status === 499)) {
-                if (!res.headersSent && !res.destroyed) {
-                    res.status(499).json({ ok: false, message: 'Resposta interrompida pelo usuário.' });
-                }
+            if (controller.signal.aborted || (apiErr instanceof GatewayHttpError && apiErr.status === 499)) {
+                respond(req, res, 499, { ok: false, message: 'Resposta interrompida pelo usuário.' });
                 return;
             }
             if (apiErr instanceof GatewayHttpError) {
@@ -270,14 +321,17 @@ export const sendMessage = async (req: Request, res: Response) => {
             agentVersion: assistantAgent?.version,
             agentTier: assistantAgent?.tier,
         });
-        res.json({ ok: true, userMessage: userMsg, assistantMessage: assistantMsg });
+        respond(req, res, 200, { ok: true, userMessage: userMsg, assistantMessage: assistantMsg });
     } catch (err: unknown) {
         console.error('[ChatController] sendMessage error:', err);
-        if (!res.headersSent) {
-            res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'Unexpected error' });
-        }
+        respond(req, res, 500, { ok: false, message: err instanceof Error ? err.message : 'Unexpected error' });
     } finally {
-        req.off('aborted', cancelUpstream);
-        res.off('close', cancelUpstream);
+        if (
+            responseSessionId &&
+            responseController &&
+            activeResponseControllers.get(responseSessionId) === responseController
+        ) {
+            activeResponseControllers.delete(responseSessionId);
+        }
     }
 };

@@ -1,19 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useWizard } from '../context/WizardContext';
-import {
-    X,
-    Upload,
-    Loader2,
-    Volume2,
-    VolumeX,
-    Check,
-    Plus,
-    ChevronDown,
-    ChevronRight,
-    Sparkles,
-    Trash2,
-    Search,
-} from 'lucide-react';
+import { X, Upload, Loader2, Volume2, VolumeX, Check, Plus, Sparkles, Trash2, Search, Film } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import type { TransitionAsset } from '../types';
@@ -39,6 +26,12 @@ const TransitionCard = ({
 }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
 
+    const showPreviewFrame = () => {
+        const video = videoRef.current;
+        if (!video || !Number.isFinite(video.duration)) return;
+        video.currentTime = Math.min(Math.max(video.duration * 0.18, 0.08), 0.45);
+    };
+
     useEffect(() => {
         if (videoRef.current) {
             videoRef.current.volume = Math.min(1, currentVolume);
@@ -55,7 +48,7 @@ const TransitionCard = ({
     const handleMouseLeave = () => {
         if (videoRef.current) {
             videoRef.current.pause();
-            videoRef.current.currentTime = 0;
+            showPreviewFrame();
         }
     };
 
@@ -88,21 +81,24 @@ const TransitionCard = ({
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
             className={cn(
-                'relative flex flex-row items-stretch overflow-hidden rounded-xl border-2 transition-all bg-card cursor-pointer',
+                'relative flex flex-row items-stretch overflow-hidden rounded-2xl border transition-all duration-200 bg-card cursor-pointer hover:-translate-y-0.5 hover:shadow-xl',
                 isSelected
-                    ? 'border-primary shadow-[0_0_15px_rgba(34,197,94,0.2)]'
+                    ? 'border-primary shadow-[0_0_0_1px_rgba(0,230,118,.18),0_14px_32px_rgba(0,0,0,.28)]'
                     : 'border-border hover:border-primary/50'
             )}
         >
             <div className="flex flex-col flex-1 min-w-0">
-                <div className="relative h-44 w-full overflow-hidden bg-black group flex items-center justify-center">
+                <div className="relative h-36 w-full overflow-hidden bg-black group flex items-center justify-center">
+                    <Film className="absolute h-9 w-9 text-primary/20" />
                     <video
                         ref={videoRef}
-                        src={`${((window as any).API_BASE_URL || 'http://localhost:3301')}${t.publicUrl}`}
+                        src={`${(window as any).API_BASE_URL || 'http://localhost:3301'}${t.publicUrl}`}
                         className="h-full w-full object-cover opacity-80 transition-all duration-500 group-hover:scale-105 group-hover:opacity-100"
                         loop
                         playsInline
                         muted={currentMuted}
+                        preload="metadata"
+                        onLoadedMetadata={showPreviewFrame}
                     />
 
                     {isSelected && (
@@ -147,44 +143,46 @@ const TransitionCard = ({
                 </div>
             </div>
 
-            {!t.isBuiltIn && <div
-                className="w-12 border-l border-border bg-background/50 flex flex-col items-center py-3 px-1"
-                onClick={(e) => e.stopPropagation()}
-            >
-                <button
-                    onClick={toggleMute}
-                    className={cn(
-                        'flex h-8 w-8 items-center justify-center rounded-md shadow-sm transition-colors mb-3 shrink-0',
-                        currentMuted
-                            ? 'bg-destructive/10 text-destructive hover:bg-destructive/20'
-                            : 'bg-primary/10 text-primary hover:bg-primary/20'
-                    )}
-                    title={currentMuted ? 'Desmutar' : 'Mutar'}
+            {!t.isBuiltIn && (
+                <div
+                    className="w-12 border-l border-border bg-background/50 flex flex-col items-center py-3 px-1"
+                    onClick={(e) => e.stopPropagation()}
                 >
-                    {currentMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-                </button>
+                    <button
+                        onClick={toggleMute}
+                        className={cn(
+                            'flex h-8 w-8 items-center justify-center rounded-md shadow-sm transition-colors mb-3 shrink-0',
+                            currentMuted
+                                ? 'bg-destructive/10 text-destructive hover:bg-destructive/20'
+                                : 'bg-primary/10 text-primary hover:bg-primary/20'
+                        )}
+                        title={currentMuted ? 'Desmutar' : 'Mutar'}
+                    >
+                        {currentMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                    </button>
 
-                <div className="flex-1 w-full flex justify-center py-2 h-24">
-                    <input
-                        type="range"
-                        // @ts-expect-error - orient is a non-standard attribute supported by Firefox
-                        orient="vertical"
-                        min="0"
-                        max="2"
-                        step="0.05"
-                        value={currentVolume}
-                        onChange={handleVolumeChange}
-                        disabled={currentMuted}
-                        className="w-1.5 h-full cursor-pointer appearance-none rounded-lg bg-secondary accent-primary"
-                        style={
-                            {
-                                WebkitAppearance: 'slider-vertical',
-                                writingMode: 'bt-lr',
-                            } as unknown as React.CSSProperties
-                        }
-                    />
+                    <div className="flex-1 w-full flex justify-center py-2 h-24">
+                        <input
+                            type="range"
+                            // @ts-expect-error - orient is a non-standard attribute supported by Firefox
+                            orient="vertical"
+                            min="0"
+                            max="2"
+                            step="0.05"
+                            value={currentVolume}
+                            onChange={handleVolumeChange}
+                            disabled={currentMuted}
+                            className="w-1.5 h-full cursor-pointer appearance-none rounded-lg bg-secondary accent-primary"
+                            style={
+                                {
+                                    WebkitAppearance: 'slider-vertical',
+                                    writingMode: 'bt-lr',
+                                } as unknown as React.CSSProperties
+                            }
+                        />
+                    </div>
                 </div>
-            </div>}
+            )}
         </div>
     );
 };
@@ -218,7 +216,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
 
     const loadTransitions = async () => {
         try {
-            const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/transitions/list`);
+            const res = await fetch(`${(window as any).API_BASE_URL || 'http://localhost:3301'}/api/transitions/list`);
             const data = await res.json();
             if (data.ok) {
                 setTransitions(data.transitions);
@@ -232,7 +230,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                 ];
                 setCategories(orderedCategories);
                 setActiveCategory((current) =>
-                    orderedCategories.includes(current) ? current : (orderedCategories[0] || 'Essencial')
+                    orderedCategories.includes(current) ? current : orderedCategories[0] || 'Essencial'
                 );
             }
         } catch (err) {
@@ -272,9 +270,12 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
         const t = itemToDelete;
 
         try {
-            const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/transitions/${t.id}`, {
-                method: 'DELETE',
-            });
+            const res = await fetch(
+                `${(window as any).API_BASE_URL || 'http://localhost:3301'}/api/transitions/${t.id}`,
+                {
+                    method: 'DELETE',
+                }
+            );
             const data = await res.json();
 
             if (data.ok) {
@@ -319,10 +320,13 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
         formData.append('category', activeCategory);
 
         try {
-            const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/transitions/upload`, {
-                method: 'POST',
-                body: formData,
-            });
+            const res = await fetch(
+                `${(window as any).API_BASE_URL || 'http://localhost:3301'}/api/transitions/upload`,
+                {
+                    method: 'POST',
+                    body: formData,
+                }
+            );
             const data = await res.json();
 
             if (data.ok && data.transition) {
@@ -410,9 +414,21 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
         }
     };
 
+    const normalizedQuery = searchQuery.trim().toLocaleLowerCase('pt-BR');
+    const activeTransitions = transitions.filter((transition) => {
+        const matchesSearch = `${transition.originalName} ${transition.description || ''} ${transition.category || ''}`
+            .toLocaleLowerCase('pt-BR')
+            .includes(normalizedQuery);
+
+        if (normalizedQuery) return matchesSearch;
+        return (transition.category || 'Essencial') === activeCategory;
+    });
+    const activeLabel = normalizedQuery ? 'Resultados da busca' : activeCategory;
+    const selectedCategory = currentTransition?.category || 'Essencial';
+
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-            <div className="bg-card border border-border/80 w-full max-w-6xl rounded-3xl shadow-2xl flex flex-col max-h-[92vh] overflow-hidden">
+            <div className="bg-card border border-border/80 w-full max-w-[1320px] h-[min(860px,92vh)] rounded-3xl shadow-2xl flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between p-6 border-b border-border shrink-0 bg-card z-10">
                     <div>
                         <h2 className="text-xl font-bold text-foreground">
@@ -467,191 +483,223 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                     </div>
                 )}
 
-                <div className="p-6 overflow-y-auto flex-1 flex flex-col gap-4 relative">
-                    <div className="relative">
-                        <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                        <input
-                            value={searchQuery}
-                            onChange={(event) => setSearchQuery(event.target.value)}
-                            placeholder="Buscar por estilo, nome ou uso..."
-                            className="h-12 w-full rounded-xl border border-border bg-background/70 pl-11 pr-4 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50"
-                        />
-                    </div>
-                    {/* Sanfona de Categorias */}
-                    {categories.map((cat) => {
-                        const isExpanded = activeCategory === cat;
-                        const normalizedQuery = searchQuery.trim().toLocaleLowerCase('pt-BR');
-                        const catTransitions = transitions.filter((t) => {
-                            if ((t.category || 'Essencial') !== cat) return false;
-                            if (!normalizedQuery) return true;
-                            return `${t.originalName} ${t.description || ''} ${t.category || ''}`
-                                .toLocaleLowerCase('pt-BR')
-                                .includes(normalizedQuery);
-                        });
+                <div className="min-h-0 flex-1 p-5 relative">
+                    <div className="grid h-full min-h-0 grid-cols-1 gap-4 lg:grid-cols-[250px_minmax(0,1fr)]">
+                        <aside className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/35">
+                            <div className="border-b border-border/60 p-4">
+                                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground">
+                                    Coleções
+                                </p>
+                                <p className="mt-1 text-xs leading-relaxed text-muted-foreground/75">
+                                    Escolha uma família de efeitos para explorar.
+                                </p>
+                            </div>
 
-                        return (
-                            <div
-                                key={cat}
-                                className={cn(
-                                    'border rounded-xl overflow-hidden transition-all duration-300',
-                                    isExpanded
-                                        ? 'border-primary/40 shadow-[0_4px_20px_rgba(34,197,94,0.05)]'
-                                        : 'border-border/50 hover:border-border'
-                                )}
-                            >
-                                {/* Categoria Header (Clickable) */}
-                                <button
-                                    onClick={() => setActiveCategory(isExpanded ? '' : cat)}
-                                    className={cn(
-                                        'w-full flex items-center justify-between p-4 bg-card hover:bg-muted/30 transition-colors text-left outline-none',
-                                        isExpanded && 'bg-muted/30 border-b border-border/50'
-                                    )}
-                                >
-                                    <div className="flex items-center gap-3">
-                                        <div
+                            <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-2.5">
+                                {categories.map((category) => {
+                                    const count = transitions.filter(
+                                        (transition) => (transition.category || 'Essencial') === category
+                                    ).length;
+                                    const isActive = !normalizedQuery && activeCategory === category;
+
+                                    return (
+                                        <button
+                                            key={category}
+                                            type="button"
+                                            onClick={() => {
+                                                setSearchQuery('');
+                                                setActiveCategory(category);
+                                            }}
                                             className={cn(
-                                                'w-8 h-8 rounded-lg flex items-center justify-center transition-colors',
-                                                isExpanded
-                                                    ? 'bg-primary/20 text-primary'
-                                                    : 'bg-muted text-muted-foreground'
+                                                'flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition-all',
+                                                isActive
+                                                    ? 'border-primary/35 bg-primary/10 text-primary shadow-[0_8px_24px_rgba(0,0,0,.18)]'
+                                                    : 'border-transparent text-muted-foreground hover:border-border/80 hover:bg-muted/40 hover:text-foreground'
                                             )}
                                         >
-                                            {isExpanded ? (
-                                                <ChevronDown className="w-5 h-5" />
-                                            ) : (
-                                                <ChevronRight className="w-5 h-5" />
-                                            )}
-                                        </div>
-                                        <div>
-                                            <h3
+                                            <span
                                                 className={cn(
-                                                    'font-bold text-lg',
-                                                    isExpanded ? 'text-primary' : 'text-foreground'
+                                                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl',
+                                                    isActive ? 'bg-primary/15' : 'bg-muted/70'
                                                 )}
                                             >
-                                                {cat}
-                                            </h3>
-                                            <p className="text-xs text-muted-foreground mt-0.5">
-                                                {catTransitions.length} transições
-                                            </p>
+                                                <Film className="h-4 w-4" />
+                                            </span>
+                                            <span className="min-w-0 flex-1">
+                                                <span className="block truncate text-sm font-bold">{category}</span>
+                                                <span className="mt-0.5 block text-[10px] font-semibold uppercase tracking-wider opacity-65">
+                                                    {count} {count === 1 ? 'efeito' : 'efeitos'}
+                                                </span>
+                                            </span>
+                                            {selectedCategory === category && currentTransition && (
+                                                <Check className="h-4 w-4 shrink-0 text-primary" />
+                                            )}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+
+                            <div className="border-t border-border/60 p-3">
+                                {isCreatingCategory ? (
+                                    <div className="space-y-2">
+                                        <input
+                                            type="text"
+                                            value={newCategoryName}
+                                            onChange={(event) => setNewCategoryName(event.target.value)}
+                                            placeholder="Nome da coleção"
+                                            className="h-10 w-full rounded-xl border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary/50"
+                                            autoFocus
+                                            onKeyDown={(event) => {
+                                                if (event.key === 'Enter') handleCreateCategory();
+                                                if (event.key === 'Escape') {
+                                                    setIsCreatingCategory(false);
+                                                    setNewCategoryName('');
+                                                }
+                                            }}
+                                        />
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setIsCreatingCategory(false);
+                                                    setNewCategoryName('');
+                                                }}
+                                                className="h-9 rounded-lg border border-border text-xs font-bold text-muted-foreground hover:bg-muted/40"
+                                            >
+                                                Cancelar
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={handleCreateCategory}
+                                                className="h-9 rounded-lg bg-primary text-xs font-black text-primary-foreground hover:bg-primary/90"
+                                            >
+                                                Criar
+                                            </button>
                                         </div>
                                     </div>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsCreatingCategory(true)}
+                                        className="flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border text-xs font-bold text-muted-foreground transition-colors hover:border-primary/35 hover:bg-primary/5 hover:text-primary"
+                                    >
+                                        <Plus className="h-4 w-4" />
+                                        Nova coleção
+                                    </button>
+                                )}
+                            </div>
+                        </aside>
 
-                                    {/* Adicionar Efeito Rápido (Header) */}
-                                    {isExpanded && (
-                                        <div
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                fileInputRef.current?.click();
-                                            }}
-                                            className="px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-md text-sm font-semibold flex items-center gap-2 transition-colors cursor-pointer"
-                                        >
-                                            <Upload className="w-4 h-4" />
-                                            Upload
-                                        </div>
-                                    )}
-                                </button>
-
-                                {/* Categoria Body (Conteúdo da Sanfona) */}
-                                {isExpanded && (
-                                    <div className="p-5 bg-background/50">
+                        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/20">
+                            <div className="space-y-3 border-b border-border/60 p-4">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                                    <div className="relative min-w-0 flex-1">
+                                        <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                                         <input
-                                            type="file"
-                                            accept="video/mp4,video/quicktime,.mp4,.mov"
-                                            className="hidden"
-                                            ref={fileInputRef}
-                                            onChange={handleUpload}
+                                            value={searchQuery}
+                                            onChange={(event) => setSearchQuery(event.target.value)}
+                                            placeholder="Buscar por estilo, nome ou uso..."
+                                            className="h-11 w-full rounded-xl border border-border bg-background/70 pl-11 pr-4 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50"
                                         />
-
-                                        {isLoading || isUploading ? (
-                                            <div className="flex justify-center p-8">
-                                                <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                                            </div>
-                                        ) : catTransitions.length === 0 ? (
-                                            <div className="flex flex-col items-center justify-center py-10 px-4 border-2 border-dashed border-border/50 rounded-xl bg-card">
-                                                <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mb-3">
-                                                    <Sparkles className="w-6 h-6 text-muted-foreground opacity-50 block" />
-                                                </div>
-                                                <p className="text-muted-foreground text-center text-sm font-medium">
-                                                    Pasta Vazia
-                                                </p>
-                                                <p className="text-muted-foreground/60 text-center text-xs mt-1">
-                                                    Clique em <strong className="text-primary/70">Upload</strong> acima
-                                                    para carregar.
-                                                </p>
-                                            </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => fileInputRef.current?.click()}
+                                        disabled={isUploading}
+                                        className="flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl border border-primary/25 bg-primary/10 px-4 text-sm font-bold text-primary transition-colors hover:bg-primary/15 disabled:cursor-wait disabled:opacity-60"
+                                    >
+                                        {isUploading ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
                                         ) : (
-                                            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                                                {catTransitions.map((t) => (
-                                                    <TransitionCard
-                                                        key={t.id}
-                                                        t={t}
-                                                        currentVolume={currentVolume}
-                                                        currentMuted={currentMuted}
-                                                        onVolumeChange={handleVolumeChange}
-                                                        onMuteToggle={handleMuteToggle}
-                                                        isSelected={currentTransition?.id === t.id}
-                                                        toggleTransitionSelection={toggleTransitionSelection}
-                                                        onDelete={handleDeleteTransition}
-                                                    />
-                                                ))}
-                                            </div>
+                                            <Upload className="h-4 w-4" />
                                         )}
+                                        Adicionar efeito
+                                    </button>
+                                    <input
+                                        type="file"
+                                        accept="video/mp4,video/quicktime,.mp4,.mov"
+                                        className="hidden"
+                                        ref={fileInputRef}
+                                        onChange={handleUpload}
+                                    />
+                                </div>
+
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <p className="truncate text-sm font-black text-foreground">{activeLabel}</p>
+                                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                                            {activeTransitions.length}{' '}
+                                            {activeTransitions.length === 1
+                                                ? 'efeito disponível'
+                                                : 'efeitos disponíveis'}
+                                        </p>
+                                    </div>
+                                    {currentTransition ? (
+                                        <div className="max-w-[46%] rounded-full border border-primary/25 bg-primary/10 px-3 py-1.5 text-[10px] font-bold text-primary">
+                                            <span className="block truncate">
+                                                Selecionado: {currentTransition.originalName}
+                                            </span>
+                                        </div>
+                                    ) : (
+                                        <span className="rounded-full border border-border px-3 py-1.5 text-[10px] font-bold text-muted-foreground">
+                                            Sem efeito
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                                {isLoading ? (
+                                    <div className="flex h-full min-h-52 flex-col items-center justify-center gap-3">
+                                        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                                        <p className="text-xs font-semibold text-muted-foreground">
+                                            Carregando biblioteca...
+                                        </p>
+                                    </div>
+                                ) : activeTransitions.length === 0 ? (
+                                    <div className="flex h-full min-h-52 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-card/40 px-6 text-center">
+                                        <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-muted">
+                                            <Sparkles className="h-5 w-5 text-muted-foreground" />
+                                        </div>
+                                        <p className="text-sm font-bold text-foreground">
+                                            {normalizedQuery
+                                                ? 'Nenhum efeito encontrado'
+                                                : 'Esta coleção ainda está vazia'}
+                                        </p>
+                                        <p className="mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">
+                                            {normalizedQuery
+                                                ? 'Tente outro nome, estilo ou finalidade.'
+                                                : 'Adicione um overlay MP4 ou MOV para começar esta coleção.'}
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                                        {activeTransitions.map((transition) => (
+                                            <TransitionCard
+                                                key={transition.id}
+                                                t={transition}
+                                                currentVolume={currentVolume}
+                                                currentMuted={currentMuted}
+                                                onVolumeChange={handleVolumeChange}
+                                                onMuteToggle={handleMuteToggle}
+                                                isSelected={currentTransition?.id === transition.id}
+                                                toggleTransitionSelection={toggleTransitionSelection}
+                                                onDelete={handleDeleteTransition}
+                                            />
+                                        ))}
                                     </div>
                                 )}
                             </div>
-                        );
-                    })}
-
-                    {/* Criar Nova Categoria */}
-                    <div className="mt-2">
-                        {isCreatingCategory ? (
-                            <div className="flex items-center gap-3 bg-card rounded-xl p-3 border border-border shadow-sm">
-                                <input
-                                    type="text"
-                                    value={newCategoryName}
-                                    onChange={(e) => setNewCategoryName(e.target.value)}
-                                    placeholder="Nome da Categoria..."
-                                    className="bg-background text-sm px-4 py-2 rounded-lg outline-none border border-border focus:border-primary/50 text-foreground flex-1"
-                                    autoFocus
-                                    onKeyDown={(e) => {
-                                        if (e.key === 'Enter') handleCreateCategory();
-                                        if (e.key === 'Escape') {
-                                            setIsCreatingCategory(false);
-                                            setNewCategoryName('');
-                                        }
-                                    }}
-                                />
-                                <button
-                                    onClick={handleCreateCategory}
-                                    className="px-4 py-2 bg-primary rounded-lg text-primary-foreground font-bold hover:bg-primary/90 transition-colors flex items-center gap-2"
-                                >
-                                    <Check className="w-4 h-4" />
-                                    Criar
-                                </button>
-                                <button
-                                    onClick={() => {
-                                        setIsCreatingCategory(false);
-                                        setNewCategoryName('');
-                                    }}
-                                    className="p-2 hover:bg-muted rounded-lg text-muted-foreground transition-colors"
-                                >
-                                    <X className="w-5 h-5" />
-                                </button>
-                            </div>
-                        ) : (
-                            <button
-                                onClick={() => setIsCreatingCategory(true)}
-                                className="w-full flex items-center justify-center gap-2 px-4 py-4 rounded-xl text-sm font-bold text-muted-foreground hover:bg-muted/30 hover:text-foreground border-2 border-dashed border-border/50 hover:border-border transition-all outline-none"
-                            >
-                                <Plus className="w-5 h-5" />
-                                Adicionar Nova Categoria
-                            </button>
-                        )}
+                        </section>
                     </div>
                 </div>
 
-                <div className="p-6 border-t border-border flex justify-end bg-card">
+                <div className="flex items-center justify-between gap-4 border-t border-border bg-card px-6 py-4">
+                    <p className="min-w-0 truncate text-xs text-muted-foreground">
+                        {currentTransition
+                            ? `O efeito “${currentTransition.originalName}” será aplicado ${isGlobal ? 'entre todos os takes' : 'neste corte'}.`
+                            : 'Nenhuma transição selecionada. Os cortes permanecerão secos.'}
+                    </p>
                     <button
                         onClick={onClose}
                         className="px-6 py-2 bg-primary text-primary-foreground font-medium rounded-md hover:bg-primary/90 transition-colors"

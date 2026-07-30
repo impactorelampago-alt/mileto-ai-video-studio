@@ -48,8 +48,20 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
     const midpoint = Math.max(1, Math.ceil(words.length / 2));
     const manualLines = text.replace(/\r\n?/g, '\n').split('\n');
     const hasManualBreaks = manualLines.length > 1;
-    const firstLine = hasManualBreaks ? manualLines[0] : words.slice(0, midpoint).join(' ');
-    const secondLine = hasManualBreaks ? manualLines.slice(1).join('\n') : words.slice(midpoint).join(' ');
+    // Alguns modelos premium dividem o texto automaticamente em duas linhas.
+    // Depois que o usuário redimensiona a caixa, a largura escolhida passa a
+    // comandar a quebra natural; apenas Enters explícitos continuam forçando linha.
+    const usesEditedTextBox = title.textBoxWidthPct != null;
+    const firstLine = hasManualBreaks
+        ? manualLines[0]
+        : usesEditedTextBox
+          ? text.trim()
+          : words.slice(0, midpoint).join(' ');
+    const secondLine = hasManualBreaks
+        ? manualLines.slice(1).join('\n')
+        : usesEditedTextBox
+          ? ''
+          : words.slice(midpoint).join(' ');
 
     const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
     const easeOutCubic = (value: number) => 1 - Math.pow(1 - clamp01(value), 3);
@@ -787,22 +799,26 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
         case 'premium-coupon-ticket':
             return (
                 <div
-                    className={cn('relative rounded-2xl border-2 border-dashed p-2 shadow-2xl', className)}
+                    className={cn('relative w-full max-w-full min-w-0 rounded-2xl border-2 border-dashed p-2 shadow-2xl', className)}
                     style={{ borderColor: primary, ...motionStyle('rise', 0, 0.44) }}
                 >
                     <div
-                        className="relative flex min-w-[360px] items-center gap-4 overflow-hidden rounded-xl px-5 py-4"
+                        className="relative flex w-full min-w-0 items-center gap-3 rounded-xl px-4 py-3"
                         style={{ backgroundColor: primary }}
                     >
-                        <BadgePercent className="h-9 w-9 shrink-0" style={{ color: secondary }} />
-                        <div className="h-11 border-l-2 border-dashed border-black/25" />
-                        <div>
+                        <BadgePercent className="h-8 w-8 shrink-0" style={{ color: secondary }} />
+                        <div className="h-10 shrink-0 border-l-2 border-dashed border-black/25" />
+                        <div className="min-w-0 flex-1">
                             <p className="text-[8px] font-black uppercase tracking-[.28em] text-black/50">
                                 Use no checkout
                             </p>
                             <h2
-                                className="mt-1 text-2xl font-black uppercase leading-none md:text-4xl"
-                                style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}
+                                className="mt-1 max-w-full break-words text-3xl font-black uppercase leading-[.9] tracking-[-0.04em]"
+                                style={{
+                                    color: secondary,
+                                    fontFamily: fontStack('Space Grotesk'),
+                                    overflowWrap: 'anywhere',
+                                }}
                             >
                                 {text}
                             </h2>

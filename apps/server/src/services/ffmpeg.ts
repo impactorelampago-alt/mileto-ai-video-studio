@@ -530,10 +530,9 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             const trimStr =
                 take.type === 'video' ? `trim=start=${take.start}:duration=${rawDuration},setpts=${setptsExpr},` : '';
             const isContain = take.objectFit === 'contain';
-            // O movimento precisa de resolução intermediária. Aplicar o zoom depois
-            // de reduzir para 720x1280 quantiza escala/recorte em pixels inteiros e
-            // produz a vibração percebida. Em 2x, cada passo inteiro vale meio pixel
-            // na saída; o Lanczos consolida o quadro somente no final.
+            // O movimento usa uma tela intermediária em 2x. O zoompan mantém a saída
+            // com dimensões fixas em todos os quadros; isso evita o arredondamento
+            // alternado de scale + crop que fazia a imagem vibrar na exportação.
             const motionFactor = take.motionEffect ? 2 : 1;
             const workingW = Math.max(2, Math.round((TARGET_W * motionFactor) / 2) * 2);
             const workingH = Math.max(2, Math.round((TARGET_H * motionFactor) / 2) * 2);
@@ -547,7 +546,8 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                 const effect = take.motionEffect;
                 const amount = Math.min(0.35, Math.max(0.02, Number(effect.intensity) || 0.12));
                 const motionDuration = Math.max(0.001, physicalDuration);
-                const p = `min(max(t/${motionDuration.toFixed(6)},0),1)`;
+                const motionFrameDenominator = Math.max(1, Math.round(motionDuration * outputFps) - 1);
+                const p = `min(max(on/${motionFrameDenominator},0),1)`;
                 const motionProgress =
                     effect.type === 'zoom-in-out' ? `(if(lt(${p},0.5),2*(${p}),2*(1-(${p}))))` : `(${p})`;
                 const eased =
@@ -560,7 +560,9 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                         : `(1+${amount.toFixed(6)}*${eased})`;
                 const focalX = Math.min(1, Math.max(0, (Number(effect.focalX) || 50) / 100));
                 const focalY = Math.min(1, Math.max(0, (Number(effect.focalY) || 50) / 100));
-                motionStr = `,format=yuv444p,scale=w='ceil(iw*${zoom})':h='ceil(ih*${zoom})':eval=frame:flags=bicubic,crop=${workingW}:${workingH}:x='(in_w-out_w)*${focalX.toFixed(4)}':y='(in_h-out_h)*${focalY.toFixed(4)}',scale=${TARGET_W}:${TARGET_H}:flags=lanczos,format=yuv420p`;
+                const zoomPanX = `(iw-iw/zoom)*${focalX.toFixed(4)}`;
+                const zoomPanY = `(ih-ih/zoom)*${focalY.toFixed(4)}`;
+                motionStr = `,format=yuv444p,zoompan=z='${zoom}':x='${zoomPanX}':y='${zoomPanY}':d=1:s=${workingW}x${workingH}:fps=${outputFps},scale=${TARGET_W}:${TARGET_H}:flags=lanczos,format=yuv420p`;
             }
 
             filterGraph += `[${index}:v]${trimStr}${scaleStr}${motionStr}[v${index}];`;

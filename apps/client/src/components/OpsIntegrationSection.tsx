@@ -253,17 +253,21 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
         }
     };
 
-    const connect = async () => {
+    const connect = async (reconnect = false) => {
         if (!canManage) return;
         setBusy('connect');
         try {
-            const started = await gatewayApi.startOpsConnection();
+            const started = await gatewayApi.startOpsConnection(reconnect);
             const attempt = authorizationAttempt.current + 1;
             authorizationAttempt.current = attempt;
             openExternal(started.authorizationUrl);
             setAwaitingAuthorization(true);
             void gatewayApi.opsConnection().then(setStatus).catch(() => undefined);
-            toast.info('Confira a conta no navegador. Se estiver errada, troque-a e abra a autorização novamente.');
+            toast.info(
+                reconnect
+                    ? 'Autorize novamente no navegador para renovar as permissões do Mileto Ops, incluindo o envio de vídeos.'
+                    : 'Confira a conta no navegador. Se estiver errada, troque-a e abra a autorização novamente.'
+            );
             void pollConnection(attempt);
         } catch (error) {
             toast.error(error instanceof GatewayError ? error.message : 'Não foi possível iniciar a conexão.');
@@ -282,9 +286,14 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                 linkModalPresented.current = true;
                 setLinkModalOpen(true);
             }
-            toast.success(
-                `${result.stats.opsUsers || 0} usuário(s) do Ops comparados; ${result.stats.uniqueMatch || 0} correspondência(s) sugerida(s).`
-            );
+            const opsUsers = Number(result.stats.opsUsers || 0);
+            const linked = Number(result.stats.linked || 0);
+            const suggested = Number(result.stats.uniqueMatch || 0);
+            if (opsUsers > 0 && linked >= opsUsers && suggested === 0) {
+                toast.success(`Equipe sincronizada: os ${opsUsers} usuário(s) do Ops já estão vinculados. Nenhuma ação necessária.`);
+            } else {
+                toast.success(`${opsUsers} usuário(s) do Ops comparados; ${suggested} correspondência(s) sugerida(s); ${linked} já vinculada(s).`);
+            }
         } catch (error) {
             toast.error(error instanceof GatewayError ? error.message : 'Não foi possível sincronizar a equipe.');
         } finally {
@@ -328,6 +337,7 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
         ? String(status.connection.lastError || '')
         : '';
     const accountMismatch = ['ops_owner_mismatch', 'ops_account_mismatch'].includes(connectionError);
+    const needsAssetsWrite = connected && !status?.connection?.scopes?.includes('assets.write');
 
     return (
         <section className="rounded-2xl border border-white/10 bg-card/50 p-5 space-y-4">
@@ -366,6 +376,13 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                     </p>
                 </div>
             </div>
+
+            {needsAssetsWrite && (
+                <div className="rounded-xl border border-amber-300/20 bg-amber-400/[0.07] p-3 text-xs text-amber-100/80 flex gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-300" />
+                    A autorização atual não permite enviar vídeos ao Ops. Reconecte para conceder a permissão de exportação.
+                </div>
+            )}
 
             {accountMismatch && (
                 <div className="relative overflow-hidden rounded-2xl border border-rose-400/20 bg-linear-to-br from-rose-500/10 via-amber-500/5 to-transparent p-5 shadow-[0_18px_55px_rgba(244,63,94,0.08)]">
@@ -441,6 +458,15 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                                     </button>
                                 )}
                                 <button
+                                    onClick={() => void connect(true)}
+                                    disabled={busy !== null}
+                                    title="Renova a autorização do Mileto Ops sem remover seus vínculos"
+                                    className="inline-flex items-center gap-1.5 rounded-lg bg-amber-400/10 border border-amber-300/25 px-3 py-2 text-xs font-bold text-amber-200 disabled:opacity-50"
+                                >
+                                    {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                                    Reconectar Ops
+                                </button>
+                                <button
                                     onClick={() => void sync()}
                                     disabled={busy !== null}
                                     className="inline-flex items-center gap-1.5 rounded-lg bg-brand-lime/10 border border-brand-lime/20 px-3 py-2 text-xs font-bold text-brand-lime disabled:opacity-50"
@@ -458,6 +484,13 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                                 </button>
                             </div>
                         )}
+                    </div>
+
+                    <div className="rounded-xl border border-white/5 bg-background/25 px-3 py-2.5">
+                        <div className="text-[9px] font-black uppercase tracking-[0.14em] text-foreground/40">Escopos concedidos pelo Mileto Ops</div>
+                        <div className="mt-1.5 break-words text-[11px] font-medium text-foreground/70">
+                            {status.connection?.scopes?.length ? status.connection.scopes.join(' · ') : 'Nenhum escopo informado'}
+                        </div>
                     </div>
 
                     {canManage && suggestions.length > 0 && (

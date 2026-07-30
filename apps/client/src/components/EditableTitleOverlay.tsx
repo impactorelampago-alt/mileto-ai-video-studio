@@ -28,6 +28,7 @@ interface GestureState {
     startPosX: number;
     startPosY: number;
     startScale: number;
+    startVisualScale: number;
     startTextBoxWidthPct: number;
     startRect: DOMRect;
 }
@@ -288,6 +289,8 @@ export const EditableTitleOverlay = ({
         const elementRect = rootRef.current?.getBoundingClientRect();
         const stageRect = rootRef.current?.parentElement?.getBoundingClientRect();
         if (!elementRect || !stageRect || stageRect.width <= 0) return;
+        const visualScale = Math.max(0.01, (title.scale ?? 1) * 0.85);
+        const measuredLogicalWidthPct = (elementRect.width / visualScale / stageRect.width) * 100;
         gestureRef.current = {
             mode,
             resizeHandle,
@@ -297,8 +300,8 @@ export const EditableTitleOverlay = ({
             startPosX: title.posX ?? 50,
             startPosY: title.posY,
             startScale: title.scale ?? 1,
-            startTextBoxWidthPct:
-                title.textBoxWidthPct ?? ((rootRef.current?.offsetWidth ?? elementRect.width) / stageRect.width) * 100,
+            startVisualScale: visualScale,
+            startTextBoxWidthPct: title.textBoxWidthPct ?? clamp(measuredLogicalWidthPct, 12, 100),
             startRect: elementRect,
         };
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -329,41 +332,54 @@ export const EditableTitleOverlay = ({
         const changesRight = handle.includes('e');
         const changesTop = handle.includes('n');
         const changesBottom = handle.includes('s');
-        const minimumWidth = 32;
-        const minimumHeight = 22;
-
-        let nextLeft = gesture.startRect.left + (changesLeft ? deltaX : 0);
-        let nextRight = gesture.startRect.right + (changesRight ? deltaX : 0);
-        let nextTop = gesture.startRect.top + (changesTop ? deltaY : 0);
-        let nextBottom = gesture.startRect.bottom + (changesBottom ? deltaY : 0);
-
-        if (nextRight - nextLeft < minimumWidth) {
-            if (changesLeft) nextLeft = nextRight - minimumWidth;
-            else nextRight = nextLeft + minimumWidth;
-        }
-        if (nextBottom - nextTop < minimumHeight) {
-            if (changesTop) nextTop = nextBottom - minimumHeight;
-            else nextBottom = nextTop + minimumHeight;
-        }
-
         const updates: Partial<TitleHook> = {};
-        if (changesLeft || changesRight) {
-            const nextTextBoxWidthPct = clamp(
-                gesture.startTextBoxWidthPct *
-                    ((nextRight - nextLeft) / Math.max(1, gesture.startRect.width)),
-                12,
-                96
-            );
-            const actualWidth =
-                gesture.startRect.width * (nextTextBoxWidthPct / Math.max(1, gesture.startTextBoxWidthPct));
-            if (changesLeft && !changesRight) nextLeft = gesture.startRect.right - actualWidth;
-            else nextRight = gesture.startRect.left + actualWidth;
+        const isCorner = (changesLeft || changesRight) && (changesTop || changesBottom);
+
+        if (isCorner) {
+            // Nas quinas, a caixa inteira escala como uma peça única. Assim, arte,
+            // tipografia e espaçamentos crescem ou diminuem juntos — sem esticar texto.
+            const anchorX = changesLeft ? gesture.startRect.right : gesture.startRect.left;
+            const anchorY = changesTop ? gesture.startRect.bottom : gesture.startRect.top;
+            const widthRatio = Math.abs(event.clientX - anchorX) / Math.max(1, gesture.startRect.width);
+            const heightRatio = Math.abs(event.clientY - anchorY) / Math.max(1, gesture.startRect.height);
+            const scaleRatio =
+                Math.abs(widthRatio - 1) >= Math.abs(heightRatio - 1) ? widthRatio : heightRatio;
+            const nextScale = clamp(gesture.startScale * scaleRatio, 0.25, 4);
+            const appliedRatio = nextScale / Math.max(0.01, gesture.startScale);
+            const nextWidth = gesture.startRect.width * appliedRatio;
+            const nextHeight = gesture.startRect.height * appliedRatio;
+            const nextLeft = changesLeft ? anchorX - nextWidth : anchorX;
+            const nextTop = changesTop ? anchorY - nextHeight : anchorY;
+
+            updates.scale = nextScale;
+            updates.scaleX = 1;
+            updates.scaleY = 1;
+            updates.posX = clamp(((nextLeft + nextWidth / 2 - stage.left) / stage.width) * 100, 3, 97);
+            updates.posY = clamp(((nextTop - stage.top) / stage.height) * 100, 0, 92);
+        } else if (changesLeft || changesRight) {
+            // As alças laterais alteram a largura de composição, não a escala do desenho.
+            // O delta visual é convertido de volta para a largura lógica porque o título
+            // inteiro é renderizado com escala no preview.
+            const signedVisualDelta = changesRight ? deltaX : -deltaX;
+            const logicalDeltaPct = (signedVisualDelta / stage.width / gesture.startVisualScale) * 100;
+            const nextTextBoxWidthPct = clamp(gesture.startTextBoxWidthPct + logicalDeltaPct, 10, 100);
+            const appliedVisualDeltaPct =
+                (nextTextBoxWidthPct - gesture.startTextBoxWidthPct) * gesture.startVisualScale;
+            const centerDirection = changesRight ? 1 : -1;
+            const nextCenter = gesture.startPosX + centerDirection * (appliedVisualDeltaPct / 2);
 
             updates.textBoxWidthPct = nextTextBoxWidthPct;
             updates.scaleX = 1;
-            updates.posX = clamp(((nextLeft + (nextRight - nextLeft) / 2 - stage.left) / stage.width) * 100, 3, 97);
-        }
-        if (changesTop || changesBottom) {
+            const halfVisibleWidth = (nextTextBoxWidthPct * gesture.startVisualScale) / 2;
+            updates.posX = clamp(nextCenter, Math.min(50, halfVisibleWidth), Math.max(50, 100 - halfVisibleWidth));
+        } else if (changesTop || changesBottom) {
+            let nextTop = gesture.startRect.top + (changesTop ? deltaY : 0);
+            let nextBottom = gesture.startRect.bottom + (changesBottom ? deltaY : 0);
+            const minimumHeight = 22;
+            if (nextBottom - nextTop < minimumHeight) {
+                if (changesTop) nextTop = nextBottom - minimumHeight;
+                else nextBottom = nextTop + minimumHeight;
+            }
             const nextScale = clamp(
                 gesture.startScale * ((nextBottom - nextTop) / Math.max(1, gesture.startRect.height)),
                 0.25,
@@ -446,7 +462,7 @@ export const EditableTitleOverlay = ({
             onKeyDown={handleKeyDown}
             {...editorHandlers}
         >
-            <div className="relative inline-flex origin-center">
+            <div className={cn('relative origin-center', title.textBoxWidthPct ? 'flex w-full' : 'inline-flex')}>
                 <div
                     ref={contentRef}
                     className={cn(

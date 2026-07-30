@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { createHash, randomUUID as uuidv4 } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -574,6 +575,44 @@ export const importLocalPaths = async (req: Request, res: Response) => {
     }
 
     return res.json({ ok: true, imported: entries.length, entries, errors });
+};
+
+// POST /api/files/import-export
+// O MP4 acabou de ser renderizado no diretório temporário do sistema. Em vez de
+// obrigar o usuário a encontrá-lo e reenviá-lo, copiamos diretamente para a
+// biblioteca local. Aceitamos somente artefatos efêmeros criados pelo export.
+export const importExportedFile = async (req: Request, res: Response) => {
+    let targetPath = '';
+    try {
+        const sourcePath = typeof req.body?.sourcePath === 'string' ? path.resolve(req.body.sourcePath) : '';
+        const tempRoot = path.resolve(os.tmpdir());
+        const relative = sourcePath ? path.relative(tempRoot, sourcePath) : '..';
+        if (!sourcePath || relative.startsWith('..') || path.isAbsolute(relative) || !/^mileto-final-[\w-]+\.mp4$/i.test(path.basename(sourcePath))) {
+            throw new Error('Arquivo de exportação inválido.');
+        }
+        const sourceStat = await fs.promises.stat(sourcePath);
+        if (!sourceStat.isFile()) throw new Error('O MP4 temporário não foi encontrado.');
+
+        const parent = typeof req.body?.parent === 'string' && req.body.parent ? req.body.parent : 'Vídeos';
+        const parentDir = safeResolve(FILES_ROOT, parent);
+        if (!parentDir.startsWith(FILES_ROOT)) throw new Error('Pasta de destino inválida.');
+        await fs.promises.mkdir(parentDir, { recursive: true });
+
+        const requestedName = typeof req.body?.name === 'string' ? req.body.name : 'MeuVideo_Mileto.mp4';
+        const originalName = extOf(requestedName) ? requestedName : `${requestedName}.mp4`;
+        const storedName = `${uuidv4()}${extOf(originalName) || '.mp4'}`;
+        targetPath = path.join(parentDir, storedName);
+        const relPath = path.join(parent, storedName).split(path.sep).join('/');
+        await fs.promises.copyFile(sourcePath, targetPath);
+        const entry = await registerFile(targetPath, relPath, {
+            category: 'Vídeos',
+            name: path.basename(originalName).slice(0, 120),
+        });
+        res.json({ ok: true, entry });
+    } catch (error: unknown) {
+        if (targetPath && fs.existsSync(targetPath)) await fs.promises.unlink(targetPath).catch(() => undefined);
+        res.status(400).json({ ok: false, message: errMsg(error) });
+    }
 };
 
 // PATCH /api/files/rename  { id, name }

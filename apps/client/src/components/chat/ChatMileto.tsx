@@ -519,9 +519,11 @@ export const ChatMileto: React.FC = () => {
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
-    const activeRequestRef = useRef<AbortController | null>(null);
+    const activeRequestControllersRef = useRef(new Map<string, AbortController>());
+    const activeSessionRef = useRef<string | null>(null);
 
-    useEffect(() => () => activeRequestRef.current?.abort(), []);
+    // Não cancelamos uma resposta ao recolher/desmontar o painel: a execução é
+    // mantida pelo servidor e a conversa é atualizada quando o usuário voltar.
 
     // ─── Initialize button position ──────────────────────────────────────────
     useEffect(() => {
@@ -552,7 +554,52 @@ export const ChatMileto: React.FC = () => {
         }
     }, [activeSessionId]);
 
+    useEffect(() => {
+        activeSessionRef.current = activeSessionId;
+    }, [activeSessionId]);
+
     // ─── Auto-scroll ─────────────────────────────────────────────────────────
+    // Caso o painel seja fechado, a resposta continua no servidor. Ao voltar à
+    // conversa, consultamos o estado e recarregamos as mensagens até ela terminar.
+    useEffect(() => {
+        if (!isOpen || !activeSessionId) return;
+
+        let disposed = false;
+        let timer: number | undefined;
+        const sessionId = activeSessionId;
+
+        const refreshBackgroundResponse = async () => {
+            try {
+                const { active } = await chatApi.getResponseStatus(sessionId);
+                if (disposed) return;
+
+                const persisted = await chatApi.getMessages(sessionId);
+                if (disposed) return;
+                setMessages(persisted);
+
+                if (active) {
+                    setIsLoading(true);
+                    timer = window.setTimeout(refreshBackgroundResponse, 1200);
+                    return;
+                }
+
+                if (!activeRequestControllersRef.current.has(sessionId)) {
+                    setIsLoading(false);
+                }
+            } catch (error) {
+                if (!disposed) {
+                    console.error('Falha ao recuperar resposta em segundo plano:', error);
+                }
+            }
+        };
+
+        timer = window.setTimeout(refreshBackgroundResponse, 350);
+        return () => {
+            disposed = true;
+            if (timer !== undefined) window.clearTimeout(timer);
+        };
+    }, [isOpen, activeSessionId]);
+
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
@@ -642,18 +689,27 @@ export const ChatMileto: React.FC = () => {
     // ─── Chat Actions ────────────────────────────────────────────────────────
 
     const stopActiveResponse = useCallback(() => {
-        activeRequestRef.current?.abort();
+        const sessionId = activeSessionRef.current;
+        if (!sessionId) return;
+
+        activeRequestControllersRef.current.get(sessionId)?.abort();
+        void chatApi.cancelResponse(sessionId).catch((error) => {
+            console.error('Falha ao interromper a resposta no servidor:', error);
+        });
     }, []);
 
     const handleNewChat = useCallback((folderId?: string | null) => {
-        stopActiveResponse();
+        // Criar ou abrir outra conversa não interrompe trabalhos já enviados.
+        // Eles continuam no servidor e ficam disponíveis ao voltar para a sessão.
         setActiveSessionId(null);
+        activeSessionRef.current = null;
+        setIsLoading(false);
         setMessages([]);
         setInputText('');
         setEditingMessageId(null);
         // If creating inside a folder, we'll store the target folder for the next auto-created session
         newChatFolderRef.current = folderId || null;
-    }, [stopActiveResponse]);
+    }, []);
 
     const newChatFolderRef = useRef<string | null>(null);
     // Marca a sessão criada dentro do próprio envio, para o efeito de carregar
@@ -662,8 +718,9 @@ export const ChatMileto: React.FC = () => {
 
     const chooseAgent = useCallback((agentId: ChatAgentId) => {
         if (agentId !== selectedAgentId && activeSessionId) {
-            stopActiveResponse();
             setActiveSessionId(null);
+            activeSessionRef.current = null;
+            setIsLoading(false);
             setMessages([]);
             setInputText('');
             setEditingMessageId(null);
@@ -671,7 +728,7 @@ export const ChatMileto: React.FC = () => {
         }
         setSelectedAgentId(agentId);
         setAgentMenuOpen(false);
-    }, [activeSessionId, selectedAgentId, stopActiveResponse]);
+    }, [activeSessionId, selectedAgentId]);
 
     const handleEditLastMessage = useCallback((message: ChatMessage) => {
         if (isLoading || message.role !== 'user') return;
@@ -742,7 +799,7 @@ export const ChatMileto: React.FC = () => {
         setMessages((prev) => [...prev, tempUserMsg]);
 
         const requestController = new AbortController();
-        activeRequestRef.current = requestController;
+        activeRequestControllersRef.current.set(sessionId, requestController);
 
         try {
             const locale = navigator.language || 'pt-BR';
@@ -755,16 +812,22 @@ export const ChatMileto: React.FC = () => {
                 selectedAgentId,
                 requestController.signal
             );
-            setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id).concat([userMessage, assistantMessage]));
+            if (activeSessionRef.current === sessionId) {
+                setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id).concat([userMessage, assistantMessage]));
+            }
         } catch (err: unknown) {
             if ((err as Error)?.name === 'AbortError' || requestController.signal.aborted) {
                 try {
                     const persisted = await chatApi.getMessages(sessionId);
-                    setMessages(persisted);
+                    if (activeSessionRef.current === sessionId) {
+                        setMessages(persisted);
+                    }
                 } catch (refreshErr) {
                     console.error('Falha ao atualizar a conversa interrompida:', refreshErr);
                 }
-                toast.info('Resposta interrompida. Você pode editar sua última mensagem e tentar novamente.');
+                if (activeSessionRef.current === sessionId) {
+                    toast.info('Resposta interrompida. Você pode editar sua última mensagem e tentar novamente.');
+                }
                 return;
             }
             const axErr = err as { response?: { data?: { message?: string } }; message?: string };
@@ -775,10 +838,14 @@ export const ChatMileto: React.FC = () => {
                 content: `❌ Erro: ${axErr?.response?.data?.message || axErr?.message || 'Falha na comunicação com a IA.'}`,
                 createdAt: new Date().toISOString(),
             };
-            setMessages((prev) => [...prev, errorMsg]);
+            if (activeSessionRef.current === sessionId) {
+                setMessages((prev) => [...prev, errorMsg]);
+            }
         } finally {
-            if (activeRequestRef.current === requestController) {
-                activeRequestRef.current = null;
+            if (activeRequestControllersRef.current.get(sessionId) === requestController) {
+                activeRequestControllersRef.current.delete(sessionId);
+            }
+            if (activeSessionRef.current === sessionId) {
                 setIsLoading(false);
             }
         }
@@ -809,10 +876,16 @@ export const ChatMileto: React.FC = () => {
     const handleDeleteSession = useCallback(
         async (sessionId: string) => {
             try {
+                if (activeRequestControllersRef.current.has(sessionId)) {
+                    activeRequestControllersRef.current.get(sessionId)?.abort();
+                    await chatApi.cancelResponse(sessionId);
+                }
                 await chatApi.deleteSession(sessionId);
                 setSessions((prev) => prev.filter((s) => s.id !== sessionId));
                 if (activeSessionId === sessionId) {
                     setActiveSessionId(null);
+                    activeSessionRef.current = null;
+                    setIsLoading(false);
                     setMessages([]);
                 }
             } catch (err) {
@@ -848,14 +921,15 @@ export const ChatMileto: React.FC = () => {
     }, []);
 
     const selectSession = useCallback((session: ChatSession) => {
-        stopActiveResponse();
         setActiveSessionId(session.id);
+        activeSessionRef.current = session.id;
+        setIsLoading(false);
         setSelectedTier(tierFromStoredModel(session.model));
         setSelectedAgentId(session.agentId || 'director');
         setEditingMessageId(null);
         setInputText('');
         newChatFolderRef.current = null;
-    }, [stopActiveResponse]);
+    }, []);
 
     const toggleFolderExpand = (id: string) => {
         setExpandedFolders((prev) => {

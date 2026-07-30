@@ -1,10 +1,64 @@
 import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { safeResolve, isSafeSegment } from '../utils/safePath';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const PROJECTS_DIR = path.join(BASE_DATA_PATH, 'data/projects');
+
+type SavedMediaTake = {
+    trim?: { start?: number; end?: number };
+    type?: 'image' | 'video';
+    url?: string;
+    fileUrl?: string;
+    proxyUrl?: string;
+    backendPath?: string;
+};
+
+type SavedProjectData = {
+    adData?: { title?: string; narrationText?: string };
+    mediaTakes?: SavedMediaTake[];
+    updatedAt?: string;
+    exported?: boolean;
+    title?: string;
+};
+
+const firstVisualTake = (data: SavedProjectData): SavedMediaTake | undefined =>
+    data.mediaTakes?.find((take) => take?.type === 'image' || take?.type === 'video');
+
+const mediaSource = (take?: SavedMediaTake): string | undefined =>
+    take
+        ? [take.proxyUrl, take.fileUrl, take.url, take.backendPath].find(
+              (candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0
+          )
+        : undefined;
+
+const isRendererUrl = (candidate: string): boolean =>
+    /^https?:\/\//i.test(candidate) ||
+    /^\/(?:api|uploads|data|files|videos)\//i.test(candidate) ||
+    candidate.startsWith('data:');
+
+const localMediaPath = (candidate: string): string | null => {
+    try {
+        if (candidate.startsWith('file://')) return fileURLToPath(candidate);
+        if (path.isAbsolute(candidate)) return candidate;
+    } catch {
+        return null;
+    }
+    return null;
+};
+
+const coverForDraft = (projectId: string, take?: SavedMediaTake) => {
+    const source = mediaSource(take);
+    if (!source || !take?.type) return null;
+    if (isRendererUrl(source)) return { url: source, type: take.type };
+    if (!localMediaPath(source)) return null;
+    return {
+        url: `/api/projects/${encodeURIComponent(projectId)}/cover`,
+        type: take.type,
+    };
+};
 
 // Garante que o diretório raiz de projetos exista — se estiver vazio, listProjects
 // simplesmente devolve []. Evita 500 quando o app é aberto pela primeira vez.
@@ -26,6 +80,7 @@ export const listProjects = async (_req: Request, res: Response) => {
             exported: boolean;
             mediaCount: number;
             duration: number;
+            cover: { url: string; type: 'image' | 'video' } | null;
         }> = [];
 
         for (const entry of entries) {
@@ -35,17 +90,13 @@ export const listProjects = async (_req: Request, res: Response) => {
 
             try {
                 const raw = fs.readFileSync(dataPath, 'utf-8');
-                const parsed = JSON.parse(raw) as {
-                    adData?: { title?: string; narrationText?: string };
-                    mediaTakes?: Array<{ trim?: { start?: number; end?: number } }>;
-                    updatedAt?: string;
-                    exported?: boolean;
-                    title?: string;
-                };
+                const parsed = JSON.parse(raw) as SavedProjectData;
 
+                // A etapa 1 é a fonte de verdade do título. O campo externo é
+                // mantido por compatibilidade com rascunhos antigos.
                 const title =
-                    (parsed.title && parsed.title.trim()) ||
                     (parsed.adData?.title && parsed.adData.title.trim()) ||
+                    (parsed.title && parsed.title.trim()) ||
                     (parsed.adData?.narrationText
                         ? parsed.adData.narrationText.trim().slice(0, 50)
                         : '') ||
@@ -60,6 +111,11 @@ export const listProjects = async (_req: Request, res: Response) => {
                       }, 0)
                     : 0;
 
+                // A capa não é uma cópia da mídia: é somente a primeira mídia
+                // visual já referenciada pelo rascunho. O renderer recebe uma
+                // URL segura do app, nunca o caminho local do PC.
+                const firstVisual = firstVisualTake(parsed);
+
                 drafts.push({
                     projectId: entry.name,
                     title,
@@ -67,6 +123,7 @@ export const listProjects = async (_req: Request, res: Response) => {
                     exported: !!parsed.exported,
                     mediaCount,
                     duration,
+                    cover: coverForDraft(entry.name, firstVisual),
                 });
             } catch (err) {
                 console.warn('[Projects] Falha ao ler rascunho', entry.name, err);
@@ -85,6 +142,43 @@ export const listProjects = async (_req: Request, res: Response) => {
         const msg = error instanceof Error ? error.message : String(error);
         console.error('[Projects] Erro ao listar:', msg);
         res.status(500).json({ ok: false, message: msg });
+    }
+};
+
+// Entrega a capa de um rascunho salvo localmente sem enviar o caminho físico
+// do arquivo para o renderer. A origem é sempre a primeira mídia já gravada
+// no próprio ad-data.json daquele projeto — nunca um caminho informado pela URL.
+export const getProjectCover = async (req: Request, res: Response) => {
+    try {
+        const { projectId } = req.params;
+        if (!isSafeSegment(projectId)) {
+            return res.status(400).json({ ok: false, message: 'projectId inválido' });
+        }
+
+        const projectPath = safeResolve(PROJECTS_DIR, projectId);
+        const dataPath = path.join(projectPath, 'ad-data.json');
+        if (!fs.existsSync(dataPath)) {
+            return res.status(404).json({ ok: false, message: 'Rascunho não encontrado' });
+        }
+
+        const data = JSON.parse(fs.readFileSync(dataPath, 'utf-8')) as SavedProjectData;
+        const source = mediaSource(firstVisualTake(data));
+        const requestedPath = source ? localMediaPath(source) : null;
+        if (!requestedPath) {
+            return res.status(404).json({ ok: false, message: 'Capa local indisponível' });
+        }
+
+        const resolvedPath = fs.realpathSync(requestedPath);
+        if (!fs.statSync(resolvedPath).isFile()) {
+            return res.status(404).json({ ok: false, message: 'Arquivo de capa indisponível' });
+        }
+
+        res.setHeader('Cache-Control', 'private, no-store');
+        return res.sendFile(resolvedPath);
+    } catch (error: unknown) {
+        const code = error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500;
+        const message = code === 404 ? 'Arquivo de capa indisponível' : 'Não foi possível carregar a capa';
+        return res.status(code).json({ ok: false, message });
     }
 };
 

@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { bearerFrom, gatewayStt, GatewayHttpError } from '../services/gatewayClient';
+import { reconcileCaptionWords } from '../services/captionReconciliation';
 import { safeResolve } from '../utils/safePath';
 
 // Static-route prefix → diretório físico no USER_DATA_PATH (espelha index.ts).
@@ -48,7 +49,7 @@ const resolveLocalAudioPath = (audioUrl: string): string | null => {
 
 export const generateCaptions = async (req: Request, res: Response) => {
     try {
-        const { audioUrl } = req.body;
+        const { audioUrl, narrationText } = req.body;
         const token = bearerFrom(req);
 
         if (!audioUrl) {
@@ -267,6 +268,11 @@ export const generateCaptions = async (req: Request, res: Response) => {
             return res.status(200).json({ ok: true, segments: [] });
         }
 
+        // O STT determina os tempos. O roteiro aprovado corrige a grafia antes
+        // de agrupar os blocos, evitando erros em cidades, marcas e valores.
+        const reconciliation = reconcileCaptionWords(words, narrationText);
+        const captionWords = reconciliation.words;
+
         // We will package words into segments for readability in the preview,
         // but each word gets an exact timestamp.
         // Let's put about 3-5 words per segment to fit well on screen for the "Karaoke" style.
@@ -274,22 +280,22 @@ export const generateCaptions = async (req: Request, res: Response) => {
         let curSegmentWords = [];
         let segStart = 0;
 
-        for (let i = 0; i < words.length; i++) {
-            const w = words[i];
+        for (let i = 0; i < captionWords.length; i++) {
+            const w = captionWords[i];
 
             if (curSegmentWords.length === 0) {
                 segStart = w.start;
             }
 
             curSegmentWords.push({
-                text: w.word.trim().toUpperCase(),
-                start: parseFloat(w.start.toFixed(2)),
-                end: parseFloat(w.end.toFixed(2)),
+                text: w.text,
+                start: w.start,
+                end: w.end,
             });
 
             // Quebra se chegou no limite de palavras ou tem uma pausa longa entre palavras
-            const isLast = i === words.length - 1;
-            const nextW = !isLast ? words[i + 1] : null;
+            const isLast = i === captionWords.length - 1;
+            const nextW = !isLast ? captionWords[i + 1] : null;
             const isPause = nextW ? nextW.start - w.end > 0.5 : false; // Pausa de 0.5s ou mais
 
             if (curSegmentWords.length >= 4 || isPause || isLast) {
@@ -305,7 +311,7 @@ export const generateCaptions = async (req: Request, res: Response) => {
         }
 
         console.log(`[STT] Transcrição concluída: ${segments.length} blocos gerados.`);
-        return res.json({ ok: true, segments });
+        return res.json({ ok: true, segments, review: reconciliation.review });
     } catch (error: unknown) {
         const err = error as any;
         console.error('[STT] Erro durante a transcrição Whisper:', err.response?.data || err.message);

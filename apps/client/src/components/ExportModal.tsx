@@ -1,12 +1,68 @@
 import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Film, FolderOpen, Loader2, X, XCircle } from 'lucide-react';
+import { Check, ChevronDown, Download, Film, HardDrive, Search, Users, Building2, Loader2, X, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import type { MediaTake } from '../types';
 import { useWizard } from '../context/WizardContext';
 import { useExportJobs } from '../context/ExportJobsContext';
+import { API_BASE_URL } from '../lib/apiBase';
+import { gatewayApi, type OpsCompany, type OpsFolder } from '../lib/gateway';
+import { localAuthHeaders } from '../lib/serverAuth';
+
+type DestinationKind = 'local' | 'shared' | 'ops';
+type FolderOption = { label: string; value: string };
+type SelectOption = { label: string; value: string };
+const flattenFolders = (node: { name: string; relPath: string; children?: unknown[] }, prefix = ''): FolderOption[] => {
+    const path = node.relPath === '/' ? '' : node.relPath;
+    const children = Array.isArray(node.children) ? node.children as Array<{ name: string; relPath: string; children?: unknown[] }> : [];
+    return [...(path ? [{ value: path, label: `${prefix}${node.name}` }] : []), ...children.flatMap((child) => flattenFolders(child, `${prefix}${path ? '— ' : ''}`))];
+};
+
+const PremiumSelect = ({
+    value,
+    options,
+    placeholder,
+    onChange,
+    searchable = false,
+    searchPlaceholder = 'Buscar...',
+    emptyLabel = 'Nenhum resultado encontrado.',
+}: {
+    value: string;
+    options: SelectOption[];
+    placeholder: string;
+    onChange: (_value: string) => void;
+    searchable?: boolean;
+    searchPlaceholder?: string;
+    emptyLabel?: string;
+}) => {
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState('');
+    const selected = options.find((option) => option.value === value);
+    const visibleOptions = options.filter((option) => option.label.toLocaleLowerCase('pt-BR').includes(query.trim().toLocaleLowerCase('pt-BR')));
+
+    return (
+        <div className="relative min-w-0">
+            <button
+                type="button"
+                onClick={() => { setOpen((current) => !current); setQuery(''); }}
+                className={cn('flex w-full items-center justify-between gap-2 rounded-xl border bg-black/50 px-3 py-3 text-left text-xs font-semibold transition', open ? 'border-brand-accent/70 shadow-[0_0_18px_rgba(0,230,118,0.13)]' : 'border-white/10 hover:border-white/20')}
+            >
+                <span className={cn('truncate', selected ? 'text-foreground' : 'text-brand-muted')}>{selected?.label || placeholder}</span>
+                <ChevronDown className={cn('h-4 w-4 shrink-0 text-brand-accent transition-transform', open && 'rotate-180')} />
+            </button>
+            {open && (
+                <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded-xl border border-brand-accent/25 bg-[#0b1214] shadow-[0_18px_40px_rgba(0,0,0,.65)] ring-1 ring-white/5">
+                    {searchable && <div className="border-b border-white/8 p-2"><div className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/40 px-2.5 py-2"><Search className="h-3.5 w-3.5 text-brand-accent" /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={searchPlaceholder} className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-brand-muted" /></div></div>}
+                    <div className="max-h-48 overflow-y-auto p-1.5">
+                        {visibleOptions.length ? visibleOptions.map((option) => <button type="button" key={option.value} onClick={() => { onChange(option.value); setOpen(false); }} className={cn('flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition', option.value === value ? 'bg-brand-accent/15 text-brand-accent' : 'text-foreground/85 hover:bg-white/7 hover:text-foreground')}><span className="truncate">{option.label}</span>{option.value === value && <Check className="h-3.5 w-3.5 shrink-0" />}</button>) : <p className="px-2.5 py-4 text-center text-xs text-brand-muted">{emptyLabel}</p>}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
 
 interface ExportModalProps {
     onClose: () => void;
@@ -19,19 +75,20 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
     const { adData, captionStyle, projectId, saveProject } = useWizard();
     const { isExporting, startExport } = useExportJobs();
     const navigate = useNavigate();
-    const [fileName, setFileName] = useState('MeuVideo_Mileto');
+    // O título do projeto é a fonte única para o rascunho e para o MP4.
+    // Evita que o nome exibido na biblioteca e o arquivo exportado divirjam.
+    const exportFileName = adData.title?.trim() || 'MeuVideo_Mileto';
     const [fps, setFps] = useState(30);
     const [starting, setStarting] = useState(false);
     const [errorMsg, setErrorMsg] = useState('');
-    const [outputFolder, setOutputFolder] = useState(() => {
-        const saved = localStorage.getItem('mileto_export_folder');
-        if (saved) return saved;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const os = (window as any).require('os');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const path = (window as any).require('path');
-        return path.join(os.homedir(), 'Desktop');
-    });
+    const [destinationKind, setDestinationKind] = useState<DestinationKind>('local');
+    const [libraryFolders, setLibraryFolders] = useState<FolderOption[]>([]);
+    const [destinationFolder, setDestinationFolder] = useState('Vídeos');
+    const [companies, setCompanies] = useState<OpsCompany[]>([]);
+    const [opsCompanyId, setOpsCompanyId] = useState('');
+    const [opsFolders, setOpsFolders] = useState<OpsFolder[]>([]);
+    const [opsFolderId, setOpsFolderId] = useState('');
+    const [opsViewContextId, setOpsViewContextId] = useState<string | null>(null);
     const [targetDims, setTargetDims] = useState({ w: 1080, h: 1920 });
 
     useEffect(() => {
@@ -72,15 +129,41 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         return `${minutes}m ${remainder}s`;
     };
 
-    const handleBrowseFolder = useCallback(async () => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const { ipcRenderer } = (window as any).require('electron');
-        const result = await ipcRenderer.invoke('select-folder');
-        if (!result.canceled && result.folderPath) {
-            setOutputFolder(result.folderPath);
-            localStorage.setItem('mileto_export_folder', result.folderPath);
-        }
-    }, []);
+    useEffect(() => {
+        if (destinationKind === 'ops') return;
+        void (async () => {
+            try {
+                const isShared = destinationKind === 'shared';
+                const response = await fetch(`${API_BASE_URL}/api/${isShared ? 'shared/files' : 'files'}/tree`, { headers: isShared ? await localAuthHeaders() : {} });
+                const data = await response.json();
+                if (!response.ok || !data.ok) throw new Error(data.message);
+                const folders = flattenFolders(data.root).filter((folder) => folder.value.startsWith('Vídeos'));
+                setLibraryFolders(folders);
+                setDestinationFolder((current) => folders.some((folder) => folder.value === current) ? current : (folders[0]?.value || 'Vídeos'));
+            } catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Não foi possível carregar as pastas.'); }
+        })();
+    }, [destinationKind]);
+
+    useEffect(() => {
+        if (destinationKind !== 'ops') return;
+        void (async () => {
+            try {
+                const contexts = await gatewayApi.opsViewContexts();
+                const context = contexts.data.contexts.find((item) => item.contextId === contexts.data.defaultContextId) || contexts.data.contexts[0];
+                setOpsViewContextId(context?.contextId || null);
+                const response = await gatewayApi.opsCompanies('', context?.contextId);
+                setCompanies(response.data);
+                setOpsCompanyId((current) => current || response.data[0]?.id || '');
+            } catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Não foi possível carregar as empresas do Mileto Ops.'); }
+        })();
+    }, [destinationKind]);
+
+    useEffect(() => {
+        if (destinationKind !== 'ops' || !opsCompanyId) return;
+        void gatewayApi.opsFolders(opsCompanyId, opsViewContextId).then((response) => {
+            setOpsFolders(response.data); setOpsFolderId((current) => current || response.data[0]?.id || '');
+        }).catch((error) => setErrorMsg(error instanceof Error ? error.message : 'Não foi possível carregar as pastas da empresa.'));
+    }, [destinationKind, opsCompanyId, opsViewContextId]);
 
     const handleFinishWithoutExport = useCallback(async () => {
         setStarting(true);
@@ -107,12 +190,9 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
 
         setStarting(true);
         setErrorMsg('');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const { ipcRenderer } = (window as any).require('electron');
-        const folderAuthorization = await ipcRenderer.invoke('export-authorize-folder', outputFolder);
-        if (!folderAuthorization?.ok) {
+        if (destinationKind === 'ops' && !opsCompanyId) {
             setStarting(false);
-            setErrorMsg(folderAuthorization?.message || 'Selecione novamente a pasta de destino.');
+            setErrorMsg('Selecione a empresa de destino no Mileto Ops.');
             return;
         }
         const saved = await saveProject({ lastStep: 4 });
@@ -123,8 +203,8 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         }
 
         const jobId = startExport({
-            fileName: fileName.trim() || 'MeuVideo_Mileto',
-            outputFolder,
+            fileName: exportFileName,
+            outputFolder: destinationKind === 'local' ? `Biblioteca local › ${destinationFolder}` : destinationKind === 'shared' ? `Compartilhado › ${destinationFolder}` : 'Mileto Ops',
             fps,
             totalDuration,
             targetDims,
@@ -138,6 +218,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             },
             captionStyle: captionStyle ? { ...captionStyle } : null,
             projectId,
+            destination: { kind: destinationKind, folderPath: destinationFolder, companyId: opsCompanyId, opsFolderId: opsFolderId || null, viewContextId: opsViewContextId },
         });
         setStarting(false);
         if (!jobId) {
@@ -151,14 +232,18 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
     }, [
         adData,
         captionStyle,
-        fileName,
+        exportFileName,
         fps,
         isExporting,
         masterAudioUrl,
         mediaTakes,
         navigate,
         onClose,
-        outputFolder,
+        destinationFolder,
+        destinationKind,
+        opsCompanyId,
+        opsFolderId,
+        opsViewContextId,
         projectId,
         saveProject,
         startExport,
@@ -199,37 +284,32 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                 <div className="relative z-10 flex flex-col gap-6 p-8">
                     <div className="flex flex-col gap-2.5">
                         <label className="text-[10px] font-bold uppercase tracking-widest text-brand-accent">
-                            Nome do arquivo
+                            Título do projeto e nome do arquivo
                         </label>
                         <div className="flex items-center gap-3">
                             <input
                                 type="text"
-                                autoFocus
-                                value={fileName}
-                                onChange={(event) => setFileName(event.target.value)}
-                                className="flex-1 rounded-xl border border-white/10 bg-black/50 px-4 py-3 text-sm font-semibold text-foreground outline-none focus:border-brand-accent/50"
+                                value={exportFileName}
+                                readOnly
+                                aria-readonly="true"
+                                className="flex-1 cursor-default rounded-xl border border-white/10 bg-black/50 px-4 py-3 text-sm font-semibold text-foreground outline-none"
                             />
                             <span className="rounded-xl border border-white/5 bg-white/5 px-3 py-3 font-mono text-xs font-bold text-brand-muted">
                                 .MP4
                             </span>
                         </div>
+                        <p className="text-[11px] leading-relaxed text-brand-muted">
+                            Para alterar o nome do MP4, edite o título do projeto na etapa 1.
+                        </p>
                     </div>
 
                     <div className="flex flex-col gap-2.5">
-                        <label className="text-[10px] font-bold uppercase tracking-widest text-brand-accent">
-                            Pasta de destino
-                        </label>
-                        <div className="flex items-center gap-3">
-                            <div className="min-w-0 flex-1 truncate rounded-xl border border-white/10 bg-black/50 px-4 py-3 font-mono text-xs text-brand-muted">
-                                {outputFolder}
-                            </div>
-                            <button
-                                onClick={() => void handleBrowseFolder()}
-                                className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-bold uppercase text-brand-muted transition hover:border-brand-accent/50 hover:text-foreground"
-                            >
-                                <FolderOpen className="h-4 w-4" /> Alterar
-                            </button>
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-brand-accent">Destino da exportação</label>
+                        <div className="grid grid-cols-3 gap-2">
+                            {([['local', HardDrive, 'Local'], ['shared', Users, 'Compartilhado'], ['ops', Building2, 'Mileto Ops']] as const).map(([kind, Icon, label]) => <button key={kind} onClick={() => { setDestinationKind(kind); setErrorMsg(''); }} className={cn('flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-[10px] font-bold transition', destinationKind === kind ? 'border-brand-accent bg-brand-accent/10 text-brand-accent' : 'border-white/10 bg-black/30 text-brand-muted hover:text-foreground')}><Icon className="h-4 w-4" />{label}</button>)}
                         </div>
+                        {destinationKind === 'ops' ? <div className="grid grid-cols-2 gap-2"><PremiumSelect value={opsCompanyId} placeholder="Selecionar empresa" searchable searchPlaceholder="Buscar empresa..." options={companies.map((company) => ({ value: company.id, label: company.name || company.nome || 'Empresa sem nome' }))} onChange={(value) => { setOpsCompanyId(value); setOpsFolderId(''); }} /><PremiumSelect value={opsFolderId} placeholder="Pasta raiz" searchable searchPlaceholder="Buscar pasta..." options={[{ value: '', label: 'Pasta raiz' }, ...opsFolders.map((folder) => ({ value: folder.id, label: folder.name }))]} onChange={setOpsFolderId} /></div> : <PremiumSelect value={destinationFolder} placeholder="Selecionar pasta" searchable searchPlaceholder="Buscar pasta..." options={libraryFolders} onChange={setDestinationFolder} />}
+                        <p className="text-[11px] text-brand-muted">{destinationKind === 'local' ? 'O MP4 será salvo diretamente na biblioteca deste programa.' : destinationKind === 'shared' ? 'O MP4 será enviado para a pasta compartilhada da equipe.' : 'Escolha a empresa e a pasta que receberão o vídeo no Mileto Ops.'}</p>
                     </div>
 
                     <div className="flex flex-col gap-3">
@@ -283,7 +363,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                     </button>
                     <button
                         onClick={() => void handleExport()}
-                        disabled={!fileName.trim() || starting || isExporting}
+                        disabled={starting || isExporting}
                         className="flex items-center gap-3 rounded-xl bg-linear-to-r from-brand-lime to-brand-accent px-8 py-3.5 text-xs font-black uppercase tracking-widest text-[#0a0f12] transition hover:shadow-[0_0_25px_rgba(0,230,118,0.4)] disabled:opacity-45"
                     >
                         {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}

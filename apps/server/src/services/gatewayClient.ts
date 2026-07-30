@@ -170,6 +170,33 @@ export const gatewayChat = async (
     return data as GatewayChatResult;
 };
 
+/** Encaminha um arquivo local ao gateway sem expor grants de provedores ao renderer. */
+export const gatewayUploadFile = async <T = unknown>(
+    token: string,
+    endpoint: string,
+    filePath: string,
+    fields: Record<string, string>,
+    headers: Record<string, string> = {}
+): Promise<T> => {
+    if (!token) throw new GatewayHttpError(401, 'Sessão Mileto ausente ou expirada.');
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) form.append(key, value);
+    form.append('file', (await import('fs')).createReadStream(filePath), {
+        filename: fields.fileName || 'video-exportado.mp4', contentType: 'video/mp4',
+    });
+    const res = await fetchWithTimeout(`${GATEWAY_URL}${endpoint}`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, ...form.getHeaders(), ...headers }, body: form,
+    }, 30 * 60 * 1000);
+    const data = await parseBody(res);
+    if (!res.ok) {
+        const message = res.status === 413
+            ? 'O Mileto Ops recusou o MP4 por limite de tamanho. A exportação foi preservada sem reduzir qualidade; peça ao administrador do Ops para aumentar o limite de upload do gateway/proxy.'
+            : data.message || `Gateway ${res.status}`;
+        throw new GatewayHttpError(res.status, message, data.code || null);
+    }
+    return data as T;
+};
+
 export interface GatewayGenerationSpec extends Record<string, unknown> {
     prompt?: string;
     masterPrompt?: string;

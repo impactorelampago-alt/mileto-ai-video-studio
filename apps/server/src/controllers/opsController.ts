@@ -2,9 +2,10 @@ import { Request, Response } from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { spawn } from 'child_process';
 import fetch, { Response as FetchResponse } from 'node-fetch';
-import { bearerFrom, GatewayHttpError, gatewayJson } from '../services/gatewayClient';
+import { bearerFrom, GatewayHttpError, gatewayJson, gatewayUploadFile } from '../services/gatewayClient';
 import { BASE_DATA_PATH } from './fileExplorerController';
 import { getVideoEncoderArgs, getVideoMetadata } from '../services/ffmpeg';
 import { isSafeRemoteUrl, safeResolve } from '../utils/safePath';
@@ -20,6 +21,7 @@ const OPS_BASE_URL = process.env.OPS_BASE_URL || 'https://miletoops.com';
 const OPS_MEDIA_ORIGIN = new URL(OPS_BASE_URL).origin;
 const OPS_MEDIA_PATH = /^\/api\/integrations\/mileto-ai-video\/delivery\/[^/]+$/;
 const OPS_VIEW_CONTEXT_HEADER = 'x-ops-view-context';
+const OPS_EXPORT_MAX_BYTES = Math.max(25 * 1024 * 1024, Number(process.env.OPS_EXPORT_MAX_BYTES || 512 * 1024 * 1024));
 
 const viewContextFrom = (req: Request): string | null => {
     const raw = req.headers[OPS_VIEW_CONTEXT_HEADER];
@@ -531,6 +533,29 @@ const prepareEntry = async (
 
 /** POST /api/ops/cache/materialize — baixa e prepara um ativo autorizado. */
 export const materialize = async (req: Request, res: Response) => {
+    const cachedReferenceId = String(req.body?.referenceId || '').trim();
+    if (/^[0-9a-f-]{36}$/i.test(cachedReferenceId)) {
+        // Reabre somente o arquivo que ja existe neste cache local. Um novo
+        // download continua passando pela validacao de sessao logo abaixo.
+        cleanupCache();
+        const cachedIndex = readIndex();
+        const cachedEntry = cachedIndex.find((entry) => entry.referenceId === cachedReferenceId && fs.existsSync(entry.filePath));
+        if (cachedEntry) {
+            cachedEntry.lastAccessedAt = new Date().toISOString();
+            const cachedReference: ExternalReference = {
+                id: cachedEntry.referenceId,
+                connectionId: '',
+                accountId: '',
+                companyId: '',
+                assetId: cachedEntry.assetId,
+                name: cachedEntry.name,
+                kind: cachedEntry.kind,
+                mimeType: cachedEntry.mimeType,
+            };
+            writeIndex(cachedIndex);
+            return res.json({ ok: true, cached: true, source: responseSource(cachedEntry, cachedReference) });
+        }
+    }
     const token = bearerFrom(req);
     if (!token) return res.status(401).json({ ok: false, message: 'Sessão Mileto ausente ou expirada.' });
     let viewContextId: string | null;
@@ -695,4 +720,30 @@ export const cacheStatus = (_req: Request, res: Response) => {
         maxBytes: MAX_BYTES,
         ttlDays: Math.round(TTL_MS / (24 * 60 * 60 * 1000)),
     });
+};
+
+/** POST /api/ops/exports/upload — ponte local para o upload seguro do gateway. */
+export const uploadExport = async (req: Request, res: Response) => {
+    try {
+        const token = bearerFrom(req);
+        const sourcePath = typeof req.body?.sourcePath === 'string' ? path.resolve(req.body.sourcePath) : '';
+        const tempRelative = sourcePath ? path.relative(path.resolve(os.tmpdir()), sourcePath) : '..';
+        if (!sourcePath || tempRelative.startsWith('..') || path.isAbsolute(tempRelative) || !/^mileto-final-[\w-]+\.mp4$/i.test(path.basename(sourcePath))) {
+            throw new Error('Arquivo de exportação inválido.');
+        }
+        const stat = await fs.promises.stat(sourcePath);
+        if (!stat.isFile()) throw new Error('O MP4 temporário não foi encontrado.');
+        if (stat.size > OPS_EXPORT_MAX_BYTES) throw new Error(`O MP4 excede o limite de ${Math.floor(OPS_EXPORT_MAX_BYTES / 1024 / 1024)} MB configurado para o Mileto Ops.`);
+        const companyId = String(req.body?.companyId || '').trim();
+        if (!companyId) throw new Error('Selecione uma empresa do Mileto Ops.');
+        const fileName = String(req.body?.fileName || 'MeuVideo_Mileto.mp4').replace(/[\\/:*?"<>|]/g, '_');
+        const viewContext = viewContextFrom(req);
+        const result = await gatewayUploadFile(token || '', `/v1/integrations/mileto-ops/companies/${encodeURIComponent(companyId)}/assets/export`, sourcePath, {
+            folderId: String(req.body?.folderId || ''), fileName: fileName.endsWith('.mp4') ? fileName : `${fileName}.mp4`,
+        }, viewContext ? { 'X-Ops-View-Context': viewContext } : {});
+        res.json(result);
+    } catch (error) {
+        const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 400;
+        res.status(status).json({ ok: false, message: (error as Error).message || 'Não foi possível enviar ao Mileto Ops.' });
+    }
 };

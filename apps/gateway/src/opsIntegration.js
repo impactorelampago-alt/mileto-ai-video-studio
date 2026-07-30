@@ -32,6 +32,25 @@ const normalizeEmail = (value) => String(value || '')
     .trim()
     .toLowerCase();
 const fingerprint = (value) => (normalizeEmail(value) ? sha256(normalizeEmail(value)) : null);
+const normalizeScopes = (scopes) => [...new Set((Array.isArray(scopes) ? scopes : [])
+    .map((scope) => String(scope || '').trim())
+    .filter(Boolean))];
+const missingRequiredScopes = (scopes) => {
+    const granted = new Set(normalizeScopes(scopes));
+    return normalizeScopes(config.ops.scopes).filter((scope) => !granted.has(scope));
+};
+const assertRequiredScopes = (scopes) => {
+    const missing = missingRequiredScopes(scopes);
+    if (missing.length) {
+        throw httpError(403, 'ops_scope_missing', `O Mileto Ops não concedeu os escopos obrigatórios: ${missing.join(', ')}.`);
+    }
+    return normalizeScopes(scopes);
+};
+const assertAssetsWriteScope = (connection) => {
+    if (!normalizeScopes(connection?.scopes).includes('assets.write')) {
+        throw httpError(403, 'ops_assets_write_required', 'A autorização atual não permite enviar vídeos ao Mileto Ops. Reconecte a conta e conceda assets.write.');
+    }
+};
 
 // Algumas versoes do Ops retornam emailFingerprint junto do e-mail normalizado,
 // mas o fingerprint pode ter sido gerado por outro esquema. Nunca devemos
@@ -253,6 +272,9 @@ const refreshConnection = async (connection) => {
             );
             throw error;
         }
+        const refreshedScopes = tokens.scopes.length
+            ? assertRequiredScopes(tokens.scopes)
+            : assertRequiredScopes(connection.scopes);
         const expiresAt = new Date(Date.now() + tokens.expiresIn * 1000);
         const nextRefresh = tokens.refreshToken || refreshToken;
         await query(
@@ -265,7 +287,7 @@ const refreshConnection = async (connection) => {
                 encryptOpsToken(tokens.accessToken),
                 expiresAt,
                 encryptOpsToken(nextRefresh),
-                tokens.scopes.length ? tokens.scopes : connection.scopes || config.ops.scopes,
+                refreshedScopes,
             ]
         );
         return tokens.accessToken;
@@ -448,8 +470,13 @@ export const integrationStatus = async (req, res) => {
 export const startConnection = async (req, res) => {
     requireOpsConfig();
     const current = await connectionRow(req.user.orgId, true);
-    if (current?.status === 'active') {
+    const reconnect = req.body?.reconnect === true;
+    if (current?.status === 'active' && !reconnect) {
         return res.status(409).json({ ok: false, code: 'ops_already_connected', message: 'A conta já está conectada.' });
+    }
+
+    if (reconnect && current?.status !== 'active') {
+        return res.status(409).json({ ok: false, code: 'ops_reconnect_unavailable', message: 'Não há uma conexão ativa para renovar. Conecte a conta normalmente.' });
     }
 
     const state = b64u(crypto.randomBytes(32));
@@ -460,9 +487,9 @@ export const startConnection = async (req, res) => {
     const returnTo = typeof req.body?.returnTo === 'string' ? req.body.returnTo.slice(0, 500) : null;
     await query(
         `INSERT INTO ops_authorization_attempts
-         (id, org_id, created_by, state_hash, code_verifier_enc, return_to, expires_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [attemptId, req.user.orgId, req.user.id, sha256(state), encryptOpsToken(verifier), returnTo, expiresAt]
+         (id, org_id, created_by, reconnect, connection_id, state_hash, code_verifier_enc, return_to, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [attemptId, req.user.orgId, req.user.id, reconnect, reconnect ? current.id : null, sha256(state), encryptOpsToken(verifier), returnTo, expiresAt]
     );
     await markConnectionAttempt(req.user.orgId, 'pending');
 
@@ -478,7 +505,7 @@ export const startConnection = async (req, res) => {
     // escolhe o workspace que será vinculado no Mileto Ops.
     authorize.searchParams.set('workspace_id', String(req.user.orgId));
 
-    await audit({ req, action: 'ops.connection.started', result: 'success', detail: { attemptId } });
+    await audit({ req, connectionId: current?.id || null, action: 'ops.connection.started', result: 'success', detail: { attemptId, reconnect } });
     res.status(201).json({ ok: true, attemptId, authorizationUrl: authorize.toString(), expiresAt });
 };
 
@@ -520,6 +547,7 @@ export const authorizationCallback = async (req, res) => {
         const verifier = decryptOpsToken(attempt.code_verifier_enc);
         const tokens = await exchangeAuthorizationCode(code, verifier);
         issuedTokens = tokens;
+        const grantedScopes = assertRequiredScopes(tokens.scopes);
         const accountPayload = await opsApi(tokens.accessToken, '/v1/account');
         const account = unwrapOpsData(accountPayload) || {};
         const accountId = String(account.id || account.accountId || '');
@@ -569,6 +597,9 @@ export const authorizationCallback = async (req, res) => {
         }
 
         const previous = await connectionRow(attempt.org_id, true);
+        if (attempt.reconnect && (!previous || previous.id !== attempt.connection_id || previous.status !== 'active')) {
+            throw httpError(409, 'ops_reconnect_changed', 'A conexão mudou durante a renovação. Nenhuma credencial foi substituída. Tente reconectar novamente.');
+        }
         if (previous?.ops_account_id && String(previous.ops_account_id) !== accountId) {
             await Promise.all([revokeToken(tokens.accessToken), revokeToken(tokens.refreshToken)]);
             const mismatch = new OpsHttpError(
@@ -580,9 +611,9 @@ export const authorizationCallback = async (req, res) => {
             throw mismatch;
         }
 
-        const connectionId = newId();
+        const connectionId = attempt.reconnect ? previous.id : previous?.id || newId();
         const expiresAt = new Date(Date.now() + tokens.expiresIn * 1000);
-        const scopes = tokens.scopes.length ? tokens.scopes : config.ops.scopes;
+        const scopes = grantedScopes;
         const result = await query(
             `INSERT INTO ops_connections
              (id, org_id, ops_account_id, ops_account_name, status, scopes,
@@ -616,7 +647,7 @@ export const authorizationCallback = async (req, res) => {
             `INSERT INTO ops_audit_events
              (id, org_id, connection_id, actor_user_id, action, result, detail)
              VALUES ($1,$2,$3,$4,'ops.connection.completed','success',$5)`,
-            [newId(), attempt.org_id, persistedId, attempt.created_by, { accountId }]
+            [newId(), attempt.org_id, persistedId, attempt.created_by, { accountId, reconnect: Boolean(attempt.reconnect), scopes }]
         );
         connectionPersisted = true;
         res.type('html').send(
@@ -1017,7 +1048,8 @@ export const uploadExport = async (req, res) => {
         const checksum = await hashFile(file.path);
         const idempotencyKey = crypto.randomUUID();
         const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken }) => {
-        const intentPayload = {
+            assertAssetsWriteScope(connection);
+            const intentPayload = {
             folderId,
             fileName: String(file.originalname).slice(0, 180),
             mimeType: 'video/mp4',

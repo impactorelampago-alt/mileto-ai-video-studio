@@ -465,6 +465,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         }
         await Promise.all(nextTakes.map(async (take) => {
             if (take.externalMedia?.source !== 'mileto_ops' || !take.externalMedia.referenceId) return;
+            const referenceId = take.externalMedia.referenceId;
             // Remove qualquer capability/caminho persistido por versões anteriores
             // antes de pedir uma materialização novamente autorizada.
             take.url = '';
@@ -472,28 +473,34 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             take.proxyUrl = '';
             take.backendPath = undefined;
             take.externalMedia = { ...take.externalMedia, cacheId: null };
-            try {
-                const response = await fetch(`${API_BASE_URL}/api/ops/cache/materialize`, {
-                    method: 'POST',
-                    headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ referenceId: take.externalMedia.referenceId }),
-                });
-                const result = await response.json();
-                if (!response.ok || !result.ok || !result.source) {
-                    throw new Error(result.message || 'Falha ao recuperar mídia do Mileto Ops.');
+            let lastError: unknown = null;
+            for (let attempt = 0; attempt < 5; attempt += 1) {
+                try {
+                    const response = await fetch(`${API_BASE_URL}/api/ops/cache/materialize`, {
+                        method: 'POST',
+                        headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ referenceId }),
+                    });
+                    const result = await response.json();
+                    if (!response.ok || !result.ok || !result.source) {
+                        throw new Error(result.message || 'Falha ao recuperar mídia do Mileto Ops.');
+                    }
+                    const source = result.source;
+                    const absoluteUrl = (url?: string | null) =>
+                        !url ? '' : /^https?:\/\//i.test(url) ? url : `${API_BASE_URL}${url}`;
+                    take.url = absoluteUrl(source.url);
+                    take.fileUrl = absoluteUrl(source.url);
+                    take.proxyUrl = absoluteUrl(source.proxyUrl);
+                    take.backendPath = source.path;
+                    take.originalDurationSeconds = Number(source.duration || take.originalDurationSeconds || 0);
+                    take.externalMedia = source.externalMedia || take.externalMedia;
+                    return;
+                } catch (error) {
+                    lastError = error;
+                    if (attempt < 4) await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)));
                 }
-                const source = result.source;
-                const absoluteUrl = (url?: string | null) =>
-                    !url ? '' : /^https?:\/\//i.test(url) ? url : `${API_BASE_URL}${url}`;
-                take.url = absoluteUrl(source.url);
-                take.fileUrl = absoluteUrl(source.url);
-                take.proxyUrl = absoluteUrl(source.proxyUrl);
-                take.backendPath = source.path;
-                take.originalDurationSeconds = Number(source.duration || take.originalDurationSeconds || 0);
-                take.externalMedia = source.externalMedia || take.externalMedia;
-            } catch (error) {
-                console.warn('[Draft] Não foi possível materializar referência do Mileto Ops:', (error as Error).message);
             }
+            console.warn('[Draft] Não foi possível materializar referência do Mileto Ops:', (lastError as Error)?.message);
         }));
         if (nextAd) {
             const narration = nextAd.sharedNarrationAssetId ? assets.get(nextAd.sharedNarrationAssetId) : null;
@@ -530,16 +537,19 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         const routeStep = Number(window.location.pathname.match(/\/wizard\/step\/(\d+)/)?.[1] || 1);
         const lastStep = Math.max(1, Math.min(4, opts?.lastStep ?? routeStep));
 
+        // O título do projeto é a fonte de verdade. O título da lista de
+        // rascunhos apenas acompanha esse valor para que a etapa 1, a Home e
+        // o arquivo persistido nunca mostrem nomes diferentes.
         const title =
-            s.draftTitle.trim() ||
             s.adData.title?.trim() ||
+            s.draftTitle.trim() ||
             s.adData.narrationText?.trim().slice(0, 60) ||
             'Rascunho sem título';
 
         const persist = async (): Promise<boolean> => {
             try {
                 const payload = {
-                    adData: s.adData,
+                    adData: { ...s.adData, title },
                     mediaTakes: s.mediaTakes,
                     captionStyle: s.captionStyle,
                     selectedMusicId: s.selectedMusicId,
@@ -596,13 +606,13 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
 
             const data = result.data as LoadedDraftData;
             const title =
-                data.title?.trim() ||
                 data.adData?.title?.trim() ||
+                data.title?.trim() ||
                 data.adData?.narrationText?.trim().slice(0, 60) ||
                 'Rascunho sem título';
             const localPayload = {
                 ...data,
-                adData: mergeAdData(data.adData),
+                adData: { ...mergeAdData(data.adData), title },
                 mediaTakes: Array.isArray(data.mediaTakes) ? data.mediaTakes : [],
                 captionStyle: data.captionStyle ?? null,
                 selectedMusicId: data.selectedMusicId ?? null,
@@ -620,8 +630,9 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     }, [prepareSharedPayload]);
 
     const applyLoadedDraft = React.useCallback((data: LoadedDraftData) => {
-        setDraftTitle(data.title || data.adData?.title || '');
-        if (data.adData) setAdData(mergeAdData(data.adData));
+        const title = data.adData?.title?.trim() || data.title?.trim() || '';
+        setDraftTitle(title);
+        if (data.adData) setAdData(mergeAdData({ ...data.adData, title }));
         setMediaTakes(Array.isArray(data.mediaTakes) ? data.mediaTakes : []);
         if (Object.prototype.hasOwnProperty.call(data, 'captionStyle')) {
             setCaptionStyle(data.captionStyle ?? null);
@@ -696,13 +707,14 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         // Todo projeto nasce no computador. Compartilhar é uma ação posterior e
         // explícita, para não enviar rascunhos ou mídias ao R2 sem intenção.
         setDraftScope('local');
-        setDraftTitle(opts?.title?.trim() || '');
+        const title = opts?.title?.trim() || '';
+        setDraftTitle(title);
         try {
             localStorage.setItem(ACTIVE_DRAFT_STORAGE_KEY, newId);
         } catch {
             // ignore
         }
-        setAdData(defaultAdData);
+        setAdData({ ...defaultAdData, title });
         setMediaTakes([]);
         setCaptionStyle(defaultCaptionStyle);
         setSelectedMusicIdState(null);
@@ -752,6 +764,9 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     }, []);
 
     const updateAdData = React.useCallback((data: Partial<AdData>) => {
+        if (Object.prototype.hasOwnProperty.call(data, 'title')) {
+            setDraftTitle(typeof data.title === 'string' ? data.title : '');
+        }
         setAdData((prev) => ({ ...prev, ...data }));
     }, []);
 

@@ -221,6 +221,11 @@ export interface CaptionTrack {
     language: string; // e.g., 'pt-BR'
     presetId: string | null;
     segments: CaptionSegment[];
+    review?: {
+        sourceApplied: boolean;
+        correctedWords: number;
+        formattedValues: number;
+    };
 }
 
 export interface TitleHook {

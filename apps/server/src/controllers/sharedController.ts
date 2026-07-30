@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import fs from 'fs';
 import crypto from 'crypto';
 import path from 'path';
+import os from 'os';
 import fetch, { RequestInit } from 'node-fetch';
 import { bearerFrom, GatewayHttpError } from '../services/gatewayClient';
 import { BASE_DATA_PATH } from './fileExplorerController';
@@ -149,7 +150,10 @@ const resolveLocalSource = (sourceUrl: string, backendPath: string): string => {
 
     if (!candidate) throw new Error('Não foi possível localizar a mídia local.');
     const relative = path.relative(root, candidate);
-    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    const tempRelative = path.relative(path.resolve(os.tmpdir()), candidate);
+    const isFreshExport = !tempRelative.startsWith('..') && !path.isAbsolute(tempRelative)
+        && /^mileto-final-[\w-]+\.mp4$/i.test(path.basename(candidate));
+    if ((!relative || relative.startsWith('..') || path.isAbsolute(relative)) && !isFreshExport) {
         throw new Error('A mídia precisa estar dentro da pasta de dados do Mileto.');
     }
     if (!fs.existsSync(candidate)) throw new Error('A mídia local não existe mais.');

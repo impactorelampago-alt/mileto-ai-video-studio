@@ -226,6 +226,8 @@ CREATE TABLE IF NOT EXISTS ops_authorization_attempts (
     id                  UUID PRIMARY KEY,
     org_id              BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     created_by          BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    reconnect           BOOLEAN NOT NULL DEFAULT FALSE,
+    connection_id       UUID REFERENCES ops_connections(id) ON DELETE SET NULL,
     state_hash          CHAR(64) NOT NULL UNIQUE,
     code_verifier_enc   TEXT NOT NULL,
     return_to           TEXT,

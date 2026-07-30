@@ -33,6 +33,7 @@ export const Step3 = () => {
                 headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
                 body: JSON.stringify({
                     audioUrl: audioToTranscribe,
+                    narrationText: adData.narrationText,
                 }),
             });
 
@@ -49,10 +50,24 @@ export const Step3 = () => {
                     language: 'pt-BR',
                     presetId: 'karaoke-yellow', // Internal identifier for the backend rendering
                     segments: data.segments,
+                    review: data.review,
                 },
             });
 
-            toast.success('Legendas perfeitamente sincronizadas! ✓', { id: toastId });
+            const reviewBits = [
+                data.review?.correctedWords
+                    ? `${data.review.correctedWords} grafia${data.review.correctedWords === 1 ? '' : 's'} revisada${data.review.correctedWords === 1 ? '' : 's'}`
+                    : '',
+                data.review?.formattedValues
+                    ? `${data.review.formattedValues} valor${data.review.formattedValues === 1 ? '' : 'es'} formatado${data.review.formattedValues === 1 ? '' : 's'}`
+                    : '',
+            ].filter(Boolean);
+            toast.success(
+                reviewBits.length
+                    ? `Legendas sincronizadas e revisadas: ${reviewBits.join(' · ')}`
+                    : 'Legendas perfeitamente sincronizadas! ✓',
+                { id: toastId }
+            );
         } catch (error: unknown) {
             console.error('STT Error:', error);
             const errMsg = error instanceof Error ? error.message : 'Erro';
@@ -192,6 +207,18 @@ export const Step3 = () => {
                                             <p className="text-xs text-brand-muted mt-1 font-medium">
                                                 Foram gerados {adData.captions.segments.length} blocos de legenda.
                                             </p>
+                                            {adData.captions.review?.sourceApplied && (
+                                                <p className="text-xs text-brand-lime mt-2 font-semibold">
+                                                    Roteiro da etapa 1 revisado antes de exibir as legendas
+                                                    {adData.captions.review.correctedWords > 0
+                                                        ? ` · ${adData.captions.review.correctedWords} correção(ões) de grafia`
+                                                        : ''}
+                                                    {adData.captions.review.formattedValues > 0
+                                                        ? ` · ${adData.captions.review.formattedValues} valor(es) formatado(s)`
+                                                        : ''}
+                                                    .
+                                                </p>
+                                            )}
                                         </div>
                                     </>
                                 ) : (

@@ -449,15 +449,18 @@ html {
 .title-text-box > * {
     width: 100%;
     max-width: 100%;
+    min-width: 0 !important;
 }
 
 .title-text-box * {
     min-width: 0;
+    box-sizing: border-box;
 }
 
 .title-text-box :is(h1, h2, h3, h4, p, span) {
     max-width: 100%;
     white-space: pre-wrap !important;
     overflow-wrap: normal;
+    word-break: normal;
+    text-overflow: clip;
 }
-

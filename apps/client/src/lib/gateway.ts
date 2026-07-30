@@ -278,10 +278,10 @@ export const gatewayApi = {
         return gatewayFetch('/v1/integrations/mileto-ops/connection');
     },
 
-    async startOpsConnection(): Promise<{ attemptId: string; authorizationUrl: string; expiresAt: string }> {
+    async startOpsConnection(reconnect = false): Promise<{ attemptId: string; authorizationUrl: string; expiresAt: string }> {
         return gatewayFetch('/v1/integrations/mileto-ops/connections', {
             method: 'POST',
-            body: JSON.stringify({ returnTo: 'mileto-ai-video://account' }),
+            body: JSON.stringify({ returnTo: 'mileto-ai-video://account', reconnect }),
         });
     },
 

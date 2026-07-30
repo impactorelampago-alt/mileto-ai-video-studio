@@ -8,8 +8,6 @@ dotenv.config();
 
 // Base path for persistent data (critical for installed version)
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
-const BUILTIN_TRANSITIONS_PATH =
-    process.env.BUILTIN_TRANSITIONS_PATH || path.join(__dirname, '..', 'public', 'transitions', 'builtins');
 console.log(`[Server] Base Data Path: ${BASE_DATA_PATH}`);
 
 // Ensure directories exist in the persistent path
@@ -99,7 +97,6 @@ app.use('/narrations', express.static(path.join(BASE_DATA_PATH, 'narrations')));
 app.use('/videos', express.static(path.join(BASE_DATA_PATH, 'videos')));
 app.use('/mixes', express.static(path.join(BASE_DATA_PATH, 'public', 'mixes')));
 app.use('/transitions', express.static(path.join(BASE_DATA_PATH, 'public', 'transitions')));
-app.use('/built-in-transitions', express.static(BUILTIN_TRANSITIONS_PATH));
 app.use('/files', express.static(path.join(BASE_DATA_PATH, 'files')));
 app.use('/preview-cache', express.static(path.join(BASE_DATA_PATH, 'preview-cache')));
 app.use(express.static(path.join(__dirname, '../public'))); // Correct for bundled dist/index.js

@@ -507,14 +507,24 @@ export const Step4 = () => {
                                                             </span>
                                                             <input
                                                                 type="number"
-                                                                min="0.1"
+                                                                min={Number((title.startSec + 0.1).toFixed(1))}
                                                                 step="0.1"
-                                                                value={title.durationSec}
-                                                                onChange={(e) =>
+                                                                value={Number((title.startSec + title.durationSec).toFixed(1))}
+                                                                onChange={(e) => {
+                                                                    const endSec = Number(e.target.value);
+                                                                    if (!Number.isFinite(endSec)) return;
+
+                                                                    // A interface mostra um intervalo absoluto (Início → Fim),
+                                                                    // enquanto o projeto guarda a duração para o preview e a
+                                                                    // exportação. Converter aqui evita que “5 até 6” seja
+                                                                    // interpretado como seis segundos de duração.
                                                                     updateTitle(title.id, {
-                                                                        durationSec: Number(e.target.value),
-                                                                    })
-                                                                }
+                                                                        durationSec: Math.max(
+                                                                            0.1,
+                                                                            Number((endSec - title.startSec).toFixed(3))
+                                                                        ),
+                                                                    });
+                                                                }}
                                                                 className="w-[52px] bg-background border border-black/10 dark:border-white/10 rounded-lg px-2 py-1 text-center text-xs font-mono text-foreground focus:outline-none focus:border-brand-accent transition-colors"
                                                             />
                                                         </div>
@@ -610,7 +620,7 @@ export const Step4 = () => {
                                                     Edite no preview
                                                 </p>
                                                 <p className="mt-1 text-[8px] leading-relaxed text-brand-muted">
-                                                    Arraste o meio para mover. As laterais reorganizam as linhas; topo e base ajustam o tamanho.
+                                                    Arraste o meio para mover. Laterais reorganizam as linhas; topo/base e quinas escalam proporcionalmente.
                                                 </p>
                                                 <div className="mt-2 flex items-center gap-1 rounded-md bg-black/25 px-2 py-1 font-mono text-[8px] text-brand-lime/80">
                                                     <Scaling className="h-3 w-3" /> L{' '}

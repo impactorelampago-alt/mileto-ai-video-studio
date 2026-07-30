@@ -34,6 +34,8 @@ router.delete('/chat/sessions/:id', chatController.deleteSession);
 
 router.get('/chat/sessions/:sessionId/messages', chatController.getMessages);
 router.delete('/chat/sessions/:sessionId/messages/from/:messageId', chatController.truncateMessagesFrom);
+router.get('/chat/sessions/:sessionId/response-status', chatController.getResponseStatus);
+router.post('/chat/sessions/:sessionId/cancel-response', chatController.cancelResponse);
 router.post('/chat/message', chatController.sendMessage);
 
 // Geração pelos agentes: execução continua no servidor local e termina na pasta local Geração por IA.
@@ -43,6 +45,7 @@ router.get('/ai/generations/:id', aiGenerationController.status);
 
 // Project Persistence
 router.get('/projects', projectController.listProjects);
+router.get('/projects/:projectId/cover', projectController.getProjectCover);
 router.get('/projects/:projectId', projectController.getProjectData);
 router.post('/projects/:projectId', projectController.saveProjectData);
 router.delete('/projects/:projectId', projectController.deleteProject);
@@ -99,6 +102,7 @@ router.get('/files/list', fileExplorerController.listItems);
 router.post('/files/folder', fileExplorerController.createFolder);
 router.post('/files/upload', upload.single('file'), fileExplorerController.uploadFile);
 router.post('/files/import-paths', fileExplorerController.importLocalPaths);
+router.post('/files/import-export', fileExplorerController.importExportedFile);
 router.post('/files/preview-source', fileExplorerController.preparePreviewSource);
 router.patch('/files/rename', fileExplorerController.renameItem);
 router.post('/files/move', fileExplorerController.moveItem);
@@ -125,6 +129,7 @@ router.post('/shared/files/item/:assetId/restore', sharedController.restoreItem)
 router.post('/ops/cache/materialize', opsController.materialize);
 router.get('/ops/cache/status', opsController.cacheStatus);
 router.get('/ops/cache/file/:cacheId/:filename', opsController.serveCacheFile);
+router.post('/ops/exports/upload', opsController.uploadExport);
 
 // Transition Routes
 router.post('/transitions/upload', upload.single('file'), transitionController.uploadTransition);

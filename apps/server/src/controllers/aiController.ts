@@ -384,21 +384,28 @@ export const generateTitles = async (req: Request, res: Response) => {
         .flatMap((seg: any) => (seg.words || []).map((w: any) => `[${w.start.toFixed(2)}s] ${w.text}`))
         .join(' ');
 
-    const systemPrompt = `Você é um especialista em retenção de vídeos curtos (TikTok/Reels).
-Sua missão é criar Títulos Chamativos (Hooks textuais) que vão aparecer na tela em momentos chave do vídeo para prender a atenção.
-Vou te passar o roteiro completo e as legendas exatas (com o tempo em segundos de cada palavra).
-Identifique de 3 a 5 momentos ideais (gatilhos de curiosidade, promessas, quebras de padrão) e crie um hook curto de impacto.
+    const systemPrompt = `Você é diretor criativo especializado em títulos de retenção para vídeos curtos (Reels, TikTok e anúncios).
+Sua missão é selecionar apenas os textos que realmente melhoram a atenção e a conversão do vídeo, sempre coerentes com a narração e com o instante em que aparecem.
 
-Regras:
-1. O texto do título deve ser curto (máx 5-6 palavras), impactante e estar relacionado com o que está sendo dito naquele segundo.
-2. O startSec (tempo de início) deve ser EXATAMENTE um dos tempos mapeados nas legendas fornecidas.
-3. Fixe todos os 'durationSec' como 2 (dois segundos).
+Você receberá o roteiro e as legendas com o tempo de cada palavra. Não existe quantidade fixa de títulos: escolha somente os momentos que realmente merecem destaque. A quantidade deve seguir os gatilhos legítimos encontrados no vídeo; nunca invente frases, repita a mesma ideia ou preencha espaço sem motivo.
 
-O usuário fornecerá as legendas no formato: "[segundo] palavra".
-Responda EXCLUSIVAMENTE em formato JSON. O JSON DEVE CONTER uma raiz com a chave "titles" que é um array de objetos, assim:
+Critérios de escolha, em ordem de prioridade:
+1. Gancho inicial, benefício concreto, preço/oferta, prova, quebra de padrão, urgência legítima e chamada para ação real.
+2. Se o roteiro mencionar claramente uma cidade, bairro, região ou endereço, crie exatamente um título de conexão local usando esse nome, no instante em que ele for dito. Nunca invente localização e não repita a região em outros títulos.
+3. Se houver uma CTA explícita (por exemplo: clique, chame no WhatsApp, agende, compre ou venha), inclua no máximo um item com "kind": "cta" no momento dessa CTA. Para esse item, o texto deve ser exatamente "CLIQUE AQUI"; ele será renderizado como botão padrão pelo editor.
+
+Regras obrigatórias:
+1. Cada título deve ter entre 1 e 6 palavras, linguagem direta, legível em tela e relacionado ao que está sendo dito naquele segundo.
+2. Não use escassez, urgência, preço, bônus ou prova se a narração não os sustentar.
+3. O startSec deve ser EXATAMENTE um dos tempos mapeados nas legendas.
+4. Use durationSec 2 para todos os itens.
+5. Use "kind" com um destes valores: "hook", "offer", "benefit", "local" ou "cta".
+
+O usuário fornecerá as legendas no formato "[segundo] palavra".
+Responda exclusivamente em JSON válido, nesta estrutura:
 {
   "titles": [
-    { "text": "Hook Curto e Direto", "startSec": 0.50, "durationSec": 2 }
+    { "text": "Hook curto e direto", "startSec": 0.5, "durationSec": 2, "kind": "hook" }
   ]
 }`;
 
@@ -422,17 +429,67 @@ Responda EXCLUSIVAMENTE em formato JSON. O JSON DEVE CONTER uma raiz com a chave
             parsed = {};
         }
         const titlesArr = Array.isArray(parsed) ? parsed : parsed.titles || [];
+        const captionStarts = captions.segments
+            .flatMap((seg: any) => {
+                const wordStarts = (seg.words || []).map((word: any) => Number(word.start));
+                return wordStarts.length ? wordStarts : [Number(seg.start)];
+            })
+            .filter((time: number) => Number.isFinite(time))
+            .sort((a: number, b: number) => a - b);
+        const closestCaptionStart = (requestedStart: unknown) => {
+            const requested = Number(requestedStart);
+            if (!captionStarts.length || !Number.isFinite(requested)) return 0;
+            return captionStarts.reduce((closest: number, candidate: number) =>
+                Math.abs(candidate - requested) < Math.abs(closest - requested) ? candidate : closest
+            );
+        };
+        const seenTitles = new Set<string>();
+        let ctaAdded = false;
 
-        // Format titles and assign IDs
-        const finalTitles = (Array.isArray(titlesArr) ? titlesArr : []).map((t: any) => ({
-            id: uuidv4(),
-            text: t.text || 'Título gerado',
-            startSec: Number(t.startSec) || 0,
-            durationSec: Number(t.durationSec) || 2,
-            isActive: false, // Default desativado
-            posY: 30,
-            scale: 1, // Default scale 1x
-        }));
+        // Format titles, snap them to a real spoken word, and reject duplicates.
+        // A small safety ceiling avoids a malformed model response flooding the editor;
+        // it is not a creative quota — the model decides how many moments matter.
+        const finalTitles = (Array.isArray(titlesArr) ? titlesArr : [])
+            .filter((title: any) => {
+                const text = String(title?.text || '').trim();
+                const key = text.toLocaleLowerCase('pt-BR');
+                if (!text || seenTitles.has(key)) return false;
+                seenTitles.add(key);
+                return true;
+            })
+            .slice(0, 8)
+            .flatMap((title: any) => {
+                const kind = String(title?.kind || 'hook').toLowerCase();
+                if (kind === 'cta') {
+                    if (ctaAdded) return [];
+                    ctaAdded = true;
+                    return [{
+                        id: uuidv4(),
+                        text: 'CLIQUE AQUI',
+                        startSec: closestCaptionStart(title.startSec),
+                        durationSec: 2,
+                        isActive: false,
+                        posY: 55,
+                        posX: 50,
+                        scale: 0.72,
+                        textBoxWidthPct: 50,
+                        styleId: 'cta-whatsapp',
+                        primaryColor: '#54a812',
+                        secondaryColor: '#ffffff',
+                        fontFamily: 'Poppins',
+                    }];
+                }
+
+                return [{
+                    id: uuidv4(),
+                    text: String(title.text).trim().slice(0, 90),
+                    startSec: closestCaptionStart(title.startSec),
+                    durationSec: 2,
+                    isActive: false,
+                    posY: 30,
+                    scale: 1,
+                }];
+            });
 
         res.json({ ok: true, titles: finalTitles });
     } catch (error: any) {

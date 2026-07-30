@@ -113,6 +113,18 @@ export async function truncateMessagesFrom(sessionId: string, messageId: string)
     return data.messages;
 }
 
+export async function getResponseStatus(sessionId: string): Promise<{ active: boolean }> {
+    const data = await request<{ active: boolean }>(`${BASE}/sessions/${sessionId}/response-status`);
+    return { active: data.active };
+}
+
+export async function cancelResponse(sessionId: string): Promise<{ cancelled: boolean }> {
+    const data = await request<{ cancelled: boolean }>(`${BASE}/sessions/${sessionId}/cancel-response`, {
+        method: 'POST',
+    });
+    return { cancelled: data.cancelled };
+}
+
 export async function sendMessage(
     sessionId: string,
     content: string,
