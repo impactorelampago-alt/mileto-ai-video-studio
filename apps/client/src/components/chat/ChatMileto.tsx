@@ -522,6 +522,14 @@ export const ChatMileto: React.FC = () => {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const activeRequestControllersRef = useRef(new Map<string, AbortController>());
+    // Quando a resposta já foi persistida mas o POST ficou preso na rede do
+    // Electron, o monitor encerra somente a espera local. Este Set diferencia
+    // essa reconciliação automática de uma interrupção solicitada pelo usuário.
+    const reconciledRequestSessionsRef = useRef(new Set<string>());
+    const pendingResponseMarkersRef = useRef(
+        new Map<string, { baselineLastMessageId: string | null; startedAt: number }>()
+    );
+    const [responseWatchRevision, setResponseWatchRevision] = useState(0);
     const activeSessionRef = useRef<string | null>(null);
 
     // Não cancelamos uma resposta ao recolher/desmontar o painel: a execução é
@@ -568,6 +576,7 @@ export const ChatMileto: React.FC = () => {
 
         let disposed = false;
         let timer: number | undefined;
+        let observedActiveResponse = false;
         const sessionId = activeSessionId;
 
         const refreshBackgroundResponse = async () => {
@@ -580,12 +589,26 @@ export const ChatMileto: React.FC = () => {
                 setMessages(persisted);
 
                 // O POST pode ainda estar chegando ao servidor quando a primeira
-                // consulta acontece. Enquanto a última mensagem persistida for do
-                // usuário e houver uma requisição local viva, continuamos olhando.
-                const waitingForFirstServerState =
-                    persisted[persisted.length - 1]?.role === 'user' && activeRequestControllersRef.current.has(sessionId);
+                // consulta acontece. Enquanto não surgir uma nova resposta criada
+                // depois deste envio, a requisição local mantém o monitor ativo.
+                const localController = activeRequestControllersRef.current.get(sessionId);
+                const lastPersistedMessage = persisted[persisted.length - 1];
+                const pendingMarker = pendingResponseMarkersRef.current.get(sessionId);
+                const persistedAt = lastPersistedMessage ? Date.parse(lastPersistedMessage.createdAt) : Number.NaN;
+                const hasNewPersistedAssistant = Boolean(
+                    localController &&
+                    pendingMarker &&
+                    lastPersistedMessage?.role === 'assistant' &&
+                    lastPersistedMessage.id !== pendingMarker.baselineLastMessageId &&
+                    Number.isFinite(persistedAt) &&
+                    persistedAt >= pendingMarker.startedAt - 2_000
+                );
+                const waitingForFirstServerState = Boolean(
+                    localController && !hasNewPersistedAssistant
+                );
 
                 if (active || waitingForFirstServerState) {
+                    if (active) observedActiveResponse = true;
                     setIsLoading(true);
                     timer = window.setTimeout(refreshBackgroundResponse, 800);
                     return;
@@ -594,8 +617,13 @@ export const ChatMileto: React.FC = () => {
                 // O estado do servidor é a fonte de verdade. Uma requisição HTTP
                 // antiga pode continuar pendurada mesmo depois de a resposta já
                 // ter sido salva; ela não deve manter os três pontos na tela.
+                if (localController && hasNewPersistedAssistant) {
+                    reconciledRequestSessionsRef.current.add(sessionId);
+                    localController.abort();
+                }
                 activeRequestControllersRef.current.delete(sessionId);
-                setIsLoading(false);
+                pendingResponseMarkersRef.current.delete(sessionId);
+                if (localController || observedActiveResponse) setIsLoading(false);
             } catch (error) {
                 if (!disposed) {
                     console.error('Falha ao recuperar resposta em segundo plano:', error);
@@ -611,7 +639,7 @@ export const ChatMileto: React.FC = () => {
             disposed = true;
             if (timer !== undefined) window.clearTimeout(timer);
         };
-    }, [isOpen, activeSessionId]);
+    }, [isOpen, activeSessionId, responseWatchRevision]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -758,6 +786,7 @@ export const ChatMileto: React.FC = () => {
         if (!inputText.trim() || isLoading) return;
 
         let sessionId = activeSessionId;
+        let responseBaselineLastMessageId = messages[messages.length - 1]?.id || null;
 
         if (!sessionId) {
             try {
@@ -791,6 +820,7 @@ export const ChatMileto: React.FC = () => {
             try {
                 const remaining = await chatApi.truncateMessagesFrom(sessionId, editingMessageId);
                 setMessages(remaining);
+                responseBaselineLastMessageId = remaining[remaining.length - 1]?.id || null;
                 setEditingMessageId(null);
             } catch (err) {
                 console.error('Falha ao preparar a reescrita:', err);
@@ -813,6 +843,13 @@ export const ChatMileto: React.FC = () => {
 
         const requestController = new AbortController();
         activeRequestControllersRef.current.set(sessionId, requestController);
+        pendingResponseMarkersRef.current.set(sessionId, {
+            baselineLastMessageId: responseBaselineLastMessageId,
+            startedAt: Date.now(),
+        });
+        // O envio em uma conversa já aberta precisa religar o monitor; alterar
+        // somente isLoading não recriava o efeito e causava a resposta invisível.
+        setResponseWatchRevision((revision) => revision + 1);
 
         try {
             const locale = navigator.language || 'pt-BR';
@@ -836,6 +873,7 @@ export const ChatMileto: React.FC = () => {
             }
         } catch (err: unknown) {
             if ((err as Error)?.name === 'AbortError' || requestController.signal.aborted) {
+                const wasReconciled = reconciledRequestSessionsRef.current.has(sessionId);
                 try {
                     const persisted = await chatApi.getMessages(sessionId);
                     if (activeSessionRef.current === sessionId) {
@@ -844,6 +882,7 @@ export const ChatMileto: React.FC = () => {
                 } catch (refreshErr) {
                     console.error('Falha ao atualizar a conversa interrompida:', refreshErr);
                 }
+                if (wasReconciled) return;
                 if (activeSessionRef.current === sessionId) {
                     toast.info('Resposta interrompida. Você pode editar sua última mensagem e tentar novamente.');
                 }
@@ -861,6 +900,8 @@ export const ChatMileto: React.FC = () => {
                 setMessages((prev) => [...prev, errorMsg]);
             }
         } finally {
+            reconciledRequestSessionsRef.current.delete(sessionId);
+            pendingResponseMarkersRef.current.delete(sessionId);
             if (activeRequestControllersRef.current.get(sessionId) === requestController) {
                 activeRequestControllersRef.current.delete(sessionId);
             }
@@ -868,7 +909,7 @@ export const ChatMileto: React.FC = () => {
                 setIsLoading(false);
             }
         }
-    }, [inputText, isLoading, activeSessionId, selectedAgentId, selectedModel, editingMessageId]);
+    }, [inputText, isLoading, activeSessionId, selectedAgentId, selectedModel, editingMessageId, messages]);
 
     // ─── Inline Folder Creation ──────────────────────────────────────────────
     const handleCreateFolder = useCallback(() => {

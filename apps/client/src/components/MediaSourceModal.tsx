@@ -192,6 +192,14 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
         });
     };
 
+    const selectFileFromCard = (file: SharedFile) => {
+        // O card inteiro é o alvo de seleção. Antes, somente o quadradinho que
+        // aparecia após clicar em “Selecionar” funcionava, o que fazia o arquivo
+        // parecer apenas uma miniatura sem ação.
+        if (!selectionMode) setSelectionMode(true);
+        toggleFile(file);
+    };
+
     const confirmSelection = () => {
         if (!selectedFiles.length) return;
         const batch = [...selectedFiles];
@@ -453,7 +461,13 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
                             </button>
                         ))}
                         {listing.files.map((file) => (
-                            <article key={file.id || file.relPath} className={cn('group overflow-hidden rounded-2xl border bg-white/[0.025] transition', selectedIds.has(file.id || file.relPath) ? 'border-brand-lime/50 ring-1 ring-brand-lime/20' : 'border-white/8 hover:border-brand-lime/25')}>
+                            <button
+                                type="button"
+                                key={file.id || file.relPath}
+                                aria-pressed={selectedIds.has(file.id || file.relPath)}
+                                onClick={() => selectFileFromCard(file)}
+                                className={cn('group w-full cursor-pointer overflow-hidden rounded-2xl border bg-white/[0.025] text-left transition focus:outline-none focus:ring-2 focus:ring-brand-lime/35', selectedIds.has(file.id || file.relPath) ? 'border-brand-lime/50 ring-1 ring-brand-lime/20' : 'border-white/8 hover:border-brand-lime/25')}
+                            >
                                 <div className="relative aspect-video overflow-hidden bg-black/30">
                                     {kind === 'image' ? (
                                         <img src={absoluteUrl(file.publicUrl)} alt="" className="h-full w-full object-cover" loading="lazy" />
@@ -463,20 +477,26 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
                                     <span className="absolute left-2 top-2 rounded-md bg-black/65 px-1.5 py-1 text-white">
                                         {kind === 'image' ? <FileImage className="h-3.5 w-3.5" /> : <FileVideo className="h-3.5 w-3.5" />}
                                     </span>
-                                    {selectionMode && (
-                                        <button type="button" onClick={() => toggleFile(file)} className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-lg border border-white/15 bg-black/75 text-white shadow-lg">
-                                            {selectedIds.has(file.id || file.relPath) ? <CheckSquare className="h-4 w-4 text-brand-lime" /> : <Square className="h-4 w-4" />}
-                                        </button>
-                                    )}
+                                    <span
+                                        aria-hidden="true"
+                                        className={cn(
+                                            'absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-lg border bg-black/75 text-white shadow-lg transition',
+                                            selectionMode || selectedIds.has(file.id || file.relPath)
+                                                ? 'border-brand-lime/35 opacity-100'
+                                                : 'border-white/15 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                                        )}
+                                    >
+                                        {selectedIds.has(file.id || file.relPath) ? <CheckSquare className="h-4 w-4 text-brand-lime" /> : <Square className="h-4 w-4" />}
+                                    </span>
                                 </div>
                                 <div className="p-3">
                                     <p className="truncate text-xs font-bold text-foreground" title={file.name}>{file.name}</p>
                                     <div className="mt-2 flex items-center justify-between gap-2">
                                         <span className="text-[10px] text-brand-muted">{formatBytes(file.size)}</span>
-                                        {selectionMode && <span className="text-[10px] font-bold text-brand-lime">{selectedIds.has(file.id || file.relPath) ? 'Selecionado' : 'Marque acima'}</span>}
+                                        <span className="text-[10px] font-bold text-brand-lime">{selectedIds.has(file.id || file.relPath) ? 'Selecionado' : 'Clique para usar'}</span>
                                     </div>
                                 </div>
-                            </article>
+                            </button>
                         ))}
                     </div>
                 ) : (
@@ -487,17 +507,19 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
                             </button>
                         ))}
                         {listing.files.map((file) => (
-                            <div key={file.id || file.relPath} className={cn('flex items-center gap-3 border-b border-white/6 px-4 py-3 last:border-b-0', selectedIds.has(file.id || file.relPath) ? 'bg-brand-lime/[0.055]' : 'hover:bg-white/[0.025]')}>
-                                {selectionMode && (
-                                    <button type="button" onClick={() => toggleFile(file)} className="text-brand-muted hover:text-foreground">
-                                        {selectedIds.has(file.id || file.relPath) ? <CheckSquare className="h-4 w-4 text-brand-lime" /> : <Square className="h-4 w-4" />}
-                                    </button>
-                                )}
+                            <button
+                                type="button"
+                                key={file.id || file.relPath}
+                                onClick={() => selectFileFromCard(file)}
+                                aria-pressed={selectedIds.has(file.id || file.relPath)}
+                                className={cn('flex w-full items-center gap-3 border-b border-white/6 px-4 py-3 text-left last:border-b-0', selectedIds.has(file.id || file.relPath) ? 'bg-brand-lime/[0.055]' : 'hover:bg-white/[0.025]')}
+                            >
+                                {selectedIds.has(file.id || file.relPath) ? <CheckSquare className="h-4 w-4 text-brand-lime" /> : <Square className="h-4 w-4 text-brand-muted" />}
                                 {kind === 'image' ? <FileImage className="h-5 w-5 text-violet-300" /> : <FileVideo className="h-5 w-5 text-brand-lime" />}
                                 <span className="min-w-0 flex-1 truncate text-xs font-bold text-foreground">{file.name}</span>
                                 <span className="text-[10px] text-brand-muted">{formatBytes(file.size)}</span>
-                                {selectionMode && <span className="text-[10px] font-bold text-brand-lime">{selectedIds.has(file.id || file.relPath) ? 'Selecionado' : 'Marcar'}</span>}
-                            </div>
+                                <span className="text-[10px] font-bold text-brand-lime">{selectedIds.has(file.id || file.relPath) ? 'Selecionado' : 'Usar'}</span>
+                            </button>
                         ))}
                     </div>
                 )}

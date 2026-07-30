@@ -9,6 +9,7 @@ import { VoiceSettings, clamp, isFishModel, DEFAULT_FISH_MODEL } from './ttsType
 // Use persistent data path for bundled production stability
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const NARRATION_DIR = path.join(BASE_DATA_PATH, 'narrations');
+const NARRATION_CACHE_VERSION = 'spoken-numbers-v2';
 
 if (!fs.existsSync(NARRATION_DIR)) fs.mkdirSync(NARRATION_DIR, { recursive: true });
 
@@ -53,7 +54,7 @@ export const generateNarration = async (
     const cacheSuffix = `${prosody ? `-s${prosody.speed}-v${prosody.volume}` : ''}-m${model}`;
     const hash = crypto
         .createHash('md5')
-        .update(`${voiceId}-${finalPayloadText}${cacheSuffix}`)
+        .update(`${NARRATION_CACHE_VERSION}-${voiceId}-${finalPayloadText}${cacheSuffix}`)
         .digest('hex');
     const fileName = `narration-${hash}.mp3`;
     let filePath = path.join(NARRATION_DIR, fileName);

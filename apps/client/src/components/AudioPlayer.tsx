@@ -30,12 +30,20 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, className }) => {
         audio.addEventListener('timeupdate', setAudioTime);
         audio.addEventListener('ended', handleEnded);
 
+        // Uma nova síntese pode chegar enquanto o player ainda mantém o buffer
+        // anterior. Recarregar explicitamente garante que o play use o novo MP3.
+        audio.pause();
+        setIsPlaying(false);
+        setCurrentTime(0);
+        setDuration(0);
+        audio.load();
+
         return () => {
             audio.removeEventListener('loadeddata', setAudioData);
             audio.removeEventListener('timeupdate', setAudioTime);
             audio.removeEventListener('ended', handleEnded);
         };
-    }, []);
+    }, [src]);
 
     const togglePlay = () => {
         const audio = audioRef.current;

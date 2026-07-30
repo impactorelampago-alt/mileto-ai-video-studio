@@ -27,9 +27,11 @@ import { cn } from '../lib/utils';
 import axios from 'axios';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { DynamicTitleRenderer } from '../components/DynamicTitleRenderer';
+import { TextAnimationPicker } from '../components/TextAnimationPicker';
 import { ExportModal } from '../components/ExportModal';
 import { PREMIUM_TITLE_GROUPS, PREMIUM_TITLE_MODELS } from '../lib/premiumTitleModels';
 import { missingForCompletion, pendingWarningText } from '../lib/workflowWarnings';
+import { narrationSourceKey } from '../lib/narrationState';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -47,7 +49,12 @@ export const Step4 = () => {
     const [showExportModal, setShowExportModal] = useState(false);
     const previewRef = useRef<VideoSequencePreviewRef>(null);
 
-    const titles = adData.dynamicTitles || EMPTY_TITLES;
+    const currentSourceKey = narrationSourceKey(adData);
+    const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
+    const titles = (adData.captions?.segments?.length && !currentCaptions)
+        || (adData.dynamicTitlesSourceKey && adData.dynamicTitlesSourceKey !== currentSourceKey)
+        ? EMPTY_TITLES
+        : adData.dynamicTitles || EMPTY_TITLES;
     const titleStateRef = useRef<TitleHook[]>(titles);
     const titleHistoryRef = useRef<{
         undo: TitleHook[][];
@@ -158,8 +165,10 @@ export const Step4 = () => {
     }, [titles, selectedTitleId]);
 
     const handleGenerateTitles = async () => {
-        if (!adData.captions || !adData.captions.segments || adData.captions.segments.length === 0) {
-            toast.error('Gere as legendas na Etapa 3 primeiro!');
+        if (!currentCaptions?.segments?.length) {
+            toast.error(adData.captions?.segments?.length
+                ? 'A narração mudou. Gere novamente as legendas na Etapa 3 antes dos títulos.'
+                : 'Gere as legendas na Etapa 3 primeiro!');
             return;
         }
 
@@ -172,14 +181,14 @@ export const Step4 = () => {
                 `${apiBaseUrl}/api/video/generate-titles`,
                 {
                     script: adData.narrationText,
-                    captions: adData.captions,
+                    captions: currentCaptions,
                 },
                 { headers: await localAuthHeaders() }
             );
 
             if (res.data.ok && res.data.titles) {
                 const finalTitles = (res.data.titles || []).map((t: TitleHook) => ({ ...t, hasSound: true }));
-                updateAdData({ dynamicTitles: finalTitles });
+                updateAdData({ dynamicTitles: finalTitles, dynamicTitlesSourceKey: currentSourceKey });
                 if (finalTitles.length > 0) {
                     setSelectedTitleId(finalTitles[0].id);
                 }
@@ -331,7 +340,7 @@ export const Step4 = () => {
                                 animationId: 'pop',
                                 fontFamily: 'Poppins',
                             };
-                            updateAdData({ dynamicTitles: [...titles, newTitle] });
+                            updateAdData({ dynamicTitles: [...titles, newTitle], dynamicTitlesSourceKey: currentSourceKey });
                             setSelectedTitleId(newTitle.id);
                             handleTargetTime(startSec);
                             toast.success(
@@ -380,7 +389,7 @@ export const Step4 = () => {
                                     fontFamily: 'Inter',
                                     imageUrl: imageUrl, // Store the blob URL
                                 };
-                                updateAdData({ dynamicTitles: [...titles, newTitle] });
+                                updateAdData({ dynamicTitles: [...titles, newTitle], dynamicTitlesSourceKey: currentSourceKey });
                                 setSelectedTitleId(newTitle.id);
                                 handleTargetTime(startSec);
                                 toast.success('Imagem de título carregada!');
@@ -546,20 +555,10 @@ export const Step4 = () => {
                                                         <span className="text-[9px] uppercase tracking-wider text-brand-muted font-bold pl-1">
                                                             Animação
                                                         </span>
-                                                        <select
+                                                        <TextAnimationPicker
                                                             value={title.animationId || 'pop'}
-                                                            onChange={(e) =>
-                                                                updateTitle(title.id, {
-                                                                    animationId: e.target.value,
-                                                                })
-                                                            }
-                                                            className="bg-brand-card/50 border border-black/10 dark:border-white/10 text-foreground font-medium text-xs rounded-lg px-3 py-2 outline-none focus:border-brand-accent transition-colors cursor-pointer w-full appearance-none shadow-inner"
-                                                        >
-                                                            <option value="fade">Esmaecer Suave</option>
-                                                            <option value="pop">Impacto Elástico</option>
-                                                            <option value="slide">Deslize Rápido</option>
-                                                            <option value="none">Estático</option>
-                                                        </select>
+                                                            onChange={(animationId) => updateTitle(title.id, { animationId })}
+                                                        />
                                                     </div>
 
                                                     <div className="flex flex-col gap-1.5">
@@ -1289,7 +1288,7 @@ export const Step4 = () => {
                                     ref={previewRef}
                                     takes={mediaTakes}
                                     masterAudioUrl={adData.masterAudioUrl}
-                                    captions={adData.captions}
+                                    captions={currentCaptions}
                                     hideControls={true}
                                     onMuteToggle={() => {}}
                                     onMuteAll={() => {}}

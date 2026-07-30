@@ -30,6 +30,22 @@ export interface TakeMotionEffect {
     easing: 'linear' | 'smooth';
 }
 
+export type VideoEnhancementIntensity = 'soft' | 'balanced' | 'strong';
+
+export interface VideoEnhancementSettings {
+    /** Correção automática de cor, contraste e ruído. A nitidez é controlada separadamente. */
+    enabled: boolean;
+    intensity: VideoEnhancementIntensity;
+    /** Nitidez padrão para todos os takes, de 0 a 100. */
+    globalSharpness: number;
+}
+
+export interface TakeSharpnessSettings {
+    /** `inherit` usa o valor global; `off` desliga; `custom` usa `amount`. */
+    mode: 'inherit' | 'off' | 'custom';
+    amount: number;
+}
+
 export interface ExternalMediaReference {
     source: 'mileto_ops';
     referenceId: string;
@@ -67,6 +83,7 @@ export interface MediaTake {
     speedPresetId?: SpeedPresetType;
     muteOriginalAudio?: boolean;
     motionEffect?: TakeMotionEffect;
+    sharpness?: TakeSharpnessSettings;
     transition?: {
         asset: TransitionAsset;
         volume: number;
@@ -221,6 +238,8 @@ export interface CaptionTrack {
     language: string; // e.g., 'pt-BR'
     presetId: string | null;
     segments: CaptionSegment[];
+    /** Assinatura do áudio+roteiro que originou estas legendas. */
+    sourceKey?: string;
     review?: {
         sourceApplied: boolean;
         correctedWords: number;
@@ -270,12 +289,15 @@ export interface AdData {
     narrationDuration?: number;
     captions?: CaptionTrack;
     globalTransition?: TransitionAsset | null;
+    videoEnhancement?: VideoEnhancementSettings;
     /** Rotação aplicada à transição global no preview e no render final. */
     transitionRotation?: 0 | 90 | 180 | 270;
     transitionVolume?: number; // 0.0 to 1.0, default 1.0 (or mapped to 0-200%)
     transitionMuted?: boolean;
     transitionPath?: string; // Caminho em disco para injetar via Backend Híbrido
     dynamicTitles?: TitleHook[];
+    /** Assinatura das legendas/narração usadas pela geração automática. */
+    dynamicTitlesSourceKey?: string;
     customOverlayUrl?: string; // Imagem customizada de logo/título no Step4
 }
 

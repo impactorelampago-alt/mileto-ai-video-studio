@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { AudioPlayer } from '../components/AudioPlayer';
 import { MusicLibrary } from '../components/MusicLibrary';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
+import { invalidatedNarrationDerivatives } from '../lib/narrationState';
 
 export const Step1 = () => {
     const { adData, updateAdData } = useWizard();
@@ -117,6 +118,7 @@ export const Step1 = () => {
 
             // Feedback específico para as duas falhas mais comuns, que não são bug do app.
             updateAdData({
+                ...invalidatedNarrationDerivatives(),
                 isNarrationGenerated: true,
                 narrationAudioUrl: `${((window as any).API_BASE_URL || 'http://localhost:3301')}${data.url}`,
                 narrationDuration: data.duration,
@@ -158,6 +160,7 @@ export const Step1 = () => {
             const data = await response.json();
             if (!data.ok) throw new Error(data.message);
             updateAdData({
+                ...invalidatedNarrationDerivatives(),
                 isNarrationGenerated: true,
                 narrationAudioUrl: `${apiBase}${data.url}`,
                 narrationDuration: data.duration,
@@ -297,8 +300,26 @@ export const Step1 = () => {
 
     // Apaga a narração gerada/gravada, voltando ao estado inicial.
     const handleDeleteNarration = () => {
-        updateAdData({ isNarrationGenerated: false, narrationAudioUrl: '', narrationDuration: 0 });
+        updateAdData({
+            ...invalidatedNarrationDerivatives(),
+            isNarrationGenerated: false,
+            narrationAudioUrl: '',
+            narrationAudioPath: null,
+            sharedNarrationAssetId: undefined,
+            narrationDuration: 0,
+        });
         toast.success('Áudio apagado.');
+    };
+
+    const handleResynthesizeNarration = () => {
+        updateAdData({
+            ...invalidatedNarrationDerivatives(),
+            isNarrationGenerated: false,
+            narrationAudioUrl: null,
+            narrationAudioPath: null,
+            sharedNarrationAssetId: undefined,
+            narrationDuration: 0,
+        });
     };
 
     // Auto-generation on mount removed per user request to start from scratch.
@@ -380,7 +401,15 @@ export const Step1 = () => {
                             onChange={(e) =>
                                 // Mudou o texto → o áudio gerado ficou desatualizado. Invalida
                                 // para forçar regerar (senão avança e o vídeo fala o texto antigo).
-                                updateAdData({ narrationText: e.target.value, isNarrationGenerated: false })
+                                updateAdData({
+                                    ...invalidatedNarrationDerivatives(),
+                                    narrationText: e.target.value,
+                                    isNarrationGenerated: false,
+                                    narrationAudioUrl: null,
+                                    narrationAudioPath: null,
+                                    sharedNarrationAssetId: undefined,
+                                    narrationDuration: 0,
+                                })
                             }
                             placeholder="Escreva aqui o seu roteiro matador para o anúncio..."
                             className={cn(
@@ -520,7 +549,7 @@ export const Step1 = () => {
                                     <AudioPlayer src={adData.narrationAudioUrl || ''} />
                                 </div>
                                 <button
-                                    onClick={() => updateAdData({ isNarrationGenerated: false })}
+                                    onClick={handleResynthesizeNarration}
                                     className="w-full text-xs text-brand-muted hover:text-foreground transition-colors uppercase tracking-widest font-semibold pt-1"
                                 >
                                     Refazer Sintetização

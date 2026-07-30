@@ -392,10 +392,10 @@ Você receberá o roteiro e as legendas com o tempo de cada palavra. Não existe
 Critérios de escolha, em ordem de prioridade:
 1. Gancho inicial, benefício concreto, preço/oferta, prova, quebra de padrão, urgência legítima e chamada para ação real.
 2. Se o roteiro mencionar claramente uma cidade, bairro, região ou endereço, crie exatamente um título de conexão local usando esse nome, no instante em que ele for dito. Nunca invente localização e não repita a região em outros títulos.
-3. Se houver uma CTA explícita (por exemplo: clique, chame no WhatsApp, agende, compre ou venha), inclua no máximo um item com "kind": "cta" no momento dessa CTA. Para esse item, o texto deve ser exatamente "CLIQUE AQUI"; ele será renderizado como botão padrão pelo editor.
+3. Se houver uma CTA explícita (por exemplo: clique, chame no WhatsApp, agende, compre ou venha), inclua no máximo um item com "kind": "cta" no momento dessa CTA. Use exatamente as palavras pronunciadas; nunca substitua por "CLIQUE AQUI" se essa frase não existir no áudio.
 
 Regras obrigatórias:
-1. Cada título deve ter entre 1 e 6 palavras, linguagem direta, legível em tela e relacionado ao que está sendo dito naquele segundo.
+1. Cada título deve ter entre 1 e 6 palavras e ser uma sequência literal e contínua das palavras fornecidas nas legendas. Não resuma, não parafraseie e não invente texto.
 2. Não use escassez, urgência, preço, bônus ou prova se a narração não os sustentar.
 3. O startSec deve ser EXATAMENTE um dos tempos mapeados nas legendas.
 4. Use durationSec 2 para todos os itens.
@@ -429,6 +429,37 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             parsed = {};
         }
         const titlesArr = Array.isArray(parsed) ? parsed : parsed.titles || [];
+        const spokenWords = captions.segments.flatMap((segment: any) =>
+            (segment.words || []).map((word: any) => ({
+                text: String(word.text || '').trim(),
+                start: Number(word.start),
+            }))
+        ).filter((word: { text: string; start: number }) => word.text && Number.isFinite(word.start));
+        const normalizeTitleWord = (value: unknown) => String(value || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLocaleLowerCase('pt-BR')
+            .replace(/[^a-z0-9%]+/g, '');
+        const resolveLiteralCaptionText = (candidate: unknown, requestedStart: unknown) => {
+            const tokens = String(candidate || '').trim().split(/\s+/).map(normalizeTitleWord).filter(Boolean);
+            if (!tokens.length || tokens.length > 6) return null;
+            const matches: { text: string; startSec: number }[] = [];
+            for (let start = 0; start <= spokenWords.length - tokens.length; start += 1) {
+                const isMatch = tokens.every((token, offset) => normalizeTitleWord(spokenWords[start + offset].text) === token);
+                if (isMatch) {
+                    matches.push({
+                        text: spokenWords.slice(start, start + tokens.length).map((word: { text: string }) => word.text).join(' '),
+                        startSec: spokenWords[start].start,
+                    });
+                }
+            }
+            if (!matches.length) return null;
+            const requested = Number(requestedStart);
+            if (!Number.isFinite(requested)) return matches[0];
+            return matches.reduce((closest, match) =>
+                Math.abs(match.startSec - requested) < Math.abs(closest.startSec - requested) ? match : closest
+            );
+        };
         const captionStarts = captions.segments
             .flatMap((seg: any) => {
                 const wordStarts = (seg.words || []).map((word: any) => Number(word.start));
@@ -450,23 +481,23 @@ Responda exclusivamente em JSON válido, nesta estrutura:
         // A small safety ceiling avoids a malformed model response flooding the editor;
         // it is not a creative quota — the model decides how many moments matter.
         const finalTitles = (Array.isArray(titlesArr) ? titlesArr : [])
-            .filter((title: any) => {
-                const text = String(title?.text || '').trim();
-                const key = text.toLocaleLowerCase('pt-BR');
-                if (!text || seenTitles.has(key)) return false;
+            .map((title: any) => ({ title, literal: resolveLiteralCaptionText(title?.text, title?.startSec) }))
+            .filter(({ literal }: { literal: { text: string; startSec: number } | null }) => {
+                const key = normalizeTitleWord(literal?.text);
+                if (!literal || !key || seenTitles.has(key)) return false;
                 seenTitles.add(key);
                 return true;
             })
             .slice(0, 8)
-            .flatMap((title: any) => {
+            .flatMap(({ title, literal }: any) => {
                 const kind = String(title?.kind || 'hook').toLowerCase();
                 if (kind === 'cta') {
                     if (ctaAdded) return [];
                     ctaAdded = true;
                     return [{
                         id: uuidv4(),
-                        text: 'CLIQUE AQUI',
-                        startSec: closestCaptionStart(title.startSec),
+                        text: literal.text,
+                        startSec: literal.startSec,
                         durationSec: 2,
                         isActive: false,
                         posY: 55,
@@ -482,8 +513,8 @@ Responda exclusivamente em JSON válido, nesta estrutura:
 
                 return [{
                     id: uuidv4(),
-                    text: String(title.text).trim().slice(0, 90),
-                    startSec: closestCaptionStart(title.startSec),
+                    text: literal.text.slice(0, 90),
+                    startSec: literal.startSec || closestCaptionStart(title.startSec),
                     durationSec: 2,
                     isActive: false,
                     posY: 30,

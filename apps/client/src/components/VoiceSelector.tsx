@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { TTS_PROVIDERS, type TtsProvider } from '../types';
 import { SYSTEM_VOICES, SYSTEM_VOICE_IDS } from '../lib/systemVoices';
 import { localAuthHeaders } from '../lib/serverAuth';
+import { invalidatedNarrationDerivatives } from '../lib/narrationState';
 
 // No v1, o catálogo da ElevenLabs e a clonagem por gravação ficam ocultos: a IA
 // é fornecida pelo Mileto (sem BYOK) e essas duas voltam numa versão futura.
@@ -58,9 +59,20 @@ export const VoiceSelector = () => {
 
     const apiBase = (window as unknown as { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
 
-    const selectVoice = (id: string, provider: TtsProvider) =>
-        // Trocar a voz também invalida o áudio já gerado (foi feito com outra voz).
-        updateAdData({ selectedVoiceId: id, selectedVoiceProvider: provider, isNarrationGenerated: false });
+    const selectVoice = (id: string, provider: TtsProvider) => {
+        if (adData.selectedVoiceId === id && (adData.selectedVoiceProvider ?? 'fishAudio') === provider) return;
+        // Trocar a voz também invalida tudo que foi produzido a partir do áudio anterior.
+        updateAdData({
+            ...invalidatedNarrationDerivatives(),
+            selectedVoiceId: id,
+            selectedVoiceProvider: provider,
+            isNarrationGenerated: false,
+            narrationAudioUrl: null,
+            narrationAudioPath: null,
+            sharedNarrationAssetId: undefined,
+            narrationDuration: 0,
+        });
+    };
 
     const resetAddForm = () => {
         setNewVoiceName('');

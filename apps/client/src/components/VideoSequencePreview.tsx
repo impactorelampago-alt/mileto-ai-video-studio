@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback, useState, useMemo, forwardRef, useImperativeHandle } from 'react';
+import React, { useEffect, useRef, useCallback, useState, useMemo, forwardRef, useImperativeHandle, useId } from 'react';
 import { flushSync } from 'react-dom';
 import { Play, Pause, Volume2, VolumeX, RotateCcw, Loader2, Zap, VideoOff } from 'lucide-react';
 import { AdData, CaptionStyle, MediaTake, TitleHook, CaptionTrack } from '../types';
@@ -11,6 +11,7 @@ import { getFontEmbedCSS, toCanvas } from 'html-to-image';
 import { toast } from 'sonner';
 import { normalizedTakeProgress, takeMotionScale } from '../lib/takeMotion';
 import { EditableTitleOverlay } from './EditableTitleOverlay';
+import { enhancementPreviewCss, resolveTakeSharpness, sharpnessKernel } from '../lib/videoEnhancement';
 
 export interface VideoSequencePreviewRef {
     seekToTime: (globalTime: number) => void;
@@ -66,6 +67,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const captionStyle = captionStyleOverride === undefined ? wizard.captionStyle : captionStyleOverride;
         const adData = adDataOverride || wizard.adData;
         const isDebugMode = debugModeOverride ?? wizard.isDebugMode;
+        const enhancementFilterId = `mileto-sharpness-${useId().replace(/:/g, '')}`;
 
         // Refs
         const videoRef1 = useRef<HTMLVideoElement>(null);
@@ -108,6 +110,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         // Derived
         const currentTake = takes.length > 0 ? takes[currentTakeIndex] : null;
+        const currentSharpness = currentTake ? resolveTakeSharpness(currentTake, adData.videoEnhancement) : 0;
+        const currentEnhancementFilter = enhancementPreviewCss(
+            adData.videoEnhancement,
+            currentSharpness,
+            enhancementFilterId
+        );
         // A configuração de movimento é intencionalmente reduzida a valores
         // primitivos. O estado do projeto pode ser salvo/reidratado enquanto o
         // preview toca, trocando a referência do take sem que o zoom tenha mudado.
@@ -1501,6 +1509,20 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         return (
             <div className="bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl overflow-hidden flex flex-col shadow-2xl">
+                <svg aria-hidden="true" className="absolute h-0 w-0 overflow-hidden">
+                    <filter id={enhancementFilterId} colorInterpolationFilters="sRGB">
+                        <feConvolveMatrix
+                            order="3"
+                            kernelMatrix={sharpnessKernel(currentSharpness)}
+                            divisor="1"
+                            bias="0"
+                            targetX="1"
+                            targetY="1"
+                            edgeMode="duplicate"
+                            preserveAlpha="true"
+                        />
+                    </filter>
+                </svg>
                 {/* Header */}
                 {!hideControls && (
                     <div className="flex items-center justify-between px-5 py-3 border-b border-black/5 dark:border-white/5 bg-background shadow-inner z-10">
@@ -1564,6 +1586,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         )}
                         style={{
                             transformOrigin: currentMotionOrigin,
+                            filter: currentEnhancementFilter,
                             willChange: currentTake?.motionEffect ? 'transform' : 'auto',
                             backfaceVisibility: 'hidden',
                             transformStyle: 'preserve-3d',
@@ -1622,6 +1645,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         )}
                         style={{
                             transformOrigin: currentMotionOrigin,
+                            filter: currentEnhancementFilter,
                             willChange: currentTake?.motionEffect ? 'transform' : 'auto',
                             backfaceVisibility: 'hidden',
                             transformStyle: 'preserve-3d',
@@ -1701,6 +1725,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             className={cn('h-full w-full', isHybridMode && 'opacity-0')}
                             style={{
                                 transformOrigin: currentMotionOrigin,
+                                filter: currentEnhancementFilter,
                                 willChange: currentTake?.motionEffect ? 'transform' : 'auto',
                                 backfaceVisibility: 'hidden',
                                 transformStyle: 'preserve-3d',
@@ -1811,6 +1836,17 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                 timeRemaining: number
                             ): React.CSSProperties => {
                                 if (animId === 'none') return {};
+
+                                if (animId === 'blink') {
+                                    const entrance = Math.min(1, Math.max(0, timeElapsed / 0.12));
+                                    const pulse = 0.28 + 0.72 * ((Math.sin(timeElapsed * Math.PI * 4) + 1) / 2);
+                                    const exit = isExiting ? Math.min(1, Math.max(0, timeRemaining / 0.35)) : 1;
+                                    return {
+                                        opacity: entrance * pulse * exit,
+                                        transform: `scale(${0.98 + pulse * 0.02})`,
+                                        filter: `brightness(${0.9 + pulse * 0.25})`,
+                                    };
+                                }
 
                                 const animDuration = animId === 'pop' ? 0.25 : 0.4; // Impact agora em 0.25s snap
 

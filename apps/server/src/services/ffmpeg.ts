@@ -312,6 +312,11 @@ export interface HybridTake {
         focalY: number;
         easing: 'linear' | 'smooth';
     };
+    enhancement?: {
+        enabled?: boolean;
+        intensity?: 'soft' | 'balanced' | 'strong';
+        sharpness?: number;
+    };
 }
 
 export interface HybridParams {
@@ -458,6 +463,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             speed?: string | number;
             objectFit?: 'cover' | 'contain';
             motionEffect?: HybridTake['motionEffect'];
+            enhancement?: HybridTake['enhancement'];
         }
 
         (takes as TakeData[]).forEach((t) => {
@@ -566,7 +572,27 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                 motionStr = `,format=yuv444p,zoompan=z='${zoom}':x='${zoomPanX}':y='${zoomPanY}':d=1:s=${workingW}x${workingH}:fps=${outputFps},scale=${TARGET_W}:${TARGET_H}:flags=lanczos,format=yuv420p`;
             }
 
-            filterGraph += `[${index}:v]${trimStr}${scaleStr}${motionStr}[v${index}];`;
+            // Melhoria não destrutiva: recebe apenas presets e números validados,
+            // nunca um filtro FFmpeg arbitrário vindo do renderer.
+            const enhancement = take.enhancement;
+            const enhancementFilters: string[] = [];
+            if (enhancement?.enabled === true) {
+                if (enhancement.intensity === 'soft') {
+                    enhancementFilters.push('hqdn3d=0.8:0.6:2.4:1.8', 'eq=contrast=1.025:saturation=1.035:brightness=0.006');
+                } else if (enhancement.intensity === 'strong') {
+                    enhancementFilters.push('hqdn3d=1.8:1.35:5.4:4.05', 'eq=contrast=1.06:saturation=1.075:brightness=0.012');
+                } else {
+                    enhancementFilters.push('hqdn3d=1.25:0.95:3.75:2.85', 'eq=contrast=1.04:saturation=1.055:brightness=0.008');
+                }
+            }
+            const sharpness = Math.min(100, Math.max(0, Number(enhancement?.sharpness) || 0));
+            if (sharpness > 0) {
+                const lumaAmount = ((sharpness / 100) * 1.2).toFixed(3);
+                enhancementFilters.push(`unsharp=5:5:${lumaAmount}:5:5:0`);
+            }
+            const enhancementStr = enhancementFilters.length ? `,${enhancementFilters.join(',')}` : '';
+
+            filterGraph += `[${index}:v]${trimStr}${scaleStr}${motionStr}${enhancementStr}[v${index}];`;
             concatInputs.push(`[v${index}]`);
         });
 

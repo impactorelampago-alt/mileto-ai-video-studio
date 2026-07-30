@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
 import type { AdData, MediaTake, CaptionStyle, ApiKeys, MusicTrack, CustomVoice } from '../types';
+import { DEFAULT_VIDEO_ENHANCEMENT, normalizeVideoEnhancement } from '../lib/videoEnhancement';
 import { gatewayApi, type SharedAsset } from '../lib/gateway';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { API_BASE_URL } from '../lib/apiBase';
@@ -126,6 +127,7 @@ const defaultAdData: AdData = {
         },
     },
     globalTransition: null,
+    videoEnhancement: DEFAULT_VIDEO_ENHANCEMENT,
     transitionRotation: 0,
     transitionVolume: 1.0,
     transitionMuted: false,
@@ -144,6 +146,7 @@ const mergeAdData = (data?: Partial<AdData>): AdData => ({
             ...(data?.audioConfig?.background || {}),
         },
     },
+    videoEnhancement: normalizeVideoEnhancement(data?.videoEnhancement),
 });
 
 const WizardContext = createContext<WizardContextType | undefined>(undefined);

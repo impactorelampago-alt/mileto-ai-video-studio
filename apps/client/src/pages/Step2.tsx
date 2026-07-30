@@ -22,6 +22,7 @@ import {
     Maximize,
     Minimize,
     ZoomIn,
+    SlidersHorizontal,
 } from 'lucide-react';
 import { TransitionsModal } from '../components/TransitionsModal';
 import { cn } from '../lib/utils';
@@ -48,6 +49,8 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ZoomEffectsModal } from '../components/ZoomEffectsModal';
 import { takeMotionLabel } from '../lib/takeMotion';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
+import { VideoEnhancementModal } from '../components/VideoEnhancementModal';
+import { normalizeVideoEnhancement, sharpnessLabel } from '../lib/videoEnhancement';
 
 interface SortableTakeProps {
     take: MediaTake;
@@ -55,10 +58,11 @@ interface SortableTakeProps {
     onRemove: (_id: string) => void;
     onEdit: (_take: MediaTake) => void;
     onToggleFit: (_id: string) => void;
+    onEnhance: (_id: string) => void;
     format: string;
 }
 
-const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, format }: SortableTakeProps) => {
+const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, format }: SortableTakeProps) => {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
         id: take.id,
     });
@@ -130,6 +134,11 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, format }: So
                             {takeMotionLabel(take.motionEffect)} · {Math.round(take.motionEffect.intensity * 100)}%
                         </span>
                     )}
+                    {take.sharpness?.mode && take.sharpness.mode !== 'inherit' && (
+                        <span className="rounded-md border border-brand-lime/20 bg-brand-lime/8 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-brand-lime">
+                            Nitidez {take.sharpness.mode === 'off' ? 'desligada' : sharpnessLabel(take.sharpness.amount)}
+                        </span>
+                    )}
                 </div>
             </div>
 
@@ -142,6 +151,16 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, format }: So
 
             {/* Actions */}
             <div className="flex shrink-0 items-center gap-1 rounded-xl border border-white/7 bg-black/10 p-1">
+                <button
+                    onClick={() => onEnhance(take.id)}
+                    className="relative grid h-8 w-8 place-items-center rounded-lg text-brand-muted transition hover:bg-brand-lime/12 hover:text-brand-lime"
+                    title="Melhoria e nitidez deste take"
+                >
+                    <SlidersHorizontal className="h-4 w-4" />
+                    {take.sharpness?.mode && take.sharpness.mode !== 'inherit' && (
+                        <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-brand-lime shadow-[0_0_6px_rgba(0,230,118,.9)]" />
+                    )}
+                </button>
                 <button
                     onClick={() => onToggleFit(take.id)}
                     className="grid h-8 w-8 place-items-center rounded-lg text-brand-muted transition hover:bg-cyan-500/10 hover:text-cyan-300"
@@ -174,13 +193,15 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, format }: So
 
 export const Step2 = () => {
     const navigate = useNavigate();
-    const { mediaTakes, setMediaTakes, removeMediaTake, clearMediaTakes, apiKeys, addMediaTake, adData, musicLibrary, selectedMusicId } =
+    const { mediaTakes, setMediaTakes, removeMediaTake, clearMediaTakes, apiKeys, addMediaTake, adData, updateAdData, musicLibrary, selectedMusicId } =
         useWizard();
     const [editingTake, setEditingTake] = useState<MediaTake | null>(null);
     const [showImageModal, setShowImageModal] = useState(false);
     const [showVideoModal, setShowVideoModal] = useState(false);
     const [showTransitionsModal, setShowTransitionsModal] = useState(false);
     const [showZoomModal, setShowZoomModal] = useState(false);
+    const [showEnhancementModal, setShowEnhancementModal] = useState(false);
+    const [enhancementTargetTakeId, setEnhancementTargetTakeId] = useState<string | null>(null);
     const [targetTakeId, setTargetTakeId] = useState<string | null>(null);
     const [confirmClear, setConfirmClear] = useState(false);
 
@@ -434,6 +455,22 @@ export const Step2 = () => {
                                         </button>
                                     )}
                                     <button
+                                        onClick={() => {
+                                            setEnhancementTargetTakeId(null);
+                                            setShowEnhancementModal(true);
+                                        }}
+                                        disabled={mediaTakes.length === 0}
+                                        className="relative inline-flex h-9 items-center gap-2 rounded-lg border border-brand-lime/20 bg-brand-lime/10 px-3 text-[10px] font-black uppercase tracking-wider text-brand-lime shadow-sm transition-all hover:bg-brand-lime/15 disabled:cursor-not-allowed disabled:opacity-40"
+                                        title="Melhorar automaticamente e ajustar a nitidez dos takes"
+                                    >
+                                        <Wand2 className="h-4 w-4" />
+                                        Melhorar
+                                        {(adData.videoEnhancement?.enabled || (adData.videoEnhancement?.globalSharpness || 0) > 0) && (
+                                            <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-brand-lime shadow-[0_0_8px_rgba(0,230,118,.9)]" />
+                                        )}
+                                    </button>
+
+                                    <button
                                         onClick={() => setShowZoomModal(true)}
                                         disabled={mediaTakes.length === 0}
                                         className="relative p-2 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 rounded-lg border border-emerald-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -646,6 +683,10 @@ export const Step2 = () => {
                                                             onRemove={removeMediaTake}
                                                             onEdit={setEditingTake}
                                                             onToggleFit={handleToggleFit}
+                                                            onEnhance={(takeId) => {
+                                                                setEnhancementTargetTakeId(takeId);
+                                                                setShowEnhancementModal(true);
+                                                            }}
                                                             format={adData.format}
                                                         />
                                                     </div>
@@ -799,6 +840,26 @@ export const Step2 = () => {
                         const selected = new Set(takeIds);
                         setMediaTakes((current) => current.map((take) => selected.has(take.id) ? { ...take, motionEffect: effect || undefined } : take));
                         toast.success(effect ? `Zoom aplicado em ${takeIds.length} ${takeIds.length === 1 ? 'take' : 'takes'}.` : 'Zoom removido dos takes selecionados.');
+                    }}
+                />
+
+                <VideoEnhancementModal
+                    isOpen={showEnhancementModal}
+                    takes={mediaTakes}
+                    settings={normalizeVideoEnhancement(adData.videoEnhancement)}
+                    targetTakeId={enhancementTargetTakeId}
+                    onClose={() => {
+                        setShowEnhancementModal(false);
+                        setEnhancementTargetTakeId(null);
+                    }}
+                    onSettingsChange={(videoEnhancement) => updateAdData({ videoEnhancement })}
+                    onTakeChange={(takeId, sharpness) => {
+                        setMediaTakes((current) => current.map((take) => take.id === takeId ? { ...take, sharpness } : take));
+                    }}
+                    onResetAll={() => {
+                        updateAdData({ videoEnhancement: { enabled: false, intensity: 'balanced', globalSharpness: 0 } });
+                        setMediaTakes((current) => current.map((take) => ({ ...take, sharpness: undefined })));
+                        toast.success('Melhorias removidas. A prévia voltou ao original.');
                     }}
                 />
         </ErrorBoundary>

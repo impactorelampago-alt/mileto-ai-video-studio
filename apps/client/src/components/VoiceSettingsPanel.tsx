@@ -3,6 +3,7 @@ import { SlidersHorizontal, RotateCcw, ChevronDown } from 'lucide-react';
 import { useWizard } from '../context/WizardContext';
 import { DEFAULT_VOICE_SETTINGS, FISH_MODELS, type TtsProvider, type VoiceSettings } from '../types';
 import { cn } from '../lib/utils';
+import { invalidatedNarrationDerivatives } from '../lib/narrationState';
 
 interface SliderRowProps {
     label: string;
@@ -80,9 +81,14 @@ export const VoiceSettingsPanel = () => {
 
     const patch = (changes: Partial<VoiceSettings>) =>
         updateAdData({
+            ...invalidatedNarrationDerivatives(),
             voiceSettings: { ...settings, ...changes },
             // Os ajustes mudam o áudio: obriga a regerar antes de seguir.
             isNarrationGenerated: false,
+            narrationAudioUrl: null,
+            narrationAudioPath: null,
+            sharedNarrationAssetId: undefined,
+            narrationDuration: 0,
         });
 
     const isDefault = (Object.keys(DEFAULT_VOICE_SETTINGS) as (keyof VoiceSettings)[]).every(

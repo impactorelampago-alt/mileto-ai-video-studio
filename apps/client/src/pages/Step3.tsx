@@ -8,11 +8,14 @@ import { VideoSequencePreview } from '../components/VideoSequencePreview';
 import { CaptionStudio } from '../components/CaptionStudio';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
+import { narrationSourceKey } from '../lib/narrationState';
 
 export const Step3 = () => {
     const { adData, updateAdData, mediaTakes, setMediaTakes, captionStyle } = useWizard();
     const navigate = useNavigate();
     const [isGenerating, setIsGenerating] = useState(false);
+    const currentSourceKey = narrationSourceKey(adData);
+    const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
 
     const handleGenerateCaptions = async () => {
         if (!adData.masterAudioUrl && !adData.narrationAudioUrl) {
@@ -50,8 +53,11 @@ export const Step3 = () => {
                     language: 'pt-BR',
                     presetId: 'karaoke-yellow', // Internal identifier for the backend rendering
                     segments: data.segments,
+                    sourceKey: currentSourceKey,
                     review: data.review,
                 },
+                dynamicTitles: [],
+                dynamicTitlesSourceKey: undefined,
             });
 
             const reviewBits = [
@@ -105,7 +111,7 @@ export const Step3 = () => {
                             <VideoSequencePreview
                                 takes={mediaTakes}
                                 masterAudioUrl={adData.masterAudioUrl || adData.narrationAudioUrl || undefined}
-                                captions={adData.captions}
+                                captions={currentCaptions}
                                 hideControls={true}
                                 onMuteToggle={(id) => {
                                     setMediaTakes(
@@ -195,7 +201,7 @@ export const Step3 = () => {
 
                         <div className="mt-8 pt-8 border-t border-black/5 dark:border-white/5 space-y-4">
                             <div className="flex items-start gap-4">
-                                {adData.captions?.segments && adData.captions.segments.length > 0 ? (
+                                {currentCaptions?.segments && currentCaptions.segments.length > 0 ? (
                                     <>
                                         <div className="p-2 bg-brand-lime/10 rounded-xl shadow-inner mt-0.5 shrink-0">
                                             <CheckCircle2 className="w-5 h-5 text-brand-lime drop-shadow-[0_0_5px_rgba(163,230,53,0.5)]" />
@@ -205,16 +211,16 @@ export const Step3 = () => {
                                                 Pronto para renderizar
                                             </p>
                                             <p className="text-xs text-brand-muted mt-1 font-medium">
-                                                Foram gerados {adData.captions.segments.length} blocos de legenda.
+                                                Foram gerados {currentCaptions.segments.length} blocos de legenda.
                                             </p>
-                                            {adData.captions.review?.sourceApplied && (
+                                            {currentCaptions.review?.sourceApplied && (
                                                 <p className="text-xs text-brand-lime mt-2 font-semibold">
                                                     Roteiro da etapa 1 revisado antes de exibir as legendas
-                                                    {adData.captions.review.correctedWords > 0
-                                                        ? ` · ${adData.captions.review.correctedWords} correção(ões) de grafia`
+                                                    {currentCaptions.review.correctedWords > 0
+                                                        ? ` · ${currentCaptions.review.correctedWords} correção(ões) de grafia`
                                                         : ''}
-                                                    {adData.captions.review.formattedValues > 0
-                                                        ? ` · ${adData.captions.review.formattedValues} valor(es) formatado(s)`
+                                                    {currentCaptions.review.formattedValues > 0
+                                                        ? ` · ${currentCaptions.review.formattedValues} valor(es) formatado(s)`
                                                         : ''}
                                                     .
                                                 </p>
@@ -231,7 +237,9 @@ export const Step3 = () => {
                                                 Aguardando geração
                                             </p>
                                             <p className="text-xs text-brand-muted mt-1 font-medium">
-                                                As legendas ainda não foram extraídas do áudio.
+                                                {adData.captions?.segments?.length
+                                                    ? 'A narração mudou. Gere novamente para não usar textos do áudio anterior.'
+                                                    : 'As legendas ainda não foram extraídas do áudio.'}
                                             </p>
                                         </div>
                                     </>
@@ -243,7 +251,7 @@ export const Step3 = () => {
 
                 {/* Advanced Caption Studio Panel */}
                 <div className="w-full md:w-[350px] shrink-0 transition-all duration-500 ease-in-out">
-                    {adData.captions?.segments && adData.captions.segments.length > 0 ? (
+                    {currentCaptions?.segments && currentCaptions.segments.length > 0 ? (
                         <div className="animate-in fade-in slide-in-from-right-4 duration-500 h-full">
                             <CaptionStudio />
                         </div>

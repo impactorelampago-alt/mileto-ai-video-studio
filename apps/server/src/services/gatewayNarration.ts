@@ -16,6 +16,10 @@ import { VoiceSettings, clamp, isFishModel, DEFAULT_FISH_MODEL } from './ttsType
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const NARRATION_DIR = path.join(BASE_DATA_PATH, 'narrations');
+// Incrementar quando a preparação do texto enviado ao provedor mudar. Sem isso,
+// um MP3 sintetizado antes da correção de números continuaria sendo devolvido do
+// cache local mesmo com o gateway já corrigido.
+const NARRATION_CACHE_VERSION = 'spoken-numbers-v2';
 
 if (!fs.existsSync(NARRATION_DIR)) fs.mkdirSync(NARRATION_DIR, { recursive: true });
 
@@ -50,7 +54,7 @@ export const synthesizeViaGateway = async (
     const cacheSuffix = `${prosody ? `-s${prosody.speed}-v${prosody.volume}` : ''}-m${model}`;
     const hash = crypto
         .createHash('md5')
-        .update(`${provider}-${voiceId}-${finalText}${cacheSuffix}`)
+        .update(`${NARRATION_CACHE_VERSION}-${provider}-${voiceId}-${finalText}${cacheSuffix}`)
         .digest('hex');
     const fileName = `narration-${hash}.mp3`;
     let filePath = path.join(NARRATION_DIR, fileName);
