@@ -38,6 +38,13 @@ services:
       SEED_OWNER_ORG: ${SEED_OWNER_ORG}
       SEED_OWNER_PLAN: ${SEED_OWNER_PLAN}
       RESELL_MULTIPLIER: ${RESELL_MULTIPLIER}
+      # Compartilhado: permanece desativado enquanto os quatro campos estiverem
+      # vazios. O script scripts/configure-r2.sh preenche e valida tudo.
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_DOWNLOAD_URL_TTL: ${R2_DOWNLOAD_URL_TTL:-3600}
       OPS_BASE_URL: ${OPS_BASE_URL:?OPS_BASE_URL obrigatorio}
       OPS_CLIENT_ID: ${OPS_CLIENT_ID:?OPS_CLIENT_ID obrigatorio}
       OPS_CLIENT_SECRET: ${OPS_CLIENT_SECRET:?OPS_CLIENT_SECRET obrigatorio}

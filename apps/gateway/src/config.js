@@ -63,6 +63,14 @@ export const config = {
 config.r2.enabled = Boolean(
     config.r2.accountId && config.r2.accessKeyId && config.r2.secretAccessKey && config.r2.bucket
 );
+config.r2.missing = [
+    ['R2_ACCOUNT_ID', config.r2.accountId],
+    ['R2_ACCESS_KEY_ID', config.r2.accessKeyId],
+    ['R2_SECRET_ACCESS_KEY', config.r2.secretAccessKey],
+    ['R2_BUCKET', config.r2.bucket],
+]
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
 
 config.ops.enabled = Boolean(
     config.ops.baseUrl &&

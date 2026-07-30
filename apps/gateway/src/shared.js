@@ -26,8 +26,10 @@ const s3 = config.r2.enabled
 
 const requireR2 = () => {
     if (!s3) {
-        const error = new Error('O armazenamento compartilhado ainda não foi configurado pelo administrador.');
+        const error = new Error('O Compartilhado aguarda a configuração do Cloudflare R2 pelo administrador.');
         error.status = 503;
+        error.code = 'shared_storage_not_configured';
+        error.details = { missing: config.r2.missing };
         throw error;
     }
     return s3;
@@ -131,7 +133,13 @@ const createItem = async (client, { orgId, userId, blobId, parentPath, category,
 
 export const storageStatus = async (req, res) => {
     orgIdOf(req);
-    res.json({ ok: true, configured: Boolean(config.r2.enabled), trashDays: TRASH_DAYS });
+    res.json({
+        ok: true,
+        configured: Boolean(config.r2.enabled),
+        provider: 'cloudflare-r2',
+        missing: config.r2.missing,
+        trashDays: TRASH_DAYS,
+    });
 };
 
 export const tree = async (req, res) => {

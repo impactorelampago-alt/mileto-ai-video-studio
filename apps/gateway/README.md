@@ -25,6 +25,21 @@ npm start                   # gateway em http://localhost:4000
 Sem chaves de IA no `.env`, o gateway roda em **modo demo**: devolve áudio silencioso e não
 cobra créditos — dá para ver todo o fluxo sem gastar. Cole suas chaves para síntese real.
 
+## Ativar o ambiente Compartilhado
+
+O Compartilhado usa um bucket privado do Cloudflare R2. Crie o bucket e uma credencial S3
+restrita a ele, com permissão de leitura e gravação. Na VPS, execute:
+
+```bash
+cd /opt/mileto-gateway
+bash scripts/configure-r2.sh
+```
+
+O assistente pede `Account ID`, `Access Key ID`, `Secret Access Key` e o nome do bucket sem
+mostrar o segredo na tela. Ele salva um backup do `.env`, reinicia o gateway e faz uma prova
+real de upload, leitura e exclusão. Enquanto os quatro valores estiverem vazios, o restante
+do produto funciona normalmente e `/shared/status` informa quais campos faltam.
+
 ## Endpoints
 
 | Método | Rota | Auth | O que faz |
