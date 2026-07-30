@@ -39,8 +39,17 @@ export const proxyTts = async ({ provider, voiceId, text, voiceSettings }) => {
             body: JSON.stringify({
                 text,
                 reference_id: voiceId,
+                // O texto em pt-BR já chega com números, moedas, datas e horas
+                // escritos por extenso pelo gateway. A normalização nativa da
+                // Fish é documentada para inglês/chinês e pode reinterpretar
+                // valores em português (por exemplo, R$ 199) mesmo depois da
+                // nossa normalização determinística.
+                normalize: false,
                 format: 'mp3',
                 mp3_bitrate: 128,
+                latency: 'normal',
+                temperature: 0.4,
+                top_p: 0.6,
                 ...(prosody ? { prosody } : {}),
             }),
         });

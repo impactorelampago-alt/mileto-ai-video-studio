@@ -9,7 +9,7 @@ import { VoiceSettings, clamp, isFishModel, DEFAULT_FISH_MODEL } from './ttsType
 // Use persistent data path for bundled production stability
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const NARRATION_DIR = path.join(BASE_DATA_PATH, 'narrations');
-const NARRATION_CACHE_VERSION = 'spoken-numbers-v2';
+const NARRATION_CACHE_VERSION = 'spoken-numbers-v3-fish-normalize-off';
 
 if (!fs.existsSync(NARRATION_DIR)) fs.mkdirSync(NARRATION_DIR, { recursive: true });
 
@@ -104,8 +104,15 @@ export const generateNarration = async (
             body: JSON.stringify({
                 text: finalPayloadText,
                 reference_id: voiceId, // Fish Audio uses reference_id or voice_id depending on docs, usually reference_id for cloned/presets
+                // O app já prepara números em pt-BR. A normalização da Fish é
+                // voltada a inglês/chinês e pode reinterpretar moedas em
+                // português; por isso mantemos exatamente o texto preparado.
+                normalize: false,
                 format: 'mp3',
                 mp3_bitrate: 128,
+                latency: 'normal',
+                temperature: 0.4,
+                top_p: 0.6,
                 ...(prosody ? { prosody } : {}),
             }),
         });
