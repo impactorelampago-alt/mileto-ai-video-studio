@@ -516,8 +516,10 @@ Você é o Mileto Diretor, o ponto central do estúdio de criação. Converse de
     prompt_sales: {
         enabled: true,
         tiers: {
-            lite: { provider: 'openai', model: 'gpt-4.1-mini', reasoning: 'rapido', maxOutputTokens: 3072 },
-            mileto: { provider: 'openai', model: 'gpt-5-mini', reasoning: 'profundo', maxOutputTokens: 6144 },
+            // Briefings e narracoes curtas precisam priorizar resposta consistente.
+            // O modo Ultra continua reservado para raciocinio longo quando solicitado.
+            lite: { provider: 'openai', model: 'gpt-4.1-nano', reasoning: 'rapido', maxOutputTokens: 1400 },
+            mileto: { provider: 'openai', model: 'gpt-4.1-mini', reasoning: 'equilibrado', maxOutputTokens: 2400 },
             ultra: { provider: 'openai', model: 'gpt-5', reasoning: 'profundo', maxOutputTokens: 8192 },
         },
         systemPrompt: NARRATION_SALES_SYSTEM_PROMPT_V6,

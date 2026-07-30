@@ -114,7 +114,51 @@ const REASONING_MAP = {
 // Modelos de raciocínio podem levar mais de um minuto, mas uma conexão muda não
 // pode manter créditos reservados indefinidamente. O servidor local espera um
 // pouco mais que este limite para receber a resposta de erro e encerrar o fluxo.
-const CHAT_PROVIDER_TIMEOUT_MS = 180000;
+// Chat comum não deve prender a interface por vários minutos. Há uma tentativa
+// adicional apenas para falhas transitórias ou respostas vazias.
+const CHAT_PROVIDER_TIMEOUT_MS = 75000;
+const CHAT_RETRY_DELAY_MS = 600;
+
+const isRetryableChatError = (error) => {
+    const message = String(error?.message || error || '');
+    return /(?:OpenAI|Gemini)\s+(?:408|409|425|429|5\d\d)\b|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT/i.test(message);
+};
+
+const pauseBeforeChatRetry = async (signal) => {
+    if (signal?.aborted) {
+        const cancelled = new Error('A conexão com o cliente foi encerrada.');
+        cancelled.code = 'CHAT_CLIENT_DISCONNECTED';
+        throw cancelled;
+    }
+    await new Promise((resolve) => setTimeout(resolve, CHAT_RETRY_DELAY_MS));
+    if (signal?.aborted) {
+        const cancelled = new Error('A conexão com o cliente foi encerrada.');
+        cancelled.code = 'CHAT_CLIENT_DISCONNECTED';
+        throw cancelled;
+    }
+};
+
+// O segundo resultado soma o uso do primeiro para a conciliação de créditos.
+const completeChatRequest = async (request, signal) => {
+    let first;
+    try {
+        first = await request();
+    } catch (error) {
+        if (!isRetryableChatError(error)) throw error;
+        await pauseBeforeChatRetry(signal);
+        return request();
+    }
+    if (String(first?.text || '').trim()) return first;
+
+    await pauseBeforeChatRetry(signal);
+    const second = await request();
+    if (String(second?.text || '').trim()) {
+        return { ...second, usageTokens: Number(first?.usageTokens || 0) + Number(second?.usageTokens || 0) };
+    }
+    const empty = new Error('O provedor respondeu sem texto.');
+    empty.code = 'CHAT_EMPTY_RESPONSE';
+    throw empty;
+};
 
 const fetchChatProvider = async (url, init, externalSignal) => {
     const timeoutSignal = AbortSignal.timeout(CHAT_PROVIDER_TIMEOUT_MS);
@@ -172,22 +216,24 @@ export const proxyChat = async ({ messages, model, provider, reasoning, json, ma
             },
         };
         // Chave no HEADER (x-goog-api-key), nunca na query string — a URL vaza em log/proxy/CDN.
-        const res = await fetchChatProvider(
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-                body: JSON.stringify(geminiBody),
-            },
-            signal
-        );
-        if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
-        const data = await res.json();
-        return {
-            text: data.candidates?.[0]?.content?.parts?.[0]?.text || '',
-            demo: false,
-            usageTokens: data.usageMetadata?.totalTokenCount || 0,
-        };
+        return completeChatRequest(async () => {
+            const res = await fetchChatProvider(
+                `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+                    body: JSON.stringify(geminiBody),
+                },
+                signal
+            );
+            if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
+            const data = await res.json();
+            return {
+                text: data.candidates?.[0]?.content?.parts?.[0]?.text || '',
+                demo: false,
+                usageTokens: data.usageMetadata?.totalTokenCount || 0,
+            };
+        }, signal);
     }
 
     // OpenAI
@@ -200,6 +246,7 @@ export const proxyChat = async ({ messages, model, provider, reasoning, json, ma
         body.temperature = 0.7;
         body.max_tokens = outputLimit;
     }
+    return completeChatRequest(async () => {
     const res = await fetchChatProvider(
         'https://api.openai.com/v1/chat/completions',
         {
@@ -217,4 +264,5 @@ export const proxyChat = async ({ messages, model, provider, reasoning, json, ma
         demo: false,
         usageTokens: data.usage?.total_tokens || 0,
     };
+    }, signal);
 };

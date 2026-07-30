@@ -16,7 +16,8 @@ const GATEWAY_URL = (process.env.GATEWAY_BASE_URL || 'https://api.miletoaivideo.
 // O Prompt e Vendas pode usar modelos com raciocínio profundo. O gateway encerra
 // o provedor em 180 s; damos uma margem para ele responder e liberar a reserva de
 // créditos antes de o servidor local abandonar a conexão.
-const CHAT_GATEWAY_TIMEOUT_MS = 195000;
+// O gateway limita cada tentativa e faz uma recuperacao curta de falhas transitórias.
+const CHAT_GATEWAY_TIMEOUT_MS = 90000;
 
 export class GatewayHttpError extends Error {
     status: number;
