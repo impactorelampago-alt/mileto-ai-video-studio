@@ -12,6 +12,7 @@ import { resolveTier, getSystemPrompt, resolveAgent } from './settings.js';
 import { agentRequiresStrictJsonOutput } from './agentDefaults.js';
 import { CHAT_SCRIPT_OUTPUT_CONTRACT } from './defaultPrompt.js';
 import { ensureNarrationSalesVoiceDirection, userRequestedCleanNarration } from './narrationDirection.js';
+import { normalizeSpokenNumbersPtBr } from './spokenNumbers.js';
 import * as admin from './admin.js';
 import * as account from './account.js';
 import * as shared from './shared.js';
@@ -155,8 +156,12 @@ app.post(
         const { text, voiceId, provider = 'fishAudio', voiceSettings } = req.body || {};
         if (!text || !voiceId) return res.status(400).json({ ok: false, message: 'Faltam text e voiceId.' });
 
+        // Última barreira antes do Fish Audio: também protege textos digitados ou
+        // colados manualmente, não apenas roteiros criados pelo agente.
+        const spokenText = provider === 'fishAudio' ? normalizeSpokenNumbersPtBr(text) : text;
+
         const demo = !(await hasKey(provider));
-        const units = estimateUnits(provider, 'tts', text); // texto conhecido → estimativa exata
+        const units = estimateUnits(provider, 'tts', spokenText); // texto conhecido → estimativa exata
         const { charged: estCharge } = await priceOf(provider, null, units, 'tts');
 
         let reserved;
@@ -168,7 +173,7 @@ app.post(
 
         let result;
         try {
-            result = await proxyTts({ provider, voiceId, text, voiceSettings });
+            result = await proxyTts({ provider, voiceId, text: spokenText, voiceSettings });
         } catch (e) {
             await release({ orgId: req.user.orgId, reserved, demo }).catch(() => {});
             console.error('[gateway] /v1/tts provedor', e.message);

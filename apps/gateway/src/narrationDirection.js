@@ -1,3 +1,5 @@
+import { normalizeSpokenNumbersPtBr } from './spokenNumbers.js';
+
 const FINAL_NARRATION_PATTERN = /(===\s*ROTEIRO\s*===\s*)([\s\S]*?)(\s*===\s*FIM\s*===)/i;
 const FISH_AUDIO_TAG_PATTERN = /\[(?:angry|sad|embarrassed|emphasis|whispering|soft|breathy|excited|laughing|chuckling|moaning|clear throat|sobbing|crying loudly|sighing|panting|groaning|pause|long pause)\]/i;
 const CLEAN_NARRATION_REQUEST = /(?:sem\s+tags?|texto\s+limpo|fish\s*audio\s*s1|modelo\s*s1)/i;
@@ -41,9 +43,10 @@ export const userRequestedCleanNarration = (messages = []) => {
  * eventual desobediência do modelo.
  */
 export const ensureNarrationSalesVoiceDirection = (text, { allowClean = false } = {}) => {
-    if (allowClean || typeof text !== 'string') return text;
+    if (typeof text !== 'string') return text;
     return text.replace(FINAL_NARRATION_PATTERN, (_match, opening, rawNarration, closing) => {
-        const narration = normalizeSupportedAliases(rawNarration.trim());
+        const narration = normalizeSpokenNumbersPtBr(normalizeSupportedAliases(rawNarration.trim()));
+        if (allowClean) return `${opening}${narration}${closing}`;
         const directed = FISH_AUDIO_TAG_PATTERN.test(narration)
             ? narration
             : addFallbackDirection(narration);
