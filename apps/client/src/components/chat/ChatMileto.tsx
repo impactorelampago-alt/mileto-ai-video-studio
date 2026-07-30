@@ -579,18 +579,29 @@ export const ChatMileto: React.FC = () => {
                 if (disposed) return;
                 setMessages(persisted);
 
-                if (active) {
+                // O POST pode ainda estar chegando ao servidor quando a primeira
+                // consulta acontece. Enquanto a última mensagem persistida for do
+                // usuário e houver uma requisição local viva, continuamos olhando.
+                const waitingForFirstServerState =
+                    persisted[persisted.length - 1]?.role === 'user' && activeRequestControllersRef.current.has(sessionId);
+
+                if (active || waitingForFirstServerState) {
                     setIsLoading(true);
-                    timer = window.setTimeout(refreshBackgroundResponse, 1200);
+                    timer = window.setTimeout(refreshBackgroundResponse, 800);
                     return;
                 }
 
-                if (!activeRequestControllersRef.current.has(sessionId)) {
-                    setIsLoading(false);
-                }
+                // O estado do servidor é a fonte de verdade. Uma requisição HTTP
+                // antiga pode continuar pendurada mesmo depois de a resposta já
+                // ter sido salva; ela não deve manter os três pontos na tela.
+                activeRequestControllersRef.current.delete(sessionId);
+                setIsLoading(false);
             } catch (error) {
                 if (!disposed) {
                     console.error('Falha ao recuperar resposta em segundo plano:', error);
+                    // Um erro transitório de rede não pode matar o monitor. Antes,
+                    // só fechar e reabrir o chat criava um monitor novo.
+                    timer = window.setTimeout(refreshBackgroundResponse, 1600);
                 }
             }
         };
@@ -815,7 +826,13 @@ export const ChatMileto: React.FC = () => {
                 requestController.signal
             );
             if (activeSessionRef.current === sessionId) {
-                setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id).concat([userMessage, assistantMessage]));
+                setMessages((prev) => {
+                    const replacedIds = new Set([tempUserMsg.id, userMessage.id, assistantMessage.id]);
+                    return prev
+                        .filter((message) => !replacedIds.has(message.id))
+                        .concat([userMessage, assistantMessage])
+                        .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+                });
             }
         } catch (err: unknown) {
             if ((err as Error)?.name === 'AbortError' || requestController.signal.aborted) {
