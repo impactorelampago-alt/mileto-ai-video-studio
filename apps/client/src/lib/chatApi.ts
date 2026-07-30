@@ -60,8 +60,8 @@ export async function getSessions(folderId?: string | null): Promise<ChatSession
 export async function createSession(
     title: string,
     folderId: string | null = null,
-    model: string = 'gpt-4o',
-    agentId: ChatAgentId = 'director'
+    model: string = 'mileto-plus',
+    agentId: ChatAgentId = 'prompt_sales'
 ): Promise<ChatSession> {
     const data = await request<{ session: ChatSession }>(`${BASE}/sessions`, {
         method: 'POST',

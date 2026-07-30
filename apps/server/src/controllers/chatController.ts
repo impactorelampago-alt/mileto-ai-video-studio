@@ -102,8 +102,8 @@ export const createSession = async (req: Request, res: Response) => {
             session: chatService.createSession(
                 title,
                 folderId || null,
-                model || 'gpt-4o',
-                normalizeAgentId(agentId)
+                model || 'mileto-plus',
+                agentId ? normalizeAgentId(agentId) : 'prompt_sales'
             ),
         });
     } catch (err: unknown) {

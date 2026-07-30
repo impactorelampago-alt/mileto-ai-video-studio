@@ -405,7 +405,9 @@ export const ChatMileto: React.FC = () => {
     // prompt são resolvidos pelo gateway dentro da versão ativa de cada agente.
     const [selectedTier, setSelectedTier] = useState<MiletoTier>('mileto');
     const [tierMenuOpen, setTierMenuOpen] = useState(false);
-    const [selectedAgentId, setSelectedAgentId] = useState<ChatAgentId>('director');
+    // Toda conversa nova começa no especialista que entrega narração pronta.
+    // Conversas existentes mantêm o agente salvo nelas ao serem abertas.
+    const [selectedAgentId, setSelectedAgentId] = useState<ChatAgentId>('prompt_sales');
     const [agentMenuOpen, setAgentMenuOpen] = useState(false);
     const selectedModel = MILETO_TIERS.find((tier) => tier.id === selectedTier)?.model || 'mileto-plus';
     const selectedAgent = agentById(selectedAgentId);

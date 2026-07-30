@@ -142,8 +142,8 @@ export function getSession(id: string): ChatSession | null {
 export function createSession(
     title: string,
     folderId: string | null = null,
-    model: string = 'gpt-4o',
-    agentId: ChatAgentId = 'director'
+    model: string = 'mileto-plus',
+    agentId: ChatAgentId = 'prompt_sales'
 ): ChatSession {
     const db = readDB();
     const now = new Date().toISOString();
