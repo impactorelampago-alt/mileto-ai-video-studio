@@ -6,7 +6,6 @@ import ffmpeg from 'fluent-ffmpeg';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const transitionsDir = path.join(BASE_DATA_PATH, 'public/transitions');
-const builtinsDir = process.env.BUILTIN_TRANSITIONS_PATH || path.join(__dirname, '..', '..', 'public', 'transitions', 'builtins');
 
 // Ensure directory exists
 if (!fs.existsSync(transitionsDir)) {
@@ -17,24 +16,6 @@ const readUserTransitions = (): any[] => {
     const libraryPath = path.join(BASE_DATA_PATH, 'data/transition_library.json');
     if (!fs.existsSync(libraryPath)) return [];
     return JSON.parse(fs.readFileSync(libraryPath, 'utf8'));
-};
-
-const readBuiltInTransitions = (): any[] => {
-    const catalogPath = path.join(builtinsDir, 'catalog.json');
-    if (!fs.existsSync(catalogPath)) return [];
-    try {
-        return JSON.parse(fs.readFileSync(catalogPath, 'utf8'))
-            .map((transition: any) => ({
-                ...transition,
-                isBuiltIn: true,
-                publicUrl: `/transitions/builtins/${transition.fileName}`,
-                filePath: path.join(builtinsDir, transition.fileName),
-            }))
-            .filter((transition: any) => transition.fileName && fs.existsSync(transition.filePath));
-    } catch (error) {
-        console.error('[Transitions] Catálogo incluído inválido:', error);
-        return [];
-    }
 };
 
 export const uploadTransition = async (req: Request, res: Response) => {
@@ -91,7 +72,7 @@ export const uploadTransition = async (req: Request, res: Response) => {
 export const listTransitions = async (_req: Request, res: Response) => {
     try {
         const userTransitions = readUserTransitions().map((transition) => ({ ...transition, isBuiltIn: false }));
-        res.json({ ok: true, transitions: [...readBuiltInTransitions(), ...userTransitions] });
+        res.json({ ok: true, transitions: userTransitions });
     } catch (e: unknown) {
         console.error('[Transitions] Error listing transitions:', e);
         res.status(500).json({ ok: false, message: (e as Error).message });
