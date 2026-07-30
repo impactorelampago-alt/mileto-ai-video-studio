@@ -10,6 +10,7 @@ import {
     NARRATION_SALES_SYSTEM_PROMPT_V4,
     NARRATION_SALES_SYSTEM_PROMPT_V5,
     NARRATION_SALES_SYSTEM_PROMPT_V6,
+    NARRATION_SALES_SYSTEM_PROMPT_V7,
     PROMPT_SALES_SYSTEM_PROMPT_V2,
     agentRequiresStrictJsonOutput,
     upgradeBundledAgentSystemPrompt,
@@ -58,10 +59,10 @@ test('cada agente oferece Mileto Lite, Mileto e Mileto Ultra', () => {
     assert.deepEqual(AGENT_TIERS.map((tier) => tier.label), ['Mileto Lite', 'Mileto', 'Mileto Ultra']);
 });
 
-test('Narração e Vendas v6 preserva liberdade, exige direção Fish Audio e escolhe gatilhos com base factual', () => {
+test('Narração e Vendas v7 preserva liberdade, exige direção Fish Audio e organiza parágrafos', () => {
     const prompt = DEFAULT_AGENT_CONFIGS.prompt_sales.systemPrompt;
-    assert.equal(prompt, NARRATION_SALES_SYSTEM_PROMPT_V6);
-    assert.match(prompt, /versao="6"/);
+    assert.equal(prompt, NARRATION_SALES_SYSTEM_PROMPT_V7);
+    assert.match(prompt, /versao="7"/);
     assert.match(prompt, /pontos de controle, não um roteiro rígido/);
     assert.match(prompt, /Faça de zero a cinco perguntas por rodada/);
     assert.match(prompt, /blogueiro\/UGC, varejo elétrico, rodeio\/evento, anúncio de rádio/);
@@ -79,28 +80,33 @@ test('Narração e Vendas v6 preserva liberdade, exige direção Fish Audio e es
     assert.match(prompt, /um gatilho principal e um ou dois de apoio/);
     assert.match(prompt, /Avalie silenciosamente ao menos três aberturas diferentes/);
     assert.match(prompt, /Toda prova, escassez, urgência, autoridade, garantia e comparação tem base no briefing/);
+    assert.match(prompt, /dois a quatro parágrafos curtos/);
 });
 
 test('migra somente prompts distribuídos pelo produto e preserva personalizações do Super Admin', () => {
     assert.equal(
         upgradeBundledAgentSystemPrompt('prompt_sales', LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1),
-        NARRATION_SALES_SYSTEM_PROMPT_V6
+        NARRATION_SALES_SYSTEM_PROMPT_V7
     );
     assert.equal(
         upgradeBundledAgentSystemPrompt('prompt_sales', PROMPT_SALES_SYSTEM_PROMPT_V2),
-        NARRATION_SALES_SYSTEM_PROMPT_V6
+        NARRATION_SALES_SYSTEM_PROMPT_V7
     );
     assert.equal(
         upgradeBundledAgentSystemPrompt('prompt_sales', NARRATION_SALES_SYSTEM_PROMPT_V3),
-        NARRATION_SALES_SYSTEM_PROMPT_V6
+        NARRATION_SALES_SYSTEM_PROMPT_V7
     );
     assert.equal(
         upgradeBundledAgentSystemPrompt('prompt_sales', NARRATION_SALES_SYSTEM_PROMPT_V4),
-        NARRATION_SALES_SYSTEM_PROMPT_V6
+        NARRATION_SALES_SYSTEM_PROMPT_V7
     );
     assert.equal(
         upgradeBundledAgentSystemPrompt('prompt_sales', NARRATION_SALES_SYSTEM_PROMPT_V5),
-        NARRATION_SALES_SYSTEM_PROMPT_V6
+        NARRATION_SALES_SYSTEM_PROMPT_V7
+    );
+    assert.equal(
+        upgradeBundledAgentSystemPrompt('prompt_sales', NARRATION_SALES_SYSTEM_PROMPT_V6),
+        NARRATION_SALES_SYSTEM_PROMPT_V7
     );
     const customPrompt = `${LEGACY_PROMPT_SALES_SYSTEM_PROMPT_V1}\n<!-- personalizado -->`;
     assert.equal(upgradeBundledAgentSystemPrompt('prompt_sales', customPrompt), customPrompt);

@@ -462,6 +462,15 @@ export const NARRATION_SALES_SYSTEM_PROMPT_V6 = NARRATION_SALES_SYSTEM_PROMPT_V5
         'Depois de ===FIM===, escreva no máximo quatro notas curtas: estilo escolhido, duração estimada, gatilhos usados com a respectiva base factual e por que a direção de voz melhora o anúncio.'
     );
 
+export const NARRATION_SALES_SYSTEM_PROMPT_V7 = NARRATION_SALES_SYSTEM_PROMPT_V6
+    .replace('versao="6"', 'versao="7"')
+    .replace(
+        '[somente a narração falável, OBRIGATORIAMENTE dirigida com tags Fish Audio S2, salvo pedido explícito por texto limpo/S1]',
+        `[somente a narração falável, OBRIGATORIAMENTE dirigida com tags Fish Audio S2, salvo pedido explícito por texto limpo/S1]
+
+Organize o roteiro em dois a quatro parágrafos curtos, separados por uma linha em branco. Cada parágrafo deve cumprir uma função clara — gancho, oferta/benefício, prova ou condição e CTA — sem transformar cada frase em um parágrafo isolado.`
+    );
+
 const normalizePromptText = (value) => String(value || '').replace(/\r\n/g, '\n').trim();
 
 /** Atualiza somente o prompt original distribuído pelo produto; qualquer edição do Super Admin é preservada. */
@@ -475,10 +484,11 @@ export const upgradeBundledAgentSystemPrompt = (id, systemPrompt) => {
             NARRATION_SALES_SYSTEM_PROMPT_V3,
             NARRATION_SALES_SYSTEM_PROMPT_V4,
             NARRATION_SALES_SYSTEM_PROMPT_V5,
+            NARRATION_SALES_SYSTEM_PROMPT_V6,
         ]
             .some((bundledPrompt) => current === normalizePromptText(bundledPrompt))
     ) {
-        return NARRATION_SALES_SYSTEM_PROMPT_V6;
+        return NARRATION_SALES_SYSTEM_PROMPT_V7;
     }
     return systemPrompt;
 };
@@ -522,7 +532,7 @@ Você é o Mileto Diretor, o ponto central do estúdio de criação. Converse de
             mileto: { provider: 'openai', model: 'gpt-4.1-mini', reasoning: 'equilibrado', maxOutputTokens: 2400 },
             ultra: { provider: 'openai', model: 'gpt-5', reasoning: 'profundo', maxOutputTokens: 8192 },
         },
-        systemPrompt: NARRATION_SALES_SYSTEM_PROMPT_V6,
+        systemPrompt: NARRATION_SALES_SYSTEM_PROMPT_V7,
     },
     image_director: {
         enabled: false,

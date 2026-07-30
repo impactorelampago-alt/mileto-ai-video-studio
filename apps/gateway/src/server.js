@@ -13,6 +13,7 @@ import { agentRequiresStrictJsonOutput } from './agentDefaults.js';
 import { CHAT_SCRIPT_OUTPUT_CONTRACT } from './defaultPrompt.js';
 import { ensureNarrationSalesVoiceDirection, userRequestedCleanNarration } from './narrationDirection.js';
 import { normalizeSpokenNumbersPtBr } from './spokenNumbers.js';
+import { normalizeSpokenPronunciationPtBr } from './spokenPronunciation.js';
 import * as admin from './admin.js';
 import * as account from './account.js';
 import * as shared from './shared.js';
@@ -158,7 +159,9 @@ app.post(
 
         // Última barreira antes do Fish Audio: também protege textos digitados ou
         // colados manualmente, não apenas roteiros criados pelo agente.
-        const spokenText = provider === 'fishAudio' ? normalizeSpokenNumbersPtBr(text) : text;
+        const spokenText = provider === 'fishAudio'
+            ? normalizeSpokenPronunciationPtBr(normalizeSpokenNumbersPtBr(text))
+            : text;
 
         const demo = !(await hasKey(provider));
         const units = estimateUnits(provider, 'tts', spokenText); // texto conhecido → estimativa exata

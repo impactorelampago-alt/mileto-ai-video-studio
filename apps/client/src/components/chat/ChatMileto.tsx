@@ -64,6 +64,14 @@ const stripMarkers = (content: string): string =>
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
+const formatNarrationParagraphs = (narration: string): string =>
+    narration
+        .replace(/(\S)[ \t]*(\[(?:pause|long pause)\])[ \t]*/gi, '$1 $2\n\n')
+        .replace(/^[ \t]*(\[(?:pause|long pause)\])[ \t]*/gim, '$1\n\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
 const parseMarkedNarration = (content: string): {
     title: string;
     narration: string;
@@ -77,7 +85,7 @@ const parseMarkedNarration = (content: string): {
     const end = match.index + match[0].length;
     return {
         title: match[1].trim(),
-        narration: match[2].trim(),
+        narration: formatNarrationParagraphs(match[2].trim()),
         before: content.slice(0, match.index).trim(),
         after: content.slice(end).trim(),
     };
@@ -109,11 +117,13 @@ const renderNarrationWithFishTags = (narration: string): React.ReactNode[] =>
  */
 const extractScript = (content: string): string => {
     const structuredNarration = parseStructuredResult(content)?.narration;
-    if (typeof structuredNarration === 'string' && structuredNarration.trim()) return structuredNarration.trim();
+    if (typeof structuredNarration === 'string' && structuredNarration.trim()) {
+        return formatNarrationParagraphs(structuredNarration.trim());
+    }
     const marked = [...(content || '').matchAll(/===\s*ROTEIRO\s*===\s*([\s\S]*?)\s*===\s*FIM\s*===/gi)]
         .map((m) => m[1].trim())
         .filter(Boolean);
-    if (marked.length) return marked.join('\n\n');
+    if (marked.length) return formatNarrationParagraphs(marked.join('\n\n'));
 
     // Fallback (sem marcador): corta introdução e aviso.
     let text = (content || '').trim();

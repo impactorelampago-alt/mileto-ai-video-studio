@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     ensureNarrationSalesVoiceDirection,
+    formatNarrationParagraphs,
     userRequestedCleanNarration,
 } from '../src/narrationDirection.js';
 import { normalizeSpokenNumbersPtBr } from '../src/spokenNumbers.js';
+import { normalizeSpokenPronunciationPtBr } from '../src/spokenPronunciation.js';
 
 test('preserva a direção criativa quando o modelo já entregou tags Fish Audio', () => {
     const original = '===ROTEIRO===\n[breathy] Olha essa novidade. [emphasis] Hoje.\n===FIM===';
@@ -66,5 +68,19 @@ test('texto limpo continua sem tags, mas nunca envia dígitos ao Fish Audio', ()
     assert.equal(
         ensureNarrationSalesVoiceDirection(original, { allowClean: true }),
         '===ROTEIRO===\nOferta por um real.\n===FIM==='
+    );
+});
+
+test('organiza pausas da narração em parágrafos sem alterar o texto falado', () => {
+    assert.equal(
+        formatNarrationParagraphs('[excited] Gancho. [pause] Oferta e benefício. [long pause] CTA.'),
+        '[excited] Gancho. [pause]\n\nOferta e benefício. [long pause]\n\nCTA.'
+    );
+});
+
+test('corrige somente a pronúncia enviada ao Fish Audio', () => {
+    assert.equal(
+        normalizeSpokenPronunciationPtBr('Atendimento em Araçariguama e Sorocaba.'),
+        'Atendimento em Araçari-guama e Sorocaba.'
     );
 });

@@ -19,7 +19,7 @@ const NARRATION_DIR = path.join(BASE_DATA_PATH, 'narrations');
 // Incrementar quando a preparação do texto enviado ao provedor mudar. Sem isso,
 // um MP3 sintetizado antes da correção de números continuaria sendo devolvido do
 // cache local mesmo com o gateway já corrigido.
-const NARRATION_CACHE_VERSION = 'spoken-numbers-v3-fish-normalize-off';
+const NARRATION_CACHE_VERSION = 'spoken-numbers-v4-ptbr-pronunciation';
 
 if (!fs.existsSync(NARRATION_DIR)) fs.mkdirSync(NARRATION_DIR, { recursive: true });
 

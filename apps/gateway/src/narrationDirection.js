@@ -10,6 +10,17 @@ const normalizeSupportedAliases = (narration) =>
         .replace(/\[long-break\]/gi, '[long pause]')
         .replace(/\[break\]/gi, '[pause]');
 
+// Pausas de locução também são fronteiras naturais de leitura. O modelo pode
+// devolver tudo na mesma linha; esta proteção mantém o roteiro escaneável e
+// recupera o visual em parágrafos sem alterar nenhuma palavra falada.
+export const formatNarrationParagraphs = (narration) =>
+    String(narration || '')
+        .replace(/(\S)[ \t]*(\[(?:pause|long pause)\])[ \t]*/gi, '$1 $2\n\n')
+        .replace(/^[ \t]*(\[(?:pause|long pause)\])[ \t]*/gim, '$1\n\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
 const prefixSegment = (segment, tag) => {
     const leadingWhitespace = segment.match(/^\s*/)?.[0] || '';
     return `${leadingWhitespace}${tag} ${segment.slice(leadingWhitespace.length)}`;
@@ -45,7 +56,9 @@ export const userRequestedCleanNarration = (messages = []) => {
 export const ensureNarrationSalesVoiceDirection = (text, { allowClean = false } = {}) => {
     if (typeof text !== 'string') return text;
     return text.replace(FINAL_NARRATION_PATTERN, (_match, opening, rawNarration, closing) => {
-        const narration = normalizeSpokenNumbersPtBr(normalizeSupportedAliases(rawNarration.trim()));
+        const narration = formatNarrationParagraphs(
+            normalizeSpokenNumbersPtBr(normalizeSupportedAliases(rawNarration.trim()))
+        );
         if (allowClean) return `${opening}${narration}${closing}`;
         const directed = FISH_AUDIO_TAG_PATTERN.test(narration)
             ? narration

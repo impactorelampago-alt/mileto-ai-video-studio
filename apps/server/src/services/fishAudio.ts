@@ -9,7 +9,7 @@ import { VoiceSettings, clamp, isFishModel, DEFAULT_FISH_MODEL } from './ttsType
 // Use persistent data path for bundled production stability
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const NARRATION_DIR = path.join(BASE_DATA_PATH, 'narrations');
-const NARRATION_CACHE_VERSION = 'spoken-numbers-v3-fish-normalize-off';
+const NARRATION_CACHE_VERSION = 'spoken-numbers-v4-ptbr-pronunciation';
 
 if (!fs.existsSync(NARRATION_DIR)) fs.mkdirSync(NARRATION_DIR, { recursive: true });
 
