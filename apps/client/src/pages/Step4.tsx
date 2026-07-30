@@ -1363,6 +1363,7 @@ export const Step4 = () => {
                         mediaTakes={mediaTakes}
                         masterAudioUrl={adData.masterAudioUrl || adData.narrationAudioUrl || undefined}
                         transitionPath={adData.transitionPath || adData.globalTransition?.filePath}
+                        transitionRotation={adData.transitionRotation ?? 0}
                     />
                 )}
             </div>

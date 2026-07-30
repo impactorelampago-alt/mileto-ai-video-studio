@@ -16,6 +16,7 @@ export interface BackgroundExportRequest {
     mediaTakes: MediaTake[];
     masterAudioUrl?: string;
     transitionPath?: string;
+    transitionRotation?: 0 | 90 | 180 | 270;
     adData: AdData;
     captionStyle: CaptionStyle | null;
     projectId: string;
@@ -203,6 +204,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                             motionEffect: take.motionEffect,
                         })),
                         transitionPath: activeExport.transitionPath,
+                        transitionRotation: activeExport.transitionRotation,
                         audioPath: finishResult.audioPath,
                         overlayPath: finishResult.videoPath,
                         finalPath: tempFinalPath,

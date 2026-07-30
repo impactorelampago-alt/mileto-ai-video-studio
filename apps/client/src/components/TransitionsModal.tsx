@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useWizard } from '../context/WizardContext';
-import { X, Upload, Loader2, Volume2, VolumeX, Check, Plus, Sparkles, Trash2, Search, Film } from 'lucide-react';
+import { X, Upload, Loader2, Volume2, VolumeX, Check, Plus, Sparkles, Trash2, Search, Film, RotateCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import type { TransitionAsset } from '../types';
@@ -202,6 +202,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
     const currentTransition = isGlobal ? adData.globalTransition : targetTake.transition?.asset;
     const currentVolume = isGlobal ? (adData.transitionVolume ?? 1.0) : (targetTake.transition?.volume ?? 1.0);
     const currentMuted = isGlobal ? (adData.transitionMuted ?? false) : (targetTake.transition?.muted ?? false);
+    const transitionRotation = adData.transitionRotation ?? 0;
 
     const [transitions, setTransitions] = useState<TransitionAsset[]>([]);
     const [categories, setCategories] = useState<string[]>(['Essencial']);
@@ -693,6 +694,27 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                         </section>
                     </div>
                 </div>
+
+                {isGlobal && currentTransition && (
+                    <div className="flex items-center justify-between gap-4 border-t border-border bg-background/30 px-6 py-3">
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <RotateCw className="h-4 w-4 text-primary" />
+                            Orientação da transição
+                        </div>
+                        <div className="flex rounded-xl border border-border bg-card p-1">
+                            {([0, 90, 180, 270] as const).map((rotation) => (
+                                <button
+                                    key={rotation}
+                                    type="button"
+                                    onClick={() => updateAdData({ transitionRotation: rotation })}
+                                    className={cn('rounded-lg px-3 py-1.5 text-xs font-bold transition-colors', transitionRotation === rotation ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground')}
+                                >
+                                    {rotation}°
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
                 <div className="flex items-center justify-between gap-4 border-t border-border bg-card px-6 py-4">
                     <p className="min-w-0 truncate text-xs text-muted-foreground">

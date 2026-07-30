@@ -69,9 +69,10 @@ interface ExportModalProps {
     mediaTakes: MediaTake[];
     masterAudioUrl?: string;
     transitionPath?: string;
+    transitionRotation?: 0 | 90 | 180 | 270;
 }
 
-export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPath }: ExportModalProps) => {
+export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPath, transitionRotation = 0 }: ExportModalProps) => {
     const { adData, captionStyle, projectId, saveProject } = useWizard();
     const { isExporting, startExport } = useExportJobs();
     const navigate = useNavigate();
@@ -211,6 +212,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             mediaTakes: [...mediaTakes],
             masterAudioUrl,
             transitionPath,
+            transitionRotation,
             adData: {
                 ...adData,
                 dynamicTitles: [...(adData.dynamicTitles || [])],
@@ -251,6 +253,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         targetDims,
         totalDuration,
         transitionPath,
+        transitionRotation,
     ]);
 
     return createPortal(

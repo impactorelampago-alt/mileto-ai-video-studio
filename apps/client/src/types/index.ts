@@ -270,6 +270,8 @@ export interface AdData {
     narrationDuration?: number;
     captions?: CaptionTrack;
     globalTransition?: TransitionAsset | null;
+    /** Rotação aplicada à transição global no preview e no render final. */
+    transitionRotation?: 0 | 90 | 180 | 270;
     transitionVolume?: number; // 0.0 to 1.0, default 1.0 (or mapped to 0-200%)
     transitionMuted?: boolean;
     transitionPath?: string; // Caminho em disco para injetar via Backend Híbrido

@@ -126,6 +126,7 @@ const defaultAdData: AdData = {
         },
     },
     globalTransition: null,
+    transitionRotation: 0,
     transitionVolume: 1.0,
     transitionMuted: false,
 };

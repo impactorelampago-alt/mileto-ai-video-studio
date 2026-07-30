@@ -174,7 +174,7 @@ import { buildHybridVideo } from '../services/ffmpeg';
 
 export const exportHybrid = async (req: Request, res: Response) => {
     try {
-        const { takes, transitionPath, audioPath, finalPath, duration, targetW, targetH, outputFps } = req.body;
+        const { takes, transitionPath, transitionRotation, audioPath, finalPath, duration, targetW, targetH, outputFps } = req.body;
         let { overlayPath } = req.body;
 
         console.log(`[Hybrid Export] Iniciada com ${takes?.length || 0} take(s).`);
@@ -237,6 +237,7 @@ export const exportHybrid = async (req: Request, res: Response) => {
         const exportedPath = await buildHybridVideo({
             takes,
             transitionPath,
+            transitionRotation,
             audioPath,
             overlayPath,
             outputPath: finalPath,
