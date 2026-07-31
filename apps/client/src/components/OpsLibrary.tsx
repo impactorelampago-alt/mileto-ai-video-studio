@@ -10,7 +10,9 @@ import {
     GatewayError,
     type OpsAsset,
     type OpsCompany,
+    type OpsExternalReference,
     type OpsFolder,
+    type OpsMediaUrl,
     type OpsViewContext,
 } from '../lib/gateway';
 import { API_BASE_URL } from '../lib/apiBase';
@@ -39,10 +41,31 @@ const isViewContextError = (error: unknown) =>
     error instanceof GatewayError &&
     ['view_context_forbidden', 'ops_view_context_invalid', 'ops_view_contexts_invalid'].includes(error.code || '');
 
-const OPS_EDITOR_IMPORT_CONCURRENCY = 2;
+const OPS_EDITOR_IMPORT_CONCURRENCY = 4;
+const OPS_EDITOR_PREVIEW_CONCURRENCY = 6;
 const OPS_EDITOR_IMPORT_ATTEMPTS = 5;
 const RETRYABLE_MATERIALIZE_STATUS = new Set([401, 403, 408, 409, 425, 429, 500, 502, 503, 504]);
 const wait = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+
+const remoteVideoDuration = (url: string, fallback: number) => new Promise<number>((resolve) => {
+    const video = document.createElement('video');
+    let settled = false;
+    const finish = (value: number) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        video.removeAttribute('src');
+        video.load();
+        resolve(Number.isFinite(value) && value > 0 ? value : fallback);
+    };
+    const timeout = window.setTimeout(() => finish(fallback), 12_000);
+    video.preload = 'metadata';
+    video.muted = true;
+    video.onloadedmetadata = () => finish(Number(video.duration));
+    video.onerror = () => finish(fallback);
+    video.src = url;
+    video.load();
+});
 
 const ViewContextIcon = ({ mode, className = 'w-4 h-4' }: { mode: OpsViewContext['mode']; className?: string }) => {
     if (mode === 'team') return <UsersRound className={className} />;
@@ -66,7 +89,7 @@ interface MaterializedOpsSource {
 }
 
 export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
-    const { addMediaTakes } = useWizard();
+    const { addMediaTakes, setMediaTakes } = useWizard();
     const { registerJob, registerClientJob, updateClientJob } = useDownloadJobs();
     const [ready, setReady] = useState(false);
     const [linked, setLinked] = useState(false);
@@ -88,6 +111,8 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
     const contextExpiresAtRef = useRef(0);
     const contextRecoveryRef = useRef<Promise<void> | null>(null);
     const [preview, setPreview] = useState<{ asset: OpsAsset; url: string; delivery?: string } | null>(null);
+    const previewUrlCacheRef = useRef(new Map<string, { source: OpsMediaUrl; expiresAt: number }>());
+    const previewRequestRef = useRef(new Map<string, Promise<OpsMediaUrl>>());
     const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
     const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
@@ -101,6 +126,8 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
         setCompanyQuery('');
         setThumbnailUrls({});
         setPreview(null);
+        previewUrlCacheRef.current.clear();
+        previewRequestRef.current.clear();
     }, []);
 
     const loadAuthorizedContexts = useCallback(async () => {
@@ -332,30 +359,127 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
         onPicked?.();
 
         void (async () => {
-            let completed = 0;
             const orderedTakes: Array<MediaTake | null> = Array.from({ length: total }, () => null);
+            const preparedReferences: Array<OpsExternalReference | null> = Array.from({ length: total }, () => null);
+            const placeholderDurations = new Map<string, number>();
             const failures: Array<{ asset: OpsAsset; error: unknown }> = [];
+            const previewFailures: Array<{ asset: OpsAsset; error: unknown }> = [];
             let nextIndex = 0;
 
-            const worker = async () => {
+            const previewWorker = async () => {
                 while (nextIndex < total) {
                     const index = nextIndex;
                     nextIndex += 1;
+                    const asset = batch[index];
                     try {
-                        const take = await materializeAsset(batch[index]);
-                        orderedTakes[index] = take;
-                        // Os takes aparecem à medida que ficam prontos. Assim uma fila longa
-                        // não perde os itens concluídos se o usuário trocar de etapa.
-                        addMediaTakes([take]);
+                        const contextId = await ensureFreshOpsContext();
+                        const reference = await gatewayApi.createOpsReference(asset.id, contextId);
+                        preparedReferences[index] = reference;
+                        const media = await gatewayApi.opsAssetUrl(
+                            asset.id,
+                            asset.kind === 'image' ? 'download' : 'stream',
+                            contextId
+                        );
+                        const type: MediaTake['type'] = asset.kind === 'image' ? 'image' : 'video';
+                        const declaredDuration = Number(asset.durationMs || 0) / 1000;
+                        const fallbackDuration = type === 'image' ? 3.5 : Math.max(1, declaredDuration || 5);
+                        const duration = type === 'video' && declaredDuration <= 0
+                            ? await remoteVideoDuration(media.url, fallbackDuration)
+                            : fallbackDuration;
+                        const takeId = crypto.randomUUID();
+                        placeholderDurations.set(takeId, duration);
+                        orderedTakes[index] = {
+                            id: takeId,
+                            fileName: asset.name,
+                            originalDurationSeconds: duration,
+                            url: media.url,
+                            fileUrl: media.url,
+                            proxyUrl: media.url,
+                            externalMedia: {
+                                source: 'mileto_ops',
+                                referenceId: reference.id,
+                                connectionId: reference.connectionId,
+                                accountId: reference.accountId,
+                                companyId: reference.companyId,
+                                folderId: reference.folderId,
+                                assetId: reference.assetId,
+                                mid: reference.mid,
+                                version: reference.version,
+                                checksum: reference.checksum,
+                                opsUpdatedAt: reference.opsUpdatedAt,
+                            },
+                            type,
+                            trim: { start: 0, end: duration },
+                        };
                     } catch (error) {
-                        failures.push({ asset: batch[index], error });
+                        previewFailures.push({ asset, error });
+                    }
+                }
+            };
+
+            await Promise.all(
+                Array.from(
+                    { length: Math.min(OPS_EDITOR_PREVIEW_CONCURRENCY, total) },
+                    () => previewWorker()
+                )
+            );
+
+            const immediateTakes = orderedTakes.filter((take): take is MediaTake => take !== null);
+            if (immediateTakes.length) addMediaTakes(immediateTakes);
+            updateClientJob(activityId, {
+                percent: 10,
+                stepPercent: 10,
+                statusText: `${immediateTakes.length} de ${total} na timeline · preparando originais`,
+            });
+
+            let completed = 0;
+            nextIndex = 0;
+            const materializeWorker = async () => {
+                while (nextIndex < total) {
+                    const index = nextIndex;
+                    nextIndex += 1;
+                    const asset = batch[index];
+                    const placeholder = orderedTakes[index];
+                    try {
+                        const take = await materializeAsset(
+                            asset,
+                            preparedReferences[index],
+                            placeholder?.id || crypto.randomUUID()
+                        );
+                        orderedTakes[index] = take;
+                        if (placeholder) {
+                            const placeholderDuration = placeholderDurations.get(placeholder.id) || placeholder.originalDurationSeconds;
+                            setMediaTakes((current) => current.map((existing) => {
+                                if (existing.id !== placeholder.id) return existing;
+                                const keptEnd = Math.abs(existing.trim.end - placeholderDuration) < 0.05
+                                    ? take.originalDurationSeconds
+                                    : Math.min(existing.trim.end, take.originalDurationSeconds);
+                                return {
+                                    ...existing,
+                                    url: take.url,
+                                    fileUrl: take.fileUrl,
+                                    proxyUrl: take.proxyUrl,
+                                    backendPath: take.backendPath,
+                                    externalMedia: take.externalMedia,
+                                    originalDurationSeconds: take.originalDurationSeconds,
+                                    trim: {
+                                        start: Math.min(existing.trim.start, Math.max(0, keptEnd - 0.05)),
+                                        end: keptEnd,
+                                    },
+                                };
+                            }));
+                        } else {
+                            addMediaTakes([take]);
+                        }
+                    } catch (error) {
+                        failures.push({ asset, error });
                     } finally {
                         completed += 1;
-                        const percent = Math.round((completed / total) * 100);
+                        const percent = 10 + Math.round((completed / total) * 90);
                         updateClientJob(activityId, {
                             percent,
                             stepPercent: percent,
-                            statusText: `Preparando ${completed} de ${total}`,
+                            statusText: `${immediateTakes.length} na timeline · originais ${completed} de ${total}`,
                         });
                     }
                 }
@@ -364,14 +488,14 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
             await Promise.all(
                 Array.from(
                     { length: Math.min(OPS_EDITOR_IMPORT_CONCURRENCY, total) },
-                    () => worker()
+                    () => materializeWorker()
                 )
             );
 
             const takes = orderedTakes.filter((take): take is MediaTake => take !== null);
 
             if (!takes.length) {
-                const firstError = failures[0]?.error;
+                const firstError = failures[0]?.error || previewFailures[0]?.error;
                 updateClientJob(activityId, {
                     phase: 'error',
                     completedAt: Date.now(),
@@ -394,13 +518,37 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
         })();
     };
 
+    const resolvePreviewSource = async (asset: OpsAsset) => {
+        const kind = asset.kind === 'image' ? 'download' : 'stream';
+        const cacheKey = `${selectedContext?.contextId || 'default'}:${asset.id}:${kind}`;
+        const cached = previewUrlCacheRef.current.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now() + 15_000) return cached.source;
+
+        const pending = previewRequestRef.current.get(cacheKey);
+        if (pending) return pending;
+
+        const request = gatewayApi.opsAssetUrl(asset.id, kind, selectedContext?.contextId)
+            .then((source) => {
+                const declaredExpiry = source.expiresAt ? Date.parse(source.expiresAt) : Number.NaN;
+                previewUrlCacheRef.current.set(cacheKey, {
+                    source,
+                    expiresAt: Number.isFinite(declaredExpiry) ? declaredExpiry : Date.now() + 5 * 60_000,
+                });
+                return source;
+            })
+            .finally(() => previewRequestRef.current.delete(cacheKey));
+        previewRequestRef.current.set(cacheKey, request);
+        return request;
+    };
+
+    const warmPreviewSource = (asset: OpsAsset) => {
+        if (asset.kind !== 'video') return;
+        void resolvePreviewSource(asset).catch(() => undefined);
+    };
+
     const previewAsset = async (asset: OpsAsset) => {
         try {
-            const result = await gatewayApi.opsAssetUrl(
-                asset.id,
-                asset.kind === 'image' ? 'download' : 'stream',
-                selectedContext?.contextId
-            );
+            const result = await resolvePreviewSource(asset);
             setPreview({ asset, url: result.url, delivery: result.delivery });
         } catch (error) {
             if (!(await recoverViewContext(error))) {
@@ -439,7 +587,25 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
         }
     };
 
-    const materializeAsset = async (asset: OpsAsset): Promise<MediaTake> => {
+    const ensureFreshOpsContext = async () => {
+        if (!selectedContextRef.current || Date.now() >= contextExpiresAtRef.current - 45_000) {
+            if (!contextRecoveryRef.current) {
+                contextRecoveryRef.current = loadAuthorizedContexts()
+                    .then(() => undefined)
+                    .finally(() => {
+                        contextRecoveryRef.current = null;
+                    });
+            }
+            await contextRecoveryRef.current;
+        }
+        return selectedContextRef.current?.contextId;
+    };
+
+    const materializeAsset = async (
+        asset: OpsAsset,
+        existingReference: OpsExternalReference | null = null,
+        takeId: string = crypto.randomUUID()
+    ): Promise<MediaTake> => {
         if (!['video', 'image'].includes(asset.kind)) {
             throw new Error('Por enquanto, somente vídeos e imagens entram como take no editor.');
         }
@@ -450,18 +616,8 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
             try {
                 // O contexto do Ops expira em poucos minutos. Uma importação com dezenas
                 // de vídeos pode atravessar esse limite, então renovamos sem interromper a fila.
-                if (!selectedContextRef.current || Date.now() >= contextExpiresAtRef.current - 45_000) {
-                    if (!contextRecoveryRef.current) {
-                        contextRecoveryRef.current = loadAuthorizedContexts()
-                            .then(() => undefined)
-                            .finally(() => {
-                                contextRecoveryRef.current = null;
-                            });
-                    }
-                    await contextRecoveryRef.current;
-                }
-                const contextId = selectedContextRef.current?.contextId;
-                const reference = await gatewayApi.createOpsReference(asset.id, contextId);
+                const contextId = await ensureFreshOpsContext();
+                const reference = existingReference || await gatewayApi.createOpsReference(asset.id, contextId);
                 const response = await fetch(`${API_BASE_URL}/api/ops/cache/materialize`, {
                     method: 'POST',
                     headers: {
@@ -505,7 +661,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
         const type: MediaTake['type'] = source.type === 'image' ? 'image' : 'video';
         const duration = Number(source.duration || (type === 'image' ? 3.5 : 0));
         return {
-            id: crypto.randomUUID(),
+            id: takeId,
             fileName: source.fileName || asset.name,
             originalDurationSeconds: duration,
             url: absoluteLocalUrl(source.url),
@@ -851,7 +1007,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                                     ))}
                                     {visibleAssets.map((asset) => (
                                         <article key={asset.id} className={`group overflow-hidden rounded-xl border bg-card/40 transition ${selectedAssetIds.has(asset.id) ? 'border-brand-lime/50 ring-1 ring-brand-lime/20' : 'border-white/10 hover:border-white/20'}`}>
-                                            <button onClick={() => void previewAsset(asset)} className="relative block aspect-video w-full bg-black/25">
+                                            <button onPointerEnter={() => warmPreviewSource(asset)} onFocus={() => warmPreviewSource(asset)} onClick={() => void previewAsset(asset)} className="relative block aspect-video w-full bg-black/25">
                                                 {thumbnailUrls[asset.id] ? (
                                                     <img src={thumbnailUrls[asset.id]} alt="" className="h-full w-full object-cover" />
                                                 ) : asset.kind === 'image' ? (
@@ -911,7 +1067,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                                     ))}
                                     {visibleAssets.map((asset) => (
                                         <div key={asset.id} className={`grid grid-cols-[minmax(0,1fr)_100px_120px] items-center gap-3 border-b px-4 py-2.5 last:border-0 ${selectedAssetIds.has(asset.id) ? 'border-brand-lime/10 bg-brand-lime/[0.055]' : 'border-white/5 hover:bg-white/[0.025]'}`}>
-                                            <button onClick={() => void previewAsset(asset)} className="flex min-w-0 items-center gap-3 text-left">
+                                            <button onPointerEnter={() => warmPreviewSource(asset)} onFocus={() => warmPreviewSource(asset)} onClick={() => void previewAsset(asset)} className="flex min-w-0 items-center gap-3 text-left">
                                                 {selectionMode && (
                                                     <span
                                                         role="checkbox"

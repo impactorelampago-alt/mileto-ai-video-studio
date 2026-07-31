@@ -67,7 +67,7 @@ export const MiletoMediaPlayer = ({ src, title, autoPlay = true }: MiletoMediaPl
                 src={src}
                 autoPlay={autoPlay}
                 playsInline
-                preload="metadata"
+                preload="auto"
                 onClick={() => void togglePlayback()}
                 onLoadedMetadata={(event) => {
                     setDuration(event.currentTarget.duration || 0);

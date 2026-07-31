@@ -124,7 +124,7 @@ const purgeMediaProxyTickets = () => {
     for (const [ticket] of oldest) mediaProxyTickets.delete(ticket);
 };
 
-const issueMediaProxy = (rawData) => {
+const issueMediaProxy = (rawData, purpose = 'stream') => {
     const data = rawData && typeof rawData === 'object' ? rawData : {};
     const upstreamUrl = validateOpsMediaUrl(data.url);
     const upstreamExpiry = data.expiresAt ? new Date(data.expiresAt).getTime() : 0;
@@ -135,6 +135,8 @@ const issueMediaProxy = (rawData) => {
     const ticket = crypto.randomBytes(32).toString('base64url');
     mediaProxyTickets.set(ticket, {
         upstreamUrl,
+        purpose,
+        supportsRange: data.supportsRange === true,
         createdAt: Date.now(),
         expiresAt,
     });
@@ -181,8 +183,23 @@ export const proxyMedia = async (req, res) => {
             const value = upstream.headers.get(name);
             if (value && value.length <= 512 && !/[\r\n]/.test(value)) res.setHeader(name, value);
         };
-        ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition'].forEach(copyHeader);
-        res.setHeader('Cache-Control', 'private, no-store');
+        ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition', 'etag', 'last-modified'].forEach(copyHeader);
+        // Supabase Storage returns a valid 206/Content-Range but may omit
+        // Accept-Ranges. Chromium then treats MP4 files whose `moov` atom is at
+        // the end as non-seekable and can download the whole file before it
+        // knows the duration. The Ops contract already declares range support,
+        // so make that capability explicit at the browser-facing boundary.
+        if (media.supportsRange || upstream.status === 206 || upstream.headers.get('content-range')) {
+            res.setHeader('Accept-Ranges', 'bytes');
+        }
+        // A short private cache lets the desktop player reuse the metadata and
+        // initial byte ranges when the same preview is reopened. It is never
+        // shared and remains bounded by the temporary proxy ticket.
+        res.setHeader(
+            'Cache-Control',
+            media.purpose === 'download' ? 'private, no-store' : 'private, max-age=60, no-transform'
+        );
+        res.setHeader('Vary', 'Range');
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.status(upstream.status);
         if (!upstream.body) return res.end();
@@ -1116,7 +1133,7 @@ export const getAssetUrl = async (req, res) => {
         ),
     }));
     await audit({ req, connectionId: connection.id, action: `ops.asset.${kind}_url`, resourceType: 'asset', resourceId: String(req.params.assetId), result: 'success' });
-    res.json({ ok: true, data: issueMediaProxy(unwrapOpsData(payload)), meta: payload.meta || {} });
+    res.json({ ok: true, data: issueMediaProxy(unwrapOpsData(payload), kind), meta: payload.meta || {} });
 };
 
 const publicReference = (row) => ({

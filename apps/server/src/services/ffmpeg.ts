@@ -666,6 +666,12 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         args.push('-c:a', 'aac');
         args.push('-b:a', '192k');
         args.push('-shortest');
+        // Move the MP4 index (`moov`) ahead of the media payload. This is a
+        // container-only optimization performed while FFmpeg writes the final
+        // export; it does not lower the selected video/audio quality and lets
+        // remote previews start after the first byte range instead of waiting
+        // for almost the entire file.
+        args.push('-movflags', '+faststart');
 
         if (duration) {
             args.push('-t', String(duration));

@@ -515,8 +515,9 @@ const generateProxy = async (inputPath: string, outputPath: string) =>
             '-i',
             inputPath,
             '-vf',
-            'scale=720:-2',
-            ...getVideoEncoderArgs({ quality: 26, speed: 'veryfast' }),
+            // Proxy leve para a timeline. O original permanece intacto e é usado na exportação.
+            'scale=540:-2',
+            ...getVideoEncoderArgs({ quality: 28, speed: 'veryfast' }),
             '-movflags',
             '+faststart',
             '-c:a',
