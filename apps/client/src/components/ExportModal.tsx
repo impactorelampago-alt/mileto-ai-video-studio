@@ -104,22 +104,35 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                 video.src = url;
             });
 
+        const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+
         void (async () => {
             const dimensions = await Promise.all(
                 mediaTakes.filter((take) => take.type === 'video').map((take) => probe(take.fileUrl || take.url))
             );
             const valid = dimensions.filter((item): item is { w: number; h: number } => !!item?.w && !!item?.h);
-            if (!valid.length || cancelled) return;
-            setTargetDims({
-                w: Math.max(2, Math.floor(Math.min(...valid.map((item) => item.w)) / 2) * 2),
-                h: Math.max(2, Math.floor(Math.min(...valid.map((item) => item.h)) / 2) * 2),
-            });
+            if (cancelled) return;
+
+            // O overlay (títulos, legendas e CTA) é SEMPRE desenhado numa caixa com a proporção
+            // do formato — 9:16 no retrato, 1:1 no quadrado — exatamente igual ao preview. Se a
+            // saída sair com outra proporção (ex.: dimensões cruas da fonte, que raramente são
+            // 9:16 exato), o overlay é esticado/cortado e o vídeo não bate com o preview.
+            // Por isso travamos a saída NA proporção do formato; a resolução vem do maior lado
+            // da fonte, limitada a 1080p (padrão de anúncio vertical).
+            const isSquare = adData.format === '1:1';
+            const longestSide = valid.length
+                ? Math.max(...valid.map((item) => Math.max(item.w, item.h)))
+                : 1920;
+            const base = Math.min(1920, Math.max(1080, longestSide));
+            setTargetDims(
+                isSquare ? { w: even(base), h: even(base) } : { w: even((base * 9) / 16), h: even(base) }
+            );
         })();
 
         return () => {
             cancelled = true;
         };
-    }, [mediaTakes]);
+    }, [mediaTakes, adData.format]);
 
     const takesDuration = mediaTakes.reduce((total, take) => total + (take.trim.end - take.trim.start), 0);
     const totalDuration = Number(adData.narrationDuration || 0) > 0 ? Number(adData.narrationDuration) : takesDuration;
