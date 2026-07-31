@@ -1,4 +1,14 @@
-import React, { useEffect, useRef, useCallback, useState, useMemo, forwardRef, useImperativeHandle, useId } from 'react';
+import React, {
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    useCallback,
+    useState,
+    useMemo,
+    forwardRef,
+    useImperativeHandle,
+    useId,
+} from 'react';
 import { flushSync } from 'react-dom';
 import { Play, Pause, Volume2, VolumeX, RotateCcw, Loader2, Zap, VideoOff } from 'lucide-react';
 import { AdData, CaptionStyle, MediaTake, TitleHook, CaptionTrack } from '../types';
@@ -11,7 +21,15 @@ import { getFontEmbedCSS, toCanvas } from 'html-to-image';
 import { toast } from 'sonner';
 import { normalizedTakeProgress, takeMotionScale } from '../lib/takeMotion';
 import { EditableTitleOverlay } from './EditableTitleOverlay';
-import { enhancementPreviewCss, resolveTakeEnhancement, resolveTakeSharpness, sharpnessKernel } from '../lib/videoEnhancement';
+import {
+    enhancementPreviewCss,
+    resolveTakeEnhancement,
+    resolveTakeSharpness,
+    sharpnessKernel,
+} from '../lib/videoEnhancement';
+
+const OVERLAY_DESIGN_WIDTH = 360;
+const OVERLAY_DESIGN_HEIGHT_PORTRAIT = 640;
 
 export interface VideoSequencePreviewRef {
     seekToTime: (globalTime: number) => void;
@@ -91,6 +109,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const motionAnimationRef = useRef<Animation | null>(null);
         const advancingRef = useRef(false);
         const bufferingAudioPauseTimerRef = useRef<number | null>(null);
+        const videoAreaRef = useRef<HTMLDivElement>(null);
         const overlayContainerRef = useRef<HTMLDivElement>(null);
         const overlayFontCssRef = useRef<string | null>(null);
 
@@ -109,10 +128,30 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const [activeTransitionUrl, setActiveTransitionUrl] = useState<string | null>(null);
         const [canvasReadyTakeId, setCanvasReadyTakeId] = useState<string | null>(null);
         const [canvasFallbackTakeId, setCanvasFallbackTakeId] = useState<string | null>(null);
+        const [overlayPreviewScale, setOverlayPreviewScale] = useState(1);
         const pendingSeekTimeRef = useRef<number | null>(null);
         const transitionTriggeredRef = useRef<boolean>(false);
         const progressBarRef = useRef<HTMLDivElement>(null);
         const isScrubbingRef = useRef(false);
+
+        const overlayDesignHeight =
+            adData.format === '1:1' ? OVERLAY_DESIGN_WIDTH : OVERLAY_DESIGN_HEIGHT_PORTRAIT;
+
+        useLayoutEffect(() => {
+            const videoArea = videoAreaRef.current;
+            if (!videoArea) return;
+
+            const syncOverlayScale = () => {
+                const nextScale = videoArea.clientWidth / OVERLAY_DESIGN_WIDTH;
+                if (!Number.isFinite(nextScale) || nextScale <= 0) return;
+                setOverlayPreviewScale((current) => (Math.abs(current - nextScale) < 0.001 ? current : nextScale));
+            };
+
+            syncOverlayScale();
+            const observer = new ResizeObserver(syncOverlayScale);
+            observer.observe(videoArea);
+            return () => observer.disconnect();
+        }, [adData.format]);
         const wasPlayingBeforeScrubRef = useRef(false);
         const previewRepairAttemptsRef = useRef(new Set<string>());
         const sequenceFirstIdRef = useRef<string | null>(null);
@@ -178,9 +217,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         );
         const isCanvasMotionPreviewReady = Boolean(
             shouldUseCanvasMotionPreview &&
-                currentTakeId &&
-                canvasReadyTakeId === currentTakeId &&
-                canvasFallbackTakeId !== currentTakeId
+            currentTakeId &&
+            canvasReadyTakeId === currentTakeId &&
+            canvasFallbackTakeId !== currentTakeId
         );
         const allMuted = takes.length > 0 && takes.every((t) => t.muteOriginalAudio);
         const playbackSourceFor = useCallback(
@@ -375,7 +414,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         drawWidth,
                         drawHeight
                     );
-                    setCanvasReadyTakeId((readyTakeId) => (readyTakeId === currentTakeId ? readyTakeId : currentTakeId));
+                    setCanvasReadyTakeId((readyTakeId) =>
+                        readyTakeId === currentTakeId ? readyTakeId : currentTakeId
+                    );
                     return true;
                 } catch {
                     // Se uma fonte externa não permitir drawImage, preservamos o
@@ -421,14 +462,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 video.removeEventListener('seeked', drawWhenReady);
                 video.removeEventListener('resize', drawWhenReady);
             };
-        }, [
-            activeVideo,
-            canvasFallbackTakeId,
-            currentMotion,
-            currentObjectFit,
-            currentTakeId,
-            isHybridMode,
-        ]);
+        }, [activeVideo, canvasFallbackTakeId, currentMotion, currentObjectFit, currentTakeId, isHybridMode]);
 
         const repairUnsupportedLocalVideo = useCallback(async (take: MediaTake) => {
             if (previewRepairAttemptsRef.current.has(take.id)) return;
@@ -610,15 +644,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             if (!isStandaloneTakePreview && (!currentTake || !isBuffering)) {
                 playAudio();
             }
-        }, [
-            activeVideo,
-            currentTake,
-            currentTimeInTake,
-            isBuffering,
-            isImageTake,
-            isStandaloneTakePreview,
-            playAudio,
-        ]);
+        }, [activeVideo, currentTake, currentTimeInTake, isBuffering, isImageTake, isStandaloneTakePreview, playAudio]);
 
         const pause = useCallback(() => {
             rangePreviewRef.current = null;
@@ -755,59 +781,65 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             }
         }, [currentTakeIndex, takes, activeVideo, playbackSourceFor]); // Dependency on 'takes' ensures update on edit
 
-        const seekToGlobalTime = useCallback((requestedTime: number, preserveRange = false) => {
-            if (totalDuration <= 0) return 0;
-            if (!preserveRange) rangePreviewRef.current = null;
-            const targetGlobalTime = Math.max(0, Math.min(requestedTime, totalDuration));
-            let accumulated = 0;
-            let targetTakeIndex = Math.max(0, takes.length - 1);
-            let targetTimeInTake = 0;
+        const seekToGlobalTime = useCallback(
+            (requestedTime: number, preserveRange = false) => {
+                if (totalDuration <= 0) return 0;
+                if (!preserveRange) rangePreviewRef.current = null;
+                const targetGlobalTime = Math.max(0, Math.min(requestedTime, totalDuration));
+                let accumulated = 0;
+                let targetTakeIndex = Math.max(0, takes.length - 1);
+                let targetTimeInTake = 0;
 
-            for (let i = 0; i < takes.length; i++) {
-                const takeDuration = Math.max(0, takes[i].trim.end - takes[i].trim.start);
-                if (targetGlobalTime < accumulated + takeDuration || i === takes.length - 1) {
-                    targetTakeIndex = i;
-                    targetTimeInTake = Math.max(0, Math.min(takeDuration, targetGlobalTime - accumulated));
-                    break;
+                for (let i = 0; i < takes.length; i++) {
+                    const takeDuration = Math.max(0, takes[i].trim.end - takes[i].trim.start);
+                    if (targetGlobalTime < accumulated + takeDuration || i === takes.length - 1) {
+                        targetTakeIndex = i;
+                        targetTimeInTake = Math.max(0, Math.min(takeDuration, targetGlobalTime - accumulated));
+                        break;
+                    }
+                    accumulated += takeDuration;
                 }
-                accumulated += takeDuration;
-            }
 
-            stopAll();
-            pendingSeekTimeRef.current = targetTimeInTake;
-            setStandaloneTakeIndex(null);
-            setCurrentTakeIndex(targetTakeIndex);
-            setCurrentTimeInTake(targetTimeInTake);
-            setAudioTime(targetGlobalTime);
+                stopAll();
+                pendingSeekTimeRef.current = targetTimeInTake;
+                setStandaloneTakeIndex(null);
+                setCurrentTakeIndex(targetTakeIndex);
+                setCurrentTimeInTake(targetTimeInTake);
+                setAudioTime(targetGlobalTime);
 
-            if (audioMasterRef.current) audioMasterRef.current.currentTime = targetGlobalTime;
-            if (targetTakeIndex === currentTakeIndex) {
-                const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
-                if (video && takes[targetTakeIndex]?.type === 'video') {
-                    video.currentTime = takes[targetTakeIndex].trim.start + targetTimeInTake;
+                if (audioMasterRef.current) audioMasterRef.current.currentTime = targetGlobalTime;
+                if (targetTakeIndex === currentTakeIndex) {
+                    const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+                    if (video && takes[targetTakeIndex]?.type === 'video') {
+                        video.currentTime = takes[targetTakeIndex].trim.start + targetTimeInTake;
+                    }
+                    pendingSeekTimeRef.current = null;
                 }
-                pendingSeekTimeRef.current = null;
-            }
 
-            return targetGlobalTime;
-        }, [activeVideo, currentTakeIndex, stopAll, takes, totalDuration]);
+                return targetGlobalTime;
+            },
+            [activeVideo, currentTakeIndex, stopAll, takes, totalDuration]
+        );
 
-        const previewRange = useCallback((requestedStart: number, requestedEnd: number) => {
-            if (totalDuration <= 0) return;
-            const startTime = Math.max(0, Math.min(requestedStart, totalDuration));
-            const endTime = Math.min(totalDuration, Math.max(startTime + 0.05, requestedEnd));
-            const returnTime = Math.max(0, Math.min(totalDuration, Math.max(globalTime, audioTime)));
+        const previewRange = useCallback(
+            (requestedStart: number, requestedEnd: number) => {
+                if (totalDuration <= 0) return;
+                const startTime = Math.max(0, Math.min(requestedStart, totalDuration));
+                const endTime = Math.min(totalDuration, Math.max(startTime + 0.05, requestedEnd));
+                const returnTime = Math.max(0, Math.min(totalDuration, Math.max(globalTime, audioTime)));
 
-            rangePreviewRef.current = { endTime, returnTime };
-            seekToGlobalTime(startTime, true);
-            setIsPlaying(true);
+                rangePreviewRef.current = { endTime, returnTime };
+                seekToGlobalTime(startTime, true);
+                setIsPlaying(true);
 
-            window.requestAnimationFrame(() => {
-                const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
-                video?.play().catch(() => {});
-                playAudio();
-            });
-        }, [activeVideo, audioTime, globalTime, playAudio, seekToGlobalTime, totalDuration]);
+                window.requestAnimationFrame(() => {
+                    const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+                    video?.play().catch(() => {});
+                    playAudio();
+                });
+            },
+            [activeVideo, audioTime, globalTime, playAudio, seekToGlobalTime, totalDuration]
+        );
 
         // ─── Speed Curve & Time Update Loop ─────────────────────────────────
 
@@ -825,12 +857,14 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         .slice(0, currentTakeIndex)
                         .reduce((sum, take) => sum + Math.max(0, take.trim.end - take.trim.start), 0);
                     const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
-                    const localTime = currentTake?.type === 'video' && video
-                        ? Math.max(0, video.currentTime - currentTake.trim.start)
-                        : currentTimeInTake;
-                    const sequenceTime = masterAudioUrl && audioMasterRef.current
-                        ? audioMasterRef.current.currentTime
-                        : takeStartTime + localTime;
+                    const localTime =
+                        currentTake?.type === 'video' && video
+                            ? Math.max(0, video.currentTime - currentTake.trim.start)
+                            : currentTimeInTake;
+                    const sequenceTime =
+                        masterAudioUrl && audioMasterRef.current
+                            ? audioMasterRef.current.currentTime
+                            : takeStartTime + localTime;
 
                     if (sequenceTime >= activeRange.endTime - 0.02) {
                         const returnTime = activeRange.returnTime;
@@ -1231,29 +1265,32 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             [isPlaying, pause, play, seekToClientX]
         );
 
-        const seekToTakeStart = useCallback((index: number) => {
-            if (!takes[index]) return;
-            stopAll();
-            const targetGlobalTime = takes
-                .slice(0, index)
-                .reduce((total, take) => total + Math.max(0, take.trim.end - take.trim.start), 0);
-            const outsideFinalTimeline = targetGlobalTime >= totalDuration - 0.001;
+        const seekToTakeStart = useCallback(
+            (index: number) => {
+                if (!takes[index]) return;
+                stopAll();
+                const targetGlobalTime = takes
+                    .slice(0, index)
+                    .reduce((total, take) => total + Math.max(0, take.trim.end - take.trim.start), 0);
+                const outsideFinalTimeline = targetGlobalTime >= totalDuration - 0.001;
 
-            pendingSeekTimeRef.current = 0;
-            setStandaloneTakeIndex(outsideFinalTimeline ? index : null);
-            setCurrentTakeIndex(index);
-            setCurrentTimeInTake(0);
-            setAudioTime(targetGlobalTime);
-            if (!outsideFinalTimeline && audioMasterRef.current) {
-                audioMasterRef.current.currentTime = targetGlobalTime;
-            }
+                pendingSeekTimeRef.current = 0;
+                setStandaloneTakeIndex(outsideFinalTimeline ? index : null);
+                setCurrentTakeIndex(index);
+                setCurrentTimeInTake(0);
+                setAudioTime(targetGlobalTime);
+                if (!outsideFinalTimeline && audioMasterRef.current) {
+                    audioMasterRef.current.currentTime = targetGlobalTime;
+                }
 
-            if (index === currentTakeIndex) {
-                const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
-                if (video && takes[index].type === 'video') video.currentTime = takes[index].trim.start;
-                pendingSeekTimeRef.current = null;
-            }
-        }, [activeVideo, currentTakeIndex, stopAll, takes, totalDuration]);
+                if (index === currentTakeIndex) {
+                    const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+                    if (video && takes[index].type === 'video') video.currentTime = takes[index].trim.start;
+                    pendingSeekTimeRef.current = null;
+                }
+            },
+            [activeVideo, currentTakeIndex, stopAll, takes, totalDuration]
+        );
 
         useImperativeHandle(ref, () => ({
             getCurrentTime: () => Math.max(0, Math.min(totalDuration, Math.max(globalTime, audioTime))),
@@ -1623,19 +1660,34 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             return `${m}:${sec.toString().padStart(2, '0')}`;
         };
 
-        const displayDuration = isStandaloneTakePreview && currentTake
-            ? Math.max(0, currentTake.trim.end - currentTake.trim.start)
-            : totalDuration;
+        const displayDuration =
+            isStandaloneTakePreview && currentTake
+                ? Math.max(0, currentTake.trim.end - currentTake.trim.start)
+                : totalDuration;
         const displayTime = isStandaloneTakePreview
             ? Math.min(displayDuration, Math.max(0, currentTimeInTake))
             : Math.min(totalDuration, Math.max(globalTime, audioTime));
 
         // Progress calculation (approximate)
-        const progressPercent =
-            displayDuration > 0 ? (displayTime / displayDuration) * 100 : 0;
+        const progressPercent = displayDuration > 0 ? (displayTime / displayDuration) * 100 : 0;
 
         return (
-            <div className="bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl overflow-hidden flex flex-col shadow-2xl">
+            <div
+                className={cn(
+                    'bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl overflow-hidden flex flex-col shadow-2xl',
+                    compactViewport && 'mx-auto max-w-full'
+                )}
+                style={
+                    compactViewport
+                        ? {
+                              width:
+                                  adData.format === '1:1'
+                                      ? 'min(100%, clamp(290px, calc(100dvh - 440px), 420px))'
+                                      : 'min(100%, clamp(168.75px, calc((100dvh - 430px) * 0.5625), 247.5px))',
+                          }
+                        : undefined
+                }
+            >
                 <svg aria-hidden="true" className="absolute h-0 w-0 overflow-hidden">
                     <filter id={enhancementFilterId} colorInterpolationFilters="sRGB">
                         <feConvolveMatrix
@@ -1677,12 +1729,13 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
                 {/* Video Area */}
                 <div
+                    ref={videoAreaRef}
                     className={cn(
                         'relative w-full flex items-center justify-center overflow-hidden group/video shadow-inner cursor-pointer',
                         compactViewport
                             ? adData.format === '1:1'
-                                ? 'mx-auto aspect-square h-[clamp(290px,calc(100vh-440px),420px)] w-auto max-w-full'
-                                : 'mx-auto aspect-[9/16] h-[clamp(300px,calc(100vh-430px),440px)] w-auto max-w-full shrink-0'
+                                ? 'aspect-square'
+                                : 'aspect-[9/16]'
                             : adData.format === '1:1'
                               ? 'aspect-square mx-auto max-w-[420px]'
                               : 'aspect-[9/16]',
@@ -1898,192 +1951,208 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
                     {/* ━━━ Overlay Container for Export Capture (Captions + Titles) ━━━ */}
                     <div
-                        ref={overlayContainerRef}
-                        className="absolute inset-0 pointer-events-none"
+                        className="pointer-events-none absolute inset-0 flex items-start justify-center overflow-hidden"
                         style={{ zIndex: 30 }}
                     >
-                        {captions?.segments && (
-                            <div
-                                className={cn(
-                                    'absolute inset-x-0 flex items-center justify-center pointer-events-none z-30 px-6',
-                                    isHybridMode ? 'transition-none duration-0' : 'transition-all duration-200'
-                                )}
-                                style={{ bottom: `${captionStyle?.verticalPosition ?? 15}%` }}
-                            >
-                                {(() => {
-                                    const activeSegment = captions.segments.find(
-                                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                                        (s: any) => audioTime >= s.start && audioTime <= s.end
-                                    );
-                                    if (!activeSegment || !activeSegment.words) return null;
+                        <div
+                            ref={overlayContainerRef}
+                            className="relative shrink-0 pointer-events-none"
+                            style={{
+                                width: `${OVERLAY_DESIGN_WIDTH}px`,
+                                height: `${overlayDesignHeight}px`,
+                                transform: `scale(${overlayPreviewScale})`,
+                                transformOrigin: 'top center',
+                            }}
+                        >
+                            {captions?.segments && (
+                                <div
+                                    className={cn(
+                                        'absolute inset-x-0 flex items-center justify-center pointer-events-none z-30 px-6',
+                                        isHybridMode ? 'transition-none duration-0' : 'transition-all duration-200'
+                                    )}
+                                    style={{ bottom: `${captionStyle?.verticalPosition ?? 15}%` }}
+                                >
+                                    {(() => {
+                                        const activeSegment = captions.segments.find(
+                                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                            (s: any) => audioTime >= s.start && audioTime <= s.end
+                                        );
+                                        if (!activeSegment || !activeSegment.words) return null;
 
-                                    return (
-                                        <div
-                                            className="font-black text-center uppercase tracking-wide leading-[1.2] flex flex-wrap justify-center drop-shadow-2xl px-4"
-                                            style={{
-                                                fontFamily: captionStyle?.fontFamily || 'Poppins',
-                                                fontSize: captionStyle?.fontSize
-                                                    ? `${captionStyle.fontSize}px`
-                                                    : '48px',
-                                                WebkitTextStroke: `${captionStyle?.strokeWidth || 6}px ${captionStyle?.strokeColor || 'black'}`,
-                                                paintOrder: 'stroke fill',
-                                                textShadow: '0px 6px 12px rgba(0,0,0,0.8)',
-                                            }}
-                                        >
-                                            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                                            {activeSegment.words.map((w: any, index: number) => {
-                                                // Extend the "active" window slightly if it's the last word or there's a tiny gap
-                                                const nextStart =
-                                                    activeSegment.words[index + 1]?.start || activeSegment.end;
-                                                const isActive = audioTime >= w.start && audioTime < nextStart;
+                                        return (
+                                            <div
+                                                className="font-black text-center uppercase tracking-wide leading-[1.2] flex flex-wrap justify-center drop-shadow-2xl px-4"
+                                                style={{
+                                                    fontFamily: captionStyle?.fontFamily || 'Poppins',
+                                                    fontSize: captionStyle?.fontSize
+                                                        ? `${captionStyle.fontSize}px`
+                                                        : '48px',
+                                                    WebkitTextStroke: `${captionStyle?.strokeWidth || 6}px ${captionStyle?.strokeColor || 'black'}`,
+                                                    paintOrder: 'stroke fill',
+                                                    textShadow: '0px 6px 12px rgba(0,0,0,0.8)',
+                                                }}
+                                            >
+                                                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                                                {activeSegment.words.map((w: any, index: number) => {
+                                                    // Extend the "active" window slightly if it's the last word or there's a tiny gap
+                                                    const nextStart =
+                                                        activeSegment.words[index + 1]?.start || activeSegment.end;
+                                                    const isActive = audioTime >= w.start && audioTime < nextStart;
 
-                                                return (
-                                                    <span
-                                                        key={index}
-                                                        className={cn(
-                                                            'mx-1.5',
-                                                            isHybridMode
-                                                                ? 'transition-none duration-0'
-                                                                : 'transition-all duration-75 ease-out',
-                                                            isActive ? 'scale-110 -translate-y-1 z-10' : ''
-                                                        )}
-                                                        style={{
-                                                            color: isActive
-                                                                ? captionStyle?.activeColor || '#FFEA00'
-                                                                : captionStyle?.baseColor || '#FFFFFF',
-                                                        }}
-                                                    >
-                                                        {w.text}
-                                                    </span>
-                                                );
-                                            })}
-                                        </div>
-                                    );
-                                })()}
-                            </div>
-                        )}
-                        {/* Dynamic Titles Overlay */}
-                        {(() => {
-                            // Helper function to animate titles based on exact timeline seconds, perfectly sync'd with exporting fps.
-                            const getInlineAnimationStyles = (
-                                animId: string,
-                                timeElapsed: number,
-                                isExiting: boolean,
-                                timeRemaining: number
-                            ): React.CSSProperties => {
-                                if (animId === 'none') return {};
-
-                                if (animId === 'blink') {
-                                    const entrance = Math.min(1, Math.max(0, timeElapsed / 0.12));
-                                    const pulse = 0.28 + 0.72 * ((Math.sin(timeElapsed * Math.PI * 4) + 1) / 2);
-                                    const exit = isExiting ? Math.min(1, Math.max(0, timeRemaining / 0.35)) : 1;
-                                    return {
-                                        opacity: entrance * pulse * exit,
-                                        transform: `scale(${0.98 + pulse * 0.02})`,
-                                        filter: `brightness(${0.9 + pulse * 0.25})`,
-                                    };
-                                }
-
-                                const animDuration = animId === 'pop' ? 0.25 : 0.4; // Impact agora em 0.25s snap
-
-                                // Entrance Animation
-                                if (!isExiting) {
-                                    if (timeElapsed >= animDuration)
-                                        return { transform: 'scale(1)', opacity: 1, left: '0px' };
-                                    const progress = timeElapsed / animDuration; // 0 to 1
-
-                                    if (animId === 'fade') {
-                                        return { opacity: progress };
-                                    } else if (animId === 'slide') {
-                                        return {
-                                            transform: `translateX(${-50 * (1 - progress)}px)`,
-                                            opacity: progress,
-                                        };
-                                    } else if (animId === 'pop') {
-                                        // Pop In (Impacto ultra-rápido): 0% -> 60% dá stretch pra 1.15x
-                                        if (progress < 0.6) {
-                                            const p = progress / 0.6;
-                                            return { transform: `scale(${0.5 + p * 0.65})`, opacity: p };
-                                        } else {
-                                            const p = (progress - 0.6) / 0.4;
-                                            return { transform: `scale(${1.15 - p * 0.15})`, opacity: 1 };
-                                        }
-                                    }
-                                }
-                                // Exit Animation
-                                else {
-                                    if (timeRemaining >= animDuration)
-                                        return { transform: 'scale(1)', opacity: 1, left: '0px' };
-                                    const progress = 1 - timeRemaining / animDuration; // 0 to 1 exiting
-
-                                    if (animId === 'fade') {
-                                        return { opacity: 1 - progress };
-                                    } else if (animId === 'slide') {
-                                        return { transform: `translateX(${-50 * progress}px)`, opacity: 1 - progress };
-                                    } else if (animId === 'pop') {
-                                        // Pop Out: 0% -> 40% infla pra 1.15, depois murcha até 0.5
-                                        if (progress < 0.4) {
-                                            const p = progress / 0.4;
-                                            return { transform: `scale(${1.0 + p * 0.15})`, opacity: 1 };
-                                        } else {
-                                            const p = (progress - 0.4) / 0.6;
-                                            return { transform: `scale(${1.15 - p * 0.65})`, opacity: 1 - p };
-                                        }
-                                    }
-                                }
-                                return {};
-                            };
-
-                            return dynamicTitles.map((title) => {
-                                if (audioTime >= title.startSec && audioTime <= title.startSec + title.durationSec) {
-                                    const animId = title.animationId || 'pop';
-                                    const timeRemaining = title.startSec + title.durationSec - audioTime;
-                                    const isExiting = timeRemaining <= 0.5 && animId !== 'none';
-                                    const timeElapsed = audioTime - title.startSec;
-
-                                    const inlineStyles = getInlineAnimationStyles(
-                                        animId,
-                                        timeElapsed,
-                                        isExiting,
-                                        timeRemaining
-                                    );
-
-                                    return (
-                                        <EditableTitleOverlay
-                                            key={`${title.id}-${animId}`}
-                                            title={title}
-                                            selected={selectedTitleId === title.id}
-                                            editingEnabled={
-                                                !!onTitleTransformChange && !isHybridMode && !isExportingFrame
-                                            }
-                                            onSelect={onTitleSelect}
-                                            onChange={onTitleTransformChange}
-                                            onDelete={onTitleDelete}
-                                        >
-                                            <div className="origin-center" style={inlineStyles}>
-                                                <DynamicTitleRenderer
-                                                    title={title}
-                                                    timeElapsed={timeElapsed}
-                                                    isHybridMode={isHybridMode || isExportingFrame}
-                                                />
+                                                    return (
+                                                        <span
+                                                            key={index}
+                                                            className={cn(
+                                                                'mx-1.5',
+                                                                isHybridMode
+                                                                    ? 'transition-none duration-0'
+                                                                    : 'transition-all duration-75 ease-out',
+                                                                isActive ? 'scale-110 -translate-y-1 z-10' : ''
+                                                            )}
+                                                            style={{
+                                                                color: isActive
+                                                                    ? captionStyle?.activeColor || '#FFEA00'
+                                                                    : captionStyle?.baseColor || '#FFFFFF',
+                                                            }}
+                                                        >
+                                                            {w.text}
+                                                        </span>
+                                                    );
+                                                })}
                                             </div>
-                                        </EditableTitleOverlay>
-                                    );
-                                }
-                                return null;
-                            });
-                        })()}
-                        {/* Custom Image/Logo Overlay */}
-                        {adData.customOverlayUrl && (
-                            <div className="absolute inset-x-0 top-[5%] flex justify-center pointer-events-none z-50">
-                                <img
-                                    src={adData.customOverlayUrl}
-                                    alt="Overlay Img"
-                                    className="max-w-[70%] max-h-[15vh] object-contain drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]"
-                                    crossOrigin="anonymous"
-                                />
-                            </div>
-                        )}
+                                        );
+                                    })()}
+                                </div>
+                            )}
+                            {/* Dynamic Titles Overlay */}
+                            {(() => {
+                                // Helper function to animate titles based on exact timeline seconds, perfectly sync'd with exporting fps.
+                                const getInlineAnimationStyles = (
+                                    animId: string,
+                                    timeElapsed: number,
+                                    isExiting: boolean,
+                                    timeRemaining: number
+                                ): React.CSSProperties => {
+                                    if (animId === 'none') return {};
+
+                                    if (animId === 'blink') {
+                                        const entrance = Math.min(1, Math.max(0, timeElapsed / 0.12));
+                                        const pulse = 0.28 + 0.72 * ((Math.sin(timeElapsed * Math.PI * 4) + 1) / 2);
+                                        const exit = isExiting ? Math.min(1, Math.max(0, timeRemaining / 0.35)) : 1;
+                                        return {
+                                            opacity: entrance * pulse * exit,
+                                            transform: `scale(${0.98 + pulse * 0.02})`,
+                                            filter: `brightness(${0.9 + pulse * 0.25})`,
+                                        };
+                                    }
+
+                                    const animDuration = animId === 'pop' ? 0.25 : 0.4; // Impact agora em 0.25s snap
+
+                                    // Entrance Animation
+                                    if (!isExiting) {
+                                        if (timeElapsed >= animDuration)
+                                            return { transform: 'scale(1)', opacity: 1, left: '0px' };
+                                        const progress = timeElapsed / animDuration; // 0 to 1
+
+                                        if (animId === 'fade') {
+                                            return { opacity: progress };
+                                        } else if (animId === 'slide') {
+                                            return {
+                                                transform: `translateX(${-50 * (1 - progress)}px)`,
+                                                opacity: progress,
+                                            };
+                                        } else if (animId === 'pop') {
+                                            // Pop In (Impacto ultra-rápido): 0% -> 60% dá stretch pra 1.15x
+                                            if (progress < 0.6) {
+                                                const p = progress / 0.6;
+                                                return { transform: `scale(${0.5 + p * 0.65})`, opacity: p };
+                                            } else {
+                                                const p = (progress - 0.6) / 0.4;
+                                                return { transform: `scale(${1.15 - p * 0.15})`, opacity: 1 };
+                                            }
+                                        }
+                                    }
+                                    // Exit Animation
+                                    else {
+                                        if (timeRemaining >= animDuration)
+                                            return { transform: 'scale(1)', opacity: 1, left: '0px' };
+                                        const progress = 1 - timeRemaining / animDuration; // 0 to 1 exiting
+
+                                        if (animId === 'fade') {
+                                            return { opacity: 1 - progress };
+                                        } else if (animId === 'slide') {
+                                            return {
+                                                transform: `translateX(${-50 * progress}px)`,
+                                                opacity: 1 - progress,
+                                            };
+                                        } else if (animId === 'pop') {
+                                            // Pop Out: 0% -> 40% infla pra 1.15, depois murcha até 0.5
+                                            if (progress < 0.4) {
+                                                const p = progress / 0.4;
+                                                return { transform: `scale(${1.0 + p * 0.15})`, opacity: 1 };
+                                            } else {
+                                                const p = (progress - 0.4) / 0.6;
+                                                return { transform: `scale(${1.15 - p * 0.65})`, opacity: 1 - p };
+                                            }
+                                        }
+                                    }
+                                    return {};
+                                };
+
+                                return dynamicTitles.map((title) => {
+                                    if (
+                                        audioTime >= title.startSec &&
+                                        audioTime <= title.startSec + title.durationSec
+                                    ) {
+                                        const animId = title.animationId || 'pop';
+                                        const timeRemaining = title.startSec + title.durationSec - audioTime;
+                                        const isExiting = timeRemaining <= 0.5 && animId !== 'none';
+                                        const timeElapsed = audioTime - title.startSec;
+
+                                        const inlineStyles = getInlineAnimationStyles(
+                                            animId,
+                                            timeElapsed,
+                                            isExiting,
+                                            timeRemaining
+                                        );
+
+                                        return (
+                                            <EditableTitleOverlay
+                                                key={`${title.id}-${animId}`}
+                                                title={title}
+                                                selected={selectedTitleId === title.id}
+                                                editingEnabled={
+                                                    !!onTitleTransformChange && !isHybridMode && !isExportingFrame
+                                                }
+                                                onSelect={onTitleSelect}
+                                                onChange={onTitleTransformChange}
+                                                onDelete={onTitleDelete}
+                                            >
+                                                <div className="origin-center" style={inlineStyles}>
+                                                    <DynamicTitleRenderer
+                                                        title={title}
+                                                        timeElapsed={timeElapsed}
+                                                        isHybridMode={isHybridMode || isExportingFrame}
+                                                    />
+                                                </div>
+                                            </EditableTitleOverlay>
+                                        );
+                                    }
+                                    return null;
+                                });
+                            })()}
+                            {/* Custom Image/Logo Overlay */}
+                            {adData.customOverlayUrl && (
+                                <div className="absolute inset-x-0 top-[5%] flex justify-center pointer-events-none z-50">
+                                    <img
+                                        src={adData.customOverlayUrl}
+                                        alt="Overlay Img"
+                                        className="max-w-[70%] max-h-[15vh] object-contain drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]"
+                                        crossOrigin="anonymous"
+                                    />
+                                </div>
+                            )}
+                        </div>
                     </div>
 
                     {/* Big Play Button Overlay */}
@@ -2130,7 +2199,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 </div>
 
                 {/* Controls */}
-                <div className={cn('border-t border-black/5 bg-background z-10 dark:border-white/5', compactViewport ? 'space-y-2.5 px-4 py-3' : 'space-y-4 px-5 py-4')}>
+                <div
+                    className={cn(
+                        'border-t border-black/5 bg-background z-10 dark:border-white/5',
+                        compactViewport ? 'space-y-2.5 px-4 py-3' : 'space-y-4 px-5 py-4'
+                    )}
+                >
                     {/* Progress bar */}
                     <div
                         ref={progressBarRef}
@@ -2138,32 +2212,38 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         onMouseDown={handleScrubStart}
                     >
                         <div className="pointer-events-none absolute inset-x-0 top-0 h-2.5 rounded-full bg-[#8b5cf6]/10 ring-1 ring-inset ring-[#8b5cf6]/15">
-                            {!isStandaloneTakePreview && displayDuration > 0 && dynamicTitles
-                                .filter((title) => title.isActive)
-                                .map((title) => {
-                                    const startPercent = Math.min(100, Math.max(0, (title.startSec / displayDuration) * 100));
-                                    const rawWidth = (Math.max(0.1, title.durationSec || 0) / displayDuration) * 100;
-                                    const widthPercent = Math.min(
-                                        Math.max(0, 100 - startPercent),
-                                        Math.max(1.25, rawWidth)
-                                    );
-                                    const isSelected = selectedTitleId === title.id;
+                            {!isStandaloneTakePreview &&
+                                displayDuration > 0 &&
+                                dynamicTitles
+                                    .filter((title) => title.isActive)
+                                    .map((title) => {
+                                        const startPercent = Math.min(
+                                            100,
+                                            Math.max(0, (title.startSec / displayDuration) * 100)
+                                        );
+                                        const rawWidth =
+                                            (Math.max(0.1, title.durationSec || 0) / displayDuration) * 100;
+                                        const widthPercent = Math.min(
+                                            Math.max(0, 100 - startPercent),
+                                            Math.max(1.25, rawWidth)
+                                        );
+                                        const isSelected = selectedTitleId === title.id;
 
-                                    return (
-                                        <div
-                                            key={`timeline-title-${title.id}`}
-                                            className={cn(
-                                                'absolute inset-y-0 z-10 rounded-sm border-x transition-all duration-200',
-                                                isSelected
-                                                    ? 'border-[#fff1fb] bg-[#ff2bd6] shadow-[0_0_10px_2px_rgba(255,43,214,.9)]'
-                                                    : 'border-[#eadfff] bg-[#8b5cf6] shadow-[0_0_7px_rgba(139,92,246,.7)]'
-                                            )}
-                                            style={{ left: `${startPercent}%`, width: `${widthPercent}%` }}
-                                            title={`${title.text || 'Título'} · ${title.startSec.toFixed(1)}s–${(title.startSec + title.durationSec).toFixed(1)}s`}
-                                            aria-label={`${title.text || 'Título'}: ${title.startSec.toFixed(1)}s a ${(title.startSec + title.durationSec).toFixed(1)}s`}
-                                        />
-                                    );
-                                })}
+                                        return (
+                                            <div
+                                                key={`timeline-title-${title.id}`}
+                                                className={cn(
+                                                    'absolute inset-y-0 z-10 rounded-sm border-x transition-all duration-200',
+                                                    isSelected
+                                                        ? 'border-[#fff1fb] bg-[#ff2bd6] shadow-[0_0_10px_2px_rgba(255,43,214,.9)]'
+                                                        : 'border-[#eadfff] bg-[#8b5cf6] shadow-[0_0_7px_rgba(139,92,246,.7)]'
+                                                )}
+                                                style={{ left: `${startPercent}%`, width: `${widthPercent}%` }}
+                                                title={`${title.text || 'Título'} · ${title.startSec.toFixed(1)}s–${(title.startSec + title.durationSec).toFixed(1)}s`}
+                                                aria-label={`${title.text || 'Título'}: ${title.startSec.toFixed(1)}s a ${(title.startSec + title.durationSec).toFixed(1)}s`}
+                                            />
+                                        );
+                                    })}
                         </div>
 
                         <div className="absolute inset-x-0 bottom-0 h-2 overflow-hidden rounded-full bg-black/5 ring-1 ring-inset ring-black/5 dark:bg-white/5 dark:ring-white/5">
