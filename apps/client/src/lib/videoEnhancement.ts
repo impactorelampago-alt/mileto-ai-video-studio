@@ -1,5 +1,6 @@
 import type {
     MediaTake,
+    TakeEnhancementSettings,
     TakeSharpnessSettings,
     VideoEnhancementIntensity,
     VideoEnhancementSettings,
@@ -44,6 +45,29 @@ export const normalizeTakeSharpness = (
 ): TakeSharpnessSettings => {
     const mode = settings?.mode === 'off' || settings?.mode === 'custom' ? settings.mode : 'inherit';
     return { mode, amount: clampSharpness(settings?.amount) };
+};
+
+export const normalizeTakeEnhancement = (
+    settings?: Partial<TakeEnhancementSettings> | null
+): TakeEnhancementSettings => {
+    const mode = settings?.mode === 'off' || settings?.mode === 'custom' ? settings.mode : 'inherit';
+    const intensity: VideoEnhancementIntensity =
+        settings?.intensity === 'soft' || settings?.intensity === 'strong' ? settings.intensity : 'balanced';
+    return { mode, enabled: settings?.enabled === true, intensity };
+};
+
+export const resolveTakeEnhancement = (
+    take: Pick<MediaTake, 'enhancement'>,
+    settings?: Partial<VideoEnhancementSettings> | null
+): VideoEnhancementSettings => {
+    const global = normalizeVideoEnhancement(settings);
+    const local = normalizeTakeEnhancement(take.enhancement);
+    if (local.mode === 'inherit') return global;
+    return {
+        ...global,
+        enabled: local.mode === 'custom' && local.enabled,
+        intensity: local.intensity,
+    };
 };
 
 export const resolveTakeSharpness = (

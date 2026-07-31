@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import path from 'path';
 import os from 'os';
 import fetch, { RequestInit } from 'node-fetch';
+import ffmpeg from 'fluent-ffmpeg';
 import { bearerFrom, GatewayHttpError } from '../services/gatewayClient';
 import { BASE_DATA_PATH } from './fileExplorerController';
 
@@ -100,6 +101,7 @@ const uploadPath = async (
     originalName: string,
     mimeType: string,
     parentPath: string,
+    options: { preventDuplicate?: boolean } = {},
 ) => {
     const stat = await fs.promises.stat(filePath);
     if (!stat.isFile()) throw new Error('A origem local não é um arquivo.');
@@ -113,6 +115,44 @@ const uploadPath = async (
         parentPath,
         category,
     };
+
+    if (options.preventDuplicate) {
+        try {
+            const listing = (await gatewayRequest(
+                req,
+                `/shared/files/list?path=${encodeURIComponent(parentPath)}`
+            )) as {
+                files?: Array<{
+                    id?: string;
+                    name?: string;
+                    size?: number;
+                    checksum?: string | null;
+                    sha256?: string | null;
+                }>;
+            };
+            const normalizedName = originalName.trim().toLocaleLowerCase('pt-BR');
+            const existing = (listing.files || []).find((item) => {
+                const existingChecksum = String(item.checksum || item.sha256 || '').trim().toLowerCase();
+                if (existingChecksum && existingChecksum === sha256) return true;
+
+                const sameName = String(item.name || '').trim().toLocaleLowerCase('pt-BR') === normalizedName;
+                const sameSize = Number(item.size || 0) === stat.size;
+                return sameName && sameSize;
+            });
+
+            if (existing) {
+                return {
+                    ok: true,
+                    deduplicated: true,
+                    identityCode: sha256,
+                    entry: existing,
+                };
+            }
+        } catch {
+            // A preparação do gateway continua sendo a segunda barreira de deduplicação.
+        }
+    }
+
     let uploaded = false;
     for (let attempt = 0; attempt < 2 && !uploaded; attempt += 1) {
         const prepared = (await gatewayRequest(req, '/shared/files/upload/prepare', {
@@ -125,7 +165,7 @@ const uploadPath = async (
             item?: unknown;
         };
         if (prepared.deduplicated) {
-            return { ok: true, deduplicated: true, entry: prepared.item };
+            return { ok: true, deduplicated: true, identityCode: sha256, entry: prepared.item };
         }
         if (!prepared.uploadUrl) throw new Error('O gateway não preparou o upload.');
 
@@ -156,7 +196,7 @@ const uploadPath = async (
         method: 'POST',
         body: JSON.stringify(uploadMeta),
     })) as { item?: unknown; deduplicated?: boolean };
-    return { ok: true, deduplicated: completed.deduplicated, entry: completed.item };
+    return { ok: true, deduplicated: completed.deduplicated, identityCode: sha256, entry: completed.item };
 };
 
 export const resolveLocalSource = (sourceUrl: string, backendPath: string): string => {
@@ -172,6 +212,7 @@ export const resolveLocalSource = (sourceUrl: string, backendPath: string): stri
             ['/uploads/', 'uploads'],
             ['/narrations/', 'narrations'],
             ['/videos/', 'videos'],
+            ['/transitions/', path.join('public', 'transitions')],
             ['/mixes/', path.join('public', 'mixes')],
             ['/files/', 'files'],
         ];
@@ -190,6 +231,73 @@ export const resolveLocalSource = (sourceUrl: string, backendPath: string): stri
         if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
     }
     throw new Error('A mídia local não existe mais. Atualize a biblioteca e tente novamente.');
+};
+
+const probeDuration = (filePath: string) =>
+    new Promise<number>((resolve) => {
+        ffmpeg.ffprobe(filePath, (error, metadata) => {
+            if (error) return resolve(1);
+            resolve(Number(metadata.format.duration || 1));
+        });
+    });
+
+export const materializeTransition = async (req: Request, res: Response) => {
+    try {
+        const assetId = String(req.params.assetId || '');
+        const detail = (await gatewayRequest(
+            req,
+            `/shared/files/item/${encodeURIComponent(assetId)}`
+        )) as { item?: { id?: string; name?: string; publicUrl?: string } };
+        const item = detail.item;
+        if (!item?.publicUrl) throw new GatewayHttpError(404, 'Transição compartilhada não encontrada.');
+
+        const originalName = String(item.name || 'transicao.mp4');
+        const extension = path.extname(originalName).toLowerCase();
+        if (!['.mp4', '.mov', '.webm'].includes(extension)) {
+            throw new GatewayHttpError(415, 'O arquivo compartilhado não é uma transição de vídeo compatível.');
+        }
+
+        const targetDir = path.join(BASE_DATA_PATH, 'public', 'transitions');
+        await fs.promises.mkdir(targetDir, { recursive: true });
+        const safeId = assetId.replace(/[^a-zA-Z0-9_-]/g, '');
+        const filename = `shared-${safeId}${extension}`;
+        const targetPath = path.join(targetDir, filename);
+
+        if (!fs.existsSync(targetPath)) {
+            const response = await fetch(item.publicUrl, { signal: AbortSignal.timeout(5 * 60 * 1000) });
+            if (!response.ok || !response.body) {
+                throw new GatewayHttpError(response.status, `Falha ao preparar a transição compartilhada (${response.status}).`);
+            }
+            const temporaryPath = `${targetPath}.part`;
+            await new Promise<void>((resolve, reject) => {
+                const output = fs.createWriteStream(temporaryPath);
+                response.body?.pipe(output);
+                response.body?.once('error', reject);
+                output.once('error', reject);
+                output.once('finish', resolve);
+            });
+            await fs.promises.rename(temporaryPath, targetPath);
+        }
+
+        const durationSec = await probeDuration(targetPath);
+        res.json({
+            ok: true,
+            transition: {
+                id: `shared:${assetId}`,
+                sharedAssetId: assetId,
+                scope: 'shared',
+                originalName,
+                publicUrl: `/transitions/${filename}`,
+                filePath: targetPath,
+                durationSec,
+                category: 'Equipe',
+                isBuiltIn: false,
+            },
+        });
+    } catch (error) {
+        const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 500;
+        res.status(status).json({ ok: false, message: (error as Error).message || 'Falha ao preparar a transição compartilhada.' });
+    }
 };
 
 export const status = (req: Request, res: Response) =>
@@ -239,7 +347,14 @@ export const uploadFile = async (req: Request, res: Response) => {
     const filePath = req.file.path;
     try {
         const parentPath = String(req.body.parent || '');
-        res.json(await uploadPath(req, filePath, req.file.originalname, req.file.mimetype, parentPath));
+        res.json(await uploadPath(
+            req,
+            filePath,
+            req.file.originalname,
+            req.file.mimetype,
+            parentPath,
+            { preventDuplicate: String(req.body.preventDuplicate || '') === 'true' }
+        ));
     } catch (error) {
         const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 500;
         res.status(status).json({ ok: false, message: (error as Error).message || 'Falha no upload compartilhado.' });
@@ -253,7 +368,14 @@ export const importLocalFile = async (req: Request, res: Response) => {
         const filePath = resolveLocalSource(String(req.body.sourceUrl || ''), String(req.body.backendPath || ''));
         const name = String(req.body.name || path.basename(filePath));
         const parentPath = String(req.body.parent || 'Vídeos');
-        res.json(await uploadPath(req, filePath, name, String(req.body.mimeType || ''), parentPath));
+        res.json(await uploadPath(
+            req,
+            filePath,
+            name,
+            String(req.body.mimeType || ''),
+            parentPath,
+            { preventDuplicate: req.body.preventDuplicate === true }
+        ));
     } catch (error) {
         const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 400;
         res.status(status).json({ ok: false, message: (error as Error).message || 'Falha ao compartilhar mídia local.' });

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
     Sparkles,
     Wand2,
@@ -16,8 +16,8 @@ import {
     Image as ImageIcon,
     Trash2,
     Upload,
-    Move,
-    Scaling,
+    RotateCcw,
+    Type,
 } from 'lucide-react';
 import { useWizard, SHOW_DEBUG_FEATURES } from '../context/WizardContext';
 import { VideoSequencePreview, VideoSequencePreviewRef } from '../components/VideoSequencePreview';
@@ -35,6 +35,153 @@ import { narrationSourceKey } from '../lib/narrationState';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
+const formatTimeValue = (value: number) => Number(Math.max(0, value).toFixed(2)).toString().replace('.', ',');
+
+const TimeField = ({
+    value,
+    min = 0,
+    onCommit,
+    ariaLabel,
+}: {
+    value: number;
+    min?: number;
+    onCommit: (value: number) => void;
+    ariaLabel: string;
+}) => {
+    const [draft, setDraft] = useState(() => formatTimeValue(value));
+
+    useEffect(() => setDraft(formatTimeValue(value)), [value]);
+
+    const commit = () => {
+        const parsed = Number(draft.replace(',', '.'));
+        if (!Number.isFinite(parsed)) {
+            setDraft(formatTimeValue(value));
+            return;
+        }
+        const next = Math.max(min, parsed);
+        onCommit(next);
+        setDraft(formatTimeValue(next));
+    };
+
+    return (
+        <input
+            type="text"
+            inputMode="decimal"
+            aria-label={ariaLabel}
+            value={draft}
+            onChange={(event) => {
+                const next = event.target.value;
+                if (/^\d*(?:[.,]\d*)?$/.test(next)) setDraft(next);
+            }}
+            onBlur={commit}
+            onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    commit();
+                    event.currentTarget.blur();
+                }
+                if (event.key === 'Escape') {
+                    setDraft(formatTimeValue(value));
+                    event.currentTarget.blur();
+                }
+            }}
+            className="h-8 w-[62px] rounded-md border border-white/8 bg-background px-2 text-center font-mono text-xs text-foreground outline-none transition-colors focus:border-brand-accent/60"
+        />
+    );
+};
+
+const TITLE_FONT_OPTIONS = [
+    'DM Sans',
+    'Inter',
+    'Poppins',
+    'Montserrat',
+    'League Spartan',
+    'Space Grotesk',
+    'Archivo Black',
+    'Bebas Neue',
+    'Anton',
+    'Oswald',
+    'Playfair Display',
+    'Impact',
+];
+
+const titleLibraryHeaderClass = (isOpen: boolean) => cn(
+    'group flex min-h-14 cursor-pointer items-center justify-between border border-brand-accent/25 bg-brand-dark/85 px-4 py-3 shadow-sm transition-colors hover:border-brand-accent/45 hover:bg-brand-accent/[.055]',
+    isOpen ? 'rounded-t-xl border-b-brand-accent/10' : 'rounded-xl'
+);
+
+const titleLibraryBodyClass =
+    'border border-t-0 border-brand-accent/20 bg-brand-dark/40 p-4 rounded-b-xl animate-in slide-in-from-top-2 duration-200';
+
+const TitleFontPicker = ({
+    value,
+    onChange,
+}: {
+    value: string;
+    onChange: (fontFamily: string) => void;
+}) => {
+    const [isOpen, setIsOpen] = useState(false);
+
+    return (
+        <div className="min-w-0">
+            <button
+                type="button"
+                onClick={(event) => {
+                    event.stopPropagation();
+                    setIsOpen((open) => !open);
+                }}
+                className={cn(
+                    'flex h-12 w-full items-center justify-between rounded-xl border px-3 text-left transition-colors',
+                    isOpen
+                        ? 'border-brand-accent/60 bg-brand-accent/10'
+                        : 'border-white/8 bg-black/20 hover:border-brand-accent/35 hover:bg-brand-accent/[.055]'
+                )}
+                aria-expanded={isOpen}
+            >
+                <span className="flex min-w-0 items-center gap-2.5">
+                    <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-brand-accent/20 bg-brand-accent/10 text-brand-accent">
+                        <Type className="h-4 w-4" />
+                    </span>
+                    <span className="truncate text-xs font-bold text-foreground" style={{ fontFamily: value }}>
+                        {value}
+                    </span>
+                </span>
+                <ChevronDown className={cn('h-4 w-4 shrink-0 text-brand-accent transition-transform', isOpen && 'rotate-180')} />
+            </button>
+
+            {isOpen && (
+                <div
+                    className="mt-2 grid grid-cols-2 gap-1.5 rounded-xl border border-brand-accent/25 bg-[#09110f] p-2 shadow-[0_16px_36px_rgba(0,0,0,.38)]"
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    {TITLE_FONT_OPTIONS.map((fontFamily) => {
+                        const selected = fontFamily === value;
+                        return (
+                            <button
+                                key={fontFamily}
+                                type="button"
+                                onClick={() => {
+                                    onChange(fontFamily);
+                                    setIsOpen(false);
+                                }}
+                                className={cn(
+                                    'flex min-h-10 items-center rounded-lg border px-2.5 text-left text-[11px] transition-colors',
+                                    selected
+                                        ? 'border-brand-accent/45 bg-brand-accent/15 text-brand-accent'
+                                        : 'border-transparent bg-white/[.035] text-foreground hover:border-brand-accent/25 hover:bg-brand-accent/[.08]'
+                                )}
+                                style={{ fontFamily }}
+                            >
+                                {fontFamily}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+        </div>
+    );
+};
+
 export const Step4 = () => {
     const { adData, updateAdData, mediaTakes, isDebugMode, setIsDebugMode } = useWizard();
     const [isGenerating, setIsGenerating] = useState(false);
@@ -42,7 +189,7 @@ export const Step4 = () => {
     // Accordion states
     const [isSimplesOpen, setIsSimplesOpen] = useState(false);
     const [isCtaOpen, setIsCtaOpen] = useState(false);
-    const [isPremiumOpen, setIsPremiumOpen] = useState(true);
+    const [isPremiumOpen, setIsPremiumOpen] = useState(false);
     const [isLocationOpen, setIsLocationOpen] = useState(false);
     const [isCustomImgOpen, setIsCustomImgOpen] = useState(false);
     const [isUploadingImage, setIsUploadingImage] = useState(false);
@@ -55,6 +202,15 @@ export const Step4 = () => {
         || (adData.dynamicTitlesSourceKey && adData.dynamicTitlesSourceKey !== currentSourceKey)
         ? EMPTY_TITLES
         : adData.dynamicTitles || EMPTY_TITLES;
+    const orderedTitles = useMemo(
+        () => titles
+            .map((title, originalIndex) => ({ title, originalIndex }))
+            .sort((left, right) =>
+                left.title.startSec - right.title.startSec || left.originalIndex - right.originalIndex
+            )
+            .map(({ title }) => title),
+        [titles]
+    );
     const titleStateRef = useRef<TitleHook[]>(titles);
     const titleHistoryRef = useRef<{
         undo: TitleHook[][];
@@ -157,12 +313,9 @@ export const Step4 = () => {
         return () => window.removeEventListener('keydown', handleHistoryShortcut);
     }, [redoTitleChange, undoTitleChange]);
 
-    // Initialize selectedTitleId when titles are loaded or generated
     useEffect(() => {
-        if (titles.length > 0 && !selectedTitleId) {
-            setSelectedTitleId(titles[0].id);
-        }
-    }, [titles, selectedTitleId]);
+        setSelectedTitleId(null);
+    }, []);
 
     const handleGenerateTitles = async () => {
         if (!currentCaptions?.segments?.length) {
@@ -189,9 +342,7 @@ export const Step4 = () => {
             if (res.data.ok && res.data.titles) {
                 const finalTitles = (res.data.titles || []).map((t: TitleHook) => ({ ...t, hasSound: true }));
                 updateAdData({ dynamicTitles: finalTitles, dynamicTitlesSourceKey: currentSourceKey });
-                if (finalTitles.length > 0) {
-                    setSelectedTitleId(finalTitles[0].id);
-                }
+                setSelectedTitleId(null);
                 toast.success('Títulos gerados com sucesso!', { id: toastId });
             } else {
                 throw new Error(res.data.message || 'Falha ao gerar');
@@ -292,26 +443,26 @@ export const Step4 = () => {
     const selectedTitle = titles.find((t) => t.id === selectedTitleId);
 
     return (
-        <div className="max-w-[1600px] mx-auto pb-24 px-6 md:px-4">
-            <header className="mb-6 md:mb-4 mt-6 md:mt-4 text-center">
-                <h2 className="text-3xl lg:text-4xl font-extrabold text-foreground tracking-tight inline-flex items-center gap-2">
+        <div className="mx-auto flex min-h-0 w-full max-w-[1500px] flex-1 flex-col pb-20">
+            <header className="mb-4 shrink-0 text-center">
+                <h2 className="inline-flex items-center gap-2 text-2xl font-extrabold tracking-tight text-foreground lg:text-3xl">
                     <span className="bg-linear-to-r from-brand-lime to-brand-accent bg-clip-text text-transparent">
                         Ganchos e Títulos
                     </span>
                 </h2>
-                <p className="text-brand-muted mt-2 max-w-2xl mx-auto text-xs md:text-sm font-medium">
+                <p className="mx-auto mt-1.5 max-w-2xl text-xs font-medium text-brand-muted">
                     Adicione ganchos visuais e Call-to-Actions impactantes para prender a atenção do seu público nos
                     primeiros segundos.
                 </p>
             </header>
 
-            <div className="grid lg:grid-cols-12 gap-4 lg:gap-6 h-[calc(100vh-180px)] min-h-[450px]">
+            <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(250px,.8fr)_minmax(420px,1.45fr)_minmax(240px,.75fr)]">
                 {/* COLUMN 1: AI Hooks (Left) */}
-                <div className="lg:col-span-4 flex flex-col gap-3 bg-brand-card shadow-2xl border border-black/5 dark:border-white/5 rounded-3xl p-4 overflow-y-auto custom-scrollbar relative">
+                <div className="custom-scrollbar relative flex min-h-0 flex-col gap-3 overflow-y-auto rounded-2xl border border-black/5 bg-brand-card p-3 shadow-xl dark:border-white/5">
                     <button
                         onClick={handleGenerateTitles}
                         disabled={false}
-                        className="w-full py-3.5 bg-linear-to-r from-brand-lime to-brand-accent hover:shadow-[0_0_15px_rgba(0,230,118,0.4)] hover:scale-[1.02] active:scale-[0.98] text-[#0a0f12] font-bold rounded-2xl text-[13px] uppercase tracking-wider transition-all flex items-center justify-center gap-2 disabled:opacity-50 z-10"
+                        className="z-10 flex w-full items-center justify-center gap-2 rounded-xl bg-linear-to-r from-brand-lime to-brand-accent py-3 text-[11px] font-bold uppercase tracking-wider text-[#0a0f12] transition-all hover:scale-[1.01] hover:shadow-[0_0_15px_rgba(0,230,118,0.4)] active:scale-[0.98] disabled:opacity-50"
                     >
                         {isGenerating ? (
                             <div className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
@@ -321,6 +472,7 @@ export const Step4 = () => {
                         {isGenerating ? 'Analisando...' : 'Gerar Títulos com IA'}
                     </button>
 
+                    <div className="grid grid-cols-2 gap-2">
                     <button
                         onClick={() => {
                             const startSec = currentPreviewTime();
@@ -347,7 +499,7 @@ export const Step4 = () => {
                                 `Título criado em ${startSec.toFixed(1)}s. Dê dois cliques nele para editar.`
                             );
                         }}
-                        className="w-full py-3 border-2 border-dashed border-brand-accent/30 hover:border-brand-accent/60 hover:bg-brand-accent/5 text-brand-accent font-bold rounded-2xl text-[12px] uppercase tracking-wider transition-all flex items-center justify-center gap-2 mt-1"
+                        className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl border border-brand-accent/30 py-2.5 text-[10px] font-bold uppercase tracking-wider text-brand-accent transition-all hover:border-brand-accent/60 hover:bg-brand-accent/5"
                     >
                         <Sparkles className="w-4 h-4" />
                         Criar Título
@@ -396,17 +548,18 @@ export const Step4 = () => {
                             };
                             input.click();
                         }}
-                        className="w-full py-3 border-2 border-dashed border-blue-500/30 hover:border-blue-500/60 hover:bg-blue-500/5 text-blue-400 font-bold rounded-2xl text-[12px] uppercase tracking-wider transition-all flex items-center justify-center gap-2"
+                        className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl border border-blue-500/30 py-2.5 text-[10px] font-bold uppercase tracking-wider text-blue-400 transition-all hover:border-blue-500/60 hover:bg-blue-500/5"
                     >
                         <Upload className="w-4 h-4" />
                         Upload de Imagem
                     </button>
+                    </div>
 
                     <div className="space-y-2 mt-1">
                         {titles.length === 0 && !isGenerating && (
-                            <div className="text-center p-8 bg-brand-dark rounded-2xl border border-dashed border-black/10 dark:border-white/10 mt-4">
-                                <div className="w-16 h-16 bg-black/5 dark:bg-white/5 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                                    <Sparkles className="w-8 h-8 text-brand-muted opacity-50" />
+                            <div className="mt-2 rounded-xl border border-dashed border-black/10 bg-brand-dark p-5 text-center dark:border-white/10">
+                                <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-black/5 dark:bg-white/5">
+                                    <Sparkles className="h-5 w-5 text-brand-muted opacity-50" />
                                 </div>
                                 <p className="text-xs text-brand-muted uppercase tracking-wider font-bold">
                                     Nenhum título gerado ainda
@@ -414,24 +567,25 @@ export const Step4 = () => {
                             </div>
                         )}
 
-                        {titles.map((title, i) => {
+                        {orderedTitles.map((title) => {
                             const isExpanded = title.id === selectedTitleId;
+                            const titleEnd = title.startSec + Math.max(0.1, title.durationSec || 0);
                             return (
                                 <div
                                     key={title.id}
                                     onClick={() => handleSelectTitle(title)}
                                     className={cn(
-                                        'flex flex-col bg-brand-dark rounded-2xl border transition-all duration-300 cursor-pointer overflow-hidden shadow-lg',
+                                        'flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-brand-dark shadow-sm transition-all duration-200',
                                         title.isActive
-                                            ? 'border-brand-accent/50 shadow-[0_0_15px_rgba(0,230,118,0.1)]'
+                                            ? 'border-brand-accent/35'
                                             : 'border-black/5 dark:border-white/5 opacity-70 hover:opacity-100',
                                         isExpanded
-                                            ? 'ring-1 ring-brand-accent bg-brand-accent/5'
+                                            ? 'border-brand-accent bg-brand-accent/[.09] shadow-[0_0_0_1px_rgba(0,230,118,.14),0_12px_28px_rgba(0,0,0,.18)]'
                                             : 'hover:border-brand-accent/30'
                                     )}
                                 >
                                     {/* Compact Card Header (Always Visible) */}
-                                    <div className="flex items-center justify-between p-3 bg-black/5 dark:bg-white/5">
+                                    <div className="flex min-h-12 items-center justify-between bg-black/5 p-2.5 dark:bg-white/[.035]">
                                         <div className="flex items-center gap-3 flex-1 min-w-0">
                                             <div
                                                 className="flex items-center gap-2 cursor-pointer hover:bg-white/5 p-1 rounded-md transition-colors"
@@ -442,91 +596,78 @@ export const Step4 = () => {
                                                     }
                                                 }}
                                             >
-                                                {isExpanded ? (
-                                                    <ChevronDown className="w-4 h-4 text-brand-accent" />
-                                                ) : (
-                                                    <ChevronUp className="w-4 h-4 text-brand-muted" />
-                                                )}
-                                                <span className="text-xs font-bold text-brand-accent bg-brand-accent/10 border border-brand-accent/20 px-2 py-0.5 rounded-md shrink-0 shadow-[0_0_8px_rgba(0,230,118,0.2)]">
-                                                    #{i + 1}
-                                                </span>
+                                                {isExpanded ? <ChevronUp className="h-4 w-4 text-brand-accent" /> : <ChevronDown className="h-4 w-4 text-brand-muted" />}
                                             </div>
-                                            {!isExpanded && (
-                                                <span className="text-xs text-foreground truncate font-semibold tracking-wide">
-                                                    {title.text || 'Sem texto'}
-                                                </span>
-                                            )}
+                                            <span className="truncate text-xs font-semibold tracking-wide text-foreground">
+                                                {title.text || 'Sem texto'}
+                                            </span>
                                         </div>
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                const newActive = !title.isActive;
-                                                updateTitle(title.id, { isActive: newActive });
-                                                if (newActive)
-                                                    handleTargetTime(title.startSec + (title.durationSec || 3) / 2);
-                                            }}
-                                            className={cn(
-                                                'p-2 rounded-xl transition-colors ml-2 shadow-inner',
-                                                title.isActive
-                                                    ? 'bg-brand-lime/20 text-brand-lime hover:bg-brand-lime/30 border border-brand-lime/20 drop-shadow-[0_0_5px_rgba(163,230,53,0.5)]'
-                                                    : 'bg-black/5 dark:bg-white/5 text-brand-muted hover:text-foreground border border-transparent'
-                                            )}
-                                            title={title.isActive ? 'Desativar Gancho' : 'Ativar Gancho'}
-                                        >
-                                            <Power className="w-4 h-4" />
-                                        </button>
+                                        <div className="ml-2 flex shrink-0 items-center gap-2">
+                                            <span
+                                                className={cn(
+                                                    'rounded-md border px-2 py-1 font-mono text-[9px] font-bold tabular-nums',
+                                                    isExpanded
+                                                        ? 'border-brand-accent/35 bg-brand-accent/15 text-brand-accent'
+                                                        : 'border-white/8 bg-black/15 text-brand-muted'
+                                                )}
+                                                title={`Visível de ${formatTimeValue(title.startSec)}s a ${formatTimeValue(titleEnd)}s`}
+                                            >
+                                                {formatTimeValue(title.startSec)}s–{formatTimeValue(titleEnd)}s
+                                            </span>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    const newActive = !title.isActive;
+                                                    updateTitle(title.id, { isActive: newActive });
+                                                    if (newActive)
+                                                        handleTargetTime(title.startSec + (title.durationSec || 3) / 2);
+                                                }}
+                                                className={cn(
+                                                    'rounded-md border p-1.5 transition-colors',
+                                                    title.isActive
+                                                        ? 'bg-brand-lime/20 text-brand-lime hover:bg-brand-lime/30 border border-brand-lime/20 drop-shadow-[0_0_5px_rgba(163,230,53,0.5)]'
+                                                        : 'bg-black/5 dark:bg-white/5 text-brand-muted hover:text-foreground border border-transparent'
+                                                )}
+                                                title={title.isActive ? 'Desativar Gancho' : 'Ativar Gancho'}
+                                            >
+                                                <Power className="w-4 h-4" />
+                                            </button>
+                                        </div>
                                     </div>
 
                                     {/* Expanded Content Area */}
                                     {isExpanded && (
-                                        <div className="flex border-t border-white/5 bg-black/20">
-                                            {/* Main Content (Left) */}
-                                            <div className="flex-1 p-2 md:p-3 flex flex-col gap-2 md:gap-3">
+                                        <div className="border-t border-white/5 bg-black/15 p-3">
+                                            <div className="flex flex-col gap-3">
                                                 <textarea
                                                     value={title.text}
                                                     onChange={(e) => updateTitle(title.id, { text: e.target.value })}
-                                                    className="w-full bg-black/30 border border-white/5 rounded-md p-2 text-xs font-medium text-foreground resize-none focus:outline-none focus:border-brand-accent/50 h-12 md:h-16 custom-scrollbar placeholder:text-brand-muted"
+                                                    className="custom-scrollbar h-16 w-full resize-none rounded-lg border border-white/8 bg-black/25 p-2.5 text-xs font-medium text-foreground outline-none transition-colors placeholder:text-brand-muted focus:border-brand-accent/50"
                                                     placeholder="Texto do gancho..."
                                                 />
 
-                                                <div className="flex items-center justify-between bg-black/30 p-1.5 rounded-md border border-white/5 shadow-inner">
-                                                    <div className="flex items-center gap-3">
-                                                        <div className="flex items-center gap-1.5">
+                                                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-white/8 bg-black/20 p-2">
+                                                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                                                        <label className="flex items-center gap-1.5">
                                                             <Clock className="w-3 h-3 text-brand-accent" />
                                                             <span className="text-[10px] uppercase tracking-wider text-brand-muted font-semibold">
                                                                 Início
                                                             </span>
-                                                            <input
-                                                                type="number"
-                                                                min="0"
-                                                                step="0.1"
+                                                            <TimeField
                                                                 value={title.startSec}
-                                                                onChange={(e) =>
-                                                                    updateTitle(title.id, {
-                                                                        startSec: Number(e.target.value),
-                                                                    })
-                                                                }
-                                                                className="w-[52px] bg-brand-dark border border-white/5 rounded px-1 py-0.5 text-center text-xs text-foreground focus:outline-none focus:border-brand-accent transition-colors placeholder:text-brand-muted"
+                                                                onCommit={(startSec) => updateTitle(title.id, { startSec })}
+                                                                ariaLabel="Início do título em segundos"
                                                             />
-                                                        </div>
+                                                        </label>
                                                         <div className="w-px h-3 bg-white/5" />
-                                                        <div className="flex items-center gap-1.5">
+                                                        <label className="flex items-center gap-1.5">
                                                             <span className="text-[10px] uppercase tracking-wider text-brand-muted font-bold">
                                                                 Fim
                                                             </span>
-                                                            <input
-                                                                type="number"
+                                                            <TimeField
                                                                 min={Number((title.startSec + 0.1).toFixed(1))}
-                                                                step="0.1"
                                                                 value={Number((title.startSec + title.durationSec).toFixed(1))}
-                                                                onChange={(e) => {
-                                                                    const endSec = Number(e.target.value);
-                                                                    if (!Number.isFinite(endSec)) return;
-
-                                                                    // A interface mostra um intervalo absoluto (Início → Fim),
-                                                                    // enquanto o projeto guarda a duração para o preview e a
-                                                                    // exportação. Converter aqui evita que “5 até 6” seja
-                                                                    // interpretado como seis segundos de duração.
+                                                                onCommit={(endSec) => {
                                                                     updateTitle(title.id, {
                                                                         durationSec: Math.max(
                                                                             0.1,
@@ -534,23 +675,43 @@ export const Step4 = () => {
                                                                         ),
                                                                     });
                                                                 }}
-                                                                className="w-[52px] bg-background border border-black/10 dark:border-white/10 rounded-lg px-2 py-1 text-center text-xs font-mono text-foreground focus:outline-none focus:border-brand-accent transition-colors"
+                                                                ariaLabel="Fim do título em segundos"
                                                             />
-                                                        </div>
+                                                        </label>
                                                     </div>
                                                     <button
                                                         onClick={(e) => {
                                                             e.stopPropagation();
-                                                            handleTargetTime(title.startSec);
+                                                            previewRef.current?.previewRange(
+                                                                title.startSec,
+                                                                title.startSec + Math.max(0.1, title.durationSec || 3)
+                                                            );
                                                         }}
-                                                        className="text-brand-accent hover:text-foreground text-[10px] uppercase tracking-widest font-bold px-3 py-1.5 rounded-lg bg-brand-accent/10 hover:bg-brand-accent/20 transition-colors border border-brand-accent/20 shadow-[0_0_10px_rgba(0,230,118,0.1)]"
+                                                        className="grid h-8 w-8 place-items-center rounded-md border border-brand-accent/20 bg-brand-accent/10 text-brand-accent transition-colors hover:bg-brand-accent/20 hover:text-foreground"
+                                                        title="Reproduzir somente este título"
                                                     >
-                                                        Sync
+                                                        <Play className="h-3.5 w-3.5" />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            updateTitle(title.id, { hasSound: !title.hasSound });
+                                                        }}
+                                                        className={cn(
+                                                            'grid h-8 w-8 place-items-center rounded-md border transition-colors',
+                                                            title.hasSound
+                                                                ? 'border-brand-accent/25 bg-brand-accent/10 text-brand-accent'
+                                                                : 'border-white/8 bg-white/[.035] text-brand-muted'
+                                                        )}
+                                                        title={title.hasSound ? 'Desativar efeito sonoro' : 'Ativar efeito sonoro'}
+                                                    >
+                                                        {title.hasSound ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
                                                     </button>
                                                 </div>
 
                                                 {/* Settings Grid */}
-                                                <div className="grid grid-cols-2 gap-3 text-[11px] mt-1">
+                                                <div className="grid grid-cols-2 gap-3 text-[11px]">
                                                     <div className="flex flex-col gap-1.5">
                                                         <span className="text-[9px] uppercase tracking-wider text-brand-muted font-bold pl-1">
                                                             Animação
@@ -565,69 +726,19 @@ export const Step4 = () => {
                                                         <span className="text-[9px] uppercase tracking-wider text-brand-muted font-bold pl-1">
                                                             Fonte
                                                         </span>
-                                                        <select
+                                                        <TitleFontPicker
                                                             value={title.fontFamily || 'Poppins'}
-                                                            onChange={(e) =>
-                                                                updateTitle(title.id, { fontFamily: e.target.value })
+                                                            onChange={(fontFamily) =>
+                                                                updateTitle(title.id, { fontFamily })
                                                             }
-                                                            className="bg-brand-card/50 border border-black/10 dark:border-white/10 text-foreground font-medium text-xs rounded-lg px-3 py-2 outline-none focus:border-brand-accent transition-colors cursor-pointer w-full appearance-none shadow-inner"
-                                                        >
-                                                            <option value="Inter">Inter</option>
-                                                            <option value="Poppins">Poppins</option>
-                                                            <option value="Montserrat">Montserrat</option>
-                                                            <option value="Impact">Impact</option>
-                                                            <option value="Bebas Neue">Bebas Neue</option>
-                                                            <option value="Anton">Anton</option>
-                                                            <option value="Archivo Black">Archivo Black</option>
-                                                            <option value="DM Sans">DM Sans</option>
-                                                            <option value="League Spartan">League Spartan</option>
-                                                            <option value="Oswald">Oswald</option>
-                                                            <option value="Playfair Display">Playfair Display</option>
-                                                            <option value="Space Grotesk">Space Grotesk</option>
-                                                        </select>
+                                                        />
                                                     </div>
 
-                                                    <div className="col-span-2 mt-2">
-                                                        <button
-                                                            onClick={() =>
-                                                                updateTitle(title.id, { hasSound: !title.hasSound })
-                                                            }
-                                                            className={cn(
-                                                                'w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-bold transition-all border shadow-inner uppercase tracking-wider',
-                                                                title.hasSound
-                                                                    ? 'bg-brand-accent/10 border-brand-accent/30 text-brand-accent shadow-[0_0_15px_rgba(0,230,118,0.1)]'
-                                                                    : 'bg-black/5 dark:bg-white/5 border-transparent text-brand-muted hover:text-foreground hover:bg-black/10 dark:bg-white/10'
-                                                            )}
-                                                        >
-                                                            {title.hasSound ? (
-                                                                <Volume2 className="w-4 h-4" />
-                                                            ) : (
-                                                                <VolumeX className="w-4 h-4" />
-                                                            )}
-                                                            {title.hasSound ? 'SFX Ativado' : 'Sem Áudio'}
-                                                        </button>
-                                                    </div>
                                                 </div>
-                                            </div>
-
-                                            {/* Edição direta no monitor */}
-                                            <div className="flex w-[118px] shrink-0 flex-col items-center justify-center border-l border-white/5 bg-linear-to-b from-brand-lime/[.07] to-black/25 p-3 text-center">
-                                                <div className="grid h-9 w-9 place-items-center rounded-xl border border-brand-lime/20 bg-brand-lime/10 text-brand-lime">
-                                                    <Move className="h-4 w-4" />
-                                                </div>
-                                                <p className="mt-2 text-[9px] font-black uppercase leading-relaxed tracking-wider text-foreground/75">
-                                                    Edite no preview
-                                                </p>
-                                                <p className="mt-1 text-[8px] leading-relaxed text-brand-muted">
-                                                    Arraste o meio para mover. Laterais reorganizam as linhas; topo/base e quinas escalam proporcionalmente.
-                                                </p>
-                                                <div className="mt-2 flex items-center gap-1 rounded-md bg-black/25 px-2 py-1 font-mono text-[8px] text-brand-lime/80">
-                                                    <Scaling className="h-3 w-3" /> L{' '}
-                                                    {title.textBoxWidthPct
-                                                        ? `${title.textBoxWidthPct.toFixed(0)}%`
-                                                        : 'auto'}{' '}
-                                                    · T {(title.scale ?? 1).toFixed(2)}
-                                                </div>
+                                                <div className="flex items-center justify-between border-t border-white/5 pt-2">
+                                                    <p className="text-[9px] font-semibold text-brand-muted">
+                                                        Arraste e redimensione diretamente no preview.
+                                                    </p>
                                                 <button
                                                     onClick={(event) => {
                                                         event.stopPropagation();
@@ -640,10 +751,13 @@ export const Step4 = () => {
                                                             textBoxWidthPct: undefined,
                                                         });
                                                     }}
-                                                    className="mt-2 text-[8px] font-black uppercase tracking-wider text-brand-muted transition hover:text-brand-lime"
+                                                    className="flex h-8 items-center gap-1.5 rounded-md px-2 text-[9px] font-black uppercase tracking-wider text-brand-muted transition hover:bg-white/5 hover:text-brand-lime"
+                                                    title="Restaurar posição e escala"
                                                 >
+                                                    <RotateCcw className="h-3.5 w-3.5" />
                                                     Centralizar
                                                 </button>
+                                                </div>
                                             </div>
                                         </div>
                                     )}
@@ -654,11 +768,11 @@ export const Step4 = () => {
                 </div>
 
                 {/* COLUMN 2: Visual Models (Center) */}
-                <div className="lg:col-span-4 bg-brand-card/30 border border-black/5 dark:border-white/5 shadow-inner rounded-3xl p-5 flex flex-col custom-scrollbar overflow-y-auto">
+                <div className="custom-scrollbar flex min-h-0 flex-col overflow-y-auto rounded-2xl border border-black/5 bg-brand-card/30 p-3 shadow-inner dark:border-white/5">
                     {/* Accordion: Simples */}
-                    <div className="mb-6">
+                    <div className="hidden">
                         <div
-                            className="flex items-center justify-between bg-brand-dark p-4 rounded-t-2xl border border-black/5 dark:border-white/5 shadow-sm cursor-pointer hover:bg-black/5 dark:bg-white/5 transition-colors group"
+                            className="group flex cursor-pointer items-center justify-between rounded-t-xl border border-black/5 bg-brand-dark p-3 shadow-sm transition-colors hover:bg-black/5 dark:border-white/5 dark:bg-white/5"
                             onClick={() => setIsSimplesOpen(!isSimplesOpen)}
                         >
                             <div className="flex items-center gap-3">
@@ -777,25 +891,25 @@ export const Step4 = () => {
                     </div>
 
                     {/* Accordion: Call to Action */}
-                    <div className="mb-6 mt-4">
+                    <div className="mb-3 mt-2">
                         <div
-                            className="flex items-center justify-between bg-brand-dark p-4 rounded-t-2xl border border-black/5 dark:border-white/5 shadow-sm cursor-pointer hover:bg-black/5 dark:bg-white/5 transition-colors group"
+                            className={titleLibraryHeaderClass(isCtaOpen)}
                             onClick={() => setIsCtaOpen(!isCtaOpen)}
                         >
                             <div className="flex items-center gap-3">
                                 {isCtaOpen ? (
-                                    <ChevronUp className="w-5 h-5 text-brand-lime" />
+                                    <ChevronUp className="h-5 w-5 text-brand-accent" />
                                 ) : (
-                                    <ChevronDown className="w-5 h-5 text-brand-lime" />
+                                    <ChevronDown className="h-5 w-5 text-brand-accent" />
                                 )}
-                                <h4 className="font-bold uppercase tracking-wider text-brand-lime text-[13px] drop-shadow-[0_0_5px_rgba(163,230,53,0.3)]">
-                                    Categoria: Call to Action (CTA)
+                                <h4 className="text-[12px] font-black uppercase tracking-wider text-brand-accent">
+                                    Call to Action (CTA)
                                 </h4>
                             </div>
                         </div>
 
                         {isCtaOpen && (
-                            <div className="grid gap-4 bg-brand-dark/40 p-5 border border-t-0 border-black/5 dark:border-white/5 rounded-b-2xl">
+                            <div className={cn(titleLibraryBodyClass, 'grid gap-4')}>
                                 {CTA_MODELS.map((model) => {
                                     const isSelected = selectedTitle?.styleId === model.id;
 
@@ -896,19 +1010,19 @@ export const Step4 = () => {
                     </div>
 
                     {/* Accordion: Premium */}
-                    <div className="mb-6 mt-1">
+                    <div className="mb-3 mt-2">
                         <div
-                            className="group flex cursor-pointer items-center justify-between rounded-t-2xl border border-amber-400/15 bg-linear-to-r from-amber-400/10 via-brand-dark to-fuchsia-500/5 p-4 shadow-sm transition-colors hover:border-amber-400/30"
+                            className={titleLibraryHeaderClass(isPremiumOpen)}
                             onClick={() => setIsPremiumOpen(!isPremiumOpen)}
                         >
                             <div className="flex items-center gap-3">
                                 {isPremiumOpen ? (
-                                    <ChevronUp className="h-5 w-5 text-amber-300" />
+                                    <ChevronUp className="h-5 w-5 text-brand-accent" />
                                 ) : (
-                                    <ChevronDown className="h-5 w-5 text-amber-300" />
+                                    <ChevronDown className="h-5 w-5 text-brand-accent" />
                                 )}
                                 <div>
-                                    <h4 className="text-[13px] font-black uppercase tracking-wider text-amber-300">
+                                    <h4 className="text-[12px] font-black uppercase tracking-wider text-brand-accent">
                                         Biblioteca Premium
                                     </h4>
                                     <p className="mt-0.5 text-[9px] font-semibold text-brand-muted">
@@ -916,17 +1030,17 @@ export const Step4 = () => {
                                     </p>
                                 </div>
                             </div>
-                            <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-amber-200">
+                            <span className="rounded-full border border-brand-accent/25 bg-brand-accent/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-wider text-brand-accent">
                                 Motion
                             </span>
                         </div>
 
                         {isPremiumOpen && (
-                            <div className="space-y-6 rounded-b-2xl border border-t-0 border-amber-400/10 bg-brand-dark/40 p-4 animate-in slide-in-from-top-2 duration-200">
+                            <div className={cn(titleLibraryBodyClass, 'space-y-6')}>
                                 {PREMIUM_TITLE_GROUPS.map((group) => (
                                     <section key={group}>
                                         <div className="mb-3 flex items-center gap-3">
-                                            <span className="text-[9px] font-black uppercase tracking-[.22em] text-amber-200/80">
+                                            <span className="text-[9px] font-black uppercase tracking-[.22em] text-brand-accent/80">
                                                 {group}
                                             </span>
                                             <span className="h-px flex-1 bg-linear-to-r from-amber-300/20 to-transparent" />
@@ -975,8 +1089,8 @@ export const Step4 = () => {
                                                             className={cn(
                                                                 'group/model relative min-h-40 overflow-hidden rounded-2xl border bg-background text-left shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-2xl',
                                                                 isSelected && selectedTitle
-                                                                    ? 'border-amber-300/65 ring-1 ring-amber-300/15'
-                                                                    : 'border-white/8 hover:border-amber-300/25',
+                                                                    ? 'border-brand-accent/65 ring-1 ring-brand-accent/15'
+                                                                    : 'border-white/8 hover:border-brand-accent/25',
                                                                 !selectedTitle && 'cursor-not-allowed opacity-60'
                                                             )}
                                                             disabled={!selectedTitle}
@@ -988,7 +1102,7 @@ export const Step4 = () => {
                                                                             {model.name}
                                                                         </span>
                                                                         {isSelected && selectedTitle && (
-                                                                            <CheckCircle2 className="h-4 w-4 shrink-0 text-amber-300" />
+                                                                            <CheckCircle2 className="h-4 w-4 shrink-0 text-brand-accent" />
                                                                         )}
                                                                     </div>
                                                                     <p className="mt-1 line-clamp-2 text-[9px] leading-relaxed text-brand-muted">
@@ -1065,9 +1179,9 @@ export const Step4 = () => {
                     </div>
 
                     {/* Accordion: Localização */}
-                    <div className="mb-6 mt-4">
+                    <div className="mb-3 mt-2">
                         <div
-                            className="flex items-center justify-between bg-brand-dark p-4 rounded-t-2xl border border-black/5 dark:border-white/5 shadow-sm cursor-pointer hover:bg-black/5 dark:bg-white/5 transition-colors group"
+                            className={titleLibraryHeaderClass(isLocationOpen)}
                             onClick={() => setIsLocationOpen(!isLocationOpen)}
                         >
                             <div className="flex items-center gap-3">
@@ -1077,14 +1191,14 @@ export const Step4 = () => {
                                     <ChevronDown className="w-5 h-5 text-brand-accent" />
                                 )}
                                 <MapPin className="w-4 h-4 text-brand-accent" />
-                                <h4 className="font-bold uppercase tracking-wider text-brand-accent text-[13px] drop-shadow-[0_0_5px_rgba(0,230,118,0.3)]">
-                                    Categoria: Localização
+                                <h4 className="text-[12px] font-black uppercase tracking-wider text-brand-accent">
+                                    Localização
                                 </h4>
                             </div>
                         </div>
 
                         {isLocationOpen && (
-                            <div className="grid gap-4 bg-brand-dark/40 p-5 border border-t-0 border-black/5 dark:border-white/5 rounded-b-2xl animate-in slide-in-from-top-2 duration-200">
+                            <div className={cn(titleLibraryBodyClass, 'grid gap-4')}>
                                 {LOCATION_MODELS.map((model) => {
                                     const isSelected = selectedTitle?.styleId === model.id;
 
@@ -1185,26 +1299,26 @@ export const Step4 = () => {
                     </div>
 
                     {/* Accordion: Upload Imagem Personalizada */}
-                    <div className="mb-6 mt-4">
+                    <div className="mb-3 mt-2">
                         <div
-                            className="flex items-center justify-between bg-brand-dark p-4 rounded-t-2xl border border-black/5 dark:border-white/5 shadow-sm cursor-pointer hover:bg-black/5 dark:bg-white/5 transition-colors group"
+                            className={titleLibraryHeaderClass(isCustomImgOpen)}
                             onClick={() => setIsCustomImgOpen(!isCustomImgOpen)}
                         >
                             <div className="flex items-center gap-3">
                                 {isCustomImgOpen ? (
-                                    <ChevronUp className="w-5 h-5 text-blue-400" />
+                                    <ChevronUp className="h-5 w-5 text-brand-accent" />
                                 ) : (
-                                    <ChevronDown className="w-5 h-5 text-blue-400" />
+                                    <ChevronDown className="h-5 w-5 text-brand-accent" />
                                 )}
-                                <ImageIcon className="w-4 h-4 text-blue-400" />
-                                <h4 className="font-bold uppercase tracking-wider text-blue-400 text-[13px] drop-shadow-[0_0_5px_rgba(96,165,250,0.3)]">
+                                <ImageIcon className="h-4 w-4 text-brand-accent" />
+                                <h4 className="text-[12px] font-black uppercase tracking-wider text-brand-accent">
                                     Imagem Personalizada (Logo/Selo)
                                 </h4>
                             </div>
                         </div>
 
                         {isCustomImgOpen && (
-                            <div className="bg-brand-dark/40 p-5 border border-t-0 border-black/5 dark:border-white/5 rounded-b-2xl animate-in slide-in-from-top-2 duration-200 space-y-4">
+                            <div className={cn(titleLibraryBodyClass, 'space-y-4')}>
                                 {adData.customOverlayUrl ? (
                                     <div className="flex items-center justify-between bg-background border border-black/10 dark:border-white/10 rounded-xl p-3">
                                         <div className="flex items-center gap-3">
@@ -1277,31 +1391,26 @@ export const Step4 = () => {
                 </div>
 
                 {/* COLUMN 3: Preview (Right) */}
-                <div className="lg:col-span-4 bg-brand-dark rounded-3xl border border-black/5 dark:border-white/5 overflow-hidden relative shadow-2xl flex flex-col justify-center">
+                <div className="self-start lg:sticky lg:top-0">
                     {mediaTakes.length > 0 ? (
-                        <div className="absolute inset-0 m-auto flex items-center justify-center">
-                            <div
-                                className="relative shadow-[0_0_50px_rgba(0,0,0,0.8)]"
-                                style={{ width: '100%', maxWidth: '360px', aspectRatio: '9/16' }}
-                            >
-                                <VideoSequencePreview
-                                    ref={previewRef}
-                                    takes={mediaTakes}
-                                    masterAudioUrl={adData.masterAudioUrl}
-                                    captions={currentCaptions}
-                                    hideControls={true}
-                                    onMuteToggle={() => {}}
-                                    onMuteAll={() => {}}
-                                    dynamicTitles={titles.filter((t) => t.isActive)}
-                                    selectedTitleId={selectedTitleId}
-                                    onTitleSelect={setSelectedTitleId}
-                                    onTitleTransformChange={updateTitleTransform}
-                                    onTitleDelete={deleteTitle}
-                                />
-                            </div>
-                        </div>
+                        <VideoSequencePreview
+                            ref={previewRef}
+                            takes={mediaTakes}
+                            masterAudioUrl={adData.masterAudioUrl}
+                            captions={currentCaptions}
+                            onMuteToggle={() => {}}
+                            onMuteAll={() => {}}
+                            showTakeList={false}
+                            showHeaderMute={false}
+                            compactViewport
+                            dynamicTitles={titles.filter((t) => t.isActive)}
+                            selectedTitleId={selectedTitleId}
+                            onTitleSelect={setSelectedTitleId}
+                            onTitleTransformChange={updateTitleTransform}
+                            onTitleDelete={deleteTitle}
+                        />
                     ) : (
-                        <div className="absolute inset-0 flex items-center justify-center text-brand-muted z-10 p-6 text-center font-bold uppercase tracking-wider text-xs">
+                        <div className="flex min-h-[480px] items-center justify-center rounded-2xl border border-dashed border-white/8 bg-brand-dark p-6 text-center text-xs font-bold uppercase tracking-wider text-brand-muted">
                             Adicione mídia na Etapa 1 para visualizar o vídeo.
                         </div>
                     )}
@@ -1309,7 +1418,7 @@ export const Step4 = () => {
             </div>
 
             {/* Footer Navigation */}
-            <div className="fixed bottom-0 right-0 left-0 bg-background/80 backdrop-blur-xl border-t border-black/5 dark:border-white/5 p-4 z-40 flex items-center justify-between shadow-2xl">
+            <div className="fixed bottom-0 right-0 left-0 z-40 flex h-16 items-center justify-between border-t border-black/5 bg-background/95 px-5 pr-24 shadow-2xl backdrop-blur-xl dark:border-white/5">
                 {/* Debug Controls (Left) */}
                 <div className="flex items-center gap-4">
                     {SHOW_DEBUG_FEATURES && (
@@ -1350,7 +1459,7 @@ export const Step4 = () => {
                 {/* Primary Export Action (Right) */}
                 <button
                     onClick={handleOpenExport}
-                    className="px-10 py-3.5 bg-linear-to-r from-brand-lime to-brand-accent hover:shadow-[0_0_20px_rgba(0,230,118,0.4)] text-[#0a0f12] font-extrabold uppercase tracking-widest rounded-xl text-sm flex items-center gap-3 transition-transform hover:scale-[1.02] active:scale-[0.98]"
+                    className="flex items-center gap-2.5 rounded-xl bg-linear-to-r from-brand-lime to-brand-accent px-8 py-2.5 text-xs font-extrabold uppercase tracking-widest text-[#0a0f12] transition-transform hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(0,230,118,0.4)] active:scale-[0.98]"
                 >
                     <Download className="w-5 h-5 flex-shrink-0" />
                     <span>Exportar e Concluir</span>

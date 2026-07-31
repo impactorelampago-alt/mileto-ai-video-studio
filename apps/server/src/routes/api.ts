@@ -123,6 +123,7 @@ router.post('/shared/files/move', sharedController.moveItem);
 router.post('/shared/files/copy', sharedController.copyItem);
 router.delete('/shared/files/item/:assetId', sharedController.trashItem);
 router.post('/shared/files/item/:assetId/restore', sharedController.restoreItem);
+router.post('/shared/files/item/:assetId/materialize-transition', sharedController.materializeTransition);
 
 // Mileto Ops: o renderer envia apenas uma referência opaca. O servidor local
 // busca uma URL curta via gateway e materializa o arquivo no cache privado.

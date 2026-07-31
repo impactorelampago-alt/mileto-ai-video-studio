@@ -11,12 +11,13 @@ import { getFontEmbedCSS, toCanvas } from 'html-to-image';
 import { toast } from 'sonner';
 import { normalizedTakeProgress, takeMotionScale } from '../lib/takeMotion';
 import { EditableTitleOverlay } from './EditableTitleOverlay';
-import { enhancementPreviewCss, resolveTakeSharpness, sharpnessKernel } from '../lib/videoEnhancement';
+import { enhancementPreviewCss, resolveTakeEnhancement, resolveTakeSharpness, sharpnessKernel } from '../lib/videoEnhancement';
 
 export interface VideoSequencePreviewRef {
     seekToTime: (globalTime: number) => void;
     seekToTake: (index: number) => void;
     getCurrentTime: () => number;
+    previewRange: (startTime: number, endTime: number) => void;
     extractFrameSync: (
         globalTime: number,
         isAlphaExport?: boolean,
@@ -31,6 +32,9 @@ export interface VideoSequencePreviewProps {
     onMuteToggle: (takeId: string) => void;
     onMuteAll: (muted: boolean) => void;
     hideControls?: boolean;
+    showTakeList?: boolean;
+    showHeaderMute?: boolean;
+    compactViewport?: boolean;
     captions?: CaptionTrack; // Add captions prop
     dynamicTitles?: TitleHook[];
     isHybridMode?: boolean; // Propaga a intenção Híbrida p/ o extrator
@@ -51,6 +55,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             onMuteToggle,
             onMuteAll,
             hideControls = false,
+            showTakeList = true,
+            showHeaderMute = true,
+            compactViewport = false,
             captions, // Extract captions
             dynamicTitles = [],
             isHybridMode = false, // Modo Overlay-only
@@ -109,13 +116,17 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const wasPlayingBeforeScrubRef = useRef(false);
         const previewRepairAttemptsRef = useRef(new Set<string>());
         const sequenceFirstIdRef = useRef<string | null>(null);
+        const rangePreviewRef = useRef<{ endTime: number; returnTime: number } | null>(null);
 
         // Derived
         const currentTake = takes.length > 0 ? takes[currentTakeIndex] : null;
         const isStandaloneTakePreview = standaloneTakeIndex === currentTakeIndex;
         const currentSharpness = currentTake ? resolveTakeSharpness(currentTake, adData.videoEnhancement) : 0;
+        const currentEnhancement = currentTake
+            ? resolveTakeEnhancement(currentTake, adData.videoEnhancement)
+            : adData.videoEnhancement;
         const currentEnhancementFilter = enhancementPreviewCss(
-            adData.videoEnhancement,
+            currentEnhancement,
             currentSharpness,
             enhancementFilterId
         );
@@ -610,10 +621,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         ]);
 
         const pause = useCallback(() => {
+            rangePreviewRef.current = null;
             stopAll();
         }, [stopAll]);
 
         const restart = useCallback(() => {
+            rangePreviewRef.current = null;
             stopAll();
             setCurrentTakeIndex(0);
             setCurrentTimeInTake(0);
@@ -742,6 +755,60 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             }
         }, [currentTakeIndex, takes, activeVideo, playbackSourceFor]); // Dependency on 'takes' ensures update on edit
 
+        const seekToGlobalTime = useCallback((requestedTime: number, preserveRange = false) => {
+            if (totalDuration <= 0) return 0;
+            if (!preserveRange) rangePreviewRef.current = null;
+            const targetGlobalTime = Math.max(0, Math.min(requestedTime, totalDuration));
+            let accumulated = 0;
+            let targetTakeIndex = Math.max(0, takes.length - 1);
+            let targetTimeInTake = 0;
+
+            for (let i = 0; i < takes.length; i++) {
+                const takeDuration = Math.max(0, takes[i].trim.end - takes[i].trim.start);
+                if (targetGlobalTime < accumulated + takeDuration || i === takes.length - 1) {
+                    targetTakeIndex = i;
+                    targetTimeInTake = Math.max(0, Math.min(takeDuration, targetGlobalTime - accumulated));
+                    break;
+                }
+                accumulated += takeDuration;
+            }
+
+            stopAll();
+            pendingSeekTimeRef.current = targetTimeInTake;
+            setStandaloneTakeIndex(null);
+            setCurrentTakeIndex(targetTakeIndex);
+            setCurrentTimeInTake(targetTimeInTake);
+            setAudioTime(targetGlobalTime);
+
+            if (audioMasterRef.current) audioMasterRef.current.currentTime = targetGlobalTime;
+            if (targetTakeIndex === currentTakeIndex) {
+                const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+                if (video && takes[targetTakeIndex]?.type === 'video') {
+                    video.currentTime = takes[targetTakeIndex].trim.start + targetTimeInTake;
+                }
+                pendingSeekTimeRef.current = null;
+            }
+
+            return targetGlobalTime;
+        }, [activeVideo, currentTakeIndex, stopAll, takes, totalDuration]);
+
+        const previewRange = useCallback((requestedStart: number, requestedEnd: number) => {
+            if (totalDuration <= 0) return;
+            const startTime = Math.max(0, Math.min(requestedStart, totalDuration));
+            const endTime = Math.min(totalDuration, Math.max(startTime + 0.05, requestedEnd));
+            const returnTime = Math.max(0, Math.min(totalDuration, Math.max(globalTime, audioTime)));
+
+            rangePreviewRef.current = { endTime, returnTime };
+            seekToGlobalTime(startTime, true);
+            setIsPlaying(true);
+
+            window.requestAnimationFrame(() => {
+                const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+                video?.play().catch(() => {});
+                playAudio();
+            });
+        }, [activeVideo, audioTime, globalTime, playAudio, seekToGlobalTime, totalDuration]);
+
         // ─── Speed Curve & Time Update Loop ─────────────────────────────────
 
         useEffect(() => {
@@ -751,6 +818,27 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
             const tick = () => {
                 if (!isPlaying) return;
+
+                const activeRange = rangePreviewRef.current;
+                if (activeRange) {
+                    const takeStartTime = takes
+                        .slice(0, currentTakeIndex)
+                        .reduce((sum, take) => sum + Math.max(0, take.trim.end - take.trim.start), 0);
+                    const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+                    const localTime = currentTake?.type === 'video' && video
+                        ? Math.max(0, video.currentTime - currentTake.trim.start)
+                        : currentTimeInTake;
+                    const sequenceTime = masterAudioUrl && audioMasterRef.current
+                        ? audioMasterRef.current.currentTime
+                        : takeStartTime + localTime;
+
+                    if (sequenceTime >= activeRange.endTime - 0.02) {
+                        const returnTime = activeRange.returnTime;
+                        rangePreviewRef.current = null;
+                        seekToGlobalTime(returnTime);
+                        return;
+                    }
+                }
 
                 // --- AUDIO ONLY MODE ---
                 if (!currentTake) {
@@ -1014,6 +1102,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             beginBuffering,
             finishBuffering,
             isStandaloneTakePreview,
+            currentTimeInTake,
+            masterAudioUrl,
+            seekToGlobalTime,
         ]);
 
         // ─── Audio Sync Checks (Periodic Watchdog) ──────────────────────────
@@ -1167,50 +1258,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         useImperativeHandle(ref, () => ({
             getCurrentTime: () => Math.max(0, Math.min(totalDuration, Math.max(globalTime, audioTime))),
             seekToTake: seekToTakeStart,
-            seekToTime: (globalTime: number) => {
-                if (totalDuration <= 0) return;
-                const targetGlobalTime = Math.max(0, Math.min(globalTime, totalDuration));
-
-                let accumulated = 0;
-                let targetTakeIndex = 0;
-                let targetTimeInTake = 0;
-
-                for (let i = 0; i < takes.length; i++) {
-                    const t = takes[i];
-                    const takeDur = t.trim.end - t.trim.start;
-                    if (targetGlobalTime < accumulated + takeDur) {
-                        targetTakeIndex = i;
-                        targetTimeInTake = targetGlobalTime - accumulated;
-                        break;
-                    }
-                    accumulated += takeDur;
-                }
-
-                if (targetTakeIndex >= takes.length) {
-                    targetTakeIndex = Math.max(0, takes.length - 1);
-                    if (takes.length > 0) {
-                        const lastT = takes[targetTakeIndex];
-                        const lastDur = lastT.trim.end - lastT.trim.start;
-                        targetTimeInTake = Math.min(lastDur, targetGlobalTime - accumulated + lastDur);
-                    }
-                }
-
-                pendingSeekTimeRef.current = targetTimeInTake;
-                setStandaloneTakeIndex(null);
-                setCurrentTakeIndex(targetTakeIndex);
-                setCurrentTimeInTake(targetTimeInTake);
-                setAudioTime(targetGlobalTime);
-
-                if (audioMasterRef.current) audioMasterRef.current.currentTime = targetGlobalTime;
-
-                if (targetTakeIndex === currentTakeIndex) {
-                    const vid = activeVideo === 1 ? videoRef1.current : videoRef2.current;
-                    if (vid && takes[targetTakeIndex]?.type === 'video') {
-                        vid.currentTime = takes[targetTakeIndex].trim.start + targetTimeInTake;
-                    }
-                    pendingSeekTimeRef.current = null;
-                }
-            },
+            seekToTime: seekToGlobalTime,
+            previewRange,
             extractFrameSync: async (
                 globalTime: number,
                 isAlphaExport = false,
@@ -1608,19 +1657,21 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             <span className="w-2 h-2 rounded-full bg-brand-accent shadow-[0_0_8px_rgba(0,230,118,0.8)] animate-pulse"></span>
                             Monitor de Corte
                         </span>
-                        <button
-                            onClick={() => onMuteAll(!allMuted)}
-                            className={cn(
-                                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all',
-                                allMuted
-                                    ? 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 shadow-[0_0_10px_rgba(234,179,8,0.1)]'
-                                    : 'hover:bg-black/5 dark:bg-white/5 text-brand-muted hover:text-foreground border border-transparent'
-                            )}
-                            title={allMuted ? 'Ativar áudio de todos' : 'Mutar todos os takes'}
-                        >
-                            {allMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                            {allMuted ? 'Mudos' : 'Mutar Todos'}
-                        </button>
+                        {showHeaderMute && (
+                            <button
+                                onClick={() => onMuteAll(!allMuted)}
+                                className={cn(
+                                    'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all',
+                                    allMuted
+                                        ? 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 shadow-[0_0_10px_rgba(234,179,8,0.1)]'
+                                        : 'hover:bg-black/5 dark:bg-white/5 text-brand-muted hover:text-foreground border border-transparent'
+                                )}
+                                title={allMuted ? 'Ativar áudio de todos' : 'Mutar todos os takes'}
+                            >
+                                {allMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                                {allMuted ? 'Mudos' : 'Mutar Todos'}
+                            </button>
+                        )}
                     </div>
                 )}
 
@@ -1628,9 +1679,16 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 <div
                     className={cn(
                         'relative w-full flex items-center justify-center overflow-hidden group/video shadow-inner cursor-pointer',
-                        adData.format === '1:1' ? 'aspect-square mx-auto max-w-[420px]' : 'aspect-9/16',
+                        compactViewport
+                            ? adData.format === '1:1'
+                                ? 'mx-auto aspect-square h-[clamp(290px,calc(100vh-440px),420px)] w-auto max-w-full'
+                                : 'mx-auto aspect-[9/16] h-[clamp(300px,calc(100vh-430px),440px)] w-auto max-w-full shrink-0'
+                            : adData.format === '1:1'
+                              ? 'aspect-square mx-auto max-w-[420px]'
+                              : 'aspect-[9/16]',
                         isHybridMode ? 'bg-transparent' : 'bg-brand-dark'
                     )}
+                    style={{ aspectRatio: adData.format === '1:1' ? '1 / 1' : '9 / 16' }}
                     onClick={() => {
                         if (isPlaying) pause();
                     }}
@@ -2072,18 +2130,49 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 </div>
 
                 {/* Controls */}
-                <div className="px-5 py-4 border-t border-black/5 dark:border-white/5 space-y-4 bg-background z-10">
+                <div className={cn('border-t border-black/5 bg-background z-10 dark:border-white/5', compactViewport ? 'space-y-2.5 px-4 py-3' : 'space-y-4 px-5 py-4')}>
                     {/* Progress bar */}
                     <div
                         ref={progressBarRef}
-                        className="w-full bg-black/5 dark:bg-white/5 rounded-full h-2.5 overflow-hidden cursor-pointer relative group flex items-center hover:h-3.5 transition-all"
+                        className="group relative h-6 w-full cursor-pointer"
                         onMouseDown={handleScrubStart}
                     >
-                        <div
-                            className="h-full bg-brand-accent shadow-[0_0_10px_rgba(0,230,118,0.8)]"
-                            style={{ width: `${Math.min(progressPercent, 100)}%` }}
-                        />
-                        <div className="absolute inset-0 bg-black/10 dark:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        <div className="pointer-events-none absolute inset-x-0 top-0 h-2.5 rounded-full bg-[#8b5cf6]/10 ring-1 ring-inset ring-[#8b5cf6]/15">
+                            {!isStandaloneTakePreview && displayDuration > 0 && dynamicTitles
+                                .filter((title) => title.isActive)
+                                .map((title) => {
+                                    const startPercent = Math.min(100, Math.max(0, (title.startSec / displayDuration) * 100));
+                                    const rawWidth = (Math.max(0.1, title.durationSec || 0) / displayDuration) * 100;
+                                    const widthPercent = Math.min(
+                                        Math.max(0, 100 - startPercent),
+                                        Math.max(1.25, rawWidth)
+                                    );
+                                    const isSelected = selectedTitleId === title.id;
+
+                                    return (
+                                        <div
+                                            key={`timeline-title-${title.id}`}
+                                            className={cn(
+                                                'absolute inset-y-0 z-10 rounded-sm border-x transition-all duration-200',
+                                                isSelected
+                                                    ? 'border-[#fff1fb] bg-[#ff2bd6] shadow-[0_0_10px_2px_rgba(255,43,214,.9)]'
+                                                    : 'border-[#eadfff] bg-[#8b5cf6] shadow-[0_0_7px_rgba(139,92,246,.7)]'
+                                            )}
+                                            style={{ left: `${startPercent}%`, width: `${widthPercent}%` }}
+                                            title={`${title.text || 'Título'} · ${title.startSec.toFixed(1)}s–${(title.startSec + title.durationSec).toFixed(1)}s`}
+                                            aria-label={`${title.text || 'Título'}: ${title.startSec.toFixed(1)}s a ${(title.startSec + title.durationSec).toFixed(1)}s`}
+                                        />
+                                    );
+                                })}
+                        </div>
+
+                        <div className="absolute inset-x-0 bottom-0 h-2 overflow-hidden rounded-full bg-black/5 ring-1 ring-inset ring-black/5 dark:bg-white/5 dark:ring-white/5">
+                            <div
+                                className="h-full bg-brand-accent/70 shadow-[0_0_10px_rgba(0,230,118,0.65)]"
+                                style={{ width: `${Math.min(progressPercent, 100)}%` }}
+                            />
+                            <div className="pointer-events-none absolute inset-0 bg-black/10 opacity-0 transition-opacity group-hover:opacity-100 dark:bg-white/10" />
+                        </div>
                     </div>
 
                     <div className="flex items-center justify-between">
@@ -2114,7 +2203,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 </div>
 
                 {/* Compact Take List */}
-                {!hideControls && (
+                {!hideControls && showTakeList && (
                     <div className="border-t border-black/5 dark:border-white/5 divide-y divide-white/5 max-h-[180px] overflow-y-auto bg-background/50 backdrop-blur-sm z-0 relative">
                         {takes.map((take, i) => (
                             <div

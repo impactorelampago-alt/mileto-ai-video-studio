@@ -8,6 +8,10 @@ export interface TransitionAsset {
     category?: string;
     isBuiltIn?: boolean;
     description?: string;
+    scope?: 'local' | 'shared';
+    sharedAssetId?: string;
+    identityCode?: string;
+    fileSize?: number;
 }
 
 import { SpeedPresetType } from '../lib/speedRemapping';
@@ -44,6 +48,13 @@ export interface TakeSharpnessSettings {
     /** `inherit` usa o valor global; `off` desliga; `custom` usa `amount`. */
     mode: 'inherit' | 'off' | 'custom';
     amount: number;
+}
+
+export interface TakeEnhancementSettings {
+    /** `inherit` segue o tratamento global; `off` desliga; `custom` usa os valores deste take. */
+    mode: 'inherit' | 'off' | 'custom';
+    enabled: boolean;
+    intensity: VideoEnhancementIntensity;
 }
 
 export interface ExternalMediaReference {
@@ -83,6 +94,7 @@ export interface MediaTake {
     speedPresetId?: SpeedPresetType;
     muteOriginalAudio?: boolean;
     motionEffect?: TakeMotionEffect;
+    enhancement?: TakeEnhancementSettings;
     sharpness?: TakeSharpnessSettings;
     transition?: {
         asset: TransitionAsset;

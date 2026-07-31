@@ -13,16 +13,15 @@ import {
     Wand2,
     Trash2,
     Scissors,
-    AlertTriangle,
     Clock,
     GripVertical,
-    Video,
-    Image as ImageIcon,
     Sparkles,
     Maximize,
     Minimize,
     ZoomIn,
-    SlidersHorizontal,
+    Layers3,
+    Volume2,
+    VolumeX,
 } from 'lucide-react';
 import { TransitionsModal } from '../components/TransitionsModal';
 import { cn } from '../lib/utils';
@@ -59,11 +58,15 @@ interface SortableTakeProps {
     onEdit: (_take: MediaTake) => void;
     onToggleFit: (_id: string) => void;
     onEnhance: (_id: string) => void;
+    onZoom: (_id: string) => void;
+    onTransition: (_id: string) => void;
+    onMute: (_id: string) => void;
     onSeek: (_index: number) => void;
+    isLast: boolean;
     format: string;
 }
 
-const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, onSeek, format }: SortableTakeProps) => {
+const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, onZoom, onTransition, onMute, onSeek, isLast, format }: SortableTakeProps) => {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
         id: take.id,
     });
@@ -160,30 +163,56 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, o
             {/* Actions */}
             <div className="flex shrink-0 items-center gap-1 rounded-xl border border-white/7 bg-black/10 p-1">
                 <button
-                    onClick={() => onEnhance(take.id)}
-                    className="relative grid h-8 w-8 place-items-center rounded-lg text-brand-muted transition hover:bg-brand-lime/12 hover:text-brand-lime"
-                    title="Melhoria e nitidez deste take"
+                    onClick={() => onMute(take.id)}
+                    className={cn(
+                        'grid h-8 w-8 place-items-center rounded-lg transition',
+                        take.muteOriginalAudio
+                            ? 'bg-amber-400/10 text-amber-300 hover:bg-amber-400/15'
+                            : 'text-brand-muted hover:bg-brand-lime/10 hover:text-brand-lime'
+                    )}
+                    title={take.muteOriginalAudio ? 'Ativar som deste take' : 'Silenciar este take'}
+                    aria-label={take.muteOriginalAudio ? 'Ativar som deste take' : 'Silenciar este take'}
                 >
-                    <SlidersHorizontal className="h-4 w-4" />
-                    {take.sharpness?.mode && take.sharpness.mode !== 'inherit' && (
+                    {take.muteOriginalAudio ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                </button>
+                <button
+                    onClick={() => onToggleFit(take.id)}
+                    className="grid h-8 w-8 place-items-center rounded-lg text-cyan-400/70 transition hover:bg-cyan-500/10 hover:text-cyan-300"
+                    title={take.objectFit === 'contain' ? 'Preencher este take' : 'Encaixar este take'}
+                >
+                    {take.objectFit === 'contain' ? <Maximize className="h-4 w-4" /> : <Minimize className="h-4 w-4" />}
+                </button>
+                <button
+                    onClick={() => onEnhance(take.id)}
+                    className="relative grid h-8 w-8 place-items-center rounded-lg text-brand-lime/75 transition hover:bg-brand-lime/12 hover:text-brand-lime"
+                    title="Aprimorar somente este take"
+                >
+                    <Wand2 className="h-4 w-4" />
+                    {((take.enhancement?.mode && take.enhancement.mode !== 'inherit') || (take.sharpness?.mode && take.sharpness.mode !== 'inherit')) && (
                         <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-brand-lime shadow-[0_0_6px_rgba(0,230,118,.9)]" />
                     )}
                 </button>
                 <button
-                    onClick={() => onToggleFit(take.id)}
-                    className="grid h-8 w-8 place-items-center rounded-lg text-brand-muted transition hover:bg-cyan-500/10 hover:text-cyan-300"
-                    title={
-                        take.objectFit === 'contain'
-                            ? 'Preencher Tela (Cortar Bordas)'
-                            : 'Encaixar Original (Manter Bordas)'
-                    }
+                    onClick={() => onZoom(take.id)}
+                    className="relative grid h-8 w-8 place-items-center rounded-lg text-emerald-400/75 transition hover:bg-emerald-500/10 hover:text-emerald-300"
+                    title="Zoom somente neste take"
                 >
-                    {take.objectFit === 'contain' ? <Maximize className="w-4 h-4" /> : <Minimize className="w-4 h-4" />}
+                    <ZoomIn className="h-4 w-4" />
+                    {take.motionEffect && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-emerald-300" />}
+                </button>
+                <button
+                    onClick={() => onTransition(take.id)}
+                    disabled={isLast}
+                    className="relative grid h-8 w-8 place-items-center rounded-lg text-fuchsia-400/75 transition hover:bg-fuchsia-500/10 hover:text-fuchsia-300 disabled:cursor-not-allowed disabled:opacity-20"
+                    title={isLast ? 'O último take não possui transição seguinte' : 'Transição após este take'}
+                >
+                    <Sparkles className="h-4 w-4" />
+                    {take.transition && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-fuchsia-300" />}
                 </button>
                 <button
                     onClick={() => onEdit(take)}
-                    className="grid h-8 w-8 place-items-center rounded-lg text-brand-muted transition hover:bg-brand-lime/12 hover:text-brand-lime"
-                    title="Editar Take"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-blue-400/75 transition hover:bg-blue-500/10 hover:text-blue-300"
+                    title="Cortar este take"
                 >
                     <Scissors className="w-4 h-4" />
                 </button>
@@ -208,6 +237,7 @@ export const Step2 = () => {
     const [showVideoModal, setShowVideoModal] = useState(false);
     const [showTransitionsModal, setShowTransitionsModal] = useState(false);
     const [showZoomModal, setShowZoomModal] = useState(false);
+    const [zoomTargetTakeId, setZoomTargetTakeId] = useState<string | null>(null);
     const [showEnhancementModal, setShowEnhancementModal] = useState(false);
     const [enhancementTargetTakeId, setEnhancementTargetTakeId] = useState<string | null>(null);
     const [targetTakeId, setTargetTakeId] = useState<string | null>(null);
@@ -235,6 +265,10 @@ export const Step2 = () => {
     const totalDuration = narrationDuration > 0
         ? Math.min(rawTakesDuration, narrationDuration)
         : rawTakesDuration;
+    const durationDelta = rawTakesDuration - narrationDuration;
+    const isDurationShort = narrationDuration > 0 && durationDelta < -0.05;
+    const hasDurationReserve = narrationDuration > 0 && durationDelta > 0.05;
+    const allTakesMuted = mediaTakes.length > 0 && mediaTakes.every((take) => take.muteOriginalAudio);
 
     const handleNext = () => {
         const missing = missingBeforeStep(3, adData, mediaTakes);
@@ -303,374 +337,303 @@ export const Step2 = () => {
         }
     };
 
+    const handleAutomaticCuts = () => {
+        const audioConfig = adData.audioConfig;
+        let effectiveAudioDuration = 0;
+
+        if (audioConfig?.narration?.enabled !== false) {
+            const narration = audioConfig?.narration;
+            const narrationStart = narration?.trimStart || 0;
+            const narrationEnd = narration?.trimEnd || narrationDuration;
+            const narrationOffset = narration?.offsetSec || 0;
+            if (narrationEnd > narrationStart) {
+                effectiveAudioDuration = narrationOffset + (narrationEnd - narrationStart);
+            }
+        }
+
+        if (effectiveAudioDuration === 0) effectiveAudioDuration = narrationDuration;
+
+        if (effectiveAudioDuration === 0 && audioConfig?.background?.enabled !== false) {
+            const background = audioConfig?.background;
+            const selectedMusic = musicLibrary.find((music) => music.id === selectedMusicId);
+            const musicStart = background?.trimStart || 0;
+            const musicEnd = background?.trimEnd || selectedMusic?.durationSec || 0;
+            const musicOffset = background?.offsetSec || 0;
+            if (musicEnd > musicStart) effectiveAudioDuration = musicOffset + (musicEnd - musicStart);
+        }
+
+        if (mediaTakes.length === 0 || effectiveAudioDuration === 0) {
+            if (effectiveAudioDuration === 0) toast.error('Adicione uma narração ou música para ajustar.');
+            return;
+        }
+
+        let remainingAudioTime = effectiveAudioDuration;
+        const finalDurations = new Map<string, number>();
+        let activeTakes = [...mediaTakes];
+        let attempts = 0;
+
+        while (activeTakes.length > 0 && remainingAudioTime > 0.001 && attempts < 100) {
+            attempts += 1;
+            const slice = remainingAudioTime / activeTakes.length;
+            const shortTakes = activeTakes.filter((take) => {
+                const maximum = take.type === 'video' && take.originalDurationSeconds > 0
+                    ? take.originalDurationSeconds
+                    : Number.MAX_VALUE;
+                return maximum < slice + 0.05;
+            });
+
+            if (shortTakes.length === 0) {
+                activeTakes.forEach((take) => finalDurations.set(take.id, slice));
+                remainingAudioTime = 0;
+                break;
+            }
+
+            shortTakes.forEach((take) => {
+                const maximum = take.type === 'video' && take.originalDurationSeconds > 0
+                    ? take.originalDurationSeconds
+                    : 0;
+                finalDurations.set(take.id, maximum);
+                remainingAudioTime -= maximum;
+            });
+            const lockedIds = new Set(shortTakes.map((take) => take.id));
+            activeTakes = activeTakes.filter((take) => !lockedIds.has(take.id));
+        }
+
+        const adjustedTakes = mediaTakes.map((take) => ({
+            ...take,
+            trim: { start: 0, end: Math.max(0, finalDurations.get(take.id) || 0) },
+            speedPresetId: 'normal' as const,
+        }));
+
+        if (remainingAudioTime > 0.5) {
+            const loopedTakes = [...adjustedTakes];
+            let loopIndex = 0;
+            let timeToFill = remainingAudioTime;
+
+            while (timeToFill > 0.5 && loopedTakes.length < 800) {
+                const source = mediaTakes[loopIndex % mediaTakes.length];
+                const sourceDuration = source.type === 'video' && source.originalDurationSeconds > 0
+                    ? source.originalDurationSeconds
+                    : timeToFill;
+                const duration = Math.min(sourceDuration, timeToFill);
+                loopedTakes.push({
+                    ...source,
+                    id: `${source.id}-loop-${Date.now()}-${loopIndex}`,
+                    trim: { start: 0, end: Math.max(0, duration) },
+                    speedPresetId: 'normal' as const,
+                });
+                timeToFill -= duration;
+                loopIndex += 1;
+            }
+
+            setMediaTakes(loopedTakes);
+            toast.success(`Cortes em loop ajustados para ${effectiveAudioDuration.toFixed(1)}s.`);
+            return;
+        }
+
+        setMediaTakes(adjustedTakes);
+        toast.success(`Cortes automáticos ajustados para ${effectiveAudioDuration.toFixed(1)}s.`);
+    };
+
 
 
     return (
         <ErrorBoundary>
-            <div className="mx-auto w-full max-w-[1440px] pb-24">
-                <header className="mb-7 mt-2 text-center">
-                    <h2 className="text-4xl font-extrabold text-foreground tracking-tight">
+            <div className="mx-auto w-full max-w-[1320px] pb-20">
+                <header className="mb-3 text-center">
+                    <h2 className="text-2xl font-extrabold tracking-tight text-foreground">
                         Seus{' '}
                         <span className="bg-linear-to-r from-brand-lime to-brand-accent bg-clip-text text-transparent">
                             Takes Visuais
                         </span>
                     </h2>
-                    <p className="text-brand-muted mt-3 max-w-2xl mx-auto text-sm font-medium">
+                    <p className="text-brand-muted mt-1.5 max-w-2xl mx-auto text-xs font-medium">
                         Adicione vídeos ou gere imagens por IA para compor o anúncio.
                     </p>
                 </header>
 
-                <div className="grid grid-cols-1 gap-5 xl:grid-cols-[220px_minmax(480px,1fr)_320px]">
-                    {/* Col 1: Upload & Sources */}
-                    <div className="space-y-6">
-                        <VideoUpload />
-
-                        {/* AI Generation Tools — desligado no v1 (ver ENABLE_MEDIA_AI) */}
-                        {ENABLE_MEDIA_AI && (
-                            <div className="space-y-4 bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-xl relative overflow-hidden">
-                                <div className="absolute top-0 left-0 w-full h-[2px] bg-linear-to-r from-brand-lime/40 to-brand-accent/10"></div>
-                                <h3 className="text-[13px] tracking-wide uppercase font-semibold text-brand-muted flex items-center gap-2 mb-4">
-                                    <Wand2 className="w-4 h-4 text-brand-accent" /> Gerar com IA
-                                </h3>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <button
-                                        onClick={() => setShowImageModal(true)}
-                                        className="flex flex-col items-center justify-center p-4 bg-background hover:bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 hover:border-brand-accent/40 rounded-2xl transition-all group shadow-inner min-h-[110px]"
-                                    >
-                                        <div className="p-3 bg-brand-accent/10 rounded-xl mb-3 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(0,230,118,0.1)]">
-                                            <ImageIcon className="w-5 h-5 text-brand-accent" />
-                                        </div>
-                                        <span className="text-xs font-bold uppercase tracking-wider text-foreground">
-                                            Imagem
-                                        </span>
-                                    </button>
-                                    <button
-                                        onClick={() => setShowVideoModal(true)}
-                                        className="flex flex-col items-center justify-center p-4 bg-background hover:bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 hover:border-purple-500/40 rounded-2xl transition-all group shadow-inner min-h-[110px]"
-                                    >
-                                        <div className="p-3 bg-purple-500/10 rounded-xl mb-3 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(168,85,247,0.1)]">
-                                            <Video className="w-5 h-5 text-purple-400" />
-                                        </div>
-                                        <span className="text-xs font-bold uppercase tracking-wider text-foreground">
-                                            Vídeo
-                                        </span>
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Col 2: Timeline/Segments */}
-                    <div className="space-y-6">
-                        {/* Duration Info Card */}
-                        <div
-                            className={cn(
-                                'rounded-3xl border p-6 flex items-center justify-between shadow-2xl relative overflow-hidden',
-                                totalDuration < narrationDuration
-                                    ? 'bg-yellow-500/5 border-yellow-500/10'
-                                    : 'bg-brand-lime/5 border-brand-lime/10'
-                            )}
-                        >
-                            <div className="flex items-center gap-4">
-                                <div
-                                    className={cn(
-                                        'p-3 rounded-2xl shadow-inner',
-                                        totalDuration < narrationDuration ? 'bg-yellow-500/10' : 'bg-brand-lime/10'
-                                    )}
-                                >
-                                    <Clock
+                <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(620px,1fr)_minmax(240px,270px)]">
+                    {/* Timeline/Segments */}
+                    <div className="space-y-3">
+                        {/* Compact, persistent timing summary */}
+                        <div className="isolate z-30 overflow-visible rounded-2xl border border-white/8 bg-[#11181b] shadow-[0_14px_35px_rgba(0,0,0,.42)] xl:sticky xl:top-0">
+                            <div className="flex min-h-[68px] flex-wrap items-center gap-3 px-4 py-3">
+                                <div className="flex min-w-[150px] flex-1 items-center gap-3">
+                                    <span
                                         className={cn(
-                                            'w-6 h-6',
-                                            totalDuration < narrationDuration
-                                                ? 'text-yellow-500'
-                                                : 'text-brand-lime drop-shadow-[0_0_5px_rgba(163,230,53,0.5)]'
+                                            'grid h-9 w-9 shrink-0 place-items-center rounded-xl',
+                                            isDurationShort ? 'bg-amber-400/10 text-amber-300' : 'bg-brand-lime/10 text-brand-lime'
                                         )}
-                                    />
+                                    >
+                                        <Clock className="h-4.5 w-4.5" />
+                                    </span>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.13em] text-foreground">Tempo do projeto</p>
+                                        <p className="mt-0.5 text-[10px] font-medium text-brand-muted">
+                                            O vídeo final acompanha a narração
+                                        </p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <p className="text-xs font-bold uppercase tracking-wider text-foreground">
-                                        Tempo Alocado
-                                    </p>
-                                    <p className="text-[11px] uppercase tracking-widest text-brand-muted font-bold mt-1">
-                                        Narração: {narrationDuration.toFixed(1)}s
-                                    </p>
+
+                            <div className="flex items-center gap-4 rounded-xl border border-white/6 bg-black/10 px-3 py-2">
+                                <div className="text-center">
+                                    <p className="text-[8px] font-black uppercase tracking-widest text-brand-muted">Narração</p>
+                                    <p className="mt-0.5 font-mono text-xs font-black text-foreground">{narrationDuration.toFixed(1)}s</p>
+                                </div>
+                                <span className="h-7 w-px bg-white/7" />
+                                <div className="text-center">
+                                    <p className="text-[8px] font-black uppercase tracking-widest text-brand-muted">Takes</p>
+                                    <p className="mt-0.5 font-mono text-xs font-black text-foreground">{rawTakesDuration.toFixed(1)}s</p>
+                                </div>
+                                <span className="h-7 w-px bg-white/7" />
+                                <div className="text-center">
+                                    <p className="text-[8px] font-black uppercase tracking-widest text-brand-muted">Final</p>
+                                    <p className="mt-0.5 font-mono text-xs font-black text-brand-lime">{totalDuration.toFixed(1)}s</p>
                                 </div>
                             </div>
-                            <div className="text-right">
-                                <span
-                                    className={cn(
-                                        'text-3xl font-black font-mono tracking-tighter',
-                                        totalDuration < narrationDuration
-                                            ? 'text-yellow-500'
-                                            : 'text-brand-lime drop-shadow-[0_0_8px_rgba(163,230,53,0.6)]'
-                                    )}
-                                >
-                                    {totalDuration.toFixed(1)}s
-                                </span>
+
+                            <span
+                                className={cn(
+                                    'rounded-lg border px-2.5 py-2 text-[9px] font-black uppercase tracking-wider',
+                                    mediaTakes.length === 0
+                                        ? 'border-white/8 bg-white/[0.035] text-brand-muted'
+                                        : isDurationShort
+                                          ? 'border-amber-400/20 bg-amber-400/10 text-amber-300'
+                                          : 'border-brand-lime/20 bg-brand-lime/10 text-brand-lime'
+                                )}
+                                title={
+                                    hasDurationReserve
+                                        ? `${durationDelta.toFixed(1)}s excedentes ficam disponíveis para edição, mas não passam do fim do áudio.`
+                                        : undefined
+                                }
+                            >
+                                {mediaTakes.length === 0
+                                    ? 'Aguardando takes'
+                                    : narrationDuration <= 0
+                                      ? 'Sem narração'
+                                      : isDurationShort
+                                      ? `Faltam ${Math.abs(durationDelta).toFixed(1)}s`
+                                      : hasDurationReserve
+                                        ? `+${durationDelta.toFixed(1)}s de reserva`
+                                        : 'Sincronizado'}
+                            </span>
                             </div>
-                        </div>
 
-                        {mediaTakes.length > 0 && totalDuration < narrationDuration && (
-                            <div className="flex items-start gap-3 text-yellow-500 text-xs bg-yellow-500/10 p-4 rounded-2xl border border-yellow-500/20 font-medium leading-relaxed">
-                                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-                                <p>
-                                    Seus takes ainda não cobrem toda a narração. Adicione mais material ou use o corte
-                                    automático para completar o tempo.
-                                </p>
-                            </div>
-                        )}
+                            <div className="flex items-center justify-between gap-3 border-t border-white/7 px-3 py-2.5">
+                                <VideoUpload />
 
-                        {narrationDuration > 0 && rawTakesDuration > narrationDuration + 0.05 && (
-                            <div className="flex items-start gap-3 rounded-2xl border border-brand-lime/20 bg-brand-lime/[0.06] p-4 text-xs font-medium leading-relaxed text-brand-lime">
-                                <Clock className="mt-0.5 h-4 w-4 shrink-0" />
-                                <p>
-                                    A sequência possui {(rawTakesDuration - narrationDuration).toFixed(1)}s além do áudio.
-                                    O preview e a exportação terminam exatamente junto com a mixagem.
-                                </p>
-                            </div>
-                        )}
-
-                        {/* Segments List */}
-                        <div className="overflow-hidden rounded-3xl border border-black/5 bg-brand-card p-4 shadow-2xl dark:border-white/5 sm:p-5">
-                            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-black/5 pb-4 dark:border-white/5">
-                                {/* Toggle All Fit Button */}
-                                <button
-                                    onClick={() => {
-                                        if (mediaTakes.length === 0) return;
-                                        const allContain = mediaTakes.every((t) => t.objectFit === 'contain');
-                                        const newState = allContain ? 'cover' : 'contain';
-                                        setMediaTakes(mediaTakes.map((t) => ({ ...t, objectFit: newState })));
-                                    }}
-                                    disabled={mediaTakes.length === 0}
-                                    className="p-2 bg-cyan-500/10 text-cyan-500 hover:bg-cyan-500/20 rounded-lg border border-cyan-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
-                                    title={
-                                        mediaTakes.length > 0 && mediaTakes.every((t) => t.objectFit === 'contain')
-                                            ? 'Preencher Tela (Todos)'
-                                            : 'Encaixar Original (Todos)'
-                                    }
-                                >
-                                    {mediaTakes.length > 0 && mediaTakes.every((t) => t.objectFit === 'contain') ? (
-                                        <Maximize className="w-4 h-4" />
-                                    ) : (
-                                        <Minimize className="w-4 h-4" />
-                                    )}
-                                </button>
-
-                                <div className="flex flex-wrap items-center justify-end gap-2">
-                                    {mediaTakes.length > 0 && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setConfirmClear(true)}
-                                            className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/15 bg-red-500/[0.055] px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-red-300 transition hover:bg-red-500/10"
-                                            title="Remover todos os takes"
-                                        >
-                                            <Trash2 className="h-3.5 w-3.5" /> Limpar
-                                        </button>
-                                    )}
+                                <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
                                     <button
+                                        type="button"
+                                        onClick={() => handleMuteAll(!allTakesMuted)}
+                                        disabled={mediaTakes.length === 0}
+                                        className={cn(
+                                            'grid h-9 w-9 place-items-center rounded-lg border transition disabled:cursor-not-allowed disabled:opacity-35',
+                                            allTakesMuted
+                                                ? 'border-amber-400/25 bg-amber-400/12 text-amber-300'
+                                                : 'border-amber-400/12 bg-amber-400/[0.055] text-amber-300/75 hover:bg-amber-400/12'
+                                        )}
+                                        title={allTakesMuted ? 'Ativar som em todos os takes' : 'Silenciar todos os takes'}
+                                        aria-label={allTakesMuted ? 'Ativar som em todos os takes' : 'Silenciar todos os takes'}
+                                    >
+                                        {allTakesMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const allContain = mediaTakes.every((take) => take.objectFit === 'contain');
+                                            setMediaTakes((current) => current.map((take) => ({ ...take, objectFit: allContain ? 'cover' : 'contain' })));
+                                        }}
+                                        disabled={mediaTakes.length === 0}
+                                        className="grid h-9 w-9 place-items-center rounded-lg border border-cyan-500/15 bg-cyan-500/[0.07] text-cyan-300/80 transition hover:bg-cyan-500/15 disabled:cursor-not-allowed disabled:opacity-35"
+                                        title={mediaTakes.every((take) => take.objectFit === 'contain') ? 'Preencher todos os takes' : 'Encaixar todos os takes'}
+                                        aria-label={mediaTakes.every((take) => take.objectFit === 'contain') ? 'Preencher todos os takes' : 'Encaixar todos os takes'}
+                                    >
+                                        {mediaTakes.length > 0 && mediaTakes.every((take) => take.objectFit === 'contain')
+                                            ? <Maximize className="h-4 w-4" />
+                                            : <Minimize className="h-4 w-4" />}
+                                    </button>
+
+                                    <button
+                                        type="button"
                                         onClick={() => {
                                             setEnhancementTargetTakeId(null);
                                             setShowEnhancementModal(true);
                                         }}
                                         disabled={mediaTakes.length === 0}
-                                        className="relative inline-flex h-9 items-center gap-2 rounded-lg border border-brand-lime/20 bg-brand-lime/10 px-3 text-[10px] font-black uppercase tracking-wider text-brand-lime shadow-sm transition-all hover:bg-brand-lime/15 disabled:cursor-not-allowed disabled:opacity-40"
-                                        title="Melhorar automaticamente e ajustar a nitidez dos takes"
+                                        className="relative grid h-9 w-9 place-items-center rounded-lg border border-brand-lime/20 bg-brand-lime/10 text-brand-lime transition hover:bg-brand-lime/16 disabled:cursor-not-allowed disabled:opacity-35"
+                                        title="Aprimorar todos os takes"
+                                        aria-label="Aprimorar todos os takes"
                                     >
                                         <Wand2 className="h-4 w-4" />
-                                        Melhorar
                                         {(adData.videoEnhancement?.enabled || (adData.videoEnhancement?.globalSharpness || 0) > 0) && (
-                                            <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-brand-lime shadow-[0_0_8px_rgba(0,230,118,.9)]" />
+                                            <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-brand-lime shadow-[0_0_7px_rgba(0,230,118,.9)]" />
                                         )}
                                     </button>
 
                                     <button
-                                        onClick={() => setShowZoomModal(true)}
+                                        type="button"
+                                        onClick={() => {
+                                            setZoomTargetTakeId(null);
+                                            setShowZoomModal(true);
+                                        }}
                                         disabled={mediaTakes.length === 0}
-                                        className="relative p-2 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 rounded-lg border border-emerald-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                        title="Aplicar Zoom In ou Zoom Out em um ou vários takes"
+                                        className="relative grid h-9 w-9 place-items-center rounded-lg border border-emerald-500/15 bg-emerald-500/[0.07] text-emerald-300/80 transition hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-35"
+                                        title="Zoom em todos ou em vários takes"
+                                        aria-label="Zoom em todos ou em vários takes"
                                     >
-                                        <ZoomIn className="w-4 h-4" />
-                                        {mediaTakes.some((take) => take.motionEffect) && (
-                                            <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_8px_rgba(110,231,183,.9)]" />
-                                        )}
+                                        <ZoomIn className="h-4 w-4" />
+                                        {mediaTakes.some((take) => take.motionEffect) && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-emerald-300" />}
                                     </button>
 
                                     <button
+                                        type="button"
                                         onClick={() => {
                                             setTargetTakeId(null);
                                             setShowTransitionsModal(true);
                                         }}
-                                        className="p-2 bg-fuchsia-500/10 text-fuchsia-400 hover:bg-fuchsia-500/20 rounded-lg border border-fuchsia-500/20 transition-all shadow-sm relative"
-                                        title="Adicionar efeitos visuais padrão entre cortes"
+                                        disabled={mediaTakes.length === 0}
+                                        className="relative grid h-9 w-9 place-items-center rounded-lg border border-fuchsia-500/15 bg-fuchsia-500/[0.07] text-fuchsia-300/80 transition hover:bg-fuchsia-500/15 disabled:cursor-not-allowed disabled:opacity-35"
+                                        title="Transição entre todos os takes"
+                                        aria-label="Transição entre todos os takes"
                                     >
-                                        <Sparkles className="w-4 h-4" />
-                                        {adData.globalTransition && (
-                                            <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-fuchsia-400 shadow-[0_0_8px_rgba(232,121,249,0.8)]"></span>
-                                        )}
+                                        <Sparkles className="h-4 w-4" />
+                                        {adData.globalTransition && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-fuchsia-300" />}
                                     </button>
 
                                     <button
-                                        onClick={() => {
-                                            // Compute effective audio duration from audioConfig (edited in step 1).
-                                            // The final master audio mix uses duration=first (narration), so the video
-                                            // should match the narration length — not the (usually much longer) music track.
-                                            const audioConfig = adData.audioConfig;
-                                            let effectiveAudioDuration = 0;
-
-                                            // Narration extent: offset + (trimEnd - trimStart) — this drives the video length
-                                            if (audioConfig?.narration?.enabled !== false) {
-                                                const narr = audioConfig?.narration;
-                                                const rawNarrDur = narrationDuration || 0;
-                                                const narrStart = narr?.trimStart || 0;
-                                                const narrEnd = narr?.trimEnd || rawNarrDur;
-                                                const narrOffset = narr?.offsetSec || 0;
-                                                if (narrEnd > narrStart) {
-                                                    effectiveAudioDuration = narrOffset + (narrEnd - narrStart);
-                                                }
-                                            }
-
-                                            // Fallback: raw narration duration
-                                            if (effectiveAudioDuration === 0) {
-                                                effectiveAudioDuration = narrationDuration || 0;
-                                            }
-
-                                            // Last-resort fallback (music only, no narration): use music extent
-                                            if (effectiveAudioDuration === 0 && audioConfig?.background?.enabled !== false) {
-                                                const bg = audioConfig?.background;
-                                                const selectedMusic = musicLibrary.find(
-                                                    (m) => m.id === selectedMusicId
-                                                );
-                                                const rawMusicDur = selectedMusic?.durationSec || 0;
-                                                const musicStart = bg?.trimStart || 0;
-                                                const musicEnd = bg?.trimEnd || rawMusicDur;
-                                                const musicOffset = bg?.offsetSec || 0;
-                                                if (musicEnd > musicStart) {
-                                                    effectiveAudioDuration = musicOffset + (musicEnd - musicStart);
-                                                }
-                                            }
-
-                                            if (mediaTakes.length === 0 || effectiveAudioDuration === 0) {
-                                                if (effectiveAudioDuration === 0)
-                                                    toast.error('Adicione uma narração ou música para ajustar!');
-                                                return;
-                                            }
-
-                                            // Redistribuição Inteligente (Smart Split)
-                                            let remainingAudioTime = effectiveAudioDuration;
-                                            const finalDurations = new Map<string, number>();
-                                            let activeTakes = [...mediaTakes];
-                                            let attempts = 0;
-
-                                            while (
-                                                activeTakes.length > 0 &&
-                                                remainingAudioTime > 0.001 &&
-                                                attempts < 100
-                                            ) {
-                                                attempts++;
-                                                const slice = remainingAudioTime / activeTakes.length;
-                                                const takesToLockForThisRound = [];
-
-                                                for (const take of activeTakes) {
-                                                    // Imagens não têm limite de tempo. Vídeos usam o tempo máximo (originalDurationSeconds).
-                                                    const maxDur =
-                                                        take.type === 'video' && take.originalDurationSeconds > 0
-                                                            ? take.originalDurationSeconds
-                                                            : Number.MAX_VALUE;
-
-                                                    // Se o take é menor do que a fatia que caberia a ele
-                                                    if (maxDur < slice + 0.05) {
-                                                        takesToLockForThisRound.push(take);
-                                                    }
-                                                }
-
-                                                if (takesToLockForThisRound.length === 0) {
-                                                    // Nenhum take precisa ser travado, divide o tempo restante igualmente
-                                                    for (const take of activeTakes) {
-                                                        finalDurations.set(take.id, slice);
-                                                    }
-                                                    remainingAudioTime = 0;
-                                                    break;
-                                                } else {
-                                                    // Travar os takes curtos em sua duração máxima
-                                                    for (const take of takesToLockForThisRound) {
-                                                        const maxDur =
-                                                            take.type === 'video' && take.originalDurationSeconds > 0
-                                                                ? take.originalDurationSeconds
-                                                                : 0;
-                                                        finalDurations.set(take.id, maxDur);
-                                                        remainingAudioTime -= maxDur;
-                                                        activeTakes = activeTakes.filter((t) => t.id !== take.id);
-                                                    }
-                                                }
-                                            }
-
-                                            const newTakes = mediaTakes.map((take) => {
-                                                const assignedDuration = finalDurations.get(take.id) || 0;
-                                                return {
-                                                    ...take,
-                                                    trim: {
-                                                        start: 0,
-                                                        // Manter a precisão evita que o arredondamento de cada
-                                                        // take some décimos e ultrapasse o fim do áudio.
-                                                        end: Math.max(0, assignedDuration),
-                                                    },
-                                                    speedPresetId: 'normal' as const, // Remove speed effects for automatic mode
-                                                };
-                                            });
-
-                                            // Se sobrou muito tempo realocável, significa que todos os vídeos somados são menores que a narração
-                                            if (remainingAudioTime > 0.5) {
-                                                // Lógica de LOOP para vídeos curtos: Duplicar takes até atingir effectiveAudioDuration
-                                                const newTakesArr = [...newTakes];
-                                                let loopIdx = 0;
-                                                let timeToFill = remainingAudioTime;
-                                                const maxTakesToDuplicate = 800;
-                                                
-                                                while (timeToFill > 0.5 && newTakesArr.length < maxTakesToDuplicate && mediaTakes.length > 0) {
-                                                    const baseTake = mediaTakes[loopIdx % mediaTakes.length];
-                                                    const idealTakeDur = baseTake.type === 'video' && baseTake.originalDurationSeconds > 0 
-                                                                    ? baseTake.originalDurationSeconds 
-                                                                    : timeToFill;
-                                                    
-                                                    const durationForThisLoop = Math.min(idealTakeDur, timeToFill);
-                                                    
-                                                    newTakesArr.push({
-                                                        ...baseTake,
-                                                        id: `${baseTake.id}-loop-${Date.now()}-${loopIdx}`,
-                                                        trim: {
-                                                            start: 0,
-                                                            end: Math.max(0, durationForThisLoop)
-                                                        },
-                                                        speedPresetId: 'normal' as const, // Remove speed effects for automatic mode
-                                                    });
-                                                    
-                                                    timeToFill -= durationForThisLoop;
-                                                    loopIdx++;
-                                                }
-                                                setMediaTakes(newTakesArr);
-                                                toast.success(
-                                                    `Cortes em Loop: takes foram duplicados para preencher toda a narração de ${effectiveAudioDuration.toFixed(1)}s ✓`
-                                                );
-                                            } else {
-                                                setMediaTakes(newTakes);
-                                                toast.success(
-                                                    `Cortes Automáticos ajustados para totalizar ${effectiveAudioDuration.toFixed(1)}s ✓`
-                                                );
-                                            }
-                                        }}
+                                        type="button"
+                                        onClick={handleAutomaticCuts}
                                         disabled={mediaTakes.length === 0}
-                                        className="grid h-9 w-9 place-items-center rounded-lg border border-blue-500/20 bg-blue-500/10 text-blue-400 shadow-sm transition-all hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                                        title="Dividir e preencher tempo do áudio inteligentemente (Corte Automático)"
-                                        aria-label="Corte automático"
+                                        className="grid h-9 w-9 place-items-center rounded-lg border border-blue-500/15 bg-blue-500/[0.07] text-blue-300/80 transition hover:bg-blue-500/15 disabled:cursor-not-allowed disabled:opacity-35"
+                                        title="Cortes automáticos em todos os takes"
+                                        aria-label="Cortes automáticos em todos os takes"
                                     >
-                                        <Scissors className="w-4 h-4" />
+                                        <Scissors className="h-4 w-4" />
                                     </button>
 
-                                    <span className="ml-1 rounded-lg border border-white/7 bg-black/10 px-2.5 py-2 text-[9px] font-black uppercase tracking-wider text-brand-muted">
-                                        {mediaTakes.length} {mediaTakes.length === 1 ? 'take' : 'takes'}
+                                    <button
+                                        type="button"
+                                        onClick={() => setConfirmClear(true)}
+                                        disabled={mediaTakes.length === 0}
+                                        className="grid h-9 w-9 place-items-center rounded-lg border border-red-500/15 bg-red-500/[0.055] text-red-300/75 transition hover:bg-red-500/12 disabled:cursor-not-allowed disabled:opacity-35"
+                                        title="Remover todos os takes"
+                                        aria-label="Remover todos os takes"
+                                    >
+                                        <Trash2 className="h-4 w-4" />
+                                    </button>
+
+                                    <span className="ml-1 inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/7 bg-black/10 px-2.5 font-mono text-[10px] font-black text-brand-muted" title="Quantidade de takes">
+                                        <Layers3 className="h-3.5 w-3.5" />
+                                        {mediaTakes.length}
                                     </span>
                                 </div>
                             </div>
+                        </div>
+
+                        {/* Segments List */}
+                        <div className="rounded-3xl border border-black/5 bg-brand-card p-4 shadow-2xl dark:border-white/5 sm:p-5">
 
                             {mediaTakes.length === 0 ? (
                                 <div className="p-8 text-center text-muted-foreground text-sm">
@@ -686,94 +649,32 @@ export const Step2 = () => {
                                         items={mediaTakes.map((s) => s.id)}
                                         strategy={verticalListSortingStrategy}
                                     >
-                                        <div className="flex flex-col gap-3 relative">
+                                        <div className="relative flex flex-col gap-2.5">
                                             {mediaTakes.map((take, index) => (
-                                                <div key={take.id} className="relative flex flex-col items-center">
-                                                    <div className="w-full">
-                                                        <SortableTake
-                                                            take={take}
-                                                            index={index}
-                                                            onRemove={removeMediaTake}
-                                                            onEdit={setEditingTake}
-                                                            onToggleFit={handleToggleFit}
-                                                            onEnhance={(takeId) => {
-                                                                setEnhancementTargetTakeId(takeId);
-                                                                setShowEnhancementModal(true);
-                                                            }}
-                                                            onSeek={seekToTakeStart}
-                                                            format={adData.format}
-                                                        />
-                                                    </div>
-
-                                                    {/* Individual Transition Button between Takes */}
-                                                    {index < mediaTakes.length - 1 &&
-                                                        (() => {
-                                                            const activeTrans =
-                                                                take.transition?.asset || adData.globalTransition;
-                                                            const isSpecific = !!take.transition;
-                                                            return (
-                                                                <div className="w-full relative z-10 my-0.5 px-4">
-                                                                    <button
-                                                                        onClick={() => {
-                                                                            setTargetTakeId(take.id);
-                                                                            setShowTransitionsModal(true);
-                                                                        }}
-                                                                        className={cn(
-                                                                            'w-full flex items-center justify-center gap-2 py-1 relative overflow-hidden transition-all duration-200 group/trans',
-                                                                            isSpecific
-                                                                                ? 'opacity-100 hover:opacity-90'
-                                                                                : activeTrans
-                                                                                  ? 'opacity-70 hover:opacity-100'
-                                                                                  : 'opacity-40 hover:opacity-100'
-                                                                        )}
-                                                                        title={
-                                                                            activeTrans
-                                                                                ? isSpecific
-                                                                                    ? `Transição Específica (${activeTrans.originalName})`
-                                                                                    : `Transição Global Ativa (${activeTrans.originalName})`
-                                                                                : `Adicionar Transição Específica após o Take ${index + 1}`
-                                                                        }
-                                                                    >
-                                                                        {/* Background Line Layer */}
-                                                                        <div
-                                                                            className={cn(
-                                                                                'absolute inset-0 top-1/2 -translate-y-1/2 h-1 rounded-full transition-colors',
-                                                                                isSpecific
-                                                                                    ? 'bg-fuchsia-500'
-                                                                                    : activeTrans
-                                                                                      ? 'bg-fuchsia-500/30 group-hover/trans:bg-fuchsia-500/50'
-                                                                                      : 'bg-black/5 dark:bg-white/5 group-hover/trans:bg-fuchsia-500/50'
-                                                                            )}
-                                                                        />
-
-                                                                        {/* Center Pill Layer */}
-                                                                        <div
-                                                                            className={cn(
-                                                                                'relative flex items-center gap-1.5 px-3 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-bold shadow-sm transition-colors ring-4 ring-brand-card',
-                                                                                isSpecific
-                                                                                    ? 'bg-fuchsia-500 text-foreground'
-                                                                                    : activeTrans
-                                                                                      ? 'bg-brand-card border border-fuchsia-500/30 text-fuchsia-500/80 group-hover/trans:border-fuchsia-500/60'
-                                                                                      : 'bg-brand-card border border-black/5 dark:border-white/5 text-brand-muted group-hover/trans:border-fuchsia-500/50 group-hover/trans:text-fuchsia-400'
-                                                                            )}
-                                                                        >
-                                                                            <Sparkles
-                                                                                className={cn(
-                                                                                    'w-3 h-3',
-                                                                                    isSpecific
-                                                                                        ? 'text-foreground'
-                                                                                        : 'text-fuchsia-500'
-                                                                                )}
-                                                                            />
-                                                                            {activeTrans
-                                                                                ? activeTrans.originalName
-                                                                                : 'Adicionar Transição Específica'}
-                                                                        </div>
-                                                                    </button>
-                                                                </div>
-                                                            );
-                                                        })()}
-                                                </div>
+                                                <SortableTake
+                                                    key={take.id}
+                                                    take={take}
+                                                    index={index}
+                                                    onRemove={removeMediaTake}
+                                                    onEdit={setEditingTake}
+                                                    onToggleFit={handleToggleFit}
+                                                    onEnhance={(takeId) => {
+                                                        setEnhancementTargetTakeId(takeId);
+                                                        setShowEnhancementModal(true);
+                                                    }}
+                                                    onZoom={(takeId) => {
+                                                        setZoomTargetTakeId(takeId);
+                                                        setShowZoomModal(true);
+                                                    }}
+                                                    onTransition={(takeId) => {
+                                                        setTargetTakeId(takeId);
+                                                        setShowTransitionsModal(true);
+                                                    }}
+                                                    onMute={handleMuteToggle}
+                                                    onSeek={seekToTakeStart}
+                                                    isLast={index === mediaTakes.length - 1}
+                                                    format={adData.format}
+                                                />
                                             ))}
                                         </div>
                                     </SortableContext>
@@ -782,14 +683,17 @@ export const Step2 = () => {
                         </div>
                     </div>
 
-                    {/* Col 3: Preview */}
-                    <div className="lg:sticky lg:top-24 self-start">
+                    {/* Compact, persistent preview. The central list is the single source of take controls. */}
+                    <div className="self-start xl:sticky xl:top-0">
                         <VideoSequencePreview
                             ref={previewRef}
                             takes={mediaTakes}
                             masterAudioUrl={adData.masterAudioUrl}
                             onMuteToggle={handleMuteToggle}
                             onMuteAll={handleMuteAll}
+                            showTakeList={false}
+                            showHeaderMute={false}
+                            compactViewport
                         />
                     </div>
                 </div>
@@ -829,7 +733,7 @@ export const Step2 = () => {
                 )}
 
                 {/* Footer Navigation */}
-                <div className="fixed bottom-0 right-0 left-0 bg-background/80 backdrop-blur-md border-t border-border p-4 z-20 flex justify-end">
+                <div className="fixed bottom-0 right-0 left-0 z-40 flex h-16 items-center justify-end border-t border-border bg-background/95 px-5 pr-24 backdrop-blur-xl">
                     <button
                         onClick={handleNext}
                         className="px-8 py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground font-bold rounded-lg text-sm transition-all flex items-center gap-2 shadow-lg shadow-green-900/10"
@@ -841,16 +745,23 @@ export const Step2 = () => {
             </div>
 
             {/* Transitions Modal */}
-                <TransitionsModal
+            <TransitionsModal
                 isOpen={showTransitionsModal}
-                onClose={() => setShowTransitionsModal(false)}
+                onClose={() => {
+                    setShowTransitionsModal(false);
+                    setTargetTakeId(null);
+                }}
                 targetTakeId={targetTakeId}
                 />
 
                 <ZoomEffectsModal
                     isOpen={showZoomModal}
                     takes={mediaTakes}
-                    onClose={() => setShowZoomModal(false)}
+                    targetTakeId={zoomTargetTakeId}
+                    onClose={() => {
+                        setShowZoomModal(false);
+                        setZoomTargetTakeId(null);
+                    }}
                     onApply={(takeIds, effect) => {
                         const selected = new Set(takeIds);
                         setMediaTakes((current) => current.map((take) => selected.has(take.id) ? { ...take, motionEffect: effect || undefined } : take));
@@ -867,14 +778,31 @@ export const Step2 = () => {
                         setShowEnhancementModal(false);
                         setEnhancementTargetTakeId(null);
                     }}
-                    onSettingsChange={(videoEnhancement) => updateAdData({ videoEnhancement })}
-                    onTakeChange={(takeId, sharpness) => {
-                        setMediaTakes((current) => current.map((take) => take.id === takeId ? { ...take, sharpness } : take));
+                    onApplyGlobal={(videoEnhancement) => {
+                        updateAdData({ videoEnhancement });
+                        setMediaTakes((current) => current.map((take) => ({
+                            ...take,
+                            enhancement: undefined,
+                            sharpness: undefined,
+                        })));
+                        toast.success('Melhoria aplicada a todos os takes.');
+                    }}
+                    onApplyTake={(takeId, enhancement, sharpness) => {
+                        setMediaTakes((current) => current.map((take) => take.id === takeId
+                            ? { ...take, enhancement, sharpness }
+                            : take));
+                        toast.success('Melhoria aplicada somente ao take escolhido.');
                     }}
                     onResetAll={() => {
                         updateAdData({ videoEnhancement: { enabled: false, intensity: 'balanced', globalSharpness: 0 } });
-                        setMediaTakes((current) => current.map((take) => ({ ...take, sharpness: undefined })));
-                        toast.success('Melhorias removidas. A prévia voltou ao original.');
+                        setMediaTakes((current) => current.map((take) => ({ ...take, enhancement: undefined, sharpness: undefined })));
+                        toast.success('Todas as melhorias foram removidas.');
+                    }}
+                    onResetTake={(takeId) => {
+                        setMediaTakes((current) => current.map((take) => take.id === takeId
+                            ? { ...take, enhancement: undefined, sharpness: undefined }
+                            : take));
+                        toast.success('Este take voltou a usar o ajuste global.');
                     }}
                 />
         </ErrorBoundary>

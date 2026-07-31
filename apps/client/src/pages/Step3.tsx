@@ -90,23 +90,23 @@ export const Step3 = () => {
     };
 
     return (
-        <div className="max-w-6xl mx-auto pb-24 px-6">
-            <header className="mb-12 text-center mt-8">
-                <h2 className="text-4xl font-extrabold text-foreground tracking-tight inline-flex items-center gap-2">
+        <div className="mx-auto flex min-h-0 w-full max-w-[1320px] flex-1 flex-col pb-20">
+            <header className="mb-4 shrink-0 text-center">
+                <h2 className="inline-flex items-center gap-2 text-2xl font-extrabold tracking-tight text-foreground lg:text-3xl">
                     <span className="bg-linear-to-r from-brand-lime to-brand-accent bg-clip-text text-transparent">
                         Legendas Dinâmicas
                     </span>
                 </h2>
-                <p className="text-brand-muted mt-3 max-w-2xl mx-auto text-sm font-medium">
+                <p className="mx-auto mt-1.5 max-w-2xl text-xs font-medium text-brand-muted">
                     Gere legendas automáticas perfeitamente sincronizadas com a sua voz para aumentar o engajamento do
                     seu vídeo.
                 </p>
             </header>
 
-            <div className="flex flex-col md:flex-row items-start justify-center gap-8">
+            <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[230px_330px_minmax(360px,1fr)]">
                 {/* Visual Preview Box */}
-                <div className="w-full md:w-[280px] shrink-0">
-                    <div className="relative shadow-2xl rounded-3xl overflow-hidden ring-1 ring-white/10">
+                <div className="flex min-h-0 w-full items-center justify-center rounded-2xl border border-white/7 bg-brand-card/40 p-3 shadow-xl">
+                    <div className="relative w-full max-w-[220px] overflow-hidden rounded-2xl shadow-2xl ring-1 ring-white/10">
                         {mediaTakes && mediaTakes.length > 0 ? (
                             <VideoSequencePreview
                                 takes={mediaTakes}
@@ -135,15 +135,15 @@ export const Step3 = () => {
                 </div>
 
                 {/* Controls */}
-                <div className="w-full max-w-md flex flex-col space-y-6">
-                    <div className="bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
+                <div className="custom-scrollbar min-h-0 w-full overflow-y-auto">
+                    <div className="relative overflow-hidden rounded-2xl border border-black/5 bg-brand-card p-5 shadow-xl dark:border-white/5">
                         <div className="absolute top-0 left-0 w-full h-[2px] bg-linear-to-r from-brand-accent/40 to-brand-lime/10"></div>
-                        <div className="mb-6 space-y-2">
-                            <h3 className="font-semibold text-lg flex items-center gap-2 text-foreground">
+                        <div className="mb-4 space-y-1.5">
+                            <h3 className="flex items-center gap-2 text-base font-semibold text-foreground">
                                 <Sparkles className="w-5 h-5 text-brand-accent" />
                                 Criação de Legendas
                             </h3>
-                            <p className="text-sm text-brand-muted leading-relaxed">
+                            <p className="text-xs leading-relaxed text-brand-muted">
                                 O sistema escutará sua narração e marcará os tempos exatos para criar legendas
                                 automáticas perfeitamente alinhadas com o vídeo.
                             </p>
@@ -153,7 +153,7 @@ export const Step3 = () => {
                             onClick={handleGenerateCaptions}
                             disabled={isGenerating}
                             className={cn(
-                                'w-full py-4 text-[13px] uppercase tracking-wider font-bold rounded-2xl shadow-lg flex items-center justify-center gap-2 transition-all',
+                                'flex w-full items-center justify-center gap-2 rounded-xl py-3 text-[11px] font-bold uppercase tracking-wider shadow-lg transition-all',
                                 isGenerating
                                     ? 'bg-brand-accent/20 text-brand-accent cursor-wait border border-brand-accent/20'
                                     : 'bg-linear-to-r from-brand-lime to-brand-accent text-[#0a0f12] hover:shadow-[0_0_20px_rgba(0,230,118,0.4)] hover:scale-[1.02] active:scale-[0.98]'
@@ -162,17 +162,17 @@ export const Step3 = () => {
                             {isGenerating ? 'Processando Áudio...' : 'Gerar Legendas Automáticas'}
                         </button>
 
-                        <div className="mt-8 pt-8 border-t border-black/5 dark:border-white/5 space-y-4">
-                            <h4 className="text-[13px] uppercase tracking-wider font-semibold text-brand-muted flex items-center gap-2 mb-4">
+                        <div className="mt-5 space-y-3 border-t border-black/5 pt-5 dark:border-white/5">
+                            <h4 className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-brand-muted">
                                 <Sparkles className="w-4 h-4 text-brand-accent" />
                                 Estilo da Legenda
                             </h4>
-                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                                 {/* Option 1: Karaoke (Red Highlight) */}
-                                <button className="relative w-full aspect-square bg-background rounded-2xl border-2 border-brand-accent flex items-center justify-center transition-all hover:bg-black/5 dark:bg-white/5 overflow-hidden shadow-[0_0_20px_rgba(0,230,118,0.15)] group">
+                                <button className="group relative flex h-24 w-full items-center justify-center overflow-hidden rounded-xl border-2 border-brand-accent bg-background shadow-[0_0_20px_rgba(0,230,118,0.15)] transition-all hover:bg-black/5 dark:bg-white/5">
                                     {/* Subtitle Visual Preview */}
                                     <div
-                                        className="font-black text-3xl md:text-5xl tracking-wide flex items-center justify-center uppercase scale-110 drop-shadow-xl"
+                                        className="flex scale-110 items-center justify-center text-3xl font-black uppercase tracking-wide drop-shadow-xl"
                                         style={{
                                             fontFamily: captionStyle?.fontFamily || 'Poppins',
                                             WebkitTextStroke: `${captionStyle?.strokeWidth || 3}px ${captionStyle?.strokeColor || 'black'}`,
@@ -199,7 +199,7 @@ export const Step3 = () => {
                             </div>
                         </div>
 
-                        <div className="mt-8 pt-8 border-t border-black/5 dark:border-white/5 space-y-4">
+                        <div className="mt-5 space-y-3 border-t border-black/5 pt-5 dark:border-white/5">
                             <div className="flex items-start gap-4">
                                 {currentCaptions?.segments && currentCaptions.segments.length > 0 ? (
                                     <>
@@ -250,13 +250,13 @@ export const Step3 = () => {
                 </div>
 
                 {/* Advanced Caption Studio Panel */}
-                <div className="w-full md:w-[350px] shrink-0 transition-all duration-500 ease-in-out">
+                <div className="min-h-0 w-full transition-all duration-500 ease-in-out">
                     {currentCaptions?.segments && currentCaptions.segments.length > 0 ? (
-                        <div className="animate-in fade-in slide-in-from-right-4 duration-500 h-full">
+                        <div className="h-full animate-in fade-in slide-in-from-right-4 duration-500">
                             <CaptionStudio />
                         </div>
                     ) : (
-                        <div className="bg-brand-card border-2 border-dashed border-black/10 dark:border-white/10 rounded-3xl p-8 h-[600px] flex flex-col items-center justify-center text-center opacity-70">
+                        <div className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-2xl border-2 border-dashed border-black/10 bg-brand-card p-6 text-center opacity-70 dark:border-white/10">
                             <div className="w-16 h-16 bg-black/5 dark:bg-white/5 rounded-2xl flex items-center justify-center mb-4">
                                 <Type className="w-8 h-8 text-brand-muted opacity-80" />
                             </div>
@@ -272,7 +272,7 @@ export const Step3 = () => {
             </div>
 
             {/* Footer Navigation */}
-            <div className="fixed bottom-0 right-0 left-0 bg-background/80 backdrop-blur-xl border-t border-black/5 dark:border-white/5 p-4 z-40 flex justify-end">
+            <div className="fixed bottom-0 right-0 left-0 z-40 flex h-16 items-center justify-end border-t border-black/5 bg-background/95 px-5 pr-24 backdrop-blur-xl dark:border-white/5">
                 <button
                     onClick={handleNext}
                     className="px-8 py-3 bg-black/10 dark:bg-white/10 hover:bg-black/20 dark:bg-white/20 text-foreground font-bold uppercase tracking-wider rounded-xl text-xs transition-all flex items-center gap-3 shadow-lg hover:shadow-xl hover:scale-105"

@@ -51,24 +51,24 @@ export const CaptionStudio: React.FC = () => {
     };
 
     return (
-        <div className="bg-card border border-border rounded-xl shadow-xl overflow-hidden flex flex-col h-[600px]">
-            <div className="bg-muted/30 border-b border-border p-4 flex items-center justify-between">
+        <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border bg-muted/30 p-3">
                 <h3 className="font-semibold text-foreground flex items-center gap-2">
                     <Settings2 className="w-5 h-5 text-primary" />
                     Estúdio de Legendas
                 </h3>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
+            <div className="custom-scrollbar flex-1 space-y-4 overflow-y-auto p-3">
                 {/* Style Controls Section */}
-                <div className="space-y-4">
+                <div className="space-y-3">
                     <h4 className="text-sm font-medium text-muted-foreground flex items-center gap-2 uppercase tracking-wider mb-4">
                         <PaintBucket className="w-4 h-4" />
                         Aparência
                     </h4>
 
                     {/* Presets Rápidos */}
-                    <div className="mb-6 bg-black/10 dark:bg-white/5 p-3 rounded-xl border border-black/5 dark:border-white/5">
+                    <div className="mb-4 rounded-xl border border-black/5 bg-black/10 p-3 dark:border-white/5 dark:bg-white/5">
                         <label className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block mb-2">
                             Presets Rápidos
                         </label>

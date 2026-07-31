@@ -325,28 +325,28 @@ export const Step1 = () => {
     // Auto-generation on mount removed per user request to start from scratch.
 
     return (
-        <div className="max-w-[1440px] mx-auto pb-32 pt-8 px-6 lg:px-10">
-            <header className="mb-9 text-center">
-                <h2 className="text-3xl lg:text-4xl font-extrabold text-foreground tracking-tight">
+        <div className="mx-auto flex min-h-0 w-full max-w-[1380px] flex-1 flex-col pb-20">
+            <header className="mb-4 shrink-0 text-center">
+                <h2 className="text-2xl font-extrabold tracking-tight text-foreground lg:text-3xl">
                     Crie sua{' '}
                     <span className="bg-linear-to-r from-brand-lime to-brand-accent bg-clip-text text-transparent">
                         Narração
                     </span>
                 </h2>
-                <p className="text-brand-muted mt-2.5 max-w-2xl mx-auto text-sm font-medium">
+                <p className="mx-auto mt-1.5 max-w-2xl text-xs font-medium text-brand-muted">
                     Defina o título do projeto, o formato de tela do vídeo e escreva o seu roteiro inteligente.
                 </p>
             </header>
 
             {/* 5/7 em vez de 50/50: a coluna de voz tem grade de cards e precisa de mais largura. */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            <div className="grid min-h-0 flex-1 grid-cols-1 items-stretch gap-4 lg:grid-cols-12">
                 {/* Left Column: Form */}
-                <div className="lg:col-span-5 space-y-7 bg-brand-card rounded-3xl p-6 border border-black/5 dark:border-white/5 shadow-2xl relative overflow-hidden">
+                <div className="custom-scrollbar relative space-y-4 overflow-y-auto rounded-2xl border border-black/5 bg-brand-card p-4 shadow-xl dark:border-white/5 lg:col-span-5 lg:h-full">
                     <div className="absolute top-0 left-0 w-full h-[2px] bg-linear-to-r from-brand-lime/40 to-brand-accent/10"></div>
 
                     {/* Title */}
                     <div className="space-y-2">
-                        <label className="text-[13px] font-semibold tracking-wide uppercase text-brand-muted ml-1">
+                        <label className="ml-1 text-[11px] font-bold uppercase tracking-wide text-brand-muted">
                             Título do Projeto
                         </label>
                         <input
@@ -355,7 +355,7 @@ export const Step1 = () => {
                             onChange={(e) => updateAdData({ title: e.target.value })}
                             placeholder="Ex: Lançamento Tênis Runner"
                             className={cn(
-                                'w-full bg-background border border-black/5 dark:border-white/5 rounded-xl px-4 py-3.5 text-sm focus:outline-none focus:ring-1 transition-all placeholder:text-foreground/20 text-foreground shadow-inner',
+                                'w-full rounded-xl border border-black/5 bg-background px-4 py-2.5 text-sm text-foreground shadow-inner transition-all placeholder:text-foreground/20 focus:outline-none focus:ring-1 dark:border-white/5',
                                 !isTitleValid
                                     ? 'border-red-500/50 focus:border-red-500 focus:ring-red-500/20'
                                     : 'focus:ring-brand-accent focus:border-brand-accent/40 hover:border-black/10 dark:border-white/10'
@@ -365,7 +365,7 @@ export const Step1 = () => {
 
                     {/* Format */}
                     <div className="space-y-2">
-                        <label className="text-[13px] font-semibold tracking-wide uppercase text-brand-muted ml-1">
+                        <label className="ml-1 text-[11px] font-bold uppercase tracking-wide text-brand-muted">
                             Formato da Tela
                         </label>
                         <div className="grid grid-cols-2 gap-3">
@@ -374,7 +374,7 @@ export const Step1 = () => {
                                     key={fmt}
                                     onClick={() => updateAdData({ format: fmt as '9:16' | '16:9' | '4:5' | '1:1' })}
                                     className={cn(
-                                        'py-3 px-3 rounded-xl text-xs font-bold border transition-all duration-300',
+                                        'rounded-xl border px-3 py-2 text-xs font-bold transition-all duration-300',
                                         adData.format === fmt
                                             ? 'bg-brand-accent/10 border-brand-accent/50 text-brand-accent shadow-[0_0_15px_rgba(0,230,118,0.15)] ring-1 ring-brand-accent/20'
                                             : 'bg-background border-black/5 dark:border-white/5 text-foreground/40 hover:bg-black/5 dark:bg-white/5 hover:text-foreground'
@@ -389,7 +389,7 @@ export const Step1 = () => {
                     {/* Narration Text */}
                     <div className="space-y-2">
                         <div className="flex justify-between items-center ml-1">
-                            <label className="text-[13px] font-semibold tracking-wide uppercase text-brand-muted">
+                            <label className="text-[11px] font-bold uppercase tracking-wide text-brand-muted">
                                 Texto da Narração
                             </label>
                             <span className="text-xs text-brand-muted/70 font-mono">
@@ -413,7 +413,7 @@ export const Step1 = () => {
                             }
                             placeholder="Escreva aqui o seu roteiro matador para o anúncio..."
                             className={cn(
-                                'w-full h-44 bg-background border border-black/5 dark:border-white/5 rounded-xl px-5 py-4 text-sm focus:outline-none focus:ring-1 transition-all placeholder:text-foreground/20 text-foreground resize-none leading-relaxed shadow-inner',
+                                'h-32 w-full resize-none rounded-xl border border-black/5 bg-background px-4 py-3 text-sm leading-relaxed text-foreground shadow-inner transition-all placeholder:text-foreground/20 focus:outline-none focus:ring-1 dark:border-white/5',
                                 !isTextValid
                                     ? 'border-red-500/50 focus:border-red-500 focus:ring-red-500/20'
                                     : 'focus:ring-brand-accent focus:border-brand-accent/40 hover:border-black/10 dark:border-white/10'
@@ -424,7 +424,7 @@ export const Step1 = () => {
                     {/* Síntese — logo abaixo do roteiro, que é o insumo dela */}
                     <div
                         className={cn(
-                            'rounded-3xl border p-5 transition-all',
+                            'rounded-2xl border p-4 transition-all',
                             adData.isNarrationGenerated
                                 ? 'bg-brand-accent/5 border-brand-accent/20'
                                 : 'bg-background border-black/5 dark:border-white/5 shadow-inner'
@@ -435,7 +435,7 @@ export const Step1 = () => {
                                 <button
                                     onClick={() => handleGenerateNarration()}
                                     disabled={!adData.narrationText || !adData.selectedVoiceId || isGenerating}
-                                    className="w-full px-6 py-3.5 bg-brand-accent/10 hover:bg-brand-accent/20 border border-brand-accent/30 disabled:border-black/5 dark:disabled:border-white/5 disabled:bg-black/5 dark:disabled:bg-white/5 disabled:text-foreground/30 text-brand-accent font-bold rounded-xl text-sm transition-all flex items-center justify-center gap-2"
+                                    className="flex w-full items-center justify-center gap-2 rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-5 py-2.5 text-sm font-bold text-brand-accent transition-all hover:bg-brand-accent/20 disabled:border-black/5 disabled:bg-black/5 disabled:text-foreground/30 dark:disabled:border-white/5 dark:disabled:bg-white/5"
                                 >
                                     {isGenerating ? (
                                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -563,17 +563,17 @@ export const Step1 = () => {
                 </div>
 
                 {/* Right Column: Voice */}
-                <div className="lg:col-span-7 space-y-6">
-                    <div className="bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+                <div className="min-h-0 lg:col-span-7 lg:h-full">
+                    <div className="custom-scrollbar relative h-full overflow-y-auto rounded-2xl border border-black/5 bg-brand-card p-4 shadow-xl dark:border-white/5">
                         <div className="absolute top-0 right-0 w-full h-[2px] bg-linear-to-l from-brand-lime/40 to-brand-accent/10"></div>
-                        <h3 className="text-[13px] tracking-wide uppercase font-semibold text-brand-muted mb-5 flex items-center gap-2">
+                        <h3 className="mb-3 flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-brand-muted">
                             <Music2 className="w-4 h-4 text-brand-lime" />
                             Voz da Inteligência Artificial
                         </h3>
                         <VoiceSelector />
 
                         {adData.selectedVoiceId && (
-                            <div className="mt-5">
+                            <div className="mt-3">
                                 <VoiceSettingsPanel />
                             </div>
                         )}
@@ -582,11 +582,11 @@ export const Step1 = () => {
             </div>
 
             {/* Footer Navigation */}
-            <div className="fixed bottom-0 right-0 left-0 bg-brand-dark/90 backdrop-blur-xl border-t border-black/5 dark:border-white/5 p-5 z-50">
-                <div className="max-w-[1600px] mx-auto flex justify-end gap-4 px-6">
+            <div className="fixed bottom-0 right-0 left-0 z-50 flex h-16 items-center border-t border-black/5 bg-brand-dark/95 px-5 pr-24 backdrop-blur-xl dark:border-white/5">
+                <div className="mx-auto flex w-full max-w-[1500px] justify-end gap-3">
                     <button
                         onClick={() => setIsAudioEditorOpen(true)}
-                        className="px-6 py-3.5 font-bold rounded-xl text-sm transition-all flex items-center gap-2 border border-black/5 dark:border-white/5 bg-brand-card hover:bg-black/5 dark:bg-white/5 hover:border-black/10 dark:hover:border-white/10 text-foreground"
+                        className="flex items-center gap-2 rounded-xl border border-black/5 bg-brand-card px-5 py-2.5 text-xs font-bold text-foreground transition-all hover:border-black/10 hover:bg-black/5 dark:border-white/5 dark:bg-white/5 dark:hover:border-white/10"
                     >
                         <Pencil className="w-4 h-4 text-brand-muted" />
                         Ajuste Fino de Trilhas
@@ -595,7 +595,7 @@ export const Step1 = () => {
                         onClick={handleNext}
                         disabled={isMixing}
                         className={cn(
-                            'px-8 py-3.5 font-black rounded-xl text-sm transition-all flex items-center gap-2 uppercase tracking-wide',
+                            'flex items-center gap-2 rounded-xl px-7 py-2.5 text-xs font-black uppercase tracking-wide transition-all',
                             !isMixing
                                 ? 'bg-linear-to-r from-brand-lime to-brand-accent text-[#0a0f12] shadow-[0_0_20px_rgba(0,230,118,0.3)] hover:shadow-[0_0_30px_rgba(0,230,118,0.6)] transform hover:scale-[1.02]'
                                 : 'bg-black/5 dark:bg-white/5 text-foreground/30 cursor-not-allowed border border-black/5 dark:border-white/5'

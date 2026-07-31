@@ -177,14 +177,14 @@ export const VoiceSelector = () => {
 
     return (
         <div className="space-y-5">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {/* Vozes do sistema — acompanham o produto */}
                 {SYSTEM_VOICES.map((voice) => (
                     <div
                         key={voice.id}
                         onClick={() => selectVoice(voice.id, voice.provider)}
                         className={cn(
-                            'relative group p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between gap-3 min-h-[124px] hover:border-brand-accent/50 hover:bg-black/5 dark:hover:bg-white/5',
+                            'group relative flex min-h-[96px] cursor-pointer flex-col justify-between gap-2 rounded-xl border p-3 transition-all hover:border-brand-accent/50 hover:bg-black/5 dark:hover:bg-white/5',
                             adData.selectedVoiceId === voice.id
                                 ? 'border-brand-accent/50 bg-brand-accent/10 shadow-[0_0_15px_rgba(0,230,118,0.05)]'
                                 : 'border-black/5 dark:border-white/5 bg-background'
@@ -229,7 +229,7 @@ export const VoiceSelector = () => {
                                 key={voice.id}
                                 onClick={() => selectVoice(voice.id, provider)}
                                 className={cn(
-                                    'relative group p-4 rounded-2xl border transition-all cursor-pointer hover:border-brand-accent/50 hover:bg-black/5 dark:hover:bg-white/5 flex flex-col justify-between gap-3 min-h-[124px]',
+                                    'group relative flex min-h-[96px] cursor-pointer flex-col justify-between gap-2 rounded-xl border p-3 transition-all hover:border-brand-accent/50 hover:bg-black/5 dark:hover:bg-white/5',
                                     adData.selectedVoiceId === voice.id
                                         ? 'border-brand-accent/50 bg-brand-accent/10 shadow-[0_0_15px_rgba(0,230,118,0.05)]'
                                         : 'border-black/5 dark:border-white/5 bg-background'
@@ -341,9 +341,9 @@ export const VoiceSelector = () => {
                 {addMode === 'none' && (
                     <button
                         onClick={() => setAddMode('menu')}
-                        className="p-4 rounded-2xl border-2 border-dashed border-black/10 dark:border-white/10 hover:border-brand-accent/40 bg-background hover:bg-black/5 dark:hover:bg-white/5 transition-all cursor-pointer flex flex-col items-center justify-center text-center gap-3 text-brand-muted hover:text-foreground min-h-[124px]"
+                        className="flex min-h-[96px] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-black/10 bg-background p-3 text-center text-brand-muted transition-all hover:border-brand-accent/40 hover:bg-black/5 hover:text-foreground dark:border-white/10 dark:hover:bg-white/5"
                     >
-                        <div className="w-10 h-10 rounded-xl bg-black/5 dark:bg-white/5 flex items-center justify-center">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-black/5 dark:bg-white/5">
                             <Plus className="w-5 h-5" />
                         </div>
                         <div className="text-xs font-bold uppercase tracking-wider">Nova Voz</div>

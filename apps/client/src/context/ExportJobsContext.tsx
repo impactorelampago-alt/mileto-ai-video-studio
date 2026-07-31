@@ -6,7 +6,7 @@ import { VideoSequencePreview, type VideoSequencePreviewRef } from '../component
 import { useDownloadJobs } from './DownloadJobsContext';
 import { useWizard } from './WizardContext';
 import { localAuthHeaders } from '../lib/serverAuth';
-import { normalizeVideoEnhancement, resolveTakeSharpness } from '../lib/videoEnhancement';
+import { resolveTakeEnhancement, resolveTakeSharpness } from '../lib/videoEnhancement';
 
 export interface BackgroundExportRequest {
     fileName: string;
@@ -204,7 +204,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                             objectFit: take.objectFit || 'cover',
                             motionEffect: take.motionEffect,
                             enhancement: {
-                                ...normalizeVideoEnhancement(activeExport.adData.videoEnhancement),
+                                ...resolveTakeEnhancement(take, activeExport.adData.videoEnhancement),
                                 sharpness: resolveTakeSharpness(take, activeExport.adData.videoEnhancement),
                             },
                         })),

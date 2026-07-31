@@ -541,15 +541,22 @@ export const MainLayout = () => {
                 </div>
 
                 {/* Horizontal Stepper */}
-                <div className="shrink-0 border-b border-border bg-card/40 backdrop-blur-sm z-30">
+                <div className="relative z-30 shrink-0 border-b border-border bg-card/40 backdrop-blur-sm">
                     <StepHeader />
                 </div>
 
                 {/* Área de Scroll com Background */}
-                <main className="flex-1 overflow-y-auto relative w-full flex flex-col">
+                <main className="relative flex w-full flex-1 flex-col overflow-y-auto overscroll-contain">
                     <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,var(--tw-gradient-stops))] from-primary/5 via-background to-background pointer-events-none opacity-40"></div>
 
-                    <div className="w-full max-w-[1400px] mx-auto p-6 md:p-10 relative flex-1 flex flex-col">
+                    <div
+                        className={cn(
+                            'relative mx-auto flex w-full max-w-[1500px] flex-1 flex-col',
+                            location.pathname.includes('/wizard/step/')
+                                ? 'px-3 pb-0 pt-3 sm:px-4 lg:px-5 lg:pt-4'
+                                : 'p-6 md:p-10'
+                        )}
+                    >
                         <Outlet />
                     </div>
                 </main>

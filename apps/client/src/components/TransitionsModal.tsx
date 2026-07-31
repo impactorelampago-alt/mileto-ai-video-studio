@@ -1,9 +1,46 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useWizard } from '../context/WizardContext';
-import { X, Upload, Loader2, Volume2, VolumeX, Check, Plus, Sparkles, Trash2, Search, Film, RotateCw } from 'lucide-react';
+import { X, Upload, Loader2, Volume2, VolumeX, Check, Plus, Sparkles, Trash2, Search, Film, RotateCw, HardDrive, Users, Share2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import type { TransitionAsset } from '../types';
+import { localAuthHeaders } from '../lib/serverAuth';
+
+const API = (window as Window & { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
+const SHARED_TRANSITIONS_ROOT = 'Vídeos/Transições';
+
+const safeCollectionName = (value?: string) =>
+    (value || 'Essencial').trim().replace(/[\\/]+/g, ' - ') || 'Essencial';
+
+const sharedCollectionPath = (category?: string) =>
+    `${SHARED_TRANSITIONS_ROOT}/${safeCollectionName(category)}`;
+
+interface SharedTransitionFile {
+    id: string;
+    name: string;
+    publicUrl?: string;
+    durationSec?: number;
+    size?: number;
+    checksum?: string | null;
+    sha256?: string | null;
+}
+
+interface SharedTransitionFolder {
+    name: string;
+    relPath: string;
+}
+
+const deduplicateSharedTransitions = (transitions: TransitionAsset[]) => {
+    const identities = new Set<string>();
+    return transitions.filter((transition) => {
+        const code = transition.identityCode?.trim().toLowerCase();
+        const fallback = `${transition.category || 'Equipe'}|${transition.originalName.trim().toLocaleLowerCase('pt-BR')}|${transition.fileSize || 0}`;
+        const identity = code || fallback;
+        if (identities.has(identity)) return false;
+        identities.add(identity);
+        return true;
+    });
+};
 
 const TransitionCard = ({
     t,
@@ -14,6 +51,8 @@ const TransitionCard = ({
     onMuteToggle,
     toggleTransitionSelection,
     onDelete,
+    onShare,
+    isSharing,
 }: {
     t: TransitionAsset;
     isSelected: boolean;
@@ -21,8 +60,10 @@ const TransitionCard = ({
     currentMuted: boolean;
     onVolumeChange: (vol: number) => void;
     onMuteToggle: (muted: boolean) => void;
-    toggleTransitionSelection: (t: TransitionAsset) => void;
+    toggleTransitionSelection: (t: TransitionAsset) => void | Promise<void>;
     onDelete: (t: TransitionAsset) => void;
+    onShare?: (t: TransitionAsset) => void | Promise<void>;
+    isSharing?: boolean;
 }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -92,7 +133,7 @@ const TransitionCard = ({
                     <Film className="absolute h-9 w-9 text-primary/20" />
                     <video
                         ref={videoRef}
-                        src={`${(window as any).API_BASE_URL || 'http://localhost:3301'}${t.publicUrl}`}
+                        src={/^https?:|^(blob|data):/i.test(t.publicUrl) ? t.publicUrl : `${API}${t.publicUrl}`}
                         className="h-full w-full object-cover opacity-80 transition-all duration-500 group-hover:scale-105 group-hover:opacity-100"
                         loop
                         playsInline
@@ -104,6 +145,11 @@ const TransitionCard = ({
                     {isSelected && (
                         <div className="absolute inset-0 flex items-center justify-center bg-primary/20 pointer-events-none">
                             <Check className="h-12 w-12 text-primary drop-shadow-md" />
+                        </div>
+                    )}
+                    {isSharing && t.scope === 'shared' && (
+                        <div className="absolute inset-0 grid place-items-center bg-black/55 backdrop-blur-[1px]">
+                            <Loader2 className="h-7 w-7 animate-spin text-sky-300" />
                         </div>
                     )}
                 </div>
@@ -119,6 +165,11 @@ const TransitionCard = ({
                                     Incluída
                                 </span>
                             )}
+                            {t.scope === 'shared' && (
+                                <span className="shrink-0 rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-sky-300">
+                                    Equipe
+                                </span>
+                            )}
                         </div>
                         {t.description && (
                             <p className="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
@@ -128,17 +179,32 @@ const TransitionCard = ({
                         <p className="mt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{`${t.durationSec.toFixed(1)}s · overlay`}</p>
                     </div>
 
-                    {!t.isBuiltIn && (
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onDelete(t);
-                            }}
-                            className="p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive rounded-md transition-colors shrink-0"
-                            title="Deletar Transição"
-                        >
-                            <Trash2 className="w-4 h-4" />
-                        </button>
+                    {!t.isBuiltIn && t.scope !== 'shared' && (
+                        <div className="flex shrink-0 items-center gap-1">
+                            {onShare && (
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        void onShare(t);
+                                    }}
+                                    disabled={isSharing}
+                                    className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-sky-400/10 hover:text-sky-300 disabled:cursor-wait disabled:opacity-50"
+                                    title="Compartilhar com a equipe"
+                                >
+                                    {isSharing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Share2 className="h-4 w-4" />}
+                                </button>
+                            )}
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDelete(t);
+                                }}
+                                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                                title="Excluir transição local"
+                            >
+                                <Trash2 className="h-4 w-4" />
+                            </button>
+                        </div>
                     )}
                 </div>
             </div>
@@ -211,18 +277,90 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
     const [newCategoryName, setNewCategoryName] = useState('');
     const [isUploading, setIsUploading] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
+    const [scope, setScope] = useState<'local' | 'shared'>('local');
+    const [sharingId, setSharingId] = useState<string | null>(null);
+    const [sharingCategory, setSharingCategory] = useState<string | null>(null);
+    const [materializingId, setMaterializingId] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [itemToDelete, setItemToDelete] = useState<TransitionAsset | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const loadTransitions = async () => {
+        setIsLoading(true);
         try {
-            const res = await fetch(`${(window as any).API_BASE_URL || 'http://localhost:3301'}/api/transitions/list`);
+            if (scope === 'shared') {
+                const headers = await localAuthHeaders();
+                const res = await fetch(
+                    `${API}/api/shared/files/list?path=${encodeURIComponent(SHARED_TRANSITIONS_ROOT)}`,
+                    { headers }
+                );
+                const data = await res.json();
+                if (!res.ok || !data.ok) throw new Error(data.message || 'Não foi possível abrir as transições da equipe.');
+
+                const mapFiles = (files: SharedTransitionFile[], category: string): TransitionAsset[] =>
+                    files
+                        .filter((item) => /\.(mp4|mov|webm)$/i.test(item.name || ''))
+                        .map((item) => ({
+                            id: `shared:${item.id}`,
+                            sharedAssetId: item.id,
+                            scope: 'shared' as const,
+                            originalName: item.name,
+                            publicUrl: item.publicUrl || '',
+                            filePath: '',
+                            durationSec: Math.max(0.1, Number(item.durationSec) || 1),
+                            category,
+                            isBuiltIn: false,
+                            identityCode: String(item.checksum || item.sha256 || ''),
+                            fileSize: Number(item.size || 0),
+                        }));
+
+                const legacyTransitions = mapFiles(
+                    Array.isArray(data.files) ? data.files : [],
+                    'Essencial'
+                );
+                const folders: SharedTransitionFolder[] = Array.isArray(data.folders) ? data.folders : [];
+                const folderTransitions = await Promise.all(
+                    folders.map(async (folder) => {
+                        const folderPath = folder.relPath || sharedCollectionPath(folder.name);
+                        const folderResponse = await fetch(
+                            `${API}/api/shared/files/list?path=${encodeURIComponent(folderPath)}`,
+                            { headers }
+                        );
+                        const folderData = await folderResponse.json();
+                        if (!folderResponse.ok || !folderData.ok) return [];
+                        return mapFiles(
+                            Array.isArray(folderData.files) ? folderData.files : [],
+                            safeCollectionName(folder.name)
+                        );
+                    })
+                );
+
+                const sharedTransitions = deduplicateSharedTransitions([
+                    ...legacyTransitions,
+                    ...folderTransitions.flat(),
+                ]);
+                const sharedCategories = Array.from(
+                    new Set(sharedTransitions.map((transition) => transition.category || 'Equipe'))
+                );
+
+                setTransitions(sharedTransitions);
+                setCategories(sharedCategories.length > 0 ? sharedCategories : folders.map((folder) => safeCollectionName(folder.name)));
+                setActiveCategory((current) =>
+                    sharedCategories.includes(current) ? current : sharedCategories[0] || safeCollectionName(folders[0]?.name)
+                );
+                return;
+            }
+
+            const res = await fetch(`${API}/api/transitions/list`);
             const data = await res.json();
             if (data.ok) {
-                setTransitions(data.transitions);
+                const localTransitions = data.transitions.map((transition: TransitionAsset) => ({
+                    ...transition,
+                    scope: 'local' as const,
+                }));
+                setTransitions(localTransitions);
                 const fetchedCategories = Array.from(
-                    new Set(data.transitions.map((t: TransitionAsset) => t.category || 'Essencial'))
+                    new Set(localTransitions.map((t: TransitionAsset) => t.category || 'Essencial'))
                 ) as string[];
                 const preferred = ['Luz & Cinema', 'Movimento & Energia', 'Texturas & Acabamentos', 'Essencial'];
                 const orderedCategories = [
@@ -245,7 +383,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
         if (isOpen) {
             loadTransitions();
         }
-    }, [isOpen]);
+    }, [isOpen, scope]);
 
     if (!isOpen) return null;
 
@@ -271,12 +409,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
         const t = itemToDelete;
 
         try {
-            const res = await fetch(
-                `${(window as any).API_BASE_URL || 'http://localhost:3301'}/api/transitions/${t.id}`,
-                {
-                    method: 'DELETE',
-                }
-            );
+            const res = await fetch(`${API}/api/transitions/${t.id}`, { method: 'DELETE' });
             const data = await res.json();
 
             if (data.ok) {
@@ -311,6 +444,141 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
         }
     };
 
+    const createSharedFolder = async (parent: string, name: string) => {
+        const headers = {
+            ...(await localAuthHeaders()),
+            'Content-Type': 'application/json',
+        };
+        const response = await fetch(`${API}/api/shared/files/folder`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ parent, name }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok && response.status !== 409) {
+            throw new Error(data.message || 'Não foi possível preparar a pasta compartilhada.');
+        }
+    };
+
+    const ensureSharedTransitionFolder = async (category?: string) => {
+        await createSharedFolder('Vídeos', 'Transições');
+        if (category) {
+            await createSharedFolder(SHARED_TRANSITIONS_ROOT, safeCollectionName(category));
+        }
+    };
+
+    const handleShareTransition = async (transition: TransitionAsset) => {
+        setSharingId(transition.id);
+        try {
+            const category = safeCollectionName(transition.category);
+            await ensureSharedTransitionFolder(category);
+            const headers = {
+                ...(await localAuthHeaders()),
+                'Content-Type': 'application/json',
+            };
+            const response = await fetch(`${API}/api/shared/files/import-local`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    sourceUrl: transition.publicUrl,
+                    backendPath: transition.filePath,
+                    name: transition.originalName,
+                    parent: sharedCollectionPath(category),
+                    mimeType: /\.mov$/i.test(transition.originalName) ? 'video/quicktime' : 'video/mp4',
+                    preventDuplicate: true,
+                }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.ok) {
+                throw new Error(data.message || 'Não foi possível compartilhar a transição.');
+            }
+            toast.success(
+                data.deduplicated
+                    ? 'Esta transição já estava compartilhada nesta coleção.'
+                    : `Transição compartilhada na coleção ${category}.`
+            );
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Falha ao compartilhar a transição.');
+        } finally {
+            setSharingId(null);
+        }
+    };
+
+    const handleShareCategory = async (category: string) => {
+        const sharedCategory = safeCollectionName(category);
+        const categoryTransitions = transitions.filter(
+            (transition) =>
+                (transition.category || 'Essencial') === category && transition.scope !== 'shared'
+        );
+
+        if (categoryTransitions.length === 0) {
+            toast.info('Esta coleção não possui transições locais para compartilhar.');
+            return;
+        }
+
+        setSharingCategory(category);
+        try {
+            await ensureSharedTransitionFolder(sharedCategory);
+
+            let sharedCount = 0;
+            let deduplicatedCount = 0;
+            const failedNames: string[] = [];
+
+            for (const transition of categoryTransitions) {
+                try {
+                    const headers = {
+                        ...(await localAuthHeaders()),
+                        'Content-Type': 'application/json',
+                    };
+                    const response = await fetch(`${API}/api/shared/files/import-local`, {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify({
+                            sourceUrl: transition.publicUrl,
+                            backendPath: transition.filePath,
+                            name: transition.originalName,
+                            parent: sharedCollectionPath(sharedCategory),
+                            mimeType: /\.mov$/i.test(transition.originalName)
+                                ? 'video/quicktime'
+                                : 'video/mp4',
+                            preventDuplicate: true,
+                        }),
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || !data.ok) {
+                        throw new Error(data.message || 'Falha ao compartilhar item.');
+                    }
+                    if (data.deduplicated) deduplicatedCount += 1;
+                    else sharedCount += 1;
+                } catch {
+                    failedNames.push(transition.originalName);
+                }
+            }
+
+            if (sharedCount > 0) {
+                toast.success(
+                    `${sharedCount} ${sharedCount === 1 ? 'transição compartilhada' : 'transições compartilhadas'} com a equipe.`
+                );
+            }
+            if (deduplicatedCount > 0) {
+                toast.info(
+                    `${deduplicatedCount} ${deduplicatedCount === 1 ? 'efeito já estava na coleção' : 'efeitos já estavam na coleção'} e não foram duplicados.`
+                );
+            }
+            if (failedNames.length > 0) {
+                toast.error(
+                    `${failedNames.length} ${failedNames.length === 1 ? 'item não foi compartilhado' : 'itens não foram compartilhados'}.`
+                );
+            }
+        } catch (error) {
+            toast.error(
+                error instanceof Error ? error.message : 'Falha ao compartilhar a coleção.'
+            );
+        } finally {
+            setSharingCategory(null);
+        }
+    };
+
     const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -321,13 +589,36 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
         formData.append('category', activeCategory);
 
         try {
-            const res = await fetch(
-                `${(window as any).API_BASE_URL || 'http://localhost:3301'}/api/transitions/upload`,
-                {
+            if (scope === 'shared') {
+                const category = safeCollectionName(activeCategory);
+                await ensureSharedTransitionFolder(category);
+                const headers = await localAuthHeaders();
+                const sharedForm = new FormData();
+                sharedForm.append('file', file);
+                sharedForm.append('parent', sharedCollectionPath(category));
+                sharedForm.append('preventDuplicate', 'true');
+                const response = await fetch(`${API}/api/shared/files/upload`, {
                     method: 'POST',
-                    body: formData,
+                    headers,
+                    body: sharedForm,
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.ok) {
+                    throw new Error(data.message || 'Falha ao enviar a transição para a equipe.');
                 }
-            );
+                toast.success(
+                    data.deduplicated
+                        ? 'Esta transição já existia na coleção e não foi duplicada.'
+                        : `Transição adicionada à coleção ${category}.`
+                );
+                await loadTransitions();
+                return;
+            }
+
+            const res = await fetch(`${API}/api/transitions/upload`, {
+                method: 'POST',
+                body: formData,
+            });
             const data = await res.json();
 
             if (data.ok && data.transition) {
@@ -347,12 +638,46 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
         }
     };
 
-    const toggleTransitionSelection = (t: TransitionAsset) => {
+    const toggleTransitionSelection = async (t: TransitionAsset) => {
+        let transitionToApply = t;
+        if (t.scope === 'shared' && t.sharedAssetId) {
+            if (currentTransition?.id === t.id) {
+                transitionToApply = t;
+            } else {
+                setMaterializingId(t.id);
+                try {
+                    const headers = await localAuthHeaders();
+                    const response = await fetch(
+                        `${API}/api/shared/files/item/${encodeURIComponent(t.sharedAssetId)}/materialize-transition`,
+                        { method: 'POST', headers }
+                    );
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || !data.ok || !data.transition) {
+                        throw new Error(data.message || 'Não foi possível preparar a transição compartilhada.');
+                    }
+                    transitionToApply = {
+                        ...data.transition,
+                        id: t.id,
+                        scope: 'shared',
+                        sharedAssetId: t.sharedAssetId,
+                        category: t.category || 'Equipe',
+                        identityCode: t.identityCode,
+                        fileSize: t.fileSize,
+                    };
+                } catch (error) {
+                    toast.error(error instanceof Error ? error.message : 'Falha ao preparar a transição.');
+                    return;
+                } finally {
+                    setMaterializingId(null);
+                }
+            }
+        }
+
         if (isGlobal) {
             if (adData.globalTransition?.id === t.id) {
                 updateAdData({ globalTransition: null });
             } else {
-                updateAdData({ globalTransition: t });
+                updateAdData({ globalTransition: transitionToApply });
             }
         } else if (targetTakeId) {
             setMediaTakes((prev) =>
@@ -366,7 +691,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                             return {
                                 ...take,
                                 transition: {
-                                    asset: t,
+                                    asset: transitionToApply,
                                     volume: take.transition?.volume ?? 1.0,
                                     muted: take.transition?.muted ?? false,
                                 },
@@ -430,7 +755,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
             <div className="bg-card border border-border/80 w-full max-w-[1320px] h-[min(860px,92vh)] rounded-3xl shadow-2xl flex flex-col overflow-hidden">
-                <div className="flex items-center justify-between p-6 border-b border-border shrink-0 bg-card z-10">
+                <div className="flex items-center justify-between gap-5 border-b border-border bg-card p-6 shrink-0 z-10">
                     <div>
                         <h2 className="text-xl font-bold text-foreground">
                             {isGlobal ? 'Transições Visuais (Padrão Global)' : 'Transição (Corte Específico)'}
@@ -441,12 +766,38 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                                 : `Selecione um efeito para aplicar APENAS após o arquivo "${targetTake?.fileName}".`}
                         </p>
                     </div>
-                    <button
-                        onClick={onClose}
-                        className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                    >
-                        <X className="w-5 h-5" />
-                    </button>
+                    <div className="flex shrink-0 items-center gap-3">
+                        <div className="flex rounded-xl border border-border bg-background/60 p-1">
+                            <button
+                                type="button"
+                                onClick={() => setScope('local')}
+                                className={cn(
+                                    'flex h-9 items-center gap-2 rounded-lg px-3 text-xs font-bold transition-colors',
+                                    scope === 'local' ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'
+                                )}
+                            >
+                                <HardDrive className="h-4 w-4" />
+                                Local
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setScope('shared')}
+                                className={cn(
+                                    'flex h-9 items-center gap-2 rounded-lg px-3 text-xs font-bold transition-colors',
+                                    scope === 'shared' ? 'bg-sky-400/15 text-sky-300' : 'text-muted-foreground hover:text-foreground'
+                                )}
+                            >
+                                <Users className="h-4 w-4" />
+                                Compartilhado
+                            </button>
+                        </div>
+                        <button
+                            onClick={onClose}
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
                 </div>
 
                 {/* MODAL DE DELETAR TRANSIÇÃO CUSTOMIZADO */}
@@ -503,44 +854,67 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                                     ).length;
                                     const isActive = !normalizedQuery && activeCategory === category;
 
+                                    const isSharingCategory = sharingCategory === category;
+
                                     return (
-                                        <button
+                                        <div
                                             key={category}
-                                            type="button"
-                                            onClick={() => {
-                                                setSearchQuery('');
-                                                setActiveCategory(category);
-                                            }}
                                             className={cn(
-                                                'flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition-all',
+                                                'group flex w-full items-center rounded-xl border transition-all',
                                                 isActive
                                                     ? 'border-primary/35 bg-primary/10 text-primary shadow-[0_8px_24px_rgba(0,0,0,.18)]'
                                                     : 'border-transparent text-muted-foreground hover:border-border/80 hover:bg-muted/40 hover:text-foreground'
                                             )}
                                         >
-                                            <span
-                                                className={cn(
-                                                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl',
-                                                    isActive ? 'bg-primary/15' : 'bg-muted/70'
-                                                )}
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setSearchQuery('');
+                                                    setActiveCategory(category);
+                                                }}
+                                                className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left"
                                             >
-                                                <Film className="h-4 w-4" />
-                                            </span>
-                                            <span className="min-w-0 flex-1">
-                                                <span className="block truncate text-sm font-bold">{category}</span>
-                                                <span className="mt-0.5 block text-[10px] font-semibold uppercase tracking-wider opacity-65">
-                                                    {count} {count === 1 ? 'efeito' : 'efeitos'}
+                                                <span
+                                                    className={cn(
+                                                        'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl',
+                                                        isActive ? 'bg-primary/15' : 'bg-muted/70'
+                                                    )}
+                                                >
+                                                    <Film className="h-4 w-4" />
                                                 </span>
-                                            </span>
-                                            {selectedCategory === category && currentTransition && (
-                                                <Check className="h-4 w-4 shrink-0 text-primary" />
+                                                <span className="min-w-0 flex-1">
+                                                    <span className="block truncate text-sm font-bold">{category}</span>
+                                                    <span className="mt-0.5 block text-[10px] font-semibold uppercase tracking-wider opacity-65">
+                                                        {count} {count === 1 ? 'efeito' : 'efeitos'}
+                                                    </span>
+                                                </span>
+                                                {selectedCategory === category && currentTransition && (
+                                                    <Check className="h-4 w-4 shrink-0 text-primary" />
+                                                )}
+                                            </button>
+
+                                            {scope === 'local' && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void handleShareCategory(category)}
+                                                    disabled={sharingCategory !== null}
+                                                    className="mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent text-muted-foreground opacity-70 transition-all hover:border-primary/30 hover:bg-primary/10 hover:text-primary hover:opacity-100 disabled:cursor-wait disabled:opacity-40 group-hover:opacity-100"
+                                                    title={`Compartilhar coleção ${category} com a equipe`}
+                                                    aria-label={`Compartilhar coleção ${category} com a equipe`}
+                                                >
+                                                    {isSharingCategory ? (
+                                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                                    ) : (
+                                                        <Share2 className="h-4 w-4" />
+                                                    )}
+                                                </button>
                                             )}
-                                        </button>
+                                        </div>
                                     );
                                 })}
                             </div>
 
-                            <div className="border-t border-border/60 p-3">
+                            {scope === 'local' && <div className="border-t border-border/60 p-3">
                                 {isCreatingCategory ? (
                                     <div className="space-y-2">
                                         <input
@@ -588,7 +962,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                                         Nova coleção
                                     </button>
                                 )}
-                            </div>
+                            </div>}
                         </aside>
 
                         <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-background/20">
@@ -686,6 +1060,8 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                                                 isSelected={currentTransition?.id === transition.id}
                                                 toggleTransitionSelection={toggleTransitionSelection}
                                                 onDelete={handleDeleteTransition}
+                                                onShare={scope === 'local' ? handleShareTransition : undefined}
+                                                isSharing={sharingId === transition.id || materializingId === transition.id}
                                             />
                                         ))}
                                     </div>

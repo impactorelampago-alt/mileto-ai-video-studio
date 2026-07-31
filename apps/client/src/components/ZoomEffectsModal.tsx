@@ -6,6 +6,7 @@ import { cn } from '../lib/utils';
 interface ZoomEffectsModalProps {
     isOpen: boolean;
     takes: MediaTake[];
+    targetTakeId?: string | null;
     onClose: () => void;
     onApply: (_takeIds: string[], _effect: TakeMotionEffect | null) => void;
 }
@@ -17,18 +18,22 @@ const FOCUS_POINTS = [
     { id: 'right', label: 'Direita', x: 68, y: 50 },
 ];
 
-export const ZoomEffectsModal = ({ isOpen, takes, onClose, onApply }: ZoomEffectsModalProps) => {
+export const ZoomEffectsModal = ({ isOpen, takes, targetTakeId = null, onClose, onApply }: ZoomEffectsModalProps) => {
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [type, setType] = useState<TakeZoomType>('zoom-in');
     const [intensity, setIntensity] = useState(0.12);
     const [easing, setEasing] = useState<TakeMotionEffect['easing']>('smooth');
     const [focalX, setFocalX] = useState(50);
     const [focalY, setFocalY] = useState(50);
+    const selectableTakes = useMemo(
+        () => targetTakeId ? takes.filter((take) => take.id === targetTakeId) : takes,
+        [takes, targetTakeId]
+    );
 
     useEffect(() => {
         if (!isOpen) return;
-        setSelectedIds(new Set(takes.map((take) => take.id)));
-        const existing = takes.find((take) => take.motionEffect)?.motionEffect;
+        setSelectedIds(new Set(selectableTakes.map((take) => take.id)));
+        const existing = selectableTakes.find((take) => take.motionEffect)?.motionEffect;
         if (existing) {
             setType(existing.type);
             setIntensity(existing.intensity);
@@ -36,10 +41,10 @@ export const ZoomEffectsModal = ({ isOpen, takes, onClose, onApply }: ZoomEffect
             setFocalX(existing.focalX);
             setFocalY(existing.focalY);
         }
-    }, [isOpen, takes]);
+    }, [isOpen, selectableTakes]);
 
-    const allSelected = takes.length > 0 && selectedIds.size === takes.length;
-    const selectedTakes = useMemo(() => takes.filter((take) => selectedIds.has(take.id)), [takes, selectedIds]);
+    const allSelected = selectableTakes.length > 0 && selectedIds.size === selectableTakes.length;
+    const selectedTakes = useMemo(() => selectableTakes.filter((take) => selectedIds.has(take.id)), [selectableTakes, selectedIds]);
 
     if (!isOpen) return null;
 
@@ -72,9 +77,13 @@ export const ZoomEffectsModal = ({ isOpen, takes, onClose, onApply }: ZoomEffect
                         <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[.22em] text-brand-lime">
                             <ScanSearch className="h-4 w-4" /> Movimento de câmera
                         </div>
-                        <h2 className="text-2xl font-black tracking-tight text-foreground">Zoom profissional nos takes</h2>
+                        <h2 className="text-2xl font-black tracking-tight text-foreground">
+                            {targetTakeId ? 'Zoom somente neste take' : 'Zoom profissional nos takes'}
+                        </h2>
                         <p className="mt-1.5 max-w-2xl text-sm text-brand-muted">
-                            Selecione um ou vários takes e aplique um movimento suave, sem alterar seus cortes.
+                            {targetTakeId
+                                ? 'Este movimento será aplicado apenas ao take escolhido, sem alterar os demais.'
+                                : 'Selecione um ou vários takes e aplique um movimento suave, sem alterar seus cortes.'}
                         </p>
                     </div>
                     <button onClick={onClose} className="grid h-10 w-10 place-items-center rounded-xl border border-white/8 bg-white/5 text-brand-muted transition hover:bg-white/10 hover:text-foreground" title="Fechar">
@@ -87,18 +96,18 @@ export const ZoomEffectsModal = ({ isOpen, takes, onClose, onApply }: ZoomEffect
                         <div className="mb-4 flex items-center justify-between gap-3">
                             <div>
                                 <h3 className="text-sm font-black text-foreground">Escolha os takes</h3>
-                                <p className="mt-1 text-xs text-brand-muted">{selectedIds.size} de {takes.length} selecionados</p>
+                                <p className="mt-1 text-xs text-brand-muted">{selectedIds.size} de {selectableTakes.length} selecionados</p>
                             </div>
-                            <button
-                                onClick={() => setSelectedIds(allSelected ? new Set() : new Set(takes.map((take) => take.id)))}
+                            {!targetTakeId && <button
+                                onClick={() => setSelectedIds(allSelected ? new Set() : new Set(selectableTakes.map((take) => take.id)))}
                                 className="rounded-lg border border-white/8 bg-white/4 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-foreground/70 transition hover:border-brand-lime/30 hover:text-brand-lime"
                             >
                                 {allSelected ? 'Desmarcar todos' : 'Selecionar todos'}
-                            </button>
+                            </button>}
                         </div>
 
                         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                            {takes.map((take, index) => {
+                            {selectableTakes.map((take, index) => {
                                 const selected = selectedIds.has(take.id);
                                 return (
                                     <button

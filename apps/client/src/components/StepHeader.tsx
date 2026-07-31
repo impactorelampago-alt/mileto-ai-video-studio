@@ -34,24 +34,24 @@ export const StepHeader = () => {
     };
 
     return (
-        <div className="w-full border-b border-border/50 bg-background/95 pb-5 pt-2 shadow-sm backdrop-blur-sm">
-            <div className="mx-auto max-w-4xl overflow-x-auto px-4 scrollbar-hide">
-                <div className="relative min-w-[500px] flex items-start justify-between py-2">
+        <div className="w-full bg-background/95 shadow-sm backdrop-blur-sm">
+            <div className="mx-auto max-w-3xl overflow-x-auto px-4 scrollbar-hide">
+                <div className="relative flex min-w-[460px] items-start justify-between pb-4 pt-1.5">
                     {STEPS.map((step, index) => {
                         const isCompleted = step.id < currentStep;
                         const isActive = step.id === currentStep;
                         const isLast = index === STEPS.length - 1;
 
                         return (
-                            <div key={step.id} className={cn('flex items-start mt-2', !isLast ? 'flex-1' : '')}>
+                            <div key={step.id} className={cn('mt-1 flex items-start', !isLast ? 'flex-1' : '')}>
                                 {/* Step Item */}
                                 <div
-                                    className="flex flex-col items-center relative z-10 cursor-pointer group shrink-0 w-10"
+                                    className="group relative z-10 flex w-9 shrink-0 cursor-pointer flex-col items-center"
                                     onClick={() => handleStepClick(step.id, step.path)}
                                 >
                                     <div
                                         className={cn(
-                                            'w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold transition-all duration-300 border-2 bg-background',
+                                            'flex h-9 w-9 items-center justify-center rounded-full border-2 bg-background text-xs font-bold transition-all duration-300',
                                             isActive
                                                 ? 'bg-primary border-primary text-primary-foreground shadow-[0_0_15px_rgba(34,197,94,0.4)] scale-110'
                                                 : isCompleted
@@ -59,12 +59,12 @@ export const StepHeader = () => {
                                                   : 'border-slate-700 text-slate-500 hover:border-slate-500'
                                         )}
                                     >
-                                        {isCompleted ? <Check className="w-5 h-5 font-bold" /> : step.id}
+                                        {isCompleted ? <Check className="h-4 w-4 font-bold" /> : step.id}
                                     </div>
 
                                     <span
                                         className={cn(
-                                            'text-[11px] font-semibold text-center transition-colors uppercase tracking-wide absolute -bottom-6 w-max',
+                                            'absolute -bottom-4 w-max text-center text-[9px] font-bold uppercase tracking-[0.08em] transition-colors',
                                             isActive
                                                 ? 'text-foreground'
                                                 : isCompleted
@@ -78,7 +78,7 @@ export const StepHeader = () => {
 
                                 {/* Connector Line (Only for non-last items) */}
                                 {!isLast && (
-                                    <div className="flex-1 h-px mt-5 mx-2 relative z-0">
+                                    <div className="relative z-0 mx-2 mt-[17px] h-px flex-1">
                                         <div
                                             className={cn(
                                                 'absolute inset-0 transition-all duration-500 rounded-full h-[2px]',

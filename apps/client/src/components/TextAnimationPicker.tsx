@@ -48,7 +48,7 @@ export const TextAnimationPicker = ({ value, onChange }: TextAnimationPickerProp
                     setOpen((current) => !current);
                 }}
                 className={cn(
-                    'group flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left transition-all',
+                    'group flex h-12 w-full items-center gap-2 rounded-xl border px-3 py-2 text-left transition-all',
                     open
                         ? 'border-brand-accent/45 bg-brand-accent/10 shadow-[0_0_18px_rgba(0,230,118,0.12)]'
                         : 'border-black/10 bg-brand-card/55 hover:border-brand-accent/25 dark:border-white/10'
