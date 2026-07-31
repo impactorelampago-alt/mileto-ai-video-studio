@@ -17,7 +17,12 @@ import { API_BASE_URL } from '../lib/apiBase';
 import { useWizard } from '../context/WizardContext';
 import { DynamicTitleRenderer } from './DynamicTitleRenderer';
 import { getPlaybackRateForRemap } from '../lib/speedRemapping';
-import { getFontEmbedCSS, toCanvas } from 'html-to-image';
+import { toCanvas } from 'html-to-image';
+// Fontes premium auto-hospedadas como TEXTO (data-URI, mesma origem). Passamos direto ao
+// toCanvas na exportação para garantir que o vídeo use SEMPRE as fontes certas — o embed
+// automático do html-to-image buscava do Google (cross-origin) e falhava silenciosamente,
+// fazendo o export cair em fonte fallback (mais larga) ≠ preview.
+import selfHostedFontCss from '../fonts-selfhosted.css?raw';
 import { toast } from 'sonner';
 import { normalizedTakeProgress, takeMotionScale } from '../lib/takeMotion';
 import { EditableTitleOverlay } from './EditableTitleOverlay';
@@ -1621,10 +1626,16 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         const clientW = node.offsetWidth || 360;
                         const scaleRatio = TARGET_W / clientW;
 
-                        // Give React an extra moment to fully flush the DOM unmounts (prevents ghost text)
-                        if (overlayFontCssRef.current === null) {
-                            overlayFontCssRef.current = await getFontEmbedCSS(node).catch(() => '');
+                        // Espera TODAS as fontes terminarem de carregar antes de capturar
+                        // (senão o snapshot sai com fonte fallback).
+                        try {
+                            await document.fonts.ready;
+                        } catch {
+                            /* ignore */
                         }
+                        // Embed determinístico: usa NOSSAS fontes locais (data-URI, mesma origem) direto,
+                        // em vez do getFontEmbedCSS do html-to-image (que buscava do Google e falhava).
+                        overlayFontCssRef.current = selfHostedFontCss;
 
                         const overlayCanvas = await toCanvas(node, {
                             width: TARGET_W,
