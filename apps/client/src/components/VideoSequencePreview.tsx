@@ -15,6 +15,7 @@ import { enhancementPreviewCss, resolveTakeSharpness, sharpnessKernel } from '..
 
 export interface VideoSequencePreviewRef {
     seekToTime: (globalTime: number) => void;
+    seekToTake: (index: number) => void;
     getCurrentTime: () => number;
     extractFrameSync: (
         globalTime: number,
@@ -91,6 +92,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const [isExportingFrame, setIsExportingFrame] = useState(false);
         const [currentTakeIndex, setCurrentTakeIndex] = useState(0);
         const [currentTimeInTake, setCurrentTimeInTake] = useState(0);
+        const [standaloneTakeIndex, setStandaloneTakeIndex] = useState<number | null>(null);
         const [audioTime, setAudioTime] = useState(0); // True audio time for subtitles
         const [isImageTake, setIsImageTake] = useState(false);
         const [isBuffering, setIsBuffering] = useState(false);
@@ -110,6 +112,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         // Derived
         const currentTake = takes.length > 0 ? takes[currentTakeIndex] : null;
+        const isStandaloneTakePreview = standaloneTakeIndex === currentTakeIndex;
         const currentSharpness = currentTake ? resolveTakeSharpness(currentTake, adData.videoEnhancement) : 0;
         const currentEnhancementFilter = enhancementPreviewCss(
             adData.videoEnhancement,
@@ -557,8 +560,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const finishBuffering = useCallback(() => {
             cancelDeferredAudioPause();
             setIsBuffering(false);
-            if (isPlaying) playAudio();
-        }, [cancelDeferredAudioPause, isPlaying, playAudio]);
+            if (isPlaying && !isStandaloneTakePreview) playAudio();
+        }, [cancelDeferredAudioPause, isPlaying, isStandaloneTakePreview, playAudio]);
 
         useEffect(() => cancelDeferredAudioPause, [cancelDeferredAudioPause]);
 
@@ -572,15 +575,39 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         }, [cancelDeferredAudioPause, pauseAudio, activeVideo]);
 
         const play = useCallback(() => {
-            setIsPlaying(true);
             const vid = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+            if (
+                isStandaloneTakePreview &&
+                vid &&
+                currentTake?.type === 'video' &&
+                (vid.ended || vid.currentTime >= currentTake.trim.end - 0.02)
+            ) {
+                vid.currentTime = currentTake.trim.start;
+                setCurrentTimeInTake(0);
+            }
+            if (
+                isStandaloneTakePreview &&
+                currentTake?.type === 'image' &&
+                currentTimeInTake >= currentTake.trim.end - currentTake.trim.start - 0.02
+            ) {
+                setCurrentTimeInTake(0);
+            }
+            setIsPlaying(true);
             // If there are takes, play the video.
             if (vid && currentTake && !isImageTake) vid.play().catch(() => {});
             // If we ONLY have audio (no takes) or video is not buffering, play audio
-            if (!currentTake || !isBuffering) {
+            if (!isStandaloneTakePreview && (!currentTake || !isBuffering)) {
                 playAudio();
             }
-        }, [isImageTake, isBuffering, playAudio, currentTake, activeVideo]);
+        }, [
+            activeVideo,
+            currentTake,
+            currentTimeInTake,
+            isBuffering,
+            isImageTake,
+            isStandaloneTakePreview,
+            playAudio,
+        ]);
 
         const pause = useCallback(() => {
             stopAll();
@@ -593,6 +620,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             setAudioTime(0);
             setActiveVideo(1); // Reset to first video player
             setActiveTransitionUrl(null);
+            setStandaloneTakeIndex(null);
             transitionTriggeredRef.current = false;
             advancingRef.current = false;
             pendingSeekTimeRef.current = null;
@@ -619,6 +647,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 setIsImageTake(false);
                 setIsBuffering(false);
                 setActiveTransitionUrl(null);
+                setStandaloneTakeIndex(null);
                 setPlaybackSourceOverrides({});
                 pendingSeekTimeRef.current = null;
                 transitionTriggeredRef.current = false;
@@ -641,6 +670,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 setCurrentTimeInTake(0);
                 setAudioTime(0);
                 setActiveVideo(1);
+                setStandaloneTakeIndex(null);
             }
         }, [takes, currentTakeIndex, stopAll]);
 
@@ -685,24 +715,30 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             if (vid) {
                 // Load source logic
                 const src = playbackSourceFor(currentTake);
-                if (!vid.src.endsWith(src)) {
-                    vid.src = src;
-                    vid.load();
-                }
-
-                // Set initial time
                 const startOffset = pendingSeekTimeRef.current !== null ? pendingSeekTimeRef.current : 0;
-                vid.currentTime = currentTake.trim.start + startOffset;
                 pendingSeekTimeRef.current = null;
                 transitionTriggeredRef.current = false; // Reset trigger for new take
                 vid.playbackRate = 1; // Reset speed
                 vid.muted = !!currentTake.muteOriginalAudio;
 
-                if (isPlaying && !isImg) {
-                    vid.play().catch((e) => {
-                        if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') console.error(e);
-                    });
+                const positionCurrentTake = () => {
+                    const targetTime = currentTake.trim.start + startOffset;
+                    if (Math.abs(vid.currentTime - targetTime) > 0.015) vid.currentTime = targetTime;
+                    if (isPlaying && !isImg) {
+                        vid.play().catch((e) => {
+                            if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') console.error(e);
+                        });
+                    }
+                };
+
+                if (vid.getAttribute('src') !== src) {
+                    vid.setAttribute('src', src);
+                    vid.load();
                 }
+                if (vid.readyState >= HTMLMediaElement.HAVE_METADATA) positionCurrentTake();
+                else vid.addEventListener('loadedmetadata', positionCurrentTake, { once: true });
+
+                return () => vid.removeEventListener('loadedmetadata', positionCurrentTake);
             }
         }, [currentTakeIndex, takes, activeVideo, playbackSourceFor]); // Dependency on 'takes' ensures update on edit
 
@@ -733,7 +769,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 }
 
                 // Sync true audio time for exact subtitle matching
-                if (audioMasterRef.current) {
+                if (audioMasterRef.current && !isStandaloneTakePreview) {
                     const currentAudioTime = audioMasterRef.current.currentTime;
                     setAudioTime(currentAudioTime);
                     // A mixagem mestre determina o fim do anúncio. Não continue
@@ -849,6 +885,13 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
             const advanceTrack = () => {
                 if (advancingRef.current) return;
+                if (isStandaloneTakePreview) {
+                    stopAll();
+                    if (currentTake) {
+                        setCurrentTimeInTake(Math.max(0, currentTake.trim.end - currentTake.trim.start));
+                    }
+                    return;
+                }
                 const isEndOfTakes = currentTakeIndex >= takes.length - 1;
 
                 if (!isEndOfTakes) {
@@ -970,11 +1013,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             playbackSourceFor,
             beginBuffering,
             finishBuffering,
+            isStandaloneTakePreview,
         ]);
 
         // ─── Audio Sync Checks (Periodic Watchdog) ──────────────────────────
         useEffect(() => {
-            if (!isPlaying || isBuffering) return;
+            if (!isPlaying || isBuffering || isStandaloneTakePreview) return;
 
             const interval = setInterval(() => {
                 const vid = activeVideo === 1 ? videoRef1.current : videoRef2.current;
@@ -995,7 +1039,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             }, 500);
 
             return () => clearInterval(interval);
-        }, [isPlaying, isBuffering, masterAudioUrl, activeVideo]);
+        }, [isPlaying, isBuffering, isStandaloneTakePreview, masterAudioUrl, activeVideo]);
 
         // Update mute state immediately if changed in UI
         useEffect(() => {
@@ -1050,6 +1094,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 }
 
                 pendingSeekTimeRef.current = targetTimeInTake;
+                setStandaloneTakeIndex(null);
                 setCurrentTakeIndex(targetTakeIndex);
                 setCurrentTimeInTake(targetTimeInTake);
                 setAudioTime(targetGlobalTime);
@@ -1095,8 +1140,33 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             [isPlaying, pause, play, seekToClientX]
         );
 
+        const seekToTakeStart = useCallback((index: number) => {
+            if (!takes[index]) return;
+            stopAll();
+            const targetGlobalTime = takes
+                .slice(0, index)
+                .reduce((total, take) => total + Math.max(0, take.trim.end - take.trim.start), 0);
+            const outsideFinalTimeline = targetGlobalTime >= totalDuration - 0.001;
+
+            pendingSeekTimeRef.current = 0;
+            setStandaloneTakeIndex(outsideFinalTimeline ? index : null);
+            setCurrentTakeIndex(index);
+            setCurrentTimeInTake(0);
+            setAudioTime(targetGlobalTime);
+            if (!outsideFinalTimeline && audioMasterRef.current) {
+                audioMasterRef.current.currentTime = targetGlobalTime;
+            }
+
+            if (index === currentTakeIndex) {
+                const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+                if (video && takes[index].type === 'video') video.currentTime = takes[index].trim.start;
+                pendingSeekTimeRef.current = null;
+            }
+        }, [activeVideo, currentTakeIndex, stopAll, takes, totalDuration]);
+
         useImperativeHandle(ref, () => ({
             getCurrentTime: () => Math.max(0, Math.min(totalDuration, Math.max(globalTime, audioTime))),
+            seekToTake: seekToTakeStart,
             seekToTime: (globalTime: number) => {
                 if (totalDuration <= 0) return;
                 const targetGlobalTime = Math.max(0, Math.min(globalTime, totalDuration));
@@ -1126,6 +1196,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 }
 
                 pendingSeekTimeRef.current = targetTimeInTake;
+                setStandaloneTakeIndex(null);
                 setCurrentTakeIndex(targetTakeIndex);
                 setCurrentTimeInTake(targetTimeInTake);
                 setAudioTime(targetGlobalTime);
@@ -1503,9 +1574,16 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             return `${m}:${sec.toString().padStart(2, '0')}`;
         };
 
+        const displayDuration = isStandaloneTakePreview && currentTake
+            ? Math.max(0, currentTake.trim.end - currentTake.trim.start)
+            : totalDuration;
+        const displayTime = isStandaloneTakePreview
+            ? Math.min(displayDuration, Math.max(0, currentTimeInTake))
+            : Math.min(totalDuration, Math.max(globalTime, audioTime));
+
         // Progress calculation (approximate)
         const progressPercent =
-            totalDuration > 0 ? (Math.min(totalDuration, Math.max(globalTime, audioTime)) / totalDuration) * 100 : 0;
+            displayDuration > 0 ? (displayTime / displayDuration) * 100 : 0;
 
         return (
             <div className="bg-brand-card border border-black/5 dark:border-white/5 rounded-3xl overflow-hidden flex flex-col shadow-2xl">
@@ -2029,8 +2107,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             </button>
                         </div>
                         <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-brand-muted">
-                            <span className="text-foreground">{formatTime(Math.max(globalTime, audioTime))}</span> /{' '}
-                            {formatTime(totalDuration)}
+                            <span className="text-foreground">{formatTime(displayTime)}</span> /{' '}
+                            {formatTime(displayDuration)}
                         </span>
                     </div>
                 </div>
@@ -2047,12 +2125,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                         ? 'bg-brand-accent/5 border-l-[3px] border-brand-accent'
                                         : 'hover:bg-black/5 dark:bg-white/5 border-l-[3px] border-transparent'
                                 )}
-                                onClick={() => {
-                                    // Optional: Click to jump to take logic could go here
-                                    stopAll();
-                                    setCurrentTakeIndex(i);
-                                    setCurrentTimeInTake(0);
-                                }}
+                                onClick={() => seekToTakeStart(i)}
                             >
                                 <span
                                     className={cn(

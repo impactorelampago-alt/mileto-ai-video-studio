@@ -7,10 +7,12 @@ import { spawn } from 'child_process';
 import fetch, { Response as FetchResponse } from 'node-fetch';
 import { bearerFrom, GatewayHttpError, gatewayJson, gatewayUploadFile } from '../services/gatewayClient';
 import { BASE_DATA_PATH } from './fileExplorerController';
+import { resolveLocalSource } from './sharedController';
 import { getVideoEncoderArgs, getVideoMetadata } from '../services/ffmpeg';
 import { isSafeRemoteUrl, safeResolve } from '../utils/safePath';
 
 const CACHE_ROOT = path.join(BASE_DATA_PATH, 'ops-cache');
+const PROJECTS_ROOT = path.join(BASE_DATA_PATH, 'data/projects');
 // O índice contém capabilities locais e nunca pode ficar sob uma rota estática.
 const INDEX_PATH = path.join(CACHE_ROOT, 'index.json');
 const MAX_BYTES = Math.max(1024 * 1024 * 1024, Number(process.env.OPS_CACHE_MAX_BYTES || 20 * 1024 ** 3));
@@ -184,6 +186,51 @@ const hashFile = (filePath: string): Promise<string> =>
 const removeEntryFiles = (entry: CacheEntry) => {
     const directory = safeResolve(CACHE_ROOT, entry.cacheId);
     fs.rmSync(directory, { recursive: true, force: true });
+};
+
+const purgeReferenceCache = (referenceId: string) => {
+    const entries = readIndex();
+    const removed = entries.filter((entry) => entry.referenceId === referenceId);
+    if (!removed.length) return;
+    for (const entry of removed) removeEntryFiles(entry);
+    writeIndex(entries.filter((entry) => entry.referenceId !== referenceId));
+};
+
+const purgeReferenceFromLocalProjects = (referenceId: string) => {
+    if (!fs.existsSync(PROJECTS_ROOT)) return;
+    const projectDirectories = fs.readdirSync(PROJECTS_ROOT, { withFileTypes: true });
+    for (const projectDirectory of projectDirectories) {
+        if (!projectDirectory.isDirectory()) continue;
+        const dataPath = path.join(PROJECTS_ROOT, projectDirectory.name, 'ad-data.json');
+        if (!fs.existsSync(dataPath)) continue;
+        try {
+            const project = JSON.parse(fs.readFileSync(dataPath, 'utf8')) as Record<string, unknown>;
+            if (!Array.isArray(project.mediaTakes)) continue;
+            const remainingTakes = project.mediaTakes.filter((take) => {
+                if (!take || typeof take !== 'object') return true;
+                const externalMedia = (take as Record<string, unknown>).externalMedia;
+                return !(
+                    externalMedia &&
+                    typeof externalMedia === 'object' &&
+                    String((externalMedia as Record<string, unknown>).referenceId || '') === referenceId
+                );
+            });
+            if (remainingTakes.length === project.mediaTakes.length) continue;
+            project.mediaTakes = remainingTakes;
+            project.updatedAt = new Date().toISOString();
+            project.saveRevision = Math.max(Number(project.saveRevision || 0) + 1, Date.now() * 1000);
+            const temporaryPath = `${dataPath}.${process.pid}.${Date.now()}.tmp`;
+            fs.writeFileSync(temporaryPath, JSON.stringify(project, null, 2), { encoding: 'utf8', flag: 'wx' });
+            fs.renameSync(temporaryPath, dataPath);
+        } catch (error) {
+            console.warn('[Ops cache] Não foi possível remover referência indisponível do rascunho:', error);
+        }
+    }
+};
+
+const purgeUnavailableReference = (referenceId: string) => {
+    purgeReferenceCache(referenceId);
+    purgeReferenceFromLocalProjects(referenceId);
 };
 
 const cleanupCache = (protectedCacheId?: string) => {
@@ -533,29 +580,6 @@ const prepareEntry = async (
 
 /** POST /api/ops/cache/materialize — baixa e prepara um ativo autorizado. */
 export const materialize = async (req: Request, res: Response) => {
-    const cachedReferenceId = String(req.body?.referenceId || '').trim();
-    if (/^[0-9a-f-]{36}$/i.test(cachedReferenceId)) {
-        // Reabre somente o arquivo que ja existe neste cache local. Um novo
-        // download continua passando pela validacao de sessao logo abaixo.
-        cleanupCache();
-        const cachedIndex = readIndex();
-        const cachedEntry = cachedIndex.find((entry) => entry.referenceId === cachedReferenceId && fs.existsSync(entry.filePath));
-        if (cachedEntry) {
-            cachedEntry.lastAccessedAt = new Date().toISOString();
-            const cachedReference: ExternalReference = {
-                id: cachedEntry.referenceId,
-                connectionId: '',
-                accountId: '',
-                companyId: '',
-                assetId: cachedEntry.assetId,
-                name: cachedEntry.name,
-                kind: cachedEntry.kind,
-                mimeType: cachedEntry.mimeType,
-            };
-            writeIndex(cachedIndex);
-            return res.json({ ok: true, cached: true, source: responseSource(cachedEntry, cachedReference) });
-        }
-    }
     const token = bearerFrom(req);
     if (!token) return res.status(401).json({ ok: false, message: 'Sessão Mileto ausente ou expirada.' });
     let viewContextId: string | null;
@@ -670,6 +694,7 @@ export const materialize = async (req: Request, res: Response) => {
     } catch (error) {
         if (downloadAbort.signal.aborted || res.destroyed) return;
         const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 500;
+        if (status === 404 || status === 410) purgeUnavailableReference(referenceId);
         res.status(status).json({
             ok: false,
             code: error instanceof GatewayHttpError ? error.code : null,
@@ -745,5 +770,40 @@ export const uploadExport = async (req: Request, res: Response) => {
     } catch (error) {
         const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 400;
         res.status(status).json({ ok: false, message: (error as Error).message || 'Não foi possível enviar ao Mileto Ops.' });
+    }
+};
+
+/** POST /api/ops/files/import-local — envia um MP4 já presente na biblioteca local. */
+export const importLocalFile = async (req: Request, res: Response) => {
+    try {
+        const token = bearerFrom(req);
+        const sourcePath = resolveLocalSource(
+            String(req.body?.sourceUrl || ''),
+            String(req.body?.backendPath || ''),
+        );
+        if (path.extname(sourcePath).toLowerCase() !== '.mp4') {
+            throw new Error('O Mileto Ops aceita somente vídeos MP4 nesta transferência.');
+        }
+        const stat = await fs.promises.stat(sourcePath);
+        if (!stat.isFile()) throw new Error('O MP4 local não foi encontrado.');
+        if (stat.size > OPS_EXPORT_MAX_BYTES) {
+            throw new Error(`O MP4 excede o limite de ${Math.floor(OPS_EXPORT_MAX_BYTES / 1024 / 1024)} MB configurado para o Mileto Ops.`);
+        }
+        const companyId = String(req.body?.companyId || '').trim();
+        if (!companyId) throw new Error('Selecione uma empresa do Mileto Ops.');
+        const requestedName = String(req.body?.fileName || path.basename(sourcePath)).replace(/[\\/:*?"<>|]/g, '_');
+        const fileName = requestedName.toLowerCase().endsWith('.mp4') ? requestedName : `${requestedName}.mp4`;
+        const viewContext = viewContextFrom(req);
+        const result = await gatewayUploadFile(
+            token || '',
+            `/v1/integrations/mileto-ops/companies/${encodeURIComponent(companyId)}/assets/export`,
+            sourcePath,
+            { folderId: String(req.body?.folderId || ''), fileName },
+            viewContext ? { 'X-Ops-View-Context': viewContext } : {},
+        );
+        res.json(result);
+    } catch (error) {
+        const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 400;
+        res.status(status).json({ ok: false, message: (error as Error).message || 'Não foi possível enviar o arquivo local ao Mileto Ops.' });
     }
 };

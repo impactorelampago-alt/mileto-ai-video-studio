@@ -130,6 +130,7 @@ router.post('/ops/cache/materialize', opsController.materialize);
 router.get('/ops/cache/status', opsController.cacheStatus);
 router.get('/ops/cache/file/:cacheId/:filename', opsController.serveCacheFile);
 router.post('/ops/exports/upload', opsController.uploadExport);
+router.post('/ops/files/import-local', opsController.importLocalFile);
 
 // Transition Routes
 router.post('/transitions/upload', upload.single('file'), transitionController.uploadTransition);

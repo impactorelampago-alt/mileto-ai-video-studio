@@ -76,6 +76,24 @@ const mimeFromName = (name: string): string => {
     return known[ext] || 'application/octet-stream';
 };
 
+const safeUploadHeaders = (uploadUrl: string, preparedHeaders: Record<string, string>, size: number) => {
+    const signedUrl = new URL(uploadUrl);
+    const queryNames = new Set(Array.from(signedUrl.searchParams.keys(), (key) => key.toLowerCase()));
+    const headers: Record<string, string> = { 'Content-Length': String(size) };
+    for (const [name, value] of Object.entries(preparedHeaders || {})) {
+        // O presigner do R2 move metadados x-amz-* para a query assinada.
+        // Repeti-los como header provoca SignatureDoesNotMatch.
+        if (queryNames.has(name.toLowerCase())) continue;
+        headers[name] = value;
+    }
+    return headers;
+};
+
+const r2FailureCode = async (response: { text: () => Promise<string> }) => {
+    const body = await response.text().catch(() => '');
+    return body.match(/<Code>([^<]+)<\/Code>/i)?.[1] || '';
+};
+
 const uploadPath = async (
     req: Request,
     filePath: string,
@@ -95,32 +113,44 @@ const uploadPath = async (
         parentPath,
         category,
     };
-    const prepared = (await gatewayRequest(req, '/shared/files/upload/prepare', {
-        method: 'POST',
-        body: JSON.stringify(uploadMeta),
-    })) as {
-        deduplicated?: boolean;
-        uploadUrl?: string;
-        uploadHeaders?: Record<string, string>;
-        item?: unknown;
-    };
-    if (prepared.deduplicated) {
-        return { ok: true, deduplicated: true, entry: prepared.item };
-    }
-    if (!prepared.uploadUrl) throw new Error('O gateway não preparou o upload.');
+    let uploaded = false;
+    for (let attempt = 0; attempt < 2 && !uploaded; attempt += 1) {
+        const prepared = (await gatewayRequest(req, '/shared/files/upload/prepare', {
+            method: 'POST',
+            body: JSON.stringify(uploadMeta),
+        })) as {
+            deduplicated?: boolean;
+            uploadUrl?: string;
+            uploadHeaders?: Record<string, string>;
+            item?: unknown;
+        };
+        if (prepared.deduplicated) {
+            return { ok: true, deduplicated: true, entry: prepared.item };
+        }
+        if (!prepared.uploadUrl) throw new Error('O gateway não preparou o upload.');
 
-    const uploadResponse = await fetch(prepared.uploadUrl, {
-        method: 'PUT',
-        headers: {
-            ...(prepared.uploadHeaders || {}),
-            'Content-Length': String(stat.size),
-        },
-        body: fs.createReadStream(filePath),
-        signal: AbortSignal.timeout(30 * 60 * 1000),
-    });
-    if (!uploadResponse.ok) {
-        throw new Error(`Falha ao enviar para o R2 (${uploadResponse.status}).`);
+        const uploadResponse = await fetch(prepared.uploadUrl, {
+            method: 'PUT',
+            headers: safeUploadHeaders(prepared.uploadUrl, prepared.uploadHeaders || {}, stat.size),
+            body: fs.createReadStream(filePath),
+            signal: AbortSignal.timeout(30 * 60 * 1000),
+        });
+        if (uploadResponse.ok) {
+            uploaded = true;
+            break;
+        }
+
+        const failureCode = await r2FailureCode(uploadResponse);
+        if (attempt === 0 && uploadResponse.status === 403) continue;
+        throw new GatewayHttpError(
+            uploadResponse.status,
+            failureCode
+                ? `O R2 recusou o upload (${failureCode}).`
+                : `Falha ao enviar para o R2 (${uploadResponse.status}).`
+        );
     }
+
+    if (!uploaded) throw new Error('O upload para o R2 não foi concluído.');
 
     const completed = (await gatewayRequest(req, '/shared/files/upload/complete', {
         method: 'POST',
@@ -129,11 +159,12 @@ const uploadPath = async (
     return { ok: true, deduplicated: completed.deduplicated, entry: completed.item };
 };
 
-const resolveLocalSource = (sourceUrl: string, backendPath: string): string => {
+export const resolveLocalSource = (sourceUrl: string, backendPath: string): string => {
     const root = path.resolve(BASE_DATA_PATH);
-    let candidate = backendPath ? path.resolve(backendPath) : '';
+    const candidates: string[] = [];
+    if (backendPath) candidates.push(path.resolve(backendPath));
 
-    if (!candidate && sourceUrl) {
+    if (sourceUrl) {
         const pathname = decodeURIComponent(new URL(sourceUrl, 'http://localhost').pathname);
         const mappings: Array<[string, string]> = [
             ['/data/', 'data'],
@@ -145,19 +176,20 @@ const resolveLocalSource = (sourceUrl: string, backendPath: string): string => {
             ['/files/', 'files'],
         ];
         const mapping = mappings.find(([prefix]) => pathname.startsWith(prefix));
-        if (mapping) candidate = path.resolve(root, mapping[1], pathname.slice(mapping[0].length));
+        if (mapping) candidates.push(path.resolve(root, mapping[1], pathname.slice(mapping[0].length)));
     }
 
-    if (!candidate) throw new Error('Não foi possível localizar a mídia local.');
-    const relative = path.relative(root, candidate);
-    const tempRelative = path.relative(path.resolve(os.tmpdir()), candidate);
-    const isFreshExport = !tempRelative.startsWith('..') && !path.isAbsolute(tempRelative)
-        && /^mileto-final-[\w-]+\.mp4$/i.test(path.basename(candidate));
-    if ((!relative || relative.startsWith('..') || path.isAbsolute(relative)) && !isFreshExport) {
-        throw new Error('A mídia precisa estar dentro da pasta de dados do Mileto.');
+    if (!candidates.length) throw new Error('Não foi possível localizar a mídia local.');
+    for (const candidate of [...new Set(candidates)]) {
+        const relative = path.relative(root, candidate);
+        const tempRelative = path.relative(path.resolve(os.tmpdir()), candidate);
+        const isFreshExport = !tempRelative.startsWith('..') && !path.isAbsolute(tempRelative)
+            && /^mileto-final-[\w-]+\.mp4$/i.test(path.basename(candidate));
+        const isInsideData = Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+        if (!isInsideData && !isFreshExport) continue;
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
     }
-    if (!fs.existsSync(candidate)) throw new Error('A mídia local não existe mais.');
-    return candidate;
+    throw new Error('A mídia local não existe mais. Atualize a biblioteca e tente novamente.');
 };
 
 export const status = (req: Request, res: Response) =>

@@ -20,7 +20,7 @@ const flattenFolders = (node: { name: string; relPath: string; children?: unknow
     return [...(path ? [{ value: path, label: `${prefix}${node.name}` }] : []), ...children.flatMap((child) => flattenFolders(child, `${prefix}${path ? '— ' : ''}`))];
 };
 
-const PremiumSelect = ({
+export const PremiumSelect = ({
     value,
     options,
     placeholder,

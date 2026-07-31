@@ -467,6 +467,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 take.proxyUrl = asset.publicUrl;
             }
         }
+        const unavailableOpsTakeIds = new Set<string>();
         await Promise.all(nextTakes.map(async (take) => {
             if (take.externalMedia?.source !== 'mileto_ops' || !take.externalMedia.referenceId) return;
             const referenceId = take.externalMedia.referenceId;
@@ -487,6 +488,10 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                     });
                     const result = await response.json();
                     if (!response.ok || !result.ok || !result.source) {
+                        if (response.status === 404 || response.status === 410) {
+                            unavailableOpsTakeIds.add(take.id);
+                            return;
+                        }
                         throw new Error(result.message || 'Falha ao recuperar mídia do Mileto Ops.');
                     }
                     const source = result.source;
@@ -514,7 +519,11 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             if (music) nextAd.musicAudioUrl = music.publicUrl;
             if (master) nextAd.masterAudioUrl = master.publicUrl;
         }
-        return { ...data, adData: nextAd, mediaTakes: nextTakes };
+        return {
+            ...data,
+            adData: nextAd,
+            mediaTakes: nextTakes.filter((take) => !unavailableOpsTakeIds.has(take.id)),
+        };
     }, []);
 
     const saveProject = React.useCallback((opts?: { exported?: boolean; keepalive?: boolean; lastStep?: number }): Promise<boolean> => {

@@ -261,12 +261,21 @@ export const prepareUpload = async (req, res) => {
         ContentLength: size,
         Metadata: { sha256 },
     });
-    const uploadUrl = await getSignedUrl(requireR2(), command, { expiresIn: 900 });
+    const uploadUrl = await getSignedUrl(requireR2(), command, {
+        expiresIn: 900,
+        // O R2 precisa receber o metadado exatamente uma vez como header
+        // assinado. Se ele for movido para a query, o objeto chega sem o
+        // checksum disponível no HeadObject e a conclusão rejeita o arquivo.
+        unhoistableHeaders: new Set(['x-amz-meta-sha256']),
+    });
     res.json({
         ok: true,
         deduplicated: false,
         uploadUrl,
-        uploadHeaders: { 'Content-Type': mimeType, 'x-amz-meta-sha256': sha256 },
+        uploadHeaders: {
+            'Content-Type': mimeType,
+            'x-amz-meta-sha256': sha256,
+        },
         objectKey,
     });
 };
@@ -285,8 +294,19 @@ export const completeUpload = async (req, res) => {
     }
     const objectKey = `org/${orgId}/blobs/${sha256}-${size}`;
     const head = await requireR2().send(new HeadObjectCommand({ Bucket: config.r2.bucket, Key: objectKey }));
-    if (Number(head.ContentLength) !== size || head.Metadata?.sha256 !== sha256) {
-        return res.status(409).json({ ok: false, message: 'O arquivo recebido não corresponde ao upload preparado.' });
+    if (Number(head.ContentLength) !== size) {
+        return res.status(409).json({
+            ok: false,
+            code: 'upload_size_mismatch',
+            message: 'O tamanho do arquivo recebido não corresponde ao upload preparado.',
+        });
+    }
+    if (head.Metadata?.sha256 !== sha256) {
+        return res.status(409).json({
+            ok: false,
+            code: 'upload_checksum_mismatch',
+            message: 'O checksum SHA-256 do arquivo recebido não corresponde ao upload preparado.',
+        });
     }
 
     const client = await pool.connect();

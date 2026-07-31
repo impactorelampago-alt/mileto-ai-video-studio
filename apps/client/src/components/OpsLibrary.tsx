@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     AlertTriangle, ArrowDownToLine, Building2, Check, ChevronDown, ChevronRight,
-    CheckSquare, Crown, FileImage, FileVideo, Folder, Grid2X2, List, Loader2, Music2, Play,
+    CheckSquare, Crown, FileImage, FileVideo, Folder, FolderOpen, Grid2X2, List, Loader2, Music2, Play,
     Search, ShieldCheck, Sparkles, Square, UserRound, UsersRound, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -39,8 +39,9 @@ const isViewContextError = (error: unknown) =>
     error instanceof GatewayError &&
     ['view_context_forbidden', 'ops_view_context_invalid', 'ops_view_contexts_invalid'].includes(error.code || '');
 
-const OPS_EDITOR_IMPORT_CONCURRENCY = 3;
-const RETRYABLE_MATERIALIZE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const OPS_EDITOR_IMPORT_CONCURRENCY = 2;
+const OPS_EDITOR_IMPORT_ATTEMPTS = 5;
+const RETRYABLE_MATERIALIZE_STATUS = new Set([401, 403, 408, 409, 425, 429, 500, 502, 503, 504]);
 const wait = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 
 const ViewContextIcon = ({ mode, className = 'w-4 h-4' }: { mode: OpsViewContext['mode']; className?: string }) => {
@@ -84,6 +85,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
     const [selectionMode, setSelectionMode] = useState(false);
     const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
     const selectedContextRef = useRef<OpsViewContext | null>(null);
+    const contextExpiresAtRef = useRef(0);
     const contextRecoveryRef = useRef<Promise<void> | null>(null);
     const [preview, setPreview] = useState<{ asset: OpsAsset; url: string; delivery?: string } | null>(null);
     const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
@@ -120,7 +122,9 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
         setViewContexts(available);
         setSelectedContext(next);
         selectedContextRef.current = next;
-        setContextExpiresAt(Date.now() + Math.max(60, Number(response.data.expiresIn) || 600) * 1000);
+        const expiresAt = Date.now() + Math.max(60, Number(response.data.expiresIn) || 600) * 1000;
+        setContextExpiresAt(expiresAt);
+        contextExpiresAtRef.current = expiresAt;
         return { context: next, selectionRemoved: Boolean(previous && !matching) };
     }, []);
 
@@ -330,7 +334,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
         void (async () => {
             let completed = 0;
             const orderedTakes: Array<MediaTake | null> = Array.from({ length: total }, () => null);
-            const failures: unknown[] = [];
+            const failures: Array<{ asset: OpsAsset; error: unknown }> = [];
             let nextIndex = 0;
 
             const worker = async () => {
@@ -338,9 +342,13 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                     const index = nextIndex;
                     nextIndex += 1;
                     try {
-                        orderedTakes[index] = await materializeAsset(batch[index]);
+                        const take = await materializeAsset(batch[index]);
+                        orderedTakes[index] = take;
+                        // Os takes aparecem à medida que ficam prontos. Assim uma fila longa
+                        // não perde os itens concluídos se o usuário trocar de etapa.
+                        addMediaTakes([take]);
                     } catch (error) {
-                        failures.push(error);
+                        failures.push({ asset: batch[index], error });
                     } finally {
                         completed += 1;
                         const percent = Math.round((completed / total) * 100);
@@ -362,10 +370,8 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
 
             const takes = orderedTakes.filter((take): take is MediaTake => take !== null);
 
-            if (takes.length) addMediaTakes(takes);
-
             if (!takes.length) {
-                const firstError = failures[0];
+                const firstError = failures[0]?.error;
                 updateClientJob(activityId, {
                     phase: 'error',
                     completedAt: Date.now(),
@@ -375,13 +381,16 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
             }
 
             updateClientJob(activityId, {
-                phase: 'done',
+                phase: failures.length ? 'error' : 'done',
                 percent: 100,
                 stepPercent: 100,
                 completedAt: Date.now(),
                 statusText: failures.length ? `${takes.length} adicionada(s), ${failures.length} falhou(aram)` : 'Adicionado ao projeto',
+                ...(failures.length ? {
+                    error: `${failures.length} arquivo(s) ainda não puderam ser preparados: ${failures.slice(0, 3).map(({ asset }) => asset.name).join(', ')}${failures.length > 3 ? '…' : ''}`,
+                } : {}),
             });
-            if (failures.length) toast.warning(`${takes.length} mídia(s) adicionada(s); ${failures.length} não puderam ser preparadas.`);
+            if (failures.length) toast.error(`${takes.length} mídia(s) adicionada(s); ${failures.length} continuam pendentes após novas tentativas.`);
         })();
     };
 
@@ -434,35 +443,62 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
         if (!['video', 'image'].includes(asset.kind)) {
             throw new Error('Por enquanto, somente vídeos e imagens entram como take no editor.');
         }
-        const reference = await gatewayApi.createOpsReference(asset.id, selectedContext?.contextId);
         let source: MaterializedOpsSource | null = null;
         let lastError: GatewayError | null = null;
 
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-            const response = await fetch(`${API_BASE_URL}/api/ops/cache/materialize`, {
-                method: 'POST',
-                headers: {
-                    ...(await localAuthHeaders()),
-                    'Content-Type': 'application/json',
-                    ...(selectedContext?.contextId
-                        ? { 'X-Ops-View-Context': selectedContext.contextId }
-                        : {}),
-                },
-                body: JSON.stringify({ referenceId: reference.id }),
-            });
-            const result = await response.json().catch(() => ({}));
-            if (response.ok && result.ok && result.source) {
-                source = result.source as MaterializedOpsSource;
-                break;
-            }
+        for (let attempt = 0; attempt < OPS_EDITOR_IMPORT_ATTEMPTS; attempt += 1) {
+            try {
+                // O contexto do Ops expira em poucos minutos. Uma importação com dezenas
+                // de vídeos pode atravessar esse limite, então renovamos sem interromper a fila.
+                if (!selectedContextRef.current || Date.now() >= contextExpiresAtRef.current - 45_000) {
+                    if (!contextRecoveryRef.current) {
+                        contextRecoveryRef.current = loadAuthorizedContexts()
+                            .then(() => undefined)
+                            .finally(() => {
+                                contextRecoveryRef.current = null;
+                            });
+                    }
+                    await contextRecoveryRef.current;
+                }
+                const contextId = selectedContextRef.current?.contextId;
+                const reference = await gatewayApi.createOpsReference(asset.id, contextId);
+                const response = await fetch(`${API_BASE_URL}/api/ops/cache/materialize`, {
+                    method: 'POST',
+                    headers: {
+                        ...(await localAuthHeaders()),
+                        'Content-Type': 'application/json',
+                        ...(contextId ? { 'X-Ops-View-Context': contextId } : {}),
+                    },
+                    body: JSON.stringify({ referenceId: reference.id }),
+                });
+                const result = await response.json().catch(() => ({}));
+                if (response.ok && result.ok && result.source) {
+                    source = result.source as MaterializedOpsSource;
+                    break;
+                }
 
-            lastError = new GatewayError(
-                response.status,
-                result.message || 'Falha ao preparar a mídia.',
-                typeof result.code === 'string' ? result.code : null
-            );
-            if (attempt >= 2 || !RETRYABLE_MATERIALIZE_STATUS.has(response.status)) throw lastError;
-            await wait(650 * (attempt + 1));
+                lastError = new GatewayError(
+                    response.status,
+                    result.message || 'Falha ao preparar a mídia.',
+                    typeof result.code === 'string' ? result.code : null
+                );
+                if (isViewContextError(lastError) || [401, 403].includes(response.status)) {
+                    contextExpiresAtRef.current = 0;
+                }
+                if (attempt >= OPS_EDITOR_IMPORT_ATTEMPTS - 1 || !RETRYABLE_MATERIALIZE_STATUS.has(response.status)) {
+                    throw lastError;
+                }
+            } catch (error) {
+                lastError = error instanceof GatewayError
+                    ? error
+                    : new GatewayError(0, error instanceof Error ? error.message : 'Falha ao preparar a mídia.');
+                if (isViewContextError(lastError) || [401, 403].includes(lastError.status)) {
+                    contextExpiresAtRef.current = 0;
+                }
+                if (lastError.status > 0 && !RETRYABLE_MATERIALIZE_STATUS.has(lastError.status)) throw lastError;
+                if (attempt >= OPS_EDITOR_IMPORT_ATTEMPTS - 1) throw lastError;
+            }
+            await wait(Math.min(8_000, 900 * 2 ** attempt));
         }
 
         if (!source) throw lastError || new Error('Falha ao preparar a mídia.');
@@ -506,23 +542,16 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
     }
 
     return (
-        <div className="h-full flex flex-col bg-background border border-black/5 dark:border-white/5 rounded-2xl overflow-hidden">
-            <header className="relative z-30 flex items-center justify-between gap-4 border-b border-black/5 dark:border-white/5 bg-card/35 px-4 py-3">
-                <div className="flex items-center gap-3 min-w-0">
-                    <div className="relative grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-violet-400/20 bg-gradient-to-br from-violet-500/20 via-violet-500/10 to-brand-lime/10 text-violet-300 shadow-[0_0_28px_rgba(139,92,246,0.12)]">
-                        <ShieldCheck className="h-5 w-5" />
-                        <Sparkles className="absolute -right-1 -top-1 h-3.5 w-3.5 text-brand-lime" />
+        <div className="h-full flex flex-col bg-background border border-black/5 dark:border-white/5 rounded-xl overflow-hidden">
+            <header className="relative z-30 flex items-center justify-between gap-3 border-b border-black/5 dark:border-white/5 bg-card/35 px-3 py-2">
+                <div className="flex items-center gap-2 min-w-0" title="Conteúdo filtrado pela hierarquia e carteira definidas no Ops">
+                    <div className="relative grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-violet-400/20 bg-gradient-to-br from-violet-500/20 to-brand-lime/10 text-violet-300">
+                        <ShieldCheck className="h-3.5 w-3.5" />
+                        <Sparkles className="absolute -right-1 -top-1 h-2.5 w-2.5 text-brand-lime" />
                     </div>
-                    <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                            <span className="text-sm font-bold text-foreground">Biblioteca Mileto Ops</span>
-                            <span className="rounded-full border border-brand-lime/20 bg-brand-lime/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-brand-lime">
-                                acesso seguro
-                            </span>
-                        </div>
-                        <p className="truncate text-[11px] text-brand-muted">
-                            Conteúdo filtrado pela hierarquia e carteira definidas no Ops
-                        </p>
+                    <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-xs font-bold text-foreground">Mileto Ops</span>
+                        <span className="rounded-full border border-brand-lime/20 bg-brand-lime/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.1em] text-brand-lime">seguro</span>
                     </div>
                 </div>
 
@@ -533,14 +562,14 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                             onClick={() => setContextMenuOpen((open) => !open)}
                             aria-haspopup="listbox"
                             aria-expanded={contextMenuOpen}
-                            className="group flex min-w-[240px] items-center gap-3 rounded-xl border border-violet-400/20 bg-black/10 px-3 py-2 text-left shadow-[0_12px_35px_rgba(0,0,0,0.16)] transition hover:border-violet-400/40 hover:bg-violet-500/5"
+                            className="group flex min-w-[180px] max-w-[260px] items-center gap-2 rounded-lg border border-violet-400/20 bg-black/10 px-2.5 py-1.5 text-left transition hover:border-violet-400/40 hover:bg-violet-500/5"
                         >
-                            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-violet-500/15 text-violet-300 transition group-hover:bg-violet-500/20">
+                            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-violet-500/15 text-violet-300 transition group-hover:bg-violet-500/20 [&>svg]:h-3.5 [&>svg]:w-3.5">
                                 <ViewContextIcon mode={selectedContext.mode} />
                             </span>
-                            <span className="min-w-0 flex-1">
-                                <span className="block truncate text-xs font-bold text-foreground">{selectedContext.label}</span>
-                                <span className="block truncate text-[10px] text-brand-muted">{selectedContext.subtitle}</span>
+                            <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                                <span className="truncate text-[11px] font-bold text-foreground">{selectedContext.label}</span>
+                                <span className="truncate text-[9px] text-brand-muted">· {selectedContext.subtitle}</span>
                             </span>
                             {loading ? (
                                 <Loader2 className="h-4 w-4 animate-spin text-brand-lime" />
@@ -645,31 +674,61 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                 )}
             </header>
 
-            <div className="min-h-0 flex-1 grid grid-cols-[260px_1fr]">
-            <aside className="min-h-0 overflow-y-auto overscroll-contain border-r border-black/5 p-3 custom-scrollbar dark:border-white/5">
-                <div className="relative mb-3">
+            <div className="min-h-0 flex-1 grid grid-cols-[210px_1fr]">
+            <aside className="min-h-0 overflow-y-auto overscroll-contain border-r border-black/5 p-2 custom-scrollbar dark:border-white/5">
+                <div className="relative mb-2">
                     <Search className="absolute left-3 top-2.5 w-3.5 h-3.5 text-brand-muted" />
                     <input
                         value={companyQuery}
                         onChange={(event) => setCompanyQuery(event.target.value)}
                         placeholder="Buscar empresa"
-                        className="w-full rounded-lg border border-white/10 bg-black/10 py-2 pl-9 pr-3 text-xs outline-none focus:border-brand-accent/50"
+                        className="w-full rounded-lg border border-white/10 bg-black/10 py-2 pl-9 pr-3 text-[11px] outline-none focus:border-brand-accent/50"
                     />
                 </div>
                 <div className="text-[10px] uppercase tracking-wider font-bold text-brand-muted px-2 mb-1">Empresas permitidas</div>
                 <div className="space-y-1">
-                    {filteredCompanies.map((company) => (
-                        <button
-                            key={company.id}
-                            onClick={() => void loadCompany(company)}
-                            className={`w-full flex items-center gap-2 rounded-lg px-2 py-2 text-left text-xs transition ${
-                                selectedCompany?.id === company.id ? 'bg-brand-accent/15 text-brand-accent' : 'hover:bg-white/5 text-foreground/70'
-                            }`}
-                        >
-                            <Building2 className="w-4 h-4 shrink-0" />
-                            <span className="truncate">{companyName(company)}</span>
-                        </button>
-                    ))}
+                    {filteredCompanies.map((company) => {
+                        const expanded = selectedCompany?.id === company.id;
+                        return (
+                            <div key={company.id}>
+                                <button
+                                    onClick={() => void loadCompany(company)}
+                                    className={`w-full flex items-center gap-1 rounded-lg px-1 py-1.5 text-left text-xs transition ${
+                                        expanded ? 'bg-brand-accent/12 text-brand-accent' : 'hover:bg-white/5 text-foreground/70'
+                                    }`}
+                                >
+                                    <span className="grid h-6 w-5 shrink-0 place-items-center text-brand-muted">
+                                        {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                                    </span>
+                                    <Building2 className="w-4 h-4 shrink-0" />
+                                    <span className="truncate font-bold">{companyName(company)}</span>
+                                </button>
+                                {expanded && (
+                                    <div className="ml-4 mt-0.5 space-y-0.5 border-l border-white/7 pl-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setSelectedFolder(null)}
+                                            className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition ${!selectedFolder ? 'bg-brand-lime/10 text-brand-lime' : 'text-foreground/60 hover:bg-white/5 hover:text-foreground'}`}
+                                        >
+                                            <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                                            <span className="truncate">Pastas da empresa</span>
+                                        </button>
+                                        {folders.map((folder) => (
+                                            <button
+                                                type="button"
+                                                key={folder.id}
+                                                onClick={() => setSelectedFolder(folder)}
+                                                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition ${selectedFolder?.id === folder.id ? 'bg-brand-lime/10 text-brand-lime' : 'text-foreground/60 hover:bg-white/5 hover:text-foreground'}`}
+                                            >
+                                                <Folder className="h-3.5 w-3.5 shrink-0 text-amber-300/80" />
+                                                <span className="truncate">{folder.name}</span>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
                 </div>
             </aside>
 
@@ -767,31 +826,31 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                             )}
                         </div>
 
-                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 custom-scrollbar" data-media-scroll-region="true">
+                        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5 custom-scrollbar" data-media-scroll-region="true">
                             {loading ? (
                                 <div className="grid h-full place-items-center"><Loader2 className="h-6 w-6 animate-spin text-brand-accent" /></div>
                             ) : visibleAssets.length === 0 && (selectedFolder || folders.length === 0) ? (
                                 <div className="grid h-full place-items-center text-sm text-brand-muted">Nenhum arquivo encontrado.</div>
                             ) : viewMode === 'grid' ? (
-                                <div className="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3">
+                                <div className="grid grid-cols-[repeat(auto-fill,minmax(145px,1fr))] gap-2">
                                     {!selectedFolder && folders.map((folder) => (
                                         <button
                                             type="button"
                                             key={folder.id}
                                             onClick={() => setSelectedFolder(folder)}
-                                            className="group flex min-h-[148px] flex-col justify-between rounded-2xl border border-white/8 bg-card/35 p-4 text-left transition hover:-translate-y-0.5 hover:border-brand-lime/25 hover:bg-brand-lime/[0.04]"
+                                            className="group flex min-h-[108px] flex-col justify-between rounded-xl border border-white/8 bg-card/35 p-3 text-left transition hover:-translate-y-0.5 hover:border-brand-lime/25 hover:bg-brand-lime/[0.04]"
                                         >
-                                            <div className="grid h-12 w-14 place-items-center rounded-xl border border-amber-300/15 bg-amber-300/10 text-amber-300">
-                                                <Folder className="h-7 w-7 fill-current/20" />
+                                            <div className="grid h-9 w-10 place-items-center rounded-lg border border-amber-300/15 bg-amber-300/10 text-amber-300">
+                                                <Folder className="h-5 w-5 fill-current/20" />
                                             </div>
-                                            <div className="mt-5 flex items-center justify-between gap-2">
-                                                <span className="truncate text-xs font-bold text-foreground">{folder.name}</span>
+                                            <div className="mt-3 flex items-center justify-between gap-2">
+                                                <span className="truncate text-[11px] font-bold text-foreground">{folder.name}</span>
                                                 <ChevronRight className="h-4 w-4 shrink-0 text-brand-muted transition group-hover:translate-x-0.5 group-hover:text-brand-lime" />
                                             </div>
                                         </button>
                                     ))}
                                     {visibleAssets.map((asset) => (
-                                        <article key={asset.id} className={`group overflow-hidden rounded-2xl border bg-card/40 transition ${selectedAssetIds.has(asset.id) ? 'border-brand-lime/50 ring-1 ring-brand-lime/20' : 'border-white/10 hover:border-white/20'}`}>
+                                        <article key={asset.id} className={`group overflow-hidden rounded-xl border bg-card/40 transition ${selectedAssetIds.has(asset.id) ? 'border-brand-lime/50 ring-1 ring-brand-lime/20' : 'border-white/10 hover:border-white/20'}`}>
                                             <button onClick={() => void previewAsset(asset)} className="relative block aspect-video w-full bg-black/25">
                                                 {thumbnailUrls[asset.id] ? (
                                                     <img src={thumbnailUrls[asset.id]} alt="" className="h-full w-full object-cover" />
@@ -819,9 +878,9 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                                                     </span>
                                                 )}
                                             </button>
-                                            <div className="space-y-2 p-3">
-                                                <div className="truncate text-xs font-semibold" title={asset.name}>{asset.name}</div>
-                                                <div className="flex justify-between gap-2 text-[10px] text-brand-muted">
+                                            <div className="space-y-1.5 p-2.5">
+                                                <div className="truncate text-[11px] font-semibold" title={asset.name}>{asset.name}</div>
+                                                <div className="flex justify-between gap-2 text-[9px] text-brand-muted">
                                                     <span className="capitalize">{asset.kind}</span><span>{formatBytes(asset.sizeBytes)}</span>
                                                 </div>
                                                 <div className="flex gap-1.5">

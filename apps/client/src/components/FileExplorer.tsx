@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
-    FolderOpen, Folder, FileVideo, FileImage, FileMusic, ChevronRight,
+    FolderOpen, Folder, FileVideo, FileImage, FileMusic, ChevronDown, ChevronRight,
     Plus, Upload, ArrowDownToLine, Pencil, Scissors, Copy, Trash2, X, Loader2,
     CheckSquare, Square, Check, Play, LayoutGrid, List, HardDrive, Users, RotateCcw, Building2, Sparkles,
 } from 'lucide-react';
@@ -67,6 +67,77 @@ const CATEGORY_LABEL: Record<string, string> = {
 const DEFAULT_CATEGORY_NAMES = new Set(['Imagens', 'Músicas', 'Vídeos', 'Geração por IA']);
 
 const ABSOLUTE_URL = (publicUrl: string) => /^https?:\/\//i.test(publicUrl) ? publicUrl : `${API}${publicUrl}`;
+
+const ExplorerFolderTree = ({
+    root,
+    currentPath,
+    onOpen,
+}: {
+    root: FileNode | null;
+    currentPath: string;
+    onOpen: (path: string) => void;
+}) => {
+    const [expanded, setExpanded] = useState<Set<string>>(new Set(['/']));
+
+    useEffect(() => {
+        const parts = currentPath.split('/').filter(Boolean);
+        const ancestors = new Set<string>(['/']);
+        let cursor = '';
+        for (const part of parts) {
+            cursor = cursor ? `${cursor}/${part}` : part;
+            ancestors.add(cursor);
+        }
+        setExpanded((previous) => new Set([...previous, ...ancestors]));
+    }, [currentPath]);
+
+    if (!root) return <div className="px-3 py-4 text-xs text-brand-muted">Carregando pastas...</div>;
+
+    const renderNode = (node: FileNode, depth: number) => {
+        const pathValue = node.relPath === '/' ? '' : node.relPath;
+        const open = expanded.has(node.relPath);
+        const hasChildren = node.children.length > 0;
+        const active = currentPath === pathValue;
+        return (
+            <div key={node.relPath || '/'}>
+                <div
+                    className={cn(
+                        'group flex items-center gap-1 rounded-lg pr-1 transition-colors',
+                        active ? 'bg-brand-lime/12 text-brand-lime' : 'text-foreground/70 hover:bg-white/5 hover:text-foreground'
+                    )}
+                    style={{ paddingLeft: `${Math.max(4, depth * 14 + 4)}px` }}
+                >
+                    <button
+                        type="button"
+                        className="grid h-7 w-6 shrink-0 place-items-center rounded-md text-brand-muted hover:bg-white/6 hover:text-foreground"
+                        onClick={() => hasChildren && setExpanded((previous) => {
+                            const next = new Set(previous);
+                            if (next.has(node.relPath)) next.delete(node.relPath);
+                            else next.add(node.relPath);
+                            return next;
+                        })}
+                        aria-label={open ? 'Recolher pasta' : 'Expandir pasta'}
+                    >
+                        {hasChildren ? (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />) : <span className="h-3.5 w-3.5" />}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            onOpen(pathValue);
+                            if (hasChildren) setExpanded((previous) => new Set(previous).add(node.relPath));
+                        }}
+                        className="flex min-w-0 flex-1 items-center gap-2 py-2 text-left text-[11px] font-bold"
+                    >
+                        {active ? <FolderOpen className="h-4 w-4 shrink-0" /> : <Folder className="h-4 w-4 shrink-0 text-brand-lime/65" />}
+                        <span className="truncate">{pathValue ? (CATEGORY_LABEL[node.name] || node.name) : 'Arquivos'}</span>
+                    </button>
+                </div>
+                {open && node.children.map((child) => renderNode(child, depth + 1))}
+            </div>
+        );
+    };
+
+    return <div className="space-y-0.5">{renderNode(root, 0)}</div>;
+};
 
 // ─── Componente ────────────────────────────────────────────────────────────
 
@@ -788,6 +859,12 @@ export const FileExplorer = () => {
                         </div>
                     </div>
 
+                    <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)]">
+                        <aside className="min-h-0 overflow-y-auto border-r border-black/5 bg-black/[0.018] p-2 custom-scrollbar dark:border-white/5 dark:bg-white/[0.012]">
+                            <div className="mb-2 px-2 pt-1 text-[9px] font-black uppercase tracking-[0.18em] text-brand-muted">Pastas</div>
+                            <ExplorerFolderTree key={scope} root={tree} currentPath={currentPath} onOpen={(path) => void openFolder(path)} />
+                        </aside>
+                        <div className="flex min-h-0 min-w-0 flex-col">
                     {isAiLibrary && (
                         <div className="flex items-center gap-2 overflow-x-auto border-b border-black/5 px-4 py-2.5 dark:border-white/5">
                             <span className="flex shrink-0 items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-brand-lime">
@@ -1096,6 +1173,8 @@ export const FileExplorer = () => {
                                 )}
                             </div>
                         )}
+                    </div>
+                        </div>
                     </div>
                 </div>
                 )}

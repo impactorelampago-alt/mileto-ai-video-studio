@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useWizard, ENABLE_MEDIA_AI } from '../context/WizardContext';
@@ -7,7 +7,7 @@ import { TrimModal } from '../components/TrimModal';
 import { AIImageModal } from '../components/AIImageModal';
 import { AIVideoModal } from '../components/AIVideoModal';
 import { ErrorBoundary } from '../components/ErrorBoundary';
-import { VideoSequencePreview } from '../components/VideoSequencePreview';
+import { VideoSequencePreview, type VideoSequencePreviewRef } from '../components/VideoSequencePreview';
 import {
     ArrowRight,
     Wand2,
@@ -59,10 +59,11 @@ interface SortableTakeProps {
     onEdit: (_take: MediaTake) => void;
     onToggleFit: (_id: string) => void;
     onEnhance: (_id: string) => void;
+    onSeek: (_index: number) => void;
     format: string;
 }
 
-const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, format }: SortableTakeProps) => {
+const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, onSeek, format }: SortableTakeProps) => {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
         id: take.id,
     });
@@ -79,13 +80,20 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, f
         <div
             ref={setNodeRef}
             style={style}
+            onClick={(event) => {
+                const target = event.target as HTMLElement;
+                if (target.closest('button,[data-drag-handle]')) return;
+                onSeek(index);
+            }}
             className={cn(
-                'group relative mb-2.5 flex min-w-0 items-center gap-3 overflow-hidden rounded-2xl border border-black/5 bg-background p-3 shadow-[0_6px_24px_rgba(0,0,0,0.16)] transition-all hover:border-brand-lime/15 hover:bg-black/[0.025] dark:border-white/7 dark:hover:bg-white/[0.035]'
+                'group relative mb-2.5 flex min-w-0 cursor-pointer items-center gap-3 overflow-hidden rounded-2xl border border-black/5 bg-background p-3 shadow-[0_6px_24px_rgba(0,0,0,0.16)] transition-all hover:border-brand-lime/15 hover:bg-black/[0.025] dark:border-white/7 dark:hover:bg-white/[0.035]'
             )}
+            title="Ir para o início deste take no monitor"
         >
             <div
                 {...attributes}
                 {...listeners}
+                data-drag-handle
                 className="-ml-1 cursor-grab rounded-lg p-1 text-brand-muted/45 transition hover:bg-white/5 hover:text-foreground active:cursor-grabbing"
             >
                 <GripVertical className="w-5 h-5 text-brand-muted/50" />
@@ -204,6 +212,7 @@ export const Step2 = () => {
     const [enhancementTargetTakeId, setEnhancementTargetTakeId] = useState<string | null>(null);
     const [targetTakeId, setTargetTakeId] = useState<string | null>(null);
     const [confirmClear, setConfirmClear] = useState(false);
+    const previewRef = useRef<VideoSequencePreviewRef>(null);
 
     const sensors = useSensors(
         useSensor(PointerSensor, {
@@ -249,6 +258,10 @@ export const Step2 = () => {
 
     const handleMuteAll = (muted: boolean) => {
         setMediaTakes((prev) => prev.map((t) => ({ ...t, muteOriginalAudio: muted })));
+    };
+
+    const seekToTakeStart = (index: number) => {
+        previewRef.current?.seekToTake(index);
     };
 
     const handleSaveTake = (
@@ -687,6 +700,7 @@ export const Step2 = () => {
                                                                 setEnhancementTargetTakeId(takeId);
                                                                 setShowEnhancementModal(true);
                                                             }}
+                                                            onSeek={seekToTakeStart}
                                                             format={adData.format}
                                                         />
                                                     </div>
@@ -771,6 +785,7 @@ export const Step2 = () => {
                     {/* Col 3: Preview */}
                     <div className="lg:sticky lg:top-24 self-start">
                         <VideoSequencePreview
+                            ref={previewRef}
                             takes={mediaTakes}
                             masterAudioUrl={adData.masterAudioUrl}
                             onMuteToggle={handleMuteToggle}

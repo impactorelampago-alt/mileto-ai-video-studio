@@ -93,6 +93,26 @@ function extOf(name: string): string {
     return path.extname(name).toLowerCase();
 }
 
+function isInsideFilesRoot(candidate: string): boolean {
+    const relative = path.relative(path.resolve(FILES_ROOT), path.resolve(candidate));
+    return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function existingEntryPath(entry?: FileEntry, requestedRelPath?: string): string | null {
+    const candidates = [
+        entry?.filePath,
+        entry?.relPath ? safeResolve(FILES_ROOT, entry.relPath) : '',
+        requestedRelPath ? safeResolve(FILES_ROOT, requestedRelPath) : '',
+    ];
+    for (const rawCandidate of candidates) {
+        if (!rawCandidate) continue;
+        const candidate = path.resolve(rawCandidate);
+        if (!isInsideFilesRoot(candidate)) continue;
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    }
+    return null;
+}
+
 /** Categoria a partir da extensão; lança se não for mídia reconhecida. */
 export function categoryOf(name: string): Category {
     const ext = extOf(name);
@@ -253,7 +273,17 @@ export function reconcileProjects(oldPublicUrl: string, newPublicUrl: string | n
         let changed = false;
         try {
             const obj = JSON.parse(raw) as Record<string, unknown>;
-            changed = rewriteRefs(obj, oldPublicUrl, newPublicUrl);
+            // Excluir a mídia da biblioteca também elimina o take inteiro das
+            // linhas do tempo salvas. Apenas zerar a URL deixava cartões vazios
+            // que reapareciam quando o rascunho era aberto novamente.
+            if (newPublicUrl === null && Array.isArray(obj.mediaTakes)) {
+                const remaining = obj.mediaTakes.filter((take) => !containsStringReference(take, oldPublicUrl));
+                if (remaining.length !== obj.mediaTakes.length) {
+                    obj.mediaTakes = remaining;
+                    changed = true;
+                }
+            }
+            if (rewriteRefs(obj, oldPublicUrl, newPublicUrl)) changed = true;
             if (changed) {
                 fs.writeFileSync(dataPath, JSON.stringify(obj, null, 2), 'utf-8');
                 touched++;
@@ -263,6 +293,15 @@ export function reconcileProjects(oldPublicUrl: string, newPublicUrl: string | n
         }
     }
     return touched;
+}
+
+function containsStringReference(node: unknown, reference: string): boolean {
+    if (typeof node === 'string') return node.includes(reference);
+    if (Array.isArray(node)) return node.some((item) => containsStringReference(item, reference));
+    if (node && typeof node === 'object') {
+        return Object.values(node as Record<string, unknown>).some((value) => containsStringReference(value, reference));
+    }
+    return false;
 }
 
 /** Percorre recursivamente um objeto reescrevendo strings que casam com oldUrl. */
@@ -414,6 +453,7 @@ export const listItems = (req: Request, res: Response) => {
         }
         const index = readIndex();
         const byRel = new Map(index.map((e) => [e.relPath.split(path.sep).join('/'), e]));
+        let indexChanged = false;
 
         const folders: Array<{ name: string; relPath: string }> = [];
         const files: Array<FileEntry & { size: number }> = [];
@@ -426,7 +466,16 @@ export const listItems = (req: Request, res: Response) => {
                 const meta = byRel.get(childRel);
                 const size = fs.statSync(full).size;
                 if (meta) {
-                    files.push({ ...meta, size });
+                    // O diretório de dados muda entre modo local, instalável e
+                    // atualizações. O relPath é estável; o caminho absoluto salvo
+                    // no índice pode ficar antigo mesmo com o arquivo presente.
+                    if (path.resolve(meta.filePath) !== path.resolve(full) || meta.publicUrl !== toPublicUrl(childRel)) {
+                        meta.filePath = full;
+                        meta.relPath = childRel;
+                        meta.publicUrl = toPublicUrl(childRel);
+                        indexChanged = true;
+                    }
+                    files.push({ ...meta, filePath: full, relPath: childRel, publicUrl: toPublicUrl(childRel), size });
                 } else {
                     // Arquivo no disco sem entrada no índice (ex: colado manualmente).
                     files.push({
@@ -437,6 +486,7 @@ export const listItems = (req: Request, res: Response) => {
                 }
             }
         }
+        if (indexChanged) writeIndex(index);
         res.json({ ok: true, folders, files });
     } catch (error: unknown) {
         res.status(500).json({ ok: false, message: errMsg(error) });
@@ -650,26 +700,37 @@ export const renameItem = (req: Request, res: Response) => {
 };
 
 // POST /api/files/move  { id, destPath }
-export const moveItem = (req: Request, res: Response) => {
+export const moveItem = async (req: Request, res: Response) => {
     try {
         const { id } = req.body;
+        const requestedRelPath = typeof req.body?.relPath === 'string' ? req.body.relPath : '';
         const destRel = (req.body.destPath as string) || '';
         const index = readIndex();
-        const entry = index.find((e) => e.id === id);
-        if (!entry) return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
+        const entry = index.find((e) => (id && e.id === id) || (requestedRelPath && e.relPath === requestedRelPath));
+        const sourcePath = existingEntryPath(entry, requestedRelPath);
+        if (!sourcePath) return res.status(404).json({ ok: false, message: 'Arquivo local não encontrado.' });
 
         const destDir = destRel ? safeResolve(FILES_ROOT, destRel) : FILES_ROOT;
         if (!destDir.startsWith(FILES_ROOT)) {
             return res.status(400).json({ ok: false, message: 'Destino inválido.' });
         }
-        const newFilePath = path.join(destDir, entry.name);
+        const displayName = entry?.name || path.basename(sourcePath);
+        const newFilePath = path.join(destDir, displayName);
+        if (path.resolve(newFilePath) === path.resolve(sourcePath)) {
+            return res.status(409).json({ ok: false, message: 'O arquivo já está nesta pasta.' });
+        }
         if (fs.existsSync(newFilePath)) {
             return res.status(409).json({ ok: false, message: 'Já existe um item com esse nome no destino.' });
         }
-        const oldPublic = entry.publicUrl;
-        fs.renameSync(entry.filePath, newFilePath);
+        const oldPublic = entry?.publicUrl || toPublicUrl(requestedRelPath);
+        await fs.promises.rename(sourcePath, newFilePath);
 
-        const newRel = path.join(destRel, entry.name).split(path.sep).join('/');
+        const newRel = path.join(destRel, displayName).split(path.sep).join('/');
+        if (!entry) {
+            const created = await registerFile(newFilePath, newRel, { name: displayName });
+            const touched = reconcileProjects(oldPublic, created.publicUrl);
+            return res.json({ ok: true, entry: created, projectsUpdated: touched });
+        }
         entry.filePath = newFilePath;
         entry.relPath = newRel;
         entry.publicUrl = toPublicUrl(newRel);
@@ -691,10 +752,12 @@ export const moveItem = (req: Request, res: Response) => {
 export const copyItem = async (req: Request, res: Response) => {
     try {
         const { id } = req.body;
+        const requestedRelPath = typeof req.body?.relPath === 'string' ? req.body.relPath : '';
         const destRel = (req.body.destPath as string) || '';
         const index = readIndex();
-        const entry = index.find((e) => e.id === id);
-        if (!entry) return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
+        const entry = index.find((e) => (id && e.id === id) || (requestedRelPath && e.relPath === requestedRelPath));
+        const sourcePath = existingEntryPath(entry, requestedRelPath);
+        if (!sourcePath) return res.status(404).json({ ok: false, message: 'Arquivo local não encontrado.' });
 
         const destDir = destRel ? safeResolve(FILES_ROOT, destRel) : FILES_ROOT;
         if (!destDir.startsWith(FILES_ROOT)) {
@@ -702,16 +765,17 @@ export const copyItem = async (req: Request, res: Response) => {
         }
         // Cópia = NOVO arquivo independente (nova id, nova entrada no índice).
         const copyId = uuidv4();
-        const ext = extOf(entry.name);
+        const displayName = entry?.name || path.basename(sourcePath);
+        const ext = extOf(displayName);
         const copyName = `${copyId}${ext}`;
         const copyPath = path.join(destDir, copyName);
-        fs.copyFileSync(entry.filePath, copyPath);
+        await fs.promises.copyFile(sourcePath, copyPath);
 
         const copyRel = path.join(destRel, copyName).split(path.sep).join('/');
         const copyEntry = await registerFile(copyPath, copyRel, {
-            category: entry.category,
-            name: entry.name,
-            durationSec: entry.durationSec,
+            ...(entry?.category ? { category: entry.category } : {}),
+            name: displayName,
+            durationSec: entry?.durationSec,
         });
         res.json({ ok: true, entry: copyEntry });
     } catch (error: unknown) {
@@ -726,7 +790,7 @@ export const deleteItem = (req: Request, res: Response) => {
         const id = (req.body?.id as string) || (req.query.id as string);
         const requestedRelPath = (req.body?.relPath as string) || (req.query.relPath as string);
         const index = readIndex();
-        const idx = index.findIndex((e) => e.id === id);
+        const idx = index.findIndex((e) => (id && e.id === id) || (requestedRelPath && e.relPath === requestedRelPath));
         if (idx === -1 && !requestedRelPath) {
             return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
         }
@@ -745,9 +809,8 @@ export const deleteItem = (req: Request, res: Response) => {
 
         const entry = index[idx];
         const oldPublic = entry.publicUrl;
-        if (fs.existsSync(entry.filePath)) {
-            fs.unlinkSync(entry.filePath);
-        }
+        const filePath = existingEntryPath(entry, requestedRelPath);
+        if (filePath) fs.unlinkSync(filePath);
         index.splice(idx, 1);
         writeIndex(index);
 
