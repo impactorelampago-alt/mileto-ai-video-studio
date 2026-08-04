@@ -49,6 +49,7 @@ router.get('/projects/:projectId/cover', projectController.getProjectCover);
 router.get('/projects/:projectId', projectController.getProjectData);
 router.post('/projects/:projectId', projectController.saveProjectData);
 router.delete('/projects/:projectId', projectController.deleteProject);
+router.post('/projects/:projectId/duplicate', projectController.duplicateProject);
 
 // AI Generation Routes
 router.post('/integrations/replicate/test', aiController.testReplicate);

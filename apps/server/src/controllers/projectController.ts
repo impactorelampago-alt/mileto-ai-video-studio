@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
 import { safeResolve, isSafeSegment } from '../utils/safePath';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
@@ -195,6 +196,46 @@ export const deleteProject = async (req: Request, res: Response) => {
     } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         console.error('[Projects] Erro ao deletar:', msg);
+        res.status(500).json({ ok: false, message: msg });
+    }
+};
+
+// POST /projects/:projectId/duplicate — cria uma cópia independente do projeto (novo id,
+// título "(cópia)", não-exportado). Copia todo o diretório, inclusive mídia local e capa.
+export const duplicateProject = async (req: Request, res: Response) => {
+    try {
+        const { projectId } = req.params;
+        if (!isSafeSegment(projectId)) return res.status(400).json({ ok: false, message: 'projectId inválido' });
+
+        const sourcePath = safeResolve(PROJECTS_DIR, projectId);
+        const sourceData = path.join(sourcePath, 'ad-data.json');
+        if (!fs.existsSync(sourceData)) return res.status(404).json({ ok: false, message: 'Projeto não encontrado' });
+
+        const newId = randomUUID();
+        const targetPath = safeResolve(PROJECTS_DIR, newId);
+        fs.cpSync(sourcePath, targetPath, { recursive: true });
+
+        // Ajusta o novo ad-data.json: título "(cópia)", updatedAt novo, não-exportado.
+        try {
+            const data = JSON.parse(fs.readFileSync(path.join(targetPath, 'ad-data.json'), 'utf-8'));
+            const base = String(data?.adData?.title || data?.title || 'Projeto').trim();
+            const copyTitle = `${base} (cópia)`;
+            if (data.adData && typeof data.adData === 'object') data.adData.title = copyTitle;
+            if (typeof data.title === 'string') data.title = copyTitle;
+            data.updatedAt = new Date().toISOString();
+            data.exported = false;
+            fs.writeFileSync(path.join(targetPath, 'ad-data.json'), JSON.stringify(data, null, 2), 'utf-8');
+            // O backup copiado guarda o título/estado antigos — remove para não confundir.
+            const backup = path.join(targetPath, 'ad-data.backup.json');
+            if (fs.existsSync(backup)) fs.rmSync(backup, { force: true });
+        } catch (adjustErr) {
+            console.warn('[Projects] Cópia criada, mas ajuste do título falhou:', adjustErr);
+        }
+
+        res.json({ ok: true, projectId: newId });
+    } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error('[Projects] Erro ao duplicar:', msg);
         res.status(500).json({ ok: false, message: msg });
     }
 };

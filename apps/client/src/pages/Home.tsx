@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Wand2, Scissors, Clock, Trash2, CheckCircle2, Loader2, HardDrive, Users, Share2, Pencil, Film, Check, X } from 'lucide-react';
+import { ArrowRight, Wand2, Scissors, Clock, Trash2, CheckCircle2, Loader2, HardDrive, Users, Share2, Pencil, Film, Check, X, Copy, Play } from 'lucide-react';
 import { toast } from 'sonner';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
@@ -74,11 +74,43 @@ export const Home = () => {
     const [resumingId, setResumingId] = useState<string | null>(null);
     const [sharingId, setSharingId] = useState<string | null>(null);
     const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editingTitle, setEditingTitle] = useState('');
     const [renamingId, setRenamingId] = useState<string | null>(null);
     const [scope, setScope] = useState<'local' | 'shared'>('local');
     const [newDraftTitle, setNewDraftTitle] = useState('');
+
+    // Rascunhos locais cuja mídia é do Mileto Ops guardam só a referência (externalMedia),
+    // sem URL — então o servidor não gera capa. Resolvemos a capa aqui, sob demanda, pedindo
+    // ao gateway uma URL de mídia (best-effort; se falhar, o card usa o placeholder).
+    const resolveOpsCovers = useCallback(async (list: DraftSummary[]) => {
+        for (const draft of list.slice(0, 12)) {
+            if (draft.cover) continue;
+            try {
+                const detail = await fetch(`${API_BASE}/api/projects/${draft.projectId}`).then((r) => r.json());
+                if (!detail?.ok || !isRecord(detail.data)) continue;
+                const takes: UnknownRecord[] = Array.isArray(detail.data.mediaTakes)
+                    ? (detail.data.mediaTakes as unknown[]).filter(isRecord)
+                    : [];
+                const visual = takes.find((t) => t.type === 'video' || t.type === 'image');
+                const ext = visual && isRecord(visual.externalMedia) ? visual.externalMedia : null;
+                const assetId = typeof ext?.assetId === 'string' ? ext.assetId : null;
+                if (!assetId) continue;
+                const vtype: 'image' | 'video' = visual?.type === 'image' ? 'image' : 'video';
+                const media = await gatewayApi.opsAssetUrl(assetId, vtype === 'image' ? 'thumbnail' : 'stream');
+                if (media?.url) {
+                    setDrafts((prev) =>
+                        prev.map((d) =>
+                            d.projectId === draft.projectId && !d.cover ? { ...d, cover: { url: media.url, type: vtype } } : d
+                        )
+                    );
+                }
+            } catch {
+                /* capa é complementar — nunca bloqueia a lista */
+            }
+        }
+    }, []);
 
     const refreshDrafts = useCallback(async (): Promise<boolean> => {
         setLoadingDrafts(true);
@@ -138,6 +170,7 @@ export const Home = () => {
             const json = await res.json();
             if (json.ok && Array.isArray(json.drafts)) {
                 setDrafts(json.drafts);
+                void resolveOpsCovers(json.drafts);
                 return true;
             }
             return false;
@@ -147,7 +180,7 @@ export const Home = () => {
         } finally {
             setLoadingDrafts(false);
         }
-    }, [scope]);
+    }, [scope, resolveOpsCovers]);
 
     useEffect(() => {
         let cancelled = false;
@@ -310,6 +343,23 @@ export const Home = () => {
         }
     };
 
+    const handleDuplicate = async (event: React.MouseEvent, id: string) => {
+        event.stopPropagation();
+        if (duplicatingId || scope !== 'local') return;
+        setDuplicatingId(id);
+        try {
+            const res = await fetch(`${API_BASE}/api/projects/${id}/duplicate`, { method: 'POST' });
+            const json = await res.json();
+            if (!json.ok) throw new Error(json.message || 'Falha ao duplicar');
+            toast.success('Projeto duplicado.');
+            await refreshDrafts();
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Erro ao duplicar');
+        } finally {
+            setDuplicatingId(null);
+        }
+    };
+
     return (
         <div className="flex flex-col gap-10 py-8">
             {/* Hero */}
@@ -430,13 +480,9 @@ export const Home = () => {
                                         isLoading && 'opacity-60 pointer-events-none'
                                     )}
                                 >
-                                    <div className="relative aspect-[9/16] w-[82px] shrink-0 overflow-hidden bg-black sm:w-[96px]" aria-hidden="true">
+                                    <div className="relative aspect-[9/16] w-[84px] shrink-0 overflow-hidden bg-black sm:w-[94px]" aria-hidden="true">
                                         {d.cover?.type === 'image' ? (
-                                            <img
-                                                src={d.cover.url}
-                                                alt=""
-                                                className="h-full w-full object-contain"
-                                            />
+                                            <img src={d.cover.url} alt="" className="h-full w-full object-cover" />
                                         ) : d.cover?.type === 'video' ? (
                                             <video
                                                 src={`${d.cover.url}#t=0.001`}
@@ -447,14 +493,28 @@ export const Home = () => {
                                                     // Solicita um frame real do vídeo para a capa, sem iniciar reprodução.
                                                     event.currentTarget.currentTime = 0.001;
                                                 }}
-                                                className="h-full w-full object-contain"
+                                                className="h-full w-full object-cover"
                                             />
                                         ) : (
-                                            <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-foreground/15 to-black">
-                                                <Film className="h-6 w-6 text-muted-foreground/70" />
+                                            <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-gradient-to-br from-brand-lime/10 via-foreground/[0.04] to-black">
+                                                <Film className="h-7 w-7 text-muted-foreground/45" />
+                                                <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/40">
+                                                    {d.mediaCount} take{d.mediaCount === 1 ? '' : 's'}
+                                                </span>
                                             </div>
                                         )}
-                                        <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-transparent to-card/20" />
+                                        {/* Play ao passar o mouse */}
+                                        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/25 opacity-0 transition-opacity group-hover:opacity-100">
+                                            <span className="grid h-8 w-8 place-items-center rounded-full bg-white/90 text-black shadow-lg">
+                                                <Play className="h-4 w-4 translate-x-[1px] fill-current" />
+                                            </span>
+                                        </div>
+                                        {/* Duração */}
+                                        {d.duration > 0 && (
+                                            <span className="absolute bottom-1.5 left-1.5 rounded bg-black/75 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm">
+                                                {formatDuration(d.duration)}
+                                            </span>
+                                        )}
                                     </div>
                                     <div className="min-w-0 flex flex-1 flex-col p-4">
                                         <div className="mb-3 flex items-start justify-between gap-2">
@@ -510,6 +570,22 @@ export const Home = () => {
                                                 >
                                                     <Pencil className="h-3.5 w-3.5" />
                                                 </button>
+                                                {scope === 'local' && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={(event) => void handleDuplicate(event, d.projectId)}
+                                                        disabled={!!duplicatingId}
+                                                        className="rounded-lg p-1.5 text-muted-foreground/60 transition-colors hover:bg-brand-accent/10 hover:text-brand-accent disabled:opacity-50"
+                                                        title="Duplicar projeto"
+                                                        aria-label="Duplicar projeto"
+                                                    >
+                                                        {duplicatingId === d.projectId ? (
+                                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                        ) : (
+                                                            <Copy className="h-3.5 w-3.5" />
+                                                        )}
+                                                    </button>
+                                                )}
                                                 <button
                                                     type="button"
                                                     onClick={(event) => handleDelete(event, d.projectId)}
@@ -543,20 +619,20 @@ export const Home = () => {
                                         </div>
                                     )}
 
-                                    <div className="mt-4 flex items-center justify-between">
+                                    <div className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-2 pt-3">
                                         {d.exported ? (
-                                            <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-brand-lime">
+                                            <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-brand-lime">
                                                 <CheckCircle2 className="w-3 h-3" />
                                                 Exportado
                                             </span>
                                         ) : (
-                                            <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-400/80">
+                                            <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-400/80">
                                                 <Clock className="w-3 h-3" />
                                                 Em progresso
                                             </span>
                                         )}
 
-                                        <div className="flex items-center gap-2">
+                                        <div className="ml-auto flex shrink-0 items-center gap-2">
                                             {scope === 'local' && (
                                                 <button
                                                     type="button"

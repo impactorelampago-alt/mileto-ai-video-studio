@@ -107,6 +107,8 @@ export interface OpsCompany {
     name?: string;
     nome?: string;
     status?: string;
+    /** "archive" = Acervo da agência (mídia compartilhada, não é empresa). "company" = empresa real. */
+    kind?: 'company' | 'archive' | string;
 }
 
 export interface OpsFolder {
