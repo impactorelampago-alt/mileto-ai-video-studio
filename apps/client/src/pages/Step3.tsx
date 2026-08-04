@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
 import { Play, Sparkles, AlertCircle, CheckCircle2, Type } from 'lucide-react';
@@ -16,6 +16,51 @@ export const Step3 = () => {
     const [isGenerating, setIsGenerating] = useState(false);
     const currentSourceKey = narrationSourceKey(adData);
     const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
+
+    // Preview 9:16: mede o espaço vertical REAL disponível (topo do preview → base menos a
+    // barra fixa "Próximo" de 64px) e limita a largura pra a altura caber sempre na tela,
+    // adaptando a qualquer tamanho de janela. Via style inline p/ não depender do JIT do Tailwind.
+    const gridRef = useRef<HTMLDivElement>(null);
+    const cardRef = useRef<HTMLDivElement>(null);
+    const innerRef = useRef<HTMLDivElement>(null);
+    const [previewMaxW, setPreviewMaxW] = useState<number>();
+    useLayoutEffect(() => {
+        const grid = gridRef.current;
+        if (!grid) return;
+        const scroller = grid.closest('main');
+        const BOTTOM_BAR = 64; // barra fixa "Próximo: Títulos" (h-16)
+        const BREATH = 20; // respiro
+        const compute = () => {
+            const rectTop = grid.getBoundingClientRect().top;
+            const scrollTop = scroller ? scroller.scrollTop : 0;
+            const restTop = rectTop + scrollTop; // topo do card (invariante ao scroll)
+            const budget = window.innerHeight - restTop - BOTTOM_BAR - BREATH; // espaço p/ o card inteiro
+            const card = cardRef.current;
+            const inner = innerRef.current;
+            // "chrome" = tudo que NÃO é o vídeo (padding do card + barra de controles do player).
+            // Medido de verdade: altura do card − altura do vídeo (largura do inner × 16/9).
+            // Assim o vídeo encolhe só o suficiente p/ vídeo + controles caberem juntos, sem hardcode.
+            let mw: number;
+            if (card && inner) {
+                const videoH = inner.getBoundingClientRect().width * (16 / 9);
+                const chrome = card.getBoundingClientRect().height - videoH;
+                mw = Math.round(((budget - chrome) * 9) / 16);
+            } else {
+                mw = Math.round(((budget - 150) * 9) / 16); // fallback aproximado
+            }
+            setPreviewMaxW(Math.max(240, mw));
+        };
+        compute();
+        const raf = requestAnimationFrame(compute);
+        const ro = new ResizeObserver(compute);
+        ro.observe(document.documentElement);
+        window.addEventListener('resize', compute);
+        return () => {
+            cancelAnimationFrame(raf);
+            ro.disconnect();
+            window.removeEventListener('resize', compute);
+        };
+    }, []);
 
     const handleGenerateCaptions = async () => {
         if (!adData.masterAudioUrl && !adData.narrationAudioUrl) {
@@ -103,10 +148,17 @@ export const Step3 = () => {
                 </p>
             </header>
 
-            <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[230px_330px_minmax(360px,1fr)]">
-                {/* Visual Preview Box */}
-                <div className="flex min-h-0 w-full items-center justify-center rounded-2xl border border-white/7 bg-brand-card/40 p-3 shadow-xl">
-                    <div className="relative w-full max-w-[220px] overflow-hidden rounded-2xl shadow-2xl ring-1 ring-white/10">
+            <div ref={gridRef} className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(300px,440px)_300px_minmax(360px,1fr)]">
+                {/* Visual Preview Box — fixo (sticky) enquanto as legendas rolam */}
+                <div
+                    ref={cardRef}
+                    className="sticky top-2 flex w-full items-center justify-center self-start rounded-2xl border border-white/7 bg-brand-card/40 p-3 shadow-xl"
+                >
+                    <div
+                        ref={innerRef}
+                        style={{ maxWidth: previewMaxW ? `${previewMaxW}px` : undefined }}
+                        className="relative w-full overflow-hidden rounded-2xl shadow-2xl ring-1 ring-white/10"
+                    >
                         {mediaTakes && mediaTakes.length > 0 ? (
                             <VideoSequencePreview
                                 takes={mediaTakes}
@@ -134,8 +186,8 @@ export const Step3 = () => {
                     </div>
                 </div>
 
-                {/* Controls */}
-                <div className="custom-scrollbar min-h-0 w-full overflow-y-auto">
+                {/* Controls — também fixo no topo */}
+                <div className="sticky top-2 w-full self-start">
                     <div className="relative overflow-hidden rounded-2xl border border-black/5 bg-brand-card p-5 shadow-xl dark:border-white/5">
                         <div className="absolute top-0 left-0 w-full h-[2px] bg-linear-to-r from-brand-accent/40 to-brand-lime/10"></div>
                         <div className="mb-4 space-y-1.5">

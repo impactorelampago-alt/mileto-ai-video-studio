@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Download, Film, HardDrive, Search, Users, Building2, Loader2, X, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -39,11 +39,22 @@ export const PremiumSelect = ({
 }) => {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState('');
+    const rootRef = useRef<HTMLDivElement>(null);
     const selected = options.find((option) => option.value === value);
     const visibleOptions = options.filter((option) => option.label.toLocaleLowerCase('pt-BR').includes(query.trim().toLocaleLowerCase('pt-BR')));
 
+    // Fecha ao clicar fora (evita dois dropdowns abertos ao mesmo tempo)
+    useEffect(() => {
+        if (!open) return;
+        const onDoc = (event: MouseEvent) => {
+            if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+        };
+        document.addEventListener('mousedown', onDoc);
+        return () => document.removeEventListener('mousedown', onDoc);
+    }, [open]);
+
     return (
-        <div className="relative min-w-0">
+        <div ref={rootRef} className="relative min-w-0">
             <button
                 type="button"
                 onClick={() => { setOpen((current) => !current); setQuery(''); }}

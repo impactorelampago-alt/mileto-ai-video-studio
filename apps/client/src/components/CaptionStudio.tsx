@@ -1,7 +1,58 @@
 import React from 'react';
 import { useWizard } from '../context/WizardContext';
-import { Settings2, Type, PaintBucket, TypeOutline } from 'lucide-react';
+import { Settings2, Type, PaintBucket } from 'lucide-react';
+import { cn } from '../lib/utils';
 import type { CaptionStyle } from '../types';
+
+type Preset = { name: string; s: Partial<CaptionStyle> };
+
+const PRESETS: Preset[] = [
+    { name: 'Amarelo Impacto', s: { activeColor: '#FFFF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Anton', fontSize: 42 } },
+    { name: 'Estilo Flix', s: { activeColor: '#E50914', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Bebas Neue', fontSize: 46 } },
+    { name: 'Cyan Clean', s: { activeColor: '#00D1FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 3, fontFamily: 'Inter', fontSize: 38 } },
+    { name: 'Cinematic Gold', s: { activeColor: '#FFD700', baseColor: '#F5F5F5', strokeColor: '#1A1A1A', strokeWidth: 6, fontFamily: 'Playfair Display', fontSize: 50 } },
+    { name: 'Cyberpunk', s: { activeColor: '#FF00FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Impact', fontSize: 44 } },
+    { name: 'Hacker Matrix', s: { activeColor: '#00FF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 4, fontFamily: 'Montserrat', fontSize: 36 } },
+    { name: 'Minimalista', s: { activeColor: '#FFFFFF', baseColor: '#A0A0A0', strokeColor: '#000000', strokeWidth: 2, fontFamily: 'Roboto', fontSize: 32 } },
+    { name: 'Youtuber Kids', s: { activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Comic Sans MS', fontSize: 40 } },
+];
+
+const FONTS = ['Poppins', 'Roboto', 'Inter', 'Impact', 'Montserrat', 'Anton', 'Bebas Neue', 'Playfair Display', 'Comic Sans MS'];
+
+/** Slider estilizado: trilha preenchida em verde da marca + thumb com glow. */
+const Slider: React.FC<{
+    label: string;
+    value: number;
+    min: number;
+    max: number;
+    step: number;
+    unit: string;
+    onChange: (v: number) => void;
+}> = ({ label, value, min, max, step, unit, onChange }) => {
+    const pct = Math.round(((value - min) / (max - min)) * 100);
+    return (
+        <div className="space-y-1.5">
+            <div className="flex items-baseline justify-between">
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-brand-muted">{label}</label>
+                <span className="font-mono text-[10px] tabular-nums text-foreground">
+                    {value}
+                    {unit}
+                </span>
+            </div>
+            <input
+                type="range"
+                min={min}
+                max={max}
+                step={step}
+                value={value}
+                onChange={(e) => onChange(parseInt(e.target.value))}
+                className="h-1.5 w-full cursor-pointer appearance-none rounded-full outline-none [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:bg-brand-accent [&::-webkit-slider-thumb]:shadow-[0_0_8px_rgba(0,230,118,0.7)] [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-125"
+                style={{ background: `linear-gradient(to right, hsl(var(--brand-accent)) ${pct}%, rgba(125,135,145,0.2) ${pct}%)` }}
+            />
+        </div>
+    );
+};
+
 export const CaptionStudio: React.FC = () => {
     const { adData, updateAdData, captionStyle, setCaptionStyle } = useWizard();
 
@@ -14,252 +65,166 @@ export const CaptionStudio: React.FC = () => {
         // 1. Split the new text into an array of words
         const newWords = newText.split(/\s+/).filter((w) => w.length > 0);
 
-        // 2. Map the new words to the available time evenly
-        // If the user completely changes the sentence, mapping strictly by index causes
-        // short words to take long pauses and vice-versa if the word count changes drastically.
-        // A better approach for real-time editing is to distribute the segment's total duration
-        // evenly across the new number of words.
-
+        // 2. Distribui a duração do segmento igualmente entre as novas palavras — mapear por
+        // índice faz palavras curtas ficarem com pausas longas quando a contagem muda.
         const segmentDuration = oldSegment.end - oldSegment.start;
         const timePerWord = newWords.length > 0 ? segmentDuration / newWords.length : 0;
 
-        const updatedWords = newWords.map((wordText, i) => {
-            return {
-                text: wordText,
-                start: oldSegment.start + i * timePerWord,
-                end: oldSegment.start + (i + 1) * timePerWord,
-            };
-        });
+        const updatedWords = newWords.map((wordText, i) => ({
+            text: wordText,
+            start: oldSegment.start + i * timePerWord,
+            end: oldSegment.start + (i + 1) * timePerWord,
+        }));
 
-        // 3. Save both the raw string and the reconstructed timed array
-        newSegments[segmentIndex] = {
-            ...oldSegment,
-            text: newText,
-            words: updatedWords,
-        };
+        // 3. Salva a string crua + o array reconstruído com tempos
+        newSegments[segmentIndex] = { ...oldSegment, text: newText, words: updatedWords };
 
-        updateAdData({
-            captions: {
-                ...adData.captions!,
-                segments: newSegments,
-            },
-        });
+        updateAdData({ captions: { ...adData.captions!, segments: newSegments } });
     };
 
     const updateStyle = (updates: Partial<CaptionStyle>) => {
         setCaptionStyle({ ...captionStyle, ...updates });
     };
 
+    const colors: Array<{ label: string; key: 'activeColor' | 'baseColor' | 'strokeColor'; value: string }> = [
+        { label: 'Destaque', key: 'activeColor', value: captionStyle.activeColor },
+        { label: 'Letra', key: 'baseColor', value: captionStyle.baseColor },
+        { label: 'Borda', key: 'strokeColor', value: captionStyle.strokeColor },
+    ];
+
     return (
-        <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-xl">
-            <div className="flex items-center justify-between border-b border-border bg-muted/30 p-3">
-                <h3 className="font-semibold text-foreground flex items-center gap-2">
-                    <Settings2 className="w-5 h-5 text-primary" />
-                    Estúdio de Legendas
-                </h3>
+        <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-black/5 bg-brand-card shadow-xl dark:border-white/8">
+            {/* Header */}
+            <div className="flex items-center gap-2.5 border-b border-black/5 bg-black/[0.03] px-4 py-3 dark:border-white/5 dark:bg-white/[0.03]">
+                <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-accent/12">
+                    <Settings2 className="h-4 w-4 text-brand-accent" />
+                </div>
+                <div className="min-w-0">
+                    <h3 className="text-sm font-bold leading-tight text-foreground">Estúdio de Legendas</h3>
+                    <p className="truncate text-[10px] text-brand-muted">Aparência e texto das legendas</p>
+                </div>
             </div>
 
-            <div className="custom-scrollbar flex-1 space-y-4 overflow-y-auto p-3">
-                {/* Style Controls Section */}
-                <div className="space-y-3">
-                    <h4 className="text-sm font-medium text-muted-foreground flex items-center gap-2 uppercase tracking-wider mb-4">
-                        <PaintBucket className="w-4 h-4" />
-                        Aparência
+            <div className="custom-scrollbar flex-1 space-y-4 overflow-y-auto p-3.5">
+                {/* Presets */}
+                <section className="space-y-2.5">
+                    <h4 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-brand-muted">
+                        <PaintBucket className="h-3.5 w-3.5 text-brand-accent" />
+                        Presets rápidos
                     </h4>
-
-                    {/* Presets Rápidos */}
-                    <div className="mb-4 rounded-xl border border-black/5 bg-black/10 p-3 dark:border-white/5 dark:bg-white/5">
-                        <label className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block mb-2">
-                            Presets Rápidos
-                        </label>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                            <button 
-                                onClick={() => updateStyle({ activeColor: '#FFFF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Anton', fontSize: 42 })} 
-                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-yellow-400 transition-colors font-bold text-yellow-400 bg-background shadow-sm"
-                            >
-                                AMARELO IMPACTO
-                            </button>
-                            <button 
-                                onClick={() => updateStyle({ activeColor: '#E50914', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Bebas Neue', fontSize: 46 })} 
-                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-red-500 transition-colors font-bold text-red-500 bg-background tracking-widest shadow-sm"
-                            >
-                                ESTILO FLIX
-                            </button>
-                            <button 
-                                onClick={() => updateStyle({ activeColor: '#00D1FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 3, fontFamily: 'Inter', fontSize: 38 })} 
-                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-cyan-400 transition-colors font-bold text-cyan-400 bg-background shadow-sm"
-                            >
-                                CYAN CLEAN
-                            </button>
-                            <button 
-                                onClick={() => updateStyle({ activeColor: '#FFD700', baseColor: '#F5F5F5', strokeColor: '#1A1A1A', strokeWidth: 6, fontFamily: 'Playfair Display', fontSize: 50 })} 
-                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-yellow-600 transition-colors font-serif font-black text-yellow-500 bg-background shadow-sm"
-                            >
-                                CINEMATIC GOLD
-                            </button>
-                            <button 
-                                onClick={() => updateStyle({ activeColor: '#FF00FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Impact', fontSize: 44 })} 
-                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-fuchsia-500 transition-colors font-bold text-fuchsia-500 bg-background shadow-sm"
-                            >
-                                CYBERPUNK
-                            </button>
-                            <button 
-                                onClick={() => updateStyle({ activeColor: '#00FF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 4, fontFamily: 'Montserrat', fontSize: 36 })} 
-                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-green-500 transition-colors font-bold text-green-500 bg-background shadow-sm"
-                            >
-                                HACKER MATRIX
-                            </button>
-                            <button 
-                                onClick={() => updateStyle({ activeColor: '#FFFFFF', baseColor: '#A0A0A0', strokeColor: '#000000', strokeWidth: 2, fontFamily: 'Roboto', fontSize: 32 })} 
-                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-white transition-colors font-semibold text-white bg-background shadow-sm"
-                            >
-                                MINIMALISTA
-                            </button>
-                            <button 
-                                onClick={() => updateStyle({ activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Comic Sans MS', fontSize: 40 })} 
-                                className="text-[10px] py-2 border border-border rounded-lg hover:bg-black hover:border-orange-500 transition-colors font-bold text-orange-500 bg-background shadow-sm mt-0"
-                            >
-                                YOUTUBER KIDS
-                            </button>
-                        </div>
+                    <div className="grid grid-cols-4 gap-2">
+                        {PRESETS.map((p) => {
+                            const active =
+                                captionStyle.activeColor === p.s.activeColor && captionStyle.fontFamily === p.s.fontFamily;
+                            return (
+                                <button
+                                    key={p.name}
+                                    type="button"
+                                    title={p.name}
+                                    onClick={() => updateStyle(p.s)}
+                                    className={cn(
+                                        'group flex flex-col items-center gap-1.5 rounded-xl border p-2 transition-all',
+                                        active
+                                            ? 'border-brand-accent bg-brand-accent/10 shadow-[0_0_14px_rgba(0,230,118,0.15)]'
+                                            : 'border-black/5 bg-black/[0.03] hover:border-brand-accent/40 hover:bg-black/5 dark:border-white/8 dark:bg-black/25 dark:hover:bg-white/5'
+                                    )}
+                                >
+                                    <span
+                                        className="text-xl font-black uppercase leading-none"
+                                        style={{
+                                            fontFamily: p.s.fontFamily,
+                                            color: p.s.baseColor,
+                                            WebkitTextStroke: `1px ${p.s.strokeColor}`,
+                                            paintOrder: 'stroke fill',
+                                        }}
+                                    >
+                                        A<span style={{ color: p.s.activeColor }}>a</span>
+                                    </span>
+                                    <span className="w-full truncate text-center text-[8px] font-bold uppercase tracking-wide text-brand-muted/70">
+                                        {p.name}
+                                    </span>
+                                </button>
+                            );
+                        })}
                     </div>
+                </section>
 
-                    {/* Font Family */}
-                    <div className="space-y-2">
-                        <div className="flex justify-between text-xs text-foreground">
-                            <span>Fonte</span>
-                            <span className="font-mono text-[10px]">{captionStyle.fontFamily || 'Poppins'}</span>
-                        </div>
-                        <select
-                            value={captionStyle.fontFamily || 'Poppins'}
-                            onChange={(e) => updateStyle({ fontFamily: e.target.value })}
-                            className="w-full bg-input/50 hover:bg-input border border-border/50 rounded-lg px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary transition-all cursor-pointer"
-                        >
-                            <option value="Poppins">Poppins</option>
-                            <option value="Roboto">Roboto</option>
-                            <option value="Inter">Inter</option>
-                            <option value="Impact">Impact</option>
-                            <option value="Montserrat">Montserrat</option>
-                            <option value="Anton">Anton</option>
-                            <option value="Bebas Neue">Bebas Neue</option>
-                            <option value="Playfair Display">Playfair Display</option>
-                            <option value="Comic Sans MS">Comic Sans MS</option>
-                        </select>
+                {/* Fonte */}
+                <div className="space-y-1.5">
+                    <div className="flex items-baseline justify-between">
+                        <label className="text-[11px] font-semibold uppercase tracking-wider text-brand-muted">Fonte</label>
+                        <span className="font-mono text-[10px] text-foreground/60">{captionStyle.fontFamily || 'Poppins'}</span>
                     </div>
+                    <select
+                        value={captionStyle.fontFamily || 'Poppins'}
+                        onChange={(e) => updateStyle({ fontFamily: e.target.value })}
+                        className="w-full cursor-pointer rounded-lg border border-black/10 bg-black/[0.03] px-3 py-2 text-sm text-foreground outline-none transition focus:border-brand-accent/50 dark:border-white/8 dark:bg-black/25"
+                    >
+                        {FONTS.map((f) => (
+                            <option key={f} value={f}>
+                                {f}
+                            </option>
+                        ))}
+                    </select>
+                </div>
 
-                    {/* Font Size */}
-                    <div className="space-y-2">
-                        <div className="flex justify-between text-xs text-foreground">
-                            <span>Tamanho da Fonte</span>
-                            <span className="font-mono">{captionStyle.fontSize}px</span>
-                        </div>
-                        <input
-                            type="range"
-                            min="8"
-                            max="80"
-                            step="2"
-                            value={captionStyle.fontSize}
-                            onChange={(e) => updateStyle({ fontSize: parseInt(e.target.value) })}
-                            className="w-full accent-primary"
-                        />
-                    </div>
-
-                    {/* Stroke Width */}
-                    <div className="space-y-2">
-                        <div className="flex justify-between text-xs text-foreground">
-                            <span className="flex items-center gap-1">
-                                <TypeOutline className="w-3 h-3" />
-                                Contorno
-                            </span>
-                            <span className="font-mono">{captionStyle.strokeWidth}px</span>
-                        </div>
-                        <input
-                            type="range"
-                            min="0"
-                            max="12"
-                            step="1"
-                            value={captionStyle.strokeWidth}
-                            onChange={(e) => updateStyle({ strokeWidth: parseInt(e.target.value) })}
-                            className="w-full accent-primary"
-                        />
-                    </div>
-
-                    {/* Vertical Position */}
-                    <div className="space-y-2">
-                        <div className="flex justify-between text-xs text-foreground">
-                            <span>Altura (Posição)</span>
-                            <span className="font-mono">{captionStyle.verticalPosition ?? 15}%</span>
-                        </div>
-                        <input
-                            type="range"
-                            min="5"
-                            max="50"
-                            step="1"
-                            value={captionStyle.verticalPosition ?? 15}
-                            onChange={(e) => updateStyle({ verticalPosition: parseInt(e.target.value) })}
-                            className="w-full accent-primary"
-                        />
-                    </div>
-
-                    {/* Colors Grid */}
-                    <div className="grid grid-cols-3 gap-3 pt-2">
-                        <div className="space-y-1.5">
-                            <label className="text-[10px] text-muted-foreground uppercase text-center block">
-                                Destaque
-                            </label>
-                            <input
-                                type="color"
-                                value={captionStyle.activeColor}
-                                onChange={(e) => updateStyle({ activeColor: e.target.value })}
-                                className="w-full h-8 rounded cursor-pointer border-0 p-0"
-                            />
-                        </div>
-                        <div className="space-y-1.5">
-                            <label className="text-[10px] text-muted-foreground uppercase text-center block">
-                                Letra
-                            </label>
-                            <input
-                                type="color"
-                                value={captionStyle.baseColor}
-                                onChange={(e) => updateStyle({ baseColor: e.target.value })}
-                                className="w-full h-8 rounded cursor-pointer border-0 p-0"
-                            />
-                        </div>
-                        <div className="space-y-1.5">
-                            <label className="text-[10px] text-muted-foreground uppercase text-center block">
-                                Borda
-                            </label>
-                            <input
-                                type="color"
-                                value={captionStyle.strokeColor}
-                                onChange={(e) => updateStyle({ strokeColor: e.target.value })}
-                                className="w-full h-8 rounded cursor-pointer border-0 p-0"
-                            />
-                        </div>
+                {/* Ajustes */}
+                <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                    <Slider label="Tamanho" value={captionStyle.fontSize} min={8} max={80} step={2} unit="px" onChange={(v) => updateStyle({ fontSize: v })} />
+                    <Slider label="Contorno" value={captionStyle.strokeWidth} min={0} max={12} step={1} unit="px" onChange={(v) => updateStyle({ strokeWidth: v })} />
+                    <div className="col-span-2">
+                        <Slider label="Altura (posição)" value={captionStyle.verticalPosition ?? 15} min={5} max={50} step={1} unit="%" onChange={(v) => updateStyle({ verticalPosition: v })} />
                     </div>
                 </div>
 
-                {/* Text Editor Section */}
-                <div className="space-y-3 pt-4 border-t border-border/50">
-                    <h4 className="text-sm font-medium text-muted-foreground flex items-center gap-2 uppercase tracking-wider">
-                        <Type className="w-4 h-4" />
-                        Texto da Legenda
+                {/* Cores */}
+                <section className="space-y-2">
+                    <h4 className="text-[11px] font-bold uppercase tracking-wider text-brand-muted">Cores</h4>
+                    <div className="grid grid-cols-3 gap-2">
+                        {colors.map((c) => (
+                            <label
+                                key={c.key}
+                                className="flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border border-black/5 bg-black/[0.03] p-2 transition hover:border-brand-accent/30 dark:border-white/8 dark:bg-black/25"
+                            >
+                                <span className="text-[9px] font-bold uppercase tracking-wider text-brand-muted/80">{c.label}</span>
+                                <div
+                                    className="relative h-8 w-full overflow-hidden rounded-lg ring-1 ring-black/10 dark:ring-white/10"
+                                    style={{ backgroundColor: c.value }}
+                                >
+                                    <input
+                                        type="color"
+                                        value={c.value}
+                                        onChange={(e) => updateStyle({ [c.key]: e.target.value } as Partial<CaptionStyle>)}
+                                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                                    />
+                                </div>
+                                <span className="font-mono text-[9px] uppercase text-foreground/50">{c.value}</span>
+                            </label>
+                        ))}
+                    </div>
+                </section>
+
+                {/* Texto da legenda */}
+                <section className="space-y-2 border-t border-black/5 pt-4 dark:border-white/5">
+                    <h4 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-brand-muted">
+                        <Type className="h-3.5 w-3.5 text-brand-accent" />
+                        Texto da legenda
                     </h4>
                     <div className="space-y-2">
                         {adData.captions.segments.map((segment, index) => (
-                            <div key={segment.id} className="relative group">
-                                <span className="absolute left-2 top-2 text-[10px] text-muted-foreground font-mono">
+                            <div key={segment.id} className="group relative">
+                                <span className="absolute left-2.5 top-2.5 z-10 rounded bg-black/40 px-1 font-mono text-[9px] font-bold text-brand-accent/80">
                                     {segment.start.toFixed(1)}s
                                 </span>
                                 <textarea
-                                    className="w-full bg-input/50 hover:bg-input focus:bg-input border border-border/50 rounded-lg pl-10 pr-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary transition-all resize-none min-h-[60px]"
+                                    className="min-h-[56px] w-full resize-none rounded-lg border border-black/10 bg-black/[0.03] py-2.5 pl-12 pr-3 text-sm text-foreground outline-none transition focus:border-brand-accent/50 dark:border-white/8 dark:bg-black/25"
                                     value={segment.text}
                                     onChange={(e) => handleTextChange(index, e.target.value)}
                                 />
                             </div>
                         ))}
                     </div>
-                </div>
+                </section>
             </div>
         </div>
     );

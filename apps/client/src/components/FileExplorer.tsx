@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
     FolderOpen, Folder, FileVideo, FileImage, FileMusic, ChevronDown, ChevronRight,
     Plus, Upload, ArrowDownToLine, Pencil, Scissors, Copy, Trash2, X, Loader2,
-    CheckSquare, Square, Check, Play, LayoutGrid, List, HardDrive, Users, RotateCcw, Building2, Sparkles,
+    CheckSquare, Square, Check, Play, LayoutGrid, List, HardDrive, Users, RotateCcw, Building2, Sparkles, Send,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { API_BASE_URL as API } from '../lib/apiBase';
@@ -12,6 +12,9 @@ import { cn } from '../lib/utils';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { useDownloadJobs } from '../context/DownloadJobsContext';
 import { OpsLibrary } from './OpsLibrary';
+import { PremiumSelect } from './ExportModal';
+import { OpsViewContextPicker } from './OpsViewContextPicker';
+import { gatewayApi, type OpsCompany, type OpsFolder, type OpsViewContext } from '../lib/gateway';
 
 // ─── Tipos (espelho do fileExplorerController) ────────────────────────────
 
@@ -575,6 +578,86 @@ export const FileExplorer = () => {
         setMoving(null);
         toast.success(`${ok} de ${moving.length} copiado(s).`);
         void openFolder(currentPath);
+    };
+
+    // Envia (upload) os arquivos selecionados para o acervo do Mileto Ops. Só MP4;
+    // reaproveita o endpoint /api/ops/files/import-local (mesmo fluxo do MediaSourceModal).
+    const handleSendToOps = async (opts: { companyId: string; folderId: string; viewContextId: string | null }) => {
+        if (!moving) return;
+        setBusy(true);
+        const headers = { ...(await localAuthHeaders()), 'Content-Type': 'application/json' };
+        let ok = 0;
+        let reused = 0;
+        const results = await Promise.allSettled(
+            moving.map(async (f) => {
+                const res = await fetch(`${API}/api/ops/files/import-local`, {
+                    method: 'POST',
+                    headers: { ...headers, ...(opts.viewContextId ? { 'X-Ops-View-Context': opts.viewContextId } : {}) },
+                    body: JSON.stringify({
+                        sourceUrl: /^https?:\/\//i.test(f.publicUrl) ? f.publicUrl : `${API}${f.publicUrl}`,
+                        backendPath: f.filePath,
+                        fileName: f.name,
+                        companyId: opts.companyId,
+                        folderId: opts.folderId,
+                    }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.ok) throw new Error(data.message || `Falha ao enviar ${f.name}.`);
+                ok++;
+                if (data.deduplicated) reused++;
+            })
+        );
+        setBusy(false);
+        const failed = results.filter((r) => r.status === 'rejected').length;
+        if (ok) {
+            toast.success(`${ok} de ${moving.length} enviado(s) ao Mileto Ops${reused ? ` (${reused} sem duplicar espaço)` : ''}.`);
+        }
+        if (failed) {
+            const first = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+            toast.error(`${failed} falharam. ${first?.reason instanceof Error ? first.reason.message : ''}`.trim());
+        } else {
+            setMoving(null);
+            setSelectedIds(new Set());
+        }
+    };
+
+    // Envia (copia) os arquivos selecionados para o espaço Compartilhado da equipe.
+    const handleSendToShared = async (parent: string) => {
+        if (!moving) return;
+        setBusy(true);
+        const headers = { ...(await localAuthHeaders()), 'Content-Type': 'application/json' };
+        let ok = 0;
+        let reused = 0;
+        const results = await Promise.allSettled(
+            moving.map(async (f) => {
+                const res = await fetch(`${API}/api/shared/files/import-local`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        sourceUrl: /^https?:\/\//i.test(f.publicUrl) ? f.publicUrl : `${API}${f.publicUrl}`,
+                        backendPath: f.filePath,
+                        name: f.name,
+                        parent,
+                    }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.ok) throw new Error(data.message || `Falha ao enviar ${f.name}.`);
+                ok++;
+                if (data.deduplicated) reused++;
+            })
+        );
+        setBusy(false);
+        const failed = results.filter((r) => r.status === 'rejected').length;
+        if (ok) {
+            toast.success(`${ok} de ${moving.length} enviado(s) ao Compartilhado${reused ? ` (${reused} sem duplicar espaço)` : ''}.`);
+        }
+        if (failed) {
+            const first = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+            toast.error(`${failed} falharam. ${first?.reason instanceof Error ? first.reason.message : ''}`.trim());
+        } else {
+            setMoving(null);
+            setSelectedIds(new Set());
+        }
     };
 
     // Abre o diálogo premium de exclusão. A deleção efetiva roda em doDeleteBatch.
@@ -1196,6 +1279,8 @@ export const FileExplorer = () => {
                     onClose={() => setMoving(null)}
                     onMove={handleMoveBatch}
                     onCopy={handleCopyBatch}
+                    onSendToShared={handleSendToShared}
+                    onSendToOps={handleSendToOps}
                 />
             )}
 
@@ -1241,21 +1326,162 @@ interface MoveCopyProps {
     onClose: () => void;
     onMove: (dest: string) => void;
     onCopy: (dest: string) => void;
+    onSendToShared: (parent: string) => Promise<void>;
+    onSendToOps: (opts: { companyId: string; folderId: string; viewContextId: string | null }) => Promise<void>;
 }
 
-const MoveCopyDialog = ({ items, tree, onClose, onMove, onCopy }: MoveCopyProps) => {
+type SharedNode = { name: string; relPath: string; children?: SharedNode[] };
+const flattenShared = (node: SharedNode, prefix = ''): Array<{ value: string; label: string }> => {
+    const p = node.relPath === '/' ? '' : node.relPath || '';
+    const kids = Array.isArray(node.children) ? node.children : [];
+    return [
+        ...(p ? [{ value: p, label: `${prefix}${node.name}` }] : []),
+        ...kids.flatMap((c) => flattenShared(c, `${prefix}${p ? '— ' : ''}`)),
+    ];
+};
+
+const MoveCopyDialog = ({ items, tree, onClose, onMove, onCopy, onSendToShared, onSendToOps }: MoveCopyProps) => {
+    const [destKind, setDestKind] = useState<'local' | 'shared' | 'ops'>('local');
     const [dest, setDest] = useState('');
+
+    // ── Compartilhado (carregado sob demanda) ──
+    const [sharedLoading, setSharedLoading] = useState(false);
+    const [sharedReady, setSharedReady] = useState(false);
+    const [sharedErr, setSharedErr] = useState('');
+    const [sharedFolders, setSharedFolders] = useState<Array<{ value: string; label: string }>>([]);
+    const [sharedDest, setSharedDest] = useState('');
+    const [sendingShared, setSendingShared] = useState(false);
+
+    // ── Mileto Ops (carregado sob demanda ao abrir a aba) ──
+    const [opsLoading, setOpsLoading] = useState(false);
+    const [opsReady, setOpsReady] = useState(false);
+    const [opsErr, setOpsErr] = useState('');
+    const [opsContexts, setOpsContexts] = useState<OpsViewContext[]>([]);
+    const [opsViewContextId, setOpsViewContextId] = useState<string | null>(null);
+    const [opsCompanies, setOpsCompanies] = useState<OpsCompany[]>([]);
+    const [opsCompanyId, setOpsCompanyId] = useState('');
+    const [opsFolders, setOpsFolders] = useState<OpsFolder[]>([]);
+    const [opsFolderId, setOpsFolderId] = useState('');
+    const [sending, setSending] = useState(false);
 
     const flatten = (node: FileNode, acc: Array<{ rel: string; label: string }> = []) => {
         if (node.relPath !== '') acc.push({ rel: node.relPath, label: CATEGORY_LABEL[node.name] || node.name });
         for (const c of node.children) flatten(c, acc);
         return acc;
     };
-    const options = tree ? flatten(tree) : [];
+    const localOptions: Array<{ value: string; label: string }> = [
+        { value: '', label: 'Arquivos (raiz)' },
+        ...(tree ? flatten(tree).map((o) => ({ value: o.rel, label: o.label })) : []),
+    ];
+
+    // O Mileto Ops só aceita vídeos MP4.
+    const nonMp4 = items.filter((f) => !f.name.toLowerCase().endsWith('.mp4'));
+    const opsBlockedReason =
+        items.length && nonMp4.length
+            ? 'O Mileto Ops aceita somente vídeos MP4. Remova imagens, áudios ou arquivos MOV da seleção.'
+            : '';
+
+    const loadOps = async () => {
+        setOpsLoading(true);
+        setOpsErr('');
+        try {
+            const contexts = await gatewayApi.opsViewContexts();
+            setOpsContexts(contexts.data.contexts);
+            const ctx =
+                contexts.data.contexts.find((c) => c.contextId === contexts.data.defaultContextId) ||
+                contexts.data.contexts[0];
+            setOpsViewContextId(ctx?.contextId || null);
+            const companies = await gatewayApi.opsCompanies('', ctx?.contextId);
+            setOpsCompanies(companies.data);
+            const cid = companies.data[0]?.id || '';
+            setOpsCompanyId(cid);
+            setOpsFolderId('');
+            setOpsFolders(cid ? (await gatewayApi.opsFolders(cid, ctx?.contextId)).data : []);
+            setOpsReady(true);
+        } catch (e) {
+            setOpsErr(e instanceof Error ? e.message : 'Não foi possível carregar o Mileto Ops. Conecte a conta em Integrações.');
+        } finally {
+            setOpsLoading(false);
+        }
+    };
+
+    const switchToOps = () => {
+        setDestKind('ops');
+        if (!opsReady && !opsLoading) void loadOps();
+    };
+
+    const changeCompany = async (cid: string) => {
+        setOpsCompanyId(cid);
+        setOpsFolderId('');
+        setOpsFolders([]);
+        if (!cid) return;
+        try {
+            setOpsFolders((await gatewayApi.opsFolders(cid, opsViewContextId)).data);
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : 'Não foi possível listar as pastas.');
+        }
+    };
+
+    // Troca a "visão" (dono / todos / pessoa da equipe) e re-busca as empresas visíveis nela.
+    const changeContext = async (contextId: string) => {
+        setOpsViewContextId(contextId);
+        setOpsCompanyId('');
+        setOpsFolderId('');
+        setOpsFolders([]);
+        try {
+            const companies = await gatewayApi.opsCompanies('', contextId);
+            setOpsCompanies(companies.data);
+            const cid = companies.data[0]?.id || '';
+            setOpsCompanyId(cid);
+            if (cid) setOpsFolders((await gatewayApi.opsFolders(cid, contextId)).data);
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : 'Não foi possível carregar as empresas dessa visão.');
+        }
+    };
+
+    const sendToOps = async () => {
+        if (sending || !opsCompanyId || opsBlockedReason) return;
+        setSending(true);
+        try {
+            await onSendToOps({ companyId: opsCompanyId, folderId: opsFolderId, viewContextId: opsViewContextId });
+        } finally {
+            setSending(false);
+        }
+    };
+
+    // ── Compartilhado: carrega pastas + envia ──
+    const loadShared = async () => {
+        setSharedLoading(true);
+        setSharedErr('');
+        try {
+            const res = await fetch(`${API}/api/shared/files/tree`, { headers: await localAuthHeaders() });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.message || 'Não foi possível listar as pastas compartilhadas.');
+            setSharedFolders([{ value: '', label: 'Compartilhado (raiz)' }, ...flattenShared(data.root)]);
+            setSharedReady(true);
+        } catch (e) {
+            setSharedErr(e instanceof Error ? e.message : 'Não foi possível carregar o Compartilhado.');
+        } finally {
+            setSharedLoading(false);
+        }
+    };
+    const switchToShared = () => {
+        setDestKind('shared');
+        if (!sharedReady && !sharedLoading) void loadShared();
+    };
+    const sendShared = async () => {
+        if (sendingShared) return;
+        setSendingShared(true);
+        try {
+            await onSendToShared(sharedDest);
+        } finally {
+            setSendingShared(false);
+        }
+    };
 
     return (
-        <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
-            <div className="bg-brand-dark/95 border border-brand-accent/30 rounded-3xl w-full max-w-md shadow-[0_0_50px_rgba(0,230,118,0.15)] flex flex-col overflow-hidden relative z-101">
+        <div className="fixed inset-0 z-100 flex items-start justify-center overflow-y-auto bg-black/80 backdrop-blur-md p-4 py-10">
+            <div className="bg-brand-dark/95 border border-brand-accent/30 rounded-3xl w-full max-w-md shadow-[0_0_50px_rgba(0,230,118,0.15)] flex flex-col relative z-101">
                 <div className="flex items-center justify-between px-6 py-5 border-b border-black/10 dark:border-white/10">
                     <h3 className="font-black uppercase tracking-wider text-foreground text-[15px]">
                         Mover / Copiar
@@ -1265,36 +1491,191 @@ const MoveCopyDialog = ({ items, tree, onClose, onMove, onCopy }: MoveCopyProps)
                     </button>
                 </div>
                 <div className="p-6 flex flex-col gap-4">
-                    <p className="text-sm text-brand-muted">
-                        {items.length} arquivo(s) selecionado(s)
-                    </p>
-                    <div className="flex flex-col gap-2">
-                        <label className="text-[10px] uppercase tracking-widest font-bold text-brand-accent">Destino</label>
-                        <select
-                            value={dest}
-                            onChange={(e) => setDest(e.target.value)}
-                            className="bg-black/30 border border-white/10 rounded-xl px-4 py-3 text-sm text-foreground outline-none focus:border-brand-accent/50"
-                        >
-                            <option value="">Arquivos (raiz)</option>
-                            {options.map((o) => (
-                                <option key={o.rel} value={o.rel}>{o.label}</option>
-                            ))}
-                        </select>
-                    </div>
-                    <div className="flex gap-3 pt-2">
+                    <p className="text-sm text-brand-muted">{items.length} arquivo(s) selecionado(s)</p>
+
+                    {/* Tipo de destino: local · compartilhado · Mileto Ops */}
+                    <div className="grid grid-cols-3 gap-1 rounded-xl border border-white/10 bg-black/30 p-1">
                         <button
-                            onClick={() => onCopy(dest)}
-                            className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold text-foreground border border-white/10 hover:border-white/20 hover:bg-white/5 transition-all"
+                            type="button"
+                            onClick={() => setDestKind('local')}
+                            className={cn(
+                                'flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[11px] font-bold transition-all',
+                                destKind === 'local' ? 'bg-brand-lime/15 text-brand-lime' : 'text-brand-muted hover:text-foreground'
+                            )}
                         >
-                            <Copy className="w-4 h-4" /> Copiar
+                            <HardDrive className="h-3.5 w-3.5 shrink-0" /> Local
                         </button>
                         <button
-                            onClick={() => onMove(dest)}
-                            className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-lime px-4 py-3 text-sm font-bold text-[#0a0f12] hover:brightness-110 transition-all"
+                            type="button"
+                            onClick={switchToShared}
+                            className={cn(
+                                'flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[11px] font-bold transition-all',
+                                destKind === 'shared' ? 'bg-brand-accent/15 text-brand-accent' : 'text-brand-muted hover:text-foreground'
+                            )}
                         >
-                            <Scissors className="w-4 h-4" /> Mover
+                            <Users className="h-3.5 w-3.5 shrink-0" /> Compart.
+                        </button>
+                        <button
+                            type="button"
+                            onClick={switchToOps}
+                            className={cn(
+                                'flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[11px] font-bold transition-all',
+                                destKind === 'ops' ? 'bg-violet-500/20 text-violet-300' : 'text-brand-muted hover:text-foreground'
+                            )}
+                        >
+                            <Building2 className="h-3.5 w-3.5 shrink-0" /> Ops
                         </button>
                     </div>
+
+                    {destKind === 'local' ? (
+                        <>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-[10px] uppercase tracking-widest font-bold text-brand-accent">Pasta de destino</label>
+                                <PremiumSelect
+                                    value={dest}
+                                    options={localOptions}
+                                    placeholder="Arquivos (raiz)"
+                                    searchable
+                                    searchPlaceholder="Buscar pasta..."
+                                    onChange={setDest}
+                                />
+                            </div>
+                            <div className="flex gap-3 pt-2">
+                                <button
+                                    onClick={() => onCopy(dest)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-bold text-foreground border border-white/10 hover:border-white/20 hover:bg-white/5 transition-all"
+                                >
+                                    <Copy className="w-4 h-4" /> Copiar
+                                </button>
+                                <button
+                                    onClick={() => onMove(dest)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-lime px-4 py-3 text-sm font-bold text-[#0a0f12] hover:brightness-110 transition-all"
+                                >
+                                    <Scissors className="w-4 h-4" /> Mover
+                                </button>
+                            </div>
+                        </>
+                    ) : destKind === 'shared' ? (
+                        <>
+                            {sharedLoading ? (
+                                <div className="flex items-center gap-2 py-6 text-sm text-brand-muted">
+                                    <Loader2 className="h-4 w-4 animate-spin" /> Carregando Compartilhado...
+                                </div>
+                            ) : sharedErr ? (
+                                <div className="flex flex-col gap-2 py-2">
+                                    <p className="rounded-xl border border-red-400/25 bg-red-400/10 px-3 py-2 text-xs text-red-200">{sharedErr}</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => void loadShared()}
+                                        className="self-start rounded-lg border border-white/10 px-3 py-1.5 text-xs font-bold text-foreground hover:bg-white/5"
+                                    >
+                                        Tentar de novo
+                                    </button>
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="flex flex-col gap-2">
+                                        <label className="text-[10px] uppercase tracking-widest font-bold text-brand-accent">Pasta compartilhada</label>
+                                        <PremiumSelect
+                                            value={sharedDest}
+                                            options={sharedFolders}
+                                            placeholder="Compartilhado (raiz)"
+                                            searchable
+                                            searchPlaceholder="Buscar pasta..."
+                                            onChange={setSharedDest}
+                                        />
+                                    </div>
+                                    <div className="pt-2">
+                                        <button
+                                            type="button"
+                                            disabled={sendingShared}
+                                            onClick={() => void sendShared()}
+                                            className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-brand-lime px-4 py-3 text-sm font-bold text-[#0a0f12] transition-all hover:brightness-110 disabled:opacity-40"
+                                        >
+                                            {sendingShared ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                                            {sendingShared ? 'Enviando...' : 'Enviar ao Compartilhado'}
+                                        </button>
+                                        <p className="mt-2 text-center text-[11px] text-brand-muted">
+                                            Os arquivos originais permanecem no dispositivo.
+                                        </p>
+                                    </div>
+                                </>
+                            )}
+                        </>
+                    ) : (
+                        <>
+                            {opsBlockedReason && (
+                                <p className="rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
+                                    {opsBlockedReason}
+                                </p>
+                            )}
+                            {opsLoading ? (
+                                <div className="flex items-center gap-2 py-6 text-sm text-brand-muted">
+                                    <Loader2 className="h-4 w-4 animate-spin" /> Carregando Mileto Ops...
+                                </div>
+                            ) : opsErr ? (
+                                <div className="flex flex-col gap-2 py-2">
+                                    <p className="rounded-xl border border-red-400/25 bg-red-400/10 px-3 py-2 text-xs text-red-200">{opsErr}</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => void loadOps()}
+                                        className="self-start rounded-lg border border-white/10 px-3 py-1.5 text-xs font-bold text-foreground hover:bg-white/5"
+                                    >
+                                        Tentar de novo
+                                    </button>
+                                </div>
+                            ) : (
+                                <>
+                                    {opsContexts.length > 1 && (
+                                        <div className="flex flex-col gap-2">
+                                            <label className="text-[10px] uppercase tracking-widest font-bold text-violet-300">Visualizar como</label>
+                                            <OpsViewContextPicker
+                                                contexts={opsContexts}
+                                                value={opsViewContextId}
+                                                onChange={(v) => void changeContext(v)}
+                                            />
+                                        </div>
+                                    )}
+                                    <div className="flex flex-col gap-2">
+                                        <label className="text-[10px] uppercase tracking-widest font-bold text-violet-300">Empresa</label>
+                                        <PremiumSelect
+                                            value={opsCompanyId}
+                                            options={opsCompanies.map((c) => ({ value: c.id, label: c.name || c.nome || 'Empresa sem nome' }))}
+                                            placeholder="Selecionar empresa"
+                                            searchable
+                                            searchPlaceholder="Buscar empresa..."
+                                            onChange={(v) => void changeCompany(v)}
+                                        />
+                                    </div>
+                                    <div className="flex flex-col gap-2">
+                                        <label className="text-[10px] uppercase tracking-widest font-bold text-violet-300">Pasta no Mileto Ops</label>
+                                        <PremiumSelect
+                                            value={opsFolderId}
+                                            options={[{ value: '', label: 'Pasta raiz' }, ...opsFolders.map((f) => ({ value: f.id, label: f.name }))]}
+                                            placeholder="Pasta raiz"
+                                            searchable
+                                            searchPlaceholder="Buscar pasta..."
+                                            onChange={setOpsFolderId}
+                                        />
+                                    </div>
+                                    <div className="pt-2">
+                                        <button
+                                            type="button"
+                                            disabled={sending || !opsCompanyId || !!opsBlockedReason}
+                                            onClick={() => void sendToOps()}
+                                            className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-violet-500 px-4 py-3 text-sm font-bold text-white transition-all hover:brightness-110 disabled:opacity-40"
+                                        >
+                                            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                                            {sending ? 'Enviando...' : 'Enviar ao Ops'}
+                                        </button>
+                                        <p className="mt-2 text-center text-[11px] text-brand-muted">
+                                            Os arquivos originais permanecem no dispositivo.
+                                        </p>
+                                    </div>
+                                </>
+                            )}
+                        </>
+                    )}
                 </div>
             </div>
         </div>
