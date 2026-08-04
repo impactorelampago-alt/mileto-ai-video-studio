@@ -280,6 +280,13 @@ export interface TitleHook {
     imageUrl?: string; // URL for uploaded title images
 }
 
+export interface BrandPalette {
+    primary: string;
+    secondary: string;
+    tertiary: string;
+    all: string[];
+}
+
 export interface AdData {
     title: string;
     format: VideoFormat;
@@ -310,6 +317,9 @@ export interface AdData {
     dynamicTitles?: TitleHook[];
     /** Assinatura das legendas/narração usadas pela geração automática. */
     dynamicTitlesSourceKey?: string;
+    /** Paleta recebida do Mileto Ops; o contraste de texto e derivado no cliente. */
+    brandPalette?: BrandPalette | null;
+    brandPaletteUpdatedAt?: string | null;
     customOverlayUrl?: string; // Imagem customizada de logo/título no Step4
 }
 

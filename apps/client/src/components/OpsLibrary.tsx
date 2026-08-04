@@ -21,6 +21,7 @@ import { useWizard } from '../context/WizardContext';
 import type { MediaTake } from '../types';
 import { useDownloadJobs } from '../context/DownloadJobsContext';
 import { MiletoMediaPlayer } from './MiletoMediaPlayer';
+import { normalizeBrandPalette } from '../lib/brandPalette';
 
 const absoluteLocalUrl = (url?: string | null) => {
     if (!url) return '';
@@ -89,7 +90,7 @@ interface MaterializedOpsSource {
 }
 
 export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
-    const { addMediaTakes, setMediaTakes } = useWizard();
+    const { addMediaTakes, setMediaTakes, updateAdData } = useWizard();
     const { registerJob, registerClientJob, updateClientJob } = useDownloadJobs();
     const [ready, setReady] = useState(false);
     const [linked, setLinked] = useState(false);
@@ -228,6 +229,13 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
 
     const loadCompany = async (company: OpsCompany) => {
         setSelectedCompany(company);
+        if (company.kind !== 'archive') {
+            const brandPalette = normalizeBrandPalette(company.palette);
+            updateAdData({
+                brandPalette,
+                brandPaletteUpdatedAt: brandPalette ? company.paletteUpdatedAt ?? null : null,
+            });
+        }
         setSelectedFolder(null);
         setAssetQuery('');
         setLoading(true);
@@ -333,9 +341,8 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
 
     useEffect(() => {
         let cancelled = false;
-        // Só pede thumbnail de quem tem o flag. Vídeos do Ops hoje vêm com
-        // capabilities.thumbnail=false (o endpoint responde "sem miniatura"); quando o
-        // Ops passar a gerar poster de vídeo, este filtro pega automaticamente.
+        // Só pede thumbnail de quem tem o flag. Depois do contrato v0.1.3, vídeos com poster
+        // persistido entram aqui automaticamente; itens ainda sem backfill continuam no fallback.
         const candidates = assets.filter((asset) => asset.capabilities?.thumbnail).slice(0, 80);
         if (!candidates.length) {
             setThumbnailUrls({});

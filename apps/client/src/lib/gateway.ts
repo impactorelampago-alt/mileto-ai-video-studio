@@ -1,5 +1,6 @@
 import { gatewayUrl } from './apiBase';
 import { authStorage } from './authStorage';
+import type { BrandPalette } from '../types';
 
 /** Erro do gateway com o status HTTP preservado (401 = sessão, 402 = saldo). */
 export class GatewayError extends Error {
@@ -109,6 +110,8 @@ export interface OpsCompany {
     status?: string;
     /** "archive" = Acervo da agência (mídia compartilhada, não é empresa). "company" = empresa real. */
     kind?: 'company' | 'archive' | string;
+    palette?: BrandPalette | null;
+    paletteUpdatedAt?: string | null;
 }
 
 export interface OpsFolder {
@@ -351,6 +354,45 @@ export const gatewayApi = {
         return gatewayFetch(
             `/v1/integrations/mileto-ops/companies/${encodeURIComponent(companyId)}/folders`,
             { headers: opsContextHeaders(viewContextId) }
+        );
+    },
+
+    async createOpsFolder(
+        companyId: string,
+        input: { name: string; parentId: string | null },
+        viewContextId?: string | null
+    ): Promise<OpsFolder> {
+        const response = await gatewayFetch<{ data: OpsFolder }>(
+            `/v1/integrations/mileto-ops/companies/${encodeURIComponent(companyId)}/folders`,
+            {
+                method: 'POST',
+                headers: opsContextHeaders(viewContextId),
+                body: JSON.stringify(input),
+            }
+        );
+        return response.data;
+    },
+
+    async updateOpsFolder(
+        folderId: string,
+        input: { name: string } | { parentId: string | null },
+        viewContextId?: string | null
+    ): Promise<OpsFolder> {
+        const response = await gatewayFetch<{ data: OpsFolder }>(
+            `/v1/integrations/mileto-ops/folders/${encodeURIComponent(folderId)}`,
+            {
+                method: 'PATCH',
+                headers: opsContextHeaders(viewContextId),
+                body: JSON.stringify(input),
+            }
+        );
+        return response.data;
+    },
+
+    async deleteOpsFolder(folderId: string, viewContextId?: string | null): Promise<void> {
+        await gatewayFetch(
+            `/v1/integrations/mileto-ops/folders/${encodeURIComponent(folderId)}`,
+            { method: 'DELETE', headers: opsContextHeaders(viewContextId) }
         );
     },
 

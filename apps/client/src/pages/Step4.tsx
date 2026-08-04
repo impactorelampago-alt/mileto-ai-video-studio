@@ -32,6 +32,7 @@ import { ExportModal } from '../components/ExportModal';
 import { PREMIUM_TITLE_GROUPS, PREMIUM_TITLE_MODELS } from '../lib/premiumTitleModels';
 import { missingForCompletion, pendingWarningText } from '../lib/workflowWarnings';
 import { narrationSourceKey } from '../lib/narrationState';
+import { brandTitleColors } from '../lib/brandPalette';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -340,7 +341,11 @@ export const Step4 = () => {
             );
 
             if (res.data.ok && res.data.titles) {
-                const finalTitles = (res.data.titles || []).map((t: TitleHook) => ({ ...t, hasSound: true }));
+                const finalTitles = (res.data.titles || []).map((t: TitleHook, index: number) => ({
+                    ...t,
+                    ...(brandTitleColors(adData.brandPalette, index) || {}),
+                    hasSound: true,
+                }));
                 updateAdData({ dynamicTitles: finalTitles, dynamicTitlesSourceKey: currentSourceKey });
                 setSelectedTitleId(null);
                 toast.success('Títulos gerados com sucesso!', { id: toastId });

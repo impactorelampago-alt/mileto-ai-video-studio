@@ -454,6 +454,9 @@ app.delete('/v1/integrations/mileto-ops/user-links/:aiUserId', authed, requireOw
 app.get('/v1/integrations/mileto-ops/view-contexts', authed, asyncHandler(opsIntegration.listViewContexts));
 app.get('/v1/integrations/mileto-ops/companies', authed, asyncHandler(opsIntegration.listCompanies));
 app.get('/v1/integrations/mileto-ops/companies/:companyId/folders', authed, asyncHandler(opsIntegration.listFolders));
+app.post('/v1/integrations/mileto-ops/companies/:companyId/folders', authed, asyncHandler(opsIntegration.createFolder));
+app.patch('/v1/integrations/mileto-ops/folders/:folderId', authed, asyncHandler(opsIntegration.updateFolder));
+app.delete('/v1/integrations/mileto-ops/folders/:folderId', authed, asyncHandler(opsIntegration.deleteFolder));
 app.get('/v1/integrations/mileto-ops/companies/:companyId/assets', authed, asyncHandler(opsIntegration.listAssets));
 app.post('/v1/integrations/mileto-ops/companies/:companyId/assets/export', authed, opsExportUpload.single('file'), asyncHandler(opsIntegration.uploadExport));
 app.get('/v1/integrations/mileto-ops/assets/:assetId', authed, asyncHandler(opsIntegration.getAsset));

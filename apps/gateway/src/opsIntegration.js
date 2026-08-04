@@ -1035,6 +1035,87 @@ export const listFolders = async (req, res) => {
     res.json({ ok: true, data: unwrapOpsData(payload), meta: payload.meta || {} });
 };
 
+export const createFolder = async (req, res) => {
+    const companyId = String(req.params.companyId || '').trim();
+    const name = String(req.body?.name || '').trim().replace(/\s+/g, ' ');
+    const parentId = req.body?.parentId === null ? null : String(req.body?.parentId || '').trim() || null;
+    if (!companyId || !name || name.length > 80) {
+        throw httpError(400, 'invalid_folder', 'Informe uma empresa e um nome de pasta valido.');
+    }
+    const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken }) => {
+        assertAssetsWriteScope(connection);
+        const payload = await opsApi(accessToken, `/v1/companies/${encodeURIComponent(companyId)}/folders`, {
+            method: 'POST',
+            body: JSON.stringify({ name, parentId }),
+        });
+        return { connection, payload };
+    });
+    const folder = unwrapOpsData(payload);
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: 'ops.folder.created',
+        resourceType: 'folder',
+        resourceId: folder?.id || null,
+        result: 'success',
+        detail: { companyId, parentId },
+    });
+    res.status(201).json({ ok: true, data: folder, meta: payload.meta || {} });
+};
+
+export const updateFolder = async (req, res) => {
+    const folderId = String(req.params.folderId || '').trim();
+    const hasName = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
+    const hasParentId = Object.prototype.hasOwnProperty.call(req.body || {}, 'parentId');
+    if (!folderId || hasName === hasParentId) {
+        throw httpError(400, 'invalid_folder_update', 'Informe somente name ou parentId.');
+    }
+    const body = hasName
+        ? { name: String(req.body.name || '').trim().replace(/\s+/g, ' ') }
+        : { parentId: req.body.parentId === null ? null : String(req.body.parentId || '').trim() };
+    if ((hasName && (!body.name || body.name.length > 80)) || (hasParentId && body.parentId === '')) {
+        throw httpError(400, 'invalid_folder_update', 'Alteracao de pasta invalida.');
+    }
+    const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken }) => {
+        assertAssetsWriteScope(connection);
+        const payload = await opsApi(accessToken, `/v1/folders/${encodeURIComponent(folderId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify(body),
+        });
+        return { connection, payload };
+    });
+    const folder = unwrapOpsData(payload);
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: hasName ? 'ops.folder.renamed' : 'ops.folder.moved',
+        resourceType: 'folder',
+        resourceId: folderId,
+        result: 'success',
+        detail: body,
+    });
+    res.json({ ok: true, data: folder, meta: payload.meta || {} });
+};
+
+export const deleteFolder = async (req, res) => {
+    const folderId = String(req.params.folderId || '').trim();
+    if (!folderId) throw httpError(400, 'invalid_folder', 'Pasta invalida.');
+    const { connection } = await withDelegatedAccess(req, async ({ connection, accessToken }) => {
+        assertAssetsWriteScope(connection);
+        await opsApi(accessToken, `/v1/folders/${encodeURIComponent(folderId)}`, { method: 'DELETE' });
+        return { connection };
+    });
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: 'ops.folder.deleted',
+        resourceType: 'folder',
+        resourceId: folderId,
+        result: 'success',
+    });
+    res.status(204).end();
+};
+
 export const listAssets = async (req, res) => {
     const companyId = encodeURIComponent(String(req.params.companyId));
     const folderId = normalizeOpsFolderScope(req.query.folderId);
