@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
 import { gatewayApi } from '../lib/gateway';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 interface DraftSummary {
     projectId: string;
@@ -75,6 +76,12 @@ export const Home = () => {
     const [sharingId, setSharingId] = useState<string | null>(null);
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+    const [confirmDialog, setConfirmDialog] = useState<{
+        title: string;
+        message: string;
+        confirmLabel: string;
+        onConfirm: () => void;
+    } | null>(null);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editingTitle, setEditingTitle] = useState('');
     const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -307,40 +314,45 @@ export const Home = () => {
         }
     };
 
-    const handleDelete = async (e: React.MouseEvent, id: string) => {
-        e.stopPropagation();
-        if (deletingId) return;
-        if (scope === 'shared') {
-            if (!window.confirm('Mover este rascunho compartilhado para a lixeira?')) return;
-            setDeletingId(id);
-            try {
-                await gatewayApi.deleteSharedDraft(id);
-                setDrafts((prev) => prev.filter((d) => d.projectId !== id));
-                // Um rascunho compartilhado aberto continua sendo observado pelo
-                // autosave. Ao apagá-lo, soltamos essa referência para que ele
-                // não seja recriado alguns milissegundos depois.
-                if (draftScope === 'shared' && projectId === id) startNewDraft({ scope: 'local' });
-                toast.success('Rascunho movido para a lixeira por 30 dias.');
-            } catch (err) {
-                toast.error(err instanceof Error ? err.message : 'Erro ao mover para a lixeira');
-            } finally {
-                setDeletingId(null);
-            }
-            return;
-        }
-        if (!window.confirm('Excluir este rascunho? Essa ação não pode ser desfeita.')) return;
+    const performDelete = async (id: string) => {
         setDeletingId(id);
         try {
-            const res = await fetch(`${API_BASE}/api/projects/${id}`, { method: 'DELETE' });
-            const json = await res.json();
-            if (!json.ok) throw new Error(json.message || 'Falha ao excluir');
-            setDrafts((prev) => prev.filter((d) => d.projectId !== id));
-            toast.success('Rascunho excluído.');
+            if (scope === 'shared') {
+                await gatewayApi.deleteSharedDraft(id);
+                setDrafts((prev) => prev.filter((d) => d.projectId !== id));
+                // Um rascunho compartilhado aberto continua sendo observado pelo autosave.
+                // Ao apagá-lo, soltamos essa referência para que ele não seja recriado.
+                if (draftScope === 'shared' && projectId === id) startNewDraft({ scope: 'local' });
+                toast.success('Rascunho movido para a lixeira por 30 dias.');
+            } else {
+                const res = await fetch(`${API_BASE}/api/projects/${id}`, { method: 'DELETE' });
+                const json = await res.json();
+                if (!json.ok) throw new Error(json.message || 'Falha ao excluir');
+                setDrafts((prev) => prev.filter((d) => d.projectId !== id));
+                toast.success('Rascunho excluído.');
+            }
         } catch (err) {
             toast.error(err instanceof Error ? err.message : 'Erro ao excluir');
         } finally {
             setDeletingId(null);
         }
+    };
+
+    const handleDelete = (e: React.MouseEvent, id: string) => {
+        e.stopPropagation();
+        if (deletingId) return;
+        setConfirmDialog({
+            title: scope === 'shared' ? 'Mover para a lixeira?' : 'Excluir rascunho?',
+            message:
+                scope === 'shared'
+                    ? 'O rascunho ficará na lixeira compartilhada por 30 dias e poderá ser restaurado.'
+                    : 'Esta ação não pode ser desfeita.',
+            confirmLabel: scope === 'shared' ? 'Mover para lixeira' : 'Excluir',
+            onConfirm: () => {
+                setConfirmDialog(null);
+                void performDelete(id);
+            },
+        });
     };
 
     const handleDuplicate = async (event: React.MouseEvent, id: string) => {
@@ -664,6 +676,18 @@ export const Home = () => {
                     </div>
                 )}
             </div>
+
+            {confirmDialog && (
+                <ConfirmDialog
+                    mode="confirm"
+                    title={confirmDialog.title}
+                    message={confirmDialog.message}
+                    confirmLabel={confirmDialog.confirmLabel}
+                    variant="danger"
+                    onConfirm={confirmDialog.onConfirm}
+                    onClose={() => setConfirmDialog(null)}
+                />
+            )}
         </div>
     );
 };

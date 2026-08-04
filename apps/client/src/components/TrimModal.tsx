@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Play, Check, RotateCcw, Trash2, Scissors, Split, Undo2, GripVertical } from 'lucide-react';
+import { toast } from 'sonner';
 import { MediaTake } from '../types';
 import { cn, generateId } from '../lib/utils';
 import { SpeedPresetType } from '../lib/speedRemapping';
+import { ConfirmDialog } from './ConfirmDialog';
 
 interface TrimModalProps {
     take: MediaTake;
@@ -25,6 +27,12 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(take.trim.start);
     const [duration, setDuration] = useState(take.originalDurationSeconds || 0);
+    const [confirmDialog, setConfirmDialog] = useState<{
+        title: string;
+        message: string;
+        confirmLabel: string;
+        onConfirm: () => void;
+    } | null>(null);
 
     const [localSpeedPreset] = useState<SpeedPresetType>(take.speedPresetId || 'normal');
 
@@ -160,46 +168,52 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
             });
             setActiveSegmentId(newSeg2.id);
         } else {
-            alert('Posicione a agulha dentro do segmento selecionado para dividir.');
+            toast.warning('Posicione a agulha dentro do segmento selecionado para dividir.');
         }
     };
 
     // --- DELETE LOGIC ---
     const handleDelete = () => {
         if (segments.length <= 1) {
-            alert('Você não pode excluir o último segmento. Use Cancelar se quiser sair.');
+            toast.warning('Você não pode excluir o último segmento. Use Cancelar se quiser sair.');
             return;
         }
-        const confirmDelete = window.confirm('Excluir este corte?');
-        if (!confirmDelete) return;
-
-        addToHistory();
-        setSegments((prev) => {
-            const newList = prev.filter((s) => s.id !== activeSegmentId);
-            return newList;
+        setConfirmDialog({
+            title: 'Excluir este corte?',
+            message: 'O segmento selecionado será removido.',
+            confirmLabel: 'Excluir',
+            onConfirm: () => {
+                setConfirmDialog(null);
+                addToHistory();
+                setSegments((prev) => prev.filter((s) => s.id !== activeSegmentId));
+                setActiveSegmentId(segments.find((s) => s.id !== activeSegmentId)?.id || '');
+            },
         });
-        setActiveSegmentId(segments.find((s) => s.id !== activeSegmentId)?.id || '');
     };
 
     // --- RESET ---
     const handleReset = () => {
-        if (window.confirm('Isso apagará todos os cortes e voltará ao original. Continuar?')) {
-            addToHistory();
-            const newId = generateId();
-            setSegments([{ id: newId, start: 0, end: duration }]);
-            setActiveSegmentId(newId);
-            setHistory([]);
-            if (videoRef.current) videoRef.current.currentTime = 0;
-        }
+        setConfirmDialog({
+            title: 'Voltar ao original?',
+            message: 'Isso apagará todos os cortes e restaurará o take inteiro.',
+            confirmLabel: 'Restaurar',
+            onConfirm: () => {
+                setConfirmDialog(null);
+                addToHistory();
+                const newId = generateId();
+                setSegments([{ id: newId, start: 0, end: duration }]);
+                setActiveSegmentId(newId);
+                setHistory([]);
+                if (videoRef.current) videoRef.current.currentTime = 0;
+            },
+        });
     };
 
     // --- SAVE ---
     const handleSave = () => {
         // Enforce Single Segment Rule
         if (segments.length !== 1) {
-            alert(
-                'Atenção: Para confirmar, deve haver apenas UM segmento contínuo.\n\nPor favor, exclua os cortes indesejados antes de salvar.'
-            );
+            toast.error('Para confirmar, deixe apenas UM segmento contínuo. Exclua os cortes indesejados antes de salvar.');
             return;
         }
 
@@ -569,6 +583,18 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                     </button>
                 </div>
             </div>
+
+            {confirmDialog && (
+                <ConfirmDialog
+                    mode="confirm"
+                    title={confirmDialog.title}
+                    message={confirmDialog.message}
+                    confirmLabel={confirmDialog.confirmLabel}
+                    variant="danger"
+                    onConfirm={confirmDialog.onConfirm}
+                    onClose={() => setConfirmDialog(null)}
+                />
+            )}
         </div>,
         document.body
     );
