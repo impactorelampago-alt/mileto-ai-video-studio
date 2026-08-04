@@ -114,6 +114,11 @@ export interface OpsCompany {
 export interface OpsFolder {
     id: string;
     name: string;
+    parentId?: string | null;
+    companyId?: string;
+    createdVia?: string;
+    createdAt?: string;
+    updatedAt?: string;
 }
 
 export interface OpsAsset {

@@ -822,6 +822,121 @@ export const deleteItem = (req: Request, res: Response) => {
     }
 };
 
+// ─── Operações de PASTA (diretório) ───────────────────────────────────────
+// As de arquivo acima são file-only; estas movem/copiam/apagam diretórios
+// inteiros e reconciliam o índice + as referências nos projetos.
+
+const normalizeRel = (rel: string) => String(rel || '').replace(/\\/g, '/').replace(/\/+$/, '');
+
+/** Resolve e valida uma pasta dentro de FILES_ROOT (não pode ser a raiz nem uma categoria padrão). */
+function resolveFolder(rel: string): { abs: string; norm: string } {
+    const norm = normalizeRel(rel);
+    if (!norm) throw new Error('Informe a pasta.');
+    const abs = path.resolve(safeResolve(FILES_ROOT, norm));
+    if (!isInsideFilesRoot(abs)) throw new Error('Pasta inválida.');
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) throw new Error('Pasta não encontrada.');
+    if ((DEFAULT_ROOT_FOLDERS as readonly string[]).includes(norm)) {
+        throw new Error('Não é possível mover, copiar ou apagar uma pasta padrão do sistema.');
+    }
+    return { abs, norm };
+}
+
+// DELETE /api/files/folder  { relPath }
+export const deleteFolder = (req: Request, res: Response) => {
+    try {
+        const { norm, abs } = resolveFolder((req.body?.relPath as string) || (req.query.relPath as string));
+        const prefix = `${norm}/`;
+        const index = readIndex();
+        const inside = index.filter((e) => e.relPath === norm || e.relPath.startsWith(prefix));
+        fs.rmSync(abs, { recursive: true, force: true });
+        writeIndex(index.filter((e) => !(e.relPath === norm || e.relPath.startsWith(prefix))));
+        let touched = 0;
+        for (const e of inside) touched += reconcileProjects(e.publicUrl, null);
+        res.json({ ok: true, projectsUpdated: touched, removed: inside.length });
+    } catch (error: unknown) {
+        res.status(400).json({ ok: false, message: errMsg(error) });
+    }
+};
+
+// POST /api/files/folder/move  { relPath, destPath }
+export const moveFolder = (req: Request, res: Response) => {
+    try {
+        const { abs, norm } = resolveFolder(req.body?.relPath as string);
+        const destRel = normalizeRel((req.body?.destPath as string) || '');
+        const destDir = destRel ? path.resolve(safeResolve(FILES_ROOT, destRel)) : path.resolve(FILES_ROOT);
+        if (destDir !== path.resolve(FILES_ROOT) && !isInsideFilesRoot(destDir)) {
+            return res.status(400).json({ ok: false, message: 'Destino inválido.' });
+        }
+        const name = path.basename(norm);
+        const newAbs = path.join(destDir, name);
+        const newNorm = normalizeRel(path.relative(FILES_ROOT, newAbs).split(path.sep).join('/'));
+        if (newNorm === norm) return res.status(409).json({ ok: false, message: 'A pasta já está nesse destino.' });
+        if (newNorm === `${norm}` || newNorm.startsWith(`${norm}/`)) {
+            return res.status(400).json({ ok: false, message: 'Não é possível mover a pasta para dentro dela mesma.' });
+        }
+        if (fs.existsSync(newAbs)) return res.status(409).json({ ok: false, message: 'Já existe uma pasta com esse nome no destino.' });
+
+        fs.renameSync(abs, newAbs);
+        const index = readIndex();
+        let touched = 0;
+        for (const e of index) {
+            if (e.relPath === norm || e.relPath.startsWith(`${norm}/`)) {
+                const oldPublic = e.publicUrl;
+                const nr = newNorm + e.relPath.slice(norm.length);
+                e.relPath = nr;
+                e.filePath = path.resolve(safeResolve(FILES_ROOT, nr));
+                e.publicUrl = toPublicUrl(nr);
+                touched += reconcileProjects(oldPublic, e.publicUrl);
+            }
+        }
+        writeIndex(index);
+        res.json({ ok: true, projectsUpdated: touched });
+    } catch (error: unknown) {
+        res.status(400).json({ ok: false, message: errMsg(error) });
+    }
+};
+
+// POST /api/files/folder/copy  { relPath, destPath }
+export const copyFolder = (req: Request, res: Response) => {
+    try {
+        const { abs, norm } = resolveFolder(req.body?.relPath as string);
+        const destRel = normalizeRel((req.body?.destPath as string) || '');
+        const destDir = destRel ? path.resolve(safeResolve(FILES_ROOT, destRel)) : path.resolve(FILES_ROOT);
+        if (destDir !== path.resolve(FILES_ROOT) && !isInsideFilesRoot(destDir)) {
+            return res.status(400).json({ ok: false, message: 'Destino inválido.' });
+        }
+        const name = path.basename(norm);
+        const newAbs = path.join(destDir, name);
+        const newNorm = normalizeRel(path.relative(FILES_ROOT, newAbs).split(path.sep).join('/'));
+        if (newNorm === norm || newNorm.startsWith(`${norm}/`)) {
+            return res.status(400).json({ ok: false, message: 'Não é possível copiar a pasta para dentro dela mesma.' });
+        }
+        if (fs.existsSync(newAbs)) return res.status(409).json({ ok: false, message: 'Já existe uma pasta com esse nome no destino.' });
+
+        fs.cpSync(abs, newAbs, { recursive: true });
+        // Cada arquivo indexado dentro da origem vira uma nova entrada independente.
+        const index = readIndex();
+        const sources = index.filter((e) => e.relPath === norm || e.relPath.startsWith(`${norm}/`));
+        let copied = 0;
+        for (const s of sources) {
+            const nr = newNorm + s.relPath.slice(norm.length);
+            index.push({
+                ...s,
+                id: uuidv4(),
+                relPath: nr,
+                filePath: path.resolve(safeResolve(FILES_ROOT, nr)),
+                publicUrl: toPublicUrl(nr),
+                createdAt: new Date().toISOString(),
+            });
+            copied += 1;
+        }
+        writeIndex(index);
+        res.json({ ok: true, copied });
+    } catch (error: unknown) {
+        res.status(400).json({ ok: false, message: errMsg(error) });
+    }
+};
+
 function errMsg(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }

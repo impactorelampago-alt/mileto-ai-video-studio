@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
     AlertTriangle, ArrowDownToLine, Building2, Check, ChevronDown, ChevronRight,
     CheckSquare, Crown, FileImage, FileVideo, Folder, FolderOpen, Grid2X2, Library, List, Loader2, Music2, Play,
-    Search, ShieldCheck, Sparkles, Square, UserRound, UsersRound, X,
+    Search, ShieldCheck, Sparkles, Square, Upload, UserRound, UsersRound, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -115,6 +115,8 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
     const previewRequestRef = useRef(new Map<string, Promise<OpsMediaUrl>>());
     const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
     const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+    const uploadInputRef = useRef<HTMLInputElement>(null);
+    const [uploading, setUploading] = useState(false);
 
     const resetNavigation = useCallback(() => {
         setCompanies([]);
@@ -263,6 +265,61 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
         }
     }, [assetQuery, recoverViewContext, selectedCompany, selectedContext?.contextId, selectedFolder]);
 
+    // Upload de MP4 direto na área do Ops: sobe pra biblioteca local (aparece "aqui")
+    // e em seguida envia pro acervo do Ops (aparece "lá"), na empresa/pasta abertas.
+    const uploadToOps = async (file: File) => {
+        if (!selectedCompany) {
+            toast.error('Abra uma empresa antes de enviar.');
+            return;
+        }
+        if (!file.name.toLowerCase().endsWith('.mp4')) {
+            toast.error('O Mileto Ops aceita somente vídeos MP4.');
+            return;
+        }
+        setUploading(true);
+        const toastId = toast.loading(`Enviando "${file.name}"...`);
+        try {
+            // 1) biblioteca local (aparece em Arquivos › Local)
+            const form = new FormData();
+            form.append('file', file);
+            const localRes = await fetch(`${API_BASE_URL}/api/files/upload`, {
+                method: 'POST',
+                headers: { ...(await localAuthHeaders()) },
+                body: form,
+            });
+            const localData = await localRes.json().catch(() => ({}));
+            if (!localRes.ok || !localData.ok) throw new Error(localData.message || 'Falha ao salvar localmente.');
+            const entry = localData.entry;
+
+            // 2) acervo do Ops (empresa/pasta abertas)
+            const opsRes = await fetch(`${API_BASE_URL}/api/ops/files/import-local`, {
+                method: 'POST',
+                headers: {
+                    ...(await localAuthHeaders()),
+                    'Content-Type': 'application/json',
+                    ...(selectedContext?.contextId ? { 'X-Ops-View-Context': selectedContext.contextId } : {}),
+                },
+                body: JSON.stringify({
+                    sourceUrl: absoluteLocalUrl(entry?.publicUrl),
+                    backendPath: entry?.filePath,
+                    fileName: entry?.name || file.name,
+                    companyId: selectedCompany.id,
+                    folderId: selectedFolder?.id || '',
+                }),
+            });
+            const opsData = await opsRes.json().catch(() => ({}));
+            if (!opsRes.ok || !opsData.ok) throw new Error(opsData.message || 'Falha ao enviar ao Mileto Ops.');
+
+            toast.success(`"${file.name}" enviado ao Mileto Ops e salvo em Arquivos.`, { id: toastId });
+            void loadAssets();
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Falha no envio.', { id: toastId });
+        } finally {
+            setUploading(false);
+            if (uploadInputRef.current) uploadInputRef.current.value = '';
+        }
+    };
+
     useEffect(() => {
         if (!selectedCompany) return;
         const timer = window.setTimeout(() => void loadAssets(), 300);
@@ -276,7 +333,10 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
 
     useEffect(() => {
         let cancelled = false;
-        const candidates = assets.filter((asset) => asset.capabilities?.thumbnail).slice(0, 40);
+        // Só pede thumbnail de quem tem o flag. Vídeos do Ops hoje vêm com
+        // capabilities.thumbnail=false (o endpoint responde "sem miniatura"); quando o
+        // Ops passar a gerar poster de vídeo, este filtro pega automaticamente.
+        const candidates = assets.filter((asset) => asset.capabilities?.thumbnail).slice(0, 80);
         if (!candidates.length) {
             setThumbnailUrls({});
             return;
@@ -310,6 +370,44 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
     const archiveCompanies = useMemo(() => filteredCompanies.filter((c) => c.kind === 'archive'), [filteredCompanies]);
     const regularCompanies = useMemo(() => filteredCompanies.filter((c) => c.kind !== 'archive'), [filteredCompanies]);
 
+    // ── Árvore de pastas do Ops (o Ops manda parentId por pasta; montamos o aninhamento aqui) ──
+    const childFolders = useCallback(
+        (parentId: string | null) => folders.filter((folder) => (folder.parentId ?? null) === parentId),
+        [folders]
+    );
+    // Caminho (ancestrais) da pasta aberta, p/ o breadcrumb navegável.
+    const folderPath = useMemo(() => {
+        if (!selectedFolder) return [] as OpsFolder[];
+        const byId = new Map(folders.map((folder) => [folder.id, folder]));
+        const chain: OpsFolder[] = [];
+        const seen = new Set<string>();
+        let cur: OpsFolder | undefined = selectedFolder;
+        while (cur && !seen.has(cur.id)) {
+            seen.add(cur.id);
+            chain.unshift(cur);
+            cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+        }
+        return chain;
+    }, [folders, selectedFolder]);
+    // Nó recursivo da sidebar (indenta por profundidade).
+    const renderFolderNode = (folder: OpsFolder, depth: number): ReactNode => {
+        const kids = childFolders(folder.id);
+        return (
+            <div key={folder.id}>
+                <button
+                    type="button"
+                    onClick={() => setSelectedFolder(folder)}
+                    style={{ paddingLeft: `${8 + depth * 12}px` }}
+                    className={`flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-[11px] transition ${selectedFolder?.id === folder.id ? 'bg-brand-lime/10 text-brand-lime' : 'text-foreground/60 hover:bg-white/5 hover:text-foreground'}`}
+                >
+                    <Folder className="h-3.5 w-3.5 shrink-0 text-amber-300/80" />
+                    <span className="truncate">{folder.name}</span>
+                </button>
+                {kids.map((kid) => renderFolderNode(kid, depth + 1))}
+            </div>
+        );
+    };
+
     const renderCompany = (company: OpsCompany) => {
         const expanded = selectedCompany?.id === company.id;
         const isArchive = company.kind === 'archive';
@@ -341,17 +439,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                             <FolderOpen className="h-3.5 w-3.5 shrink-0" />
                             <span className="truncate">{isArchive ? 'Todo o acervo' : 'Pastas da empresa'}</span>
                         </button>
-                        {folders.map((folder) => (
-                            <button
-                                type="button"
-                                key={folder.id}
-                                onClick={() => setSelectedFolder(folder)}
-                                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition ${selectedFolder?.id === folder.id ? 'bg-brand-lime/10 text-brand-lime' : 'text-foreground/60 hover:bg-white/5 hover:text-foreground'}`}
-                            >
-                                <Folder className="h-3.5 w-3.5 shrink-0 text-amber-300/80" />
-                                <span className="truncate">{folder.name}</span>
-                            </button>
-                        ))}
+                        {childFolders(null).map((folder) => renderFolderNode(folder, 0))}
                     </div>
                 )}
             </div>
@@ -918,14 +1006,50 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                                     <button onClick={() => setSelectedFolder(null)} className="truncate font-bold hover:text-brand-accent">
                                         {companyName(selectedCompany)}
                                     </button>
-                                    {selectedFolder && (
-                                        <>
-                                            <ChevronRight className="h-3.5 w-3.5 text-brand-muted" />
-                                            <span className="truncate text-foreground/65">{selectedFolder.name}</span>
-                                        </>
-                                    )}
+                                    {folderPath.map((folder, index) => {
+                                        const last = index === folderPath.length - 1;
+                                        return (
+                                            <span key={folder.id} className="flex min-w-0 items-center gap-2">
+                                                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-brand-muted" />
+                                                {last ? (
+                                                    <span className="truncate text-foreground/65">{folder.name}</span>
+                                                ) : (
+                                                    <button
+                                                        onClick={() => setSelectedFolder(folder)}
+                                                        className="truncate text-foreground/65 hover:text-brand-accent"
+                                                    >
+                                                        {folder.name}
+                                                    </button>
+                                                )}
+                                            </span>
+                                        );
+                                    })}
                                 </div>
                                 <div className="flex items-center gap-2">
+                                    {!pickerKind && selectedCompany && (
+                                        <>
+                                            <input
+                                                ref={uploadInputRef}
+                                                type="file"
+                                                accept="video/mp4,.mp4"
+                                                className="hidden"
+                                                onChange={(event) => {
+                                                    const file = event.target.files?.[0];
+                                                    if (file) void uploadToOps(file);
+                                                }}
+                                            />
+                                            <button
+                                                type="button"
+                                                disabled={uploading}
+                                                onClick={() => uploadInputRef.current?.click()}
+                                                title={selectedFolder ? `Enviar MP4 para ${selectedFolder.name}` : 'Enviar MP4 para a raiz da empresa'}
+                                                className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/25 bg-violet-500/10 px-3 py-2 text-[10px] font-black text-violet-200 transition hover:bg-violet-500/20 disabled:opacity-40"
+                                            >
+                                                {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                                                {uploading ? 'Enviando...' : 'Enviar MP4'}
+                                            </button>
+                                        </>
+                                    )}
                                     {selectedFolder && visibleAssets.length > 0 && (
                                         <button
                                             type="button"
@@ -1002,11 +1126,11 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2.5 custom-scrollbar" data-media-scroll-region="true">
                             {loading ? (
                                 <div className="grid h-full place-items-center"><Loader2 className="h-6 w-6 animate-spin text-brand-accent" /></div>
-                            ) : visibleAssets.length === 0 && (selectedFolder || folders.length === 0) ? (
+                            ) : visibleAssets.length === 0 && childFolders(selectedFolder?.id ?? null).length === 0 ? (
                                 <div className="grid h-full place-items-center text-sm text-brand-muted">Nenhum arquivo encontrado.</div>
                             ) : viewMode === 'grid' ? (
                                 <div className="grid grid-cols-[repeat(auto-fill,minmax(145px,1fr))] gap-2">
-                                    {!selectedFolder && folders.map((folder) => (
+                                    {childFolders(selectedFolder?.id ?? null).map((folder) => (
                                         <button
                                             type="button"
                                             key={folder.id}
@@ -1070,7 +1194,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                                     <div className="grid grid-cols-[minmax(0,1fr)_100px_120px] gap-3 border-b border-white/8 bg-white/[0.025] px-4 py-2 text-[9px] font-black uppercase tracking-wider text-brand-muted">
                                         <span>Nome</span><span>Tipo</span><span className="text-right">Ações</span>
                                     </div>
-                                    {!selectedFolder && folders.map((folder) => (
+                                    {childFolders(selectedFolder?.id ?? null).map((folder) => (
                                         <button
                                             type="button"
                                             key={folder.id}

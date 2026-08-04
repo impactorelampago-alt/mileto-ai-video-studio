@@ -168,8 +168,10 @@ export const FileExplorer = () => {
     const [dialog, setDialog] = useState<
         | { kind: 'createFolder' }
         | { kind: 'delete'; files: FileEntry[] }
+        | { kind: 'deleteFolder'; folder: { name: string; relPath: string } }
         | null
     >(null);
+    const [movingFolder, setMovingFolder] = useState<{ name: string; relPath: string } | null>(null);
 
     const apiPath = useCallback(
         (suffix: string) => `${API}/api/${scope === 'shared' ? 'shared/files' : 'files'}${suffix}`,
@@ -660,6 +662,67 @@ export const FileExplorer = () => {
         }
     };
 
+    // ── Operações de PASTA (só no escopo Local por enquanto) ──
+    const handleMoveFolder = async (destPath: string) => {
+        if (!movingFolder) return;
+        setBusy(true);
+        try {
+            const res = await scopedFetch(apiPath('/folder/move'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ relPath: movingFolder.relPath, destPath }),
+            });
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.message);
+            toast.success(`Pasta movida${data.projectsUpdated ? ` (${data.projectsUpdated} projeto(s) atualizado(s))` : ''}.`);
+            setMovingFolder(null);
+            void openFolder(currentPath);
+            void refreshTree();
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Falha ao mover a pasta.');
+        } finally {
+            setBusy(false);
+        }
+    };
+    const handleCopyFolder = async (destPath: string) => {
+        if (!movingFolder) return;
+        setBusy(true);
+        try {
+            const res = await scopedFetch(apiPath('/folder/copy'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ relPath: movingFolder.relPath, destPath }),
+            });
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.message);
+            toast.success(`Pasta copiada (${data.copied || 0} arquivo(s)).`);
+            setMovingFolder(null);
+            void openFolder(currentPath);
+            void refreshTree();
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Falha ao copiar a pasta.');
+        } finally {
+            setBusy(false);
+        }
+    };
+    const performDeleteFolder = async (folder: { name: string; relPath: string }) => {
+        setBusy(true);
+        try {
+            const res = await scopedFetch(`${apiPath('/folder')}?relPath=${encodeURIComponent(folder.relPath)}`, {
+                method: 'DELETE',
+            });
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.message);
+            toast.success(`Pasta apagada${data.projectsUpdated ? ` (${data.projectsUpdated} projeto(s) atualizado(s))` : ''}.`);
+            void openFolder(currentPath);
+            void refreshTree();
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Falha ao apagar a pasta.');
+        } finally {
+            setBusy(false);
+        }
+    };
+
     // Abre o diálogo premium de exclusão. A deleção efetiva roda em doDeleteBatch.
     const requestDelete = (files: FileEntry[]) => {
         setDialog({ kind: 'delete', files });
@@ -1034,18 +1097,41 @@ export const FileExplorer = () => {
                                 {/* Pastas */}
                                 {listing.folders.map((f) => {
                                     const isDefaultFolder = currentPath === '' && DEFAULT_CATEGORY_NAMES.has(f.name);
+                                    const canManageFolder = scope === 'local' && !isDefaultFolder;
                                     return (
-                                        <button
+                                        <div
                                             key={f.relPath}
-                                            onClick={() => void openFolder(f.relPath)}
-                                            className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 text-left transition-colors"
+                                            className="group flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 transition-colors"
                                         >
-                                            <span className="w-4 shrink-0" />
-                                            <Folder className={cn('w-5 h-5', isDefaultFolder ? 'text-brand-lime' : 'text-foreground/75')} />
-                                            <span className={cn('text-sm truncate', isDefaultFolder ? 'text-brand-lime font-semibold' : 'text-foreground')}>
-                                                {f.name}
-                                            </span>
-                                        </button>
+                                            <button
+                                                onClick={() => void openFolder(f.relPath)}
+                                                className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                                            >
+                                                <span className="w-4 shrink-0" />
+                                                <Folder className={cn('w-5 h-5 shrink-0', isDefaultFolder ? 'text-brand-lime' : 'text-foreground/75')} />
+                                                <span className={cn('text-sm truncate', isDefaultFolder ? 'text-brand-lime font-semibold' : 'text-foreground')}>
+                                                    {f.name}
+                                                </span>
+                                            </button>
+                                            {canManageFolder && (
+                                                <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                                                    <button
+                                                        onClick={() => setMovingFolder({ name: f.name, relPath: f.relPath })}
+                                                        title="Mover / copiar pasta"
+                                                        className="rounded p-1 text-brand-muted transition-colors hover:bg-white/10 hover:text-foreground"
+                                                    >
+                                                        <Scissors className="h-4 w-4" />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => setDialog({ kind: 'deleteFolder', folder: { name: f.name, relPath: f.relPath } })}
+                                                        title="Apagar pasta"
+                                                        className="rounded p-1 text-brand-muted transition-colors hover:bg-red-500/10 hover:text-red-400"
+                                                    >
+                                                        <Trash2 className="h-4 w-4" />
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
                                     );
                                 })}
 
@@ -1284,6 +1370,16 @@ export const FileExplorer = () => {
                 />
             )}
 
+            {movingFolder && (
+                <FolderMoveCopyDialog
+                    folder={movingFolder}
+                    tree={tree}
+                    onClose={() => setMovingFolder(null)}
+                    onMove={handleMoveFolder}
+                    onCopy={handleCopyFolder}
+                />
+            )}
+
             {preview && (
                 <PreviewModal file={preview} onClose={() => setPreview(null)} />
             )}
@@ -1312,6 +1408,17 @@ export const FileExplorer = () => {
                     variant="danger"
                     onClose={() => setDialog(null)}
                     onConfirm={() => { const f = dialog.files; setDialog(null); void handleDeleteBatch(f); }}
+                />
+            )}
+            {dialog?.kind === 'deleteFolder' && (
+                <ConfirmDialog
+                    mode="confirm"
+                    title={`Apagar a pasta "${dialog.folder.name}"?`}
+                    message="A pasta e todo o seu conteúdo serão apagados. Esta ação não pode ser desfeita e referências em projetos serão removidas."
+                    confirmLabel="Apagar pasta"
+                    variant="danger"
+                    onClose={() => setDialog(null)}
+                    onConfirm={() => { const folder = dialog.folder; setDialog(null); void performDeleteFolder(folder); }}
                 />
             )}
         </div>
@@ -1676,6 +1783,77 @@ const MoveCopyDialog = ({ items, tree, onClose, onMove, onCopy, onSendToShared, 
                             )}
                         </>
                     )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ─── Diálogo Mover/Copiar de PASTA (destinos locais; exclui a própria pasta) ─
+const FolderMoveCopyDialog = ({
+    folder,
+    tree,
+    onClose,
+    onMove,
+    onCopy,
+}: {
+    folder: { name: string; relPath: string };
+    tree: FileNode | null;
+    onClose: () => void;
+    onMove: (dest: string) => void;
+    onCopy: (dest: string) => void;
+}) => {
+    const [dest, setDest] = useState('');
+    const flatten = (node: FileNode, acc: Array<{ rel: string; label: string }> = []) => {
+        if (node.relPath !== '') acc.push({ rel: node.relPath, label: CATEGORY_LABEL[node.name] || node.name });
+        for (const c of node.children) flatten(c, acc);
+        return acc;
+    };
+    const norm = folder.relPath.replace(/\/+$/, '');
+    const options: Array<{ value: string; label: string }> = [
+        { value: '', label: 'Arquivos (raiz)' },
+        ...(tree ? flatten(tree) : [])
+            .filter((o) => o.rel !== norm && !o.rel.startsWith(`${norm}/`))
+            .map((o) => ({ value: o.rel, label: o.label })),
+    ];
+    return (
+        <div className="fixed inset-0 z-100 flex items-start justify-center overflow-y-auto bg-black/80 p-4 py-10 backdrop-blur-md">
+            <div className="relative z-101 flex w-full max-w-md flex-col rounded-3xl border border-brand-accent/30 bg-brand-dark/95 shadow-[0_0_50px_rgba(0,230,118,0.15)]">
+                <div className="flex items-center justify-between border-b border-black/10 px-6 py-5 dark:border-white/10">
+                    <h3 className="text-[15px] font-black uppercase tracking-wider text-foreground">Mover / copiar pasta</h3>
+                    <button onClick={onClose} className="rounded-full bg-black/5 p-2 text-brand-muted transition-all hover:bg-red-500/20 hover:text-red-400 dark:bg-white/5">
+                        <X className="h-5 w-5" />
+                    </button>
+                </div>
+                <div className="flex flex-col gap-4 p-6">
+                    <p className="text-sm text-brand-muted">
+                        Pasta <span className="font-bold text-foreground">&quot;{folder.name}&quot;</span> e todo o conteúdo.
+                    </p>
+                    <div className="flex flex-col gap-2">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-brand-accent">Pasta de destino</label>
+                        <PremiumSelect
+                            value={dest}
+                            options={options}
+                            placeholder="Arquivos (raiz)"
+                            searchable
+                            searchPlaceholder="Buscar pasta..."
+                            onChange={setDest}
+                        />
+                    </div>
+                    <div className="flex gap-3 pt-2">
+                        <button
+                            onClick={() => onCopy(dest)}
+                            className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 px-4 py-3 text-sm font-bold text-foreground transition-all hover:border-white/20 hover:bg-white/5"
+                        >
+                            <Copy className="h-4 w-4" /> Copiar
+                        </button>
+                        <button
+                            onClick={() => onMove(dest)}
+                            className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-lime px-4 py-3 text-sm font-bold text-[#0a0f12] transition-all hover:brightness-110"
+                        >
+                            <Scissors className="h-4 w-4" /> Mover
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

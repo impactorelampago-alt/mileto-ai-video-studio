@@ -147,6 +147,34 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 
+// Cria/atualiza um atalho "Mileto AI Video" na área de trabalho apontando pra
+// biblioteca local (files/) — para o usuário achar seus vídeos/imagens/músicas.
+// NÃO move dados: é só um atalho. Idempotente (roda em todo boot; só reescreve
+// se não existir ou apontar pra outro lugar). Vale p/ instalação e atualização.
+function ensureDesktopShortcut() {
+    if (process.platform !== 'win32') return;
+    try {
+        const libraryPath = path.join(app.getPath('userData'), 'mileto-server-data', 'files');
+        try { fs.mkdirSync(libraryPath, { recursive: true }); } catch { /* noop */ }
+        const shortcutPath = path.join(app.getPath('desktop'), 'Mileto AI Video.lnk');
+        let pointsRight = false;
+        if (fs.existsSync(shortcutPath)) {
+            try {
+                const existing = shell.readShortcutLink(shortcutPath);
+                pointsRight = existing && path.resolve(existing.target || '') === path.resolve(libraryPath);
+            } catch { pointsRight = false; }
+        }
+        if (!pointsRight) {
+            shell.writeShortcutLink(shortcutPath, 'create', {
+                target: libraryPath,
+                description: 'Seus vídeos, imagens e músicas do Mileto AI Video',
+            });
+        }
+    } catch (err) {
+        console.warn('[Shortcut] Falha ao criar atalho na área de trabalho:', err && err.message);
+    }
+}
+
 function createWindow() {
     const iconPath = isDev
         ? path.join(__dirname, '../build/icon.ico')
@@ -535,6 +563,7 @@ app.whenReady().then(() => {
 
     createWindow();
     startServer();
+    ensureDesktopShortcut();
 
     app.on('activate', function () {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
