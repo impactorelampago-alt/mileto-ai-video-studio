@@ -202,11 +202,11 @@
           <svg class="chev" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M6 9l6 6 6-6"/></svg>
         </button>
         <div class="nav-sub">
-          <button class="nav-subitem" data-view="ia-agents">Agentes</button>
+          <button class="nav-subitem" data-view="ia-agents">Chat</button>
+          <button class="nav-subitem" data-view="ia-title-generator">Gerador de T&iacute;tulos</button>
           <button class="nav-subitem" data-view="ia-api">API</button>
           <button class="nav-subitem" data-view="ia-models">Modelo de IA</button>
           <button class="nav-subitem" data-view="ia-credits">Créditos de IA</button>
-          <button class="nav-subitem" data-view="ia-prompt">Prompt</button>
         </div>
       </div>
     </nav>
@@ -232,12 +232,19 @@
     <!-- IA · API -->
     <section id="viewIaAgents" class="hidden">
       <div class="topbar">
-        <div><h1>IA &middot; Central de Agentes</h1><div class="muted">Quatro especialistas, uma experi&ecirc;ncia Mileto. Configure, teste e publique com vers&otilde;es.</div></div>
+        <div><h1>IA &middot; Chat</h1><div class="muted">Os quatro prompts padr&atilde;o do Mileto. Donos de ag&ecirc;ncia podem criar uma sobreposi&ccedil;&atilde;o para a pr&oacute;pria equipe.</div></div>
       </div>
       <div class="banner">&#129504; O <b>Mileto Diretor</b> conversa com o usu&aacute;rio e coordena os especialistas. Cada agente possui <b>Mileto Lite, Mileto e Mileto Ultra</b>, com c&eacute;rebro e profundidade independentes. Prompt &amp; Vendas transforma ideias em briefings; Imagem e V&iacute;deo convertem o briefing em contratos de produ&ccedil;&atilde;o. Tudo fica somente no gateway.</div>
       <div class="agent-grid" id="agentGrid"></div>
       <datalist id="agentModelsOpenai"></datalist>
       <datalist id="agentModelsGemini"></datalist>
+    </section>
+
+    <section id="viewIaTitleGenerator" class="hidden">
+      <div class="topbar"><div><h1>IA &middot; Gerador de T&iacute;tulos</h1><div class="muted">Padr&atilde;o global de gatilhos, tipos visuais, cores e layouts por propor&ccedil;&atilde;o.</div></div></div>
+      <div class="banner">Este JSON &eacute; o padr&atilde;o Mileto. O dono de cada ag&ecirc;ncia pode personaliz&aacute;-lo pela interface do app; a equipe recebe automaticamente a configura&ccedil;&atilde;o efetiva.</div>
+      <textarea id="titleConfigBox" spellcheck="false" style="width:100%;min-height:520px;background:var(--panel);border:1px solid var(--rule);border-radius:12px;padding:18px;color:var(--ink);font-family:var(--mono);font-size:12px;line-height:1.55;resize:vertical;outline:none"></textarea>
+      <div style="display:flex;gap:10px;margin-top:14px;align-items:center"><button class="btn" id="titleConfigSave">Salvar padr&atilde;o</button><span class="muted" id="titleConfigInfo"></span></div>
     </section>
 
     <section id="viewIaApi" class="hidden">
@@ -314,16 +321,16 @@ function logout() { token = ''; localStorage.removeItem('mileto_admin_token'); $
 $('logoutBtn').addEventListener('click', async () => { try { await api('/auth/logout', { method: 'POST' }); } catch {} logout(); });
 
 // ── Nav com sub-abas ──
-const VIEWS = { home: 'viewHome', 'ia-agents': 'viewIaAgents', 'ia-api': 'viewIaApi', 'ia-models': 'viewIaModels', 'ia-credits': 'viewIaCredits', 'ia-prompt': 'viewIaPrompt' };
+const VIEWS = { home: 'viewHome', 'ia-agents': 'viewIaAgents', 'ia-title-generator': 'viewIaTitleGenerator', 'ia-api': 'viewIaApi', 'ia-models': 'viewIaModels', 'ia-credits': 'viewIaCredits' };
 function showView(v) {
   Object.values(VIEWS).forEach((id) => $(id).classList.add('hidden'));
   $(VIEWS[v]).classList.remove('hidden');
   document.querySelectorAll('[data-view]').forEach((x) => x.classList.toggle('active', x.dataset.view === v));
   if (v === 'ia-agents') loadAgents();
+  if (v === 'ia-title-generator') loadTitleGenerator();
   if (v === 'ia-api') loadIa();
   if (v === 'ia-models') loadModels();
   if (v === 'ia-credits') loadCredits();
-  if (v === 'ia-prompt') loadPrompt();
 }
 $('iaParent').addEventListener('click', () => {
   const g = $('iaGroup');
@@ -500,6 +507,21 @@ async function loadAgents() {
     card.querySelector('.agent-history').addEventListener('click', () => openAgentHistory(card.dataset.agent, card.querySelector('.agent-title').textContent));
   });
 }
+
+async function loadTitleGenerator() {
+  const { config, updatedAt } = await api('/admin/title-generator');
+  $('titleConfigBox').value = JSON.stringify(config, null, 2);
+  $('titleConfigInfo').textContent = updatedAt ? 'Atualizado em ' + new Date(updatedAt).toLocaleString('pt-BR') : 'Usando padrão embutido';
+}
+$('titleConfigSave').addEventListener('click', async () => {
+  try {
+    const config = JSON.parse($('titleConfigBox').value);
+    const saved = await api('/admin/title-generator', { method: 'POST', body: JSON.stringify({ config }) });
+    $('titleConfigBox').value = JSON.stringify(saved.config, null, 2);
+    $('titleConfigInfo').textContent = 'Salvo em ' + new Date(saved.updatedAt).toLocaleString('pt-BR');
+    toast('Padrão do Gerador de Títulos salvo.');
+  } catch (e) { toast(e.message || 'JSON inválido.', true); }
+});
 
 async function openAgentHistory(id, label) {
   const { history } = await api(`/admin/agents/${id}/history`);

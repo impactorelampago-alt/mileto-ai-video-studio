@@ -9,19 +9,22 @@ import { useAuth } from './context/AuthContext';
 import { LoginScreen } from './components/LoginScreen';
 import { DownloadJobsProvider } from './context/DownloadJobsContext';
 import { ExportJobsProvider } from './context/ExportJobsContext';
+import { OpsCompanyGuard } from './components/OpsCompanyGuard';
 
 const Home = lazy(() => import('./pages/Home').then((m) => ({ default: m.Home })));
 const Downloads = lazy(() => import('./pages/Downloads').then((m) => ({ default: m.Downloads })));
 const DownloadQueue = lazy(() => import('./pages/DownloadQueue').then((m) => ({ default: m.DownloadQueue })));
 const Account = lazy(() => import('./pages/Account').then((m) => ({ default: m.Account })));
 const Integrations = lazy(() => import('./pages/Integrations').then((m) => ({ default: m.Integrations })));
+const AiChatSettings = lazy(() => import('./pages/AiChatSettings').then((m) => ({ default: m.AiChatSettings })));
+const AiTitleGeneratorSettings = lazy(() => import('./pages/AiTitleGeneratorSettings').then((m) => ({ default: m.AiTitleGeneratorSettings })));
 const Step1 = lazy(() => import('./pages/Step1').then((m) => ({ default: m.Step1 })));
 const Step2 = lazy(() => import('./pages/Step2').then((m) => ({ default: m.Step2 })));
 const Step3 = lazy(() => import('./pages/Step3').then((m) => ({ default: m.Step3 })));
 const Step4 = lazy(() => import('./pages/Step4').then((m) => ({ default: m.Step4 })));
 
 function App() {
-    const { status } = useAuth();
+    const { status, user } = useAuth();
 
     // Enquanto valida o token guardado, evita piscar a tela de login.
     if (status === 'loading') {
@@ -57,10 +60,12 @@ function App() {
                                     <Route path="downloads" element={<DownloadQueue />} />
                                     <Route path="account" element={<Account />} />
                                     <Route path="integrations" element={<Integrations />} />
+                                    <Route path="ai/chat" element={user?.role === 'owner' ? <AiChatSettings /> : <Navigate to="/" replace />} />
+                                    <Route path="ai/title-generator" element={user?.role === 'owner' ? <AiTitleGeneratorSettings /> : <Navigate to="/" replace />} />
                                     <Route path="wizard/step/1" element={<Step1 />} />
-                                    <Route path="wizard/step/2" element={<Step2 />} />
-                                    <Route path="wizard/step/3" element={<Step3 />} />
-                                    <Route path="wizard/step/4" element={<Step4 />} />
+                                    <Route path="wizard/step/2" element={<OpsCompanyGuard><Step2 /></OpsCompanyGuard>} />
+                                    <Route path="wizard/step/3" element={<OpsCompanyGuard><Step3 /></OpsCompanyGuard>} />
+                                    <Route path="wizard/step/4" element={<OpsCompanyGuard><Step4 /></OpsCompanyGuard>} />
                                     {/* Legacy paths → redirect to new wizard paths */}
                                     <Route path="step/1" element={<Navigate to="/wizard/step/1" replace />} />
                                     <Route path="step/2" element={<Navigate to="/wizard/step/2" replace />} />

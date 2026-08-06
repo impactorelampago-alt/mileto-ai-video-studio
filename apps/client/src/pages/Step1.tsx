@@ -13,6 +13,7 @@ import { AudioPlayer } from '../components/AudioPlayer';
 import { MusicLibrary } from '../components/MusicLibrary';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 import { invalidatedNarrationDerivatives } from '../lib/narrationState';
+import { OpsProjectCompanyPicker, type OpsCompanyRequirementState } from '../components/OpsProjectCompanyPicker';
 
 export const Step1 = () => {
     const { adData, updateAdData } = useWizard();
@@ -20,6 +21,14 @@ export const Step1 = () => {
     const [isGenerating, setIsGenerating] = useState(false);
     const [isMixing, setIsMixing] = useState(false);
     const [isAudioEditorOpen, setIsAudioEditorOpen] = useState(false);
+    const [opsCompanyState, setOpsCompanyState] = useState<OpsCompanyRequirementState>({
+        loading: true,
+        required: false,
+        linked: false,
+        selected: false,
+        autoSelected: false,
+    });
+    const defaultCompanyNoticeRef = useRef(false);
 
     // Gravar a própria voz (alternativa à narração por IA).
     const [isRecording, setIsRecording] = useState(false);
@@ -43,6 +52,25 @@ export const Step1 = () => {
     const isTextValid = !!adData.narrationText?.trim();
 
     const handleNext = async () => {
+        if (opsCompanyState.loading) {
+            toast.info('Aguarde a validação da empresa no Mileto Ops.');
+            return;
+        }
+        if (opsCompanyState.required && !opsCompanyState.linked) {
+            toast.error('Vincule seu usuário ao Mileto Ops antes de continuar.');
+            return;
+        }
+        if (opsCompanyState.required && !adData.opsCompany?.id) {
+            toast.error('Não encontramos uma empresa autorizada no Mileto Ops para este projeto.');
+            return;
+        }
+        if (opsCompanyState.required && opsCompanyState.autoSelected && !defaultCompanyNoticeRef.current) {
+            toast.info(`Nenhuma empresa foi escolhida manualmente. Seguiremos com ${adData.opsCompany?.name || 'Impacto Relâmpago'}.`, {
+                description: 'Você pode trocar a empresa no seletor de marca antes de avançar.',
+                duration: 5500,
+            });
+            defaultCompanyNoticeRef.current = true;
+        }
         const missing = missingBeforeStep(2, adData, []);
         if (missing.length) toast.warning(pendingWarningText(missing), { duration: 7000 });
 
@@ -116,14 +144,59 @@ export const Step1 = () => {
             const data = await response.json();
             if (!data.ok) throw new Error(data.message);
 
-            // Feedback específico para as duas falhas mais comuns, que não são bug do app.
+            const apiBase = (window as any).API_BASE_URL || 'http://localhost:3301';
+            const narrationUrl = `${apiBase}${data.url}`;
+            const narrationDuration = Number(data.duration || 0);
+            const nextAudioConfig = {
+                narration: {
+                    ...adData.audioConfig.narration,
+                    trimEnd: narrationDuration > 0 ? narrationDuration : undefined,
+                },
+                background: {
+                    ...adData.audioConfig.background,
+                    trimEnd: narrationDuration > 0 ? narrationDuration : undefined,
+                },
+            };
+
             updateAdData({
                 ...invalidatedNarrationDerivatives(),
                 isNarrationGenerated: true,
-                narrationAudioUrl: `${((window as any).API_BASE_URL || 'http://localhost:3301')}${data.url}`,
-                narrationDuration: data.duration,
+                narrationAudioUrl: narrationUrl,
+                narrationDuration,
+                audioConfig: nextAudioConfig,
+                audioTimeline: undefined,
+                masterAudioUrl: undefined,
             });
-            if (!auto) toast.success('Narração gerada com sucesso!');
+
+            if (adData.musicAudioUrl) {
+                try {
+                    const mixResponse = await fetch(`${apiBase}/api/audio/mix`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            narrationUrl,
+                            musicUrl: adData.musicAudioUrl,
+                            audioConfig: nextAudioConfig,
+                        }),
+                    });
+                    const mixData = await mixResponse.json();
+                    if (!mixResponse.ok || !mixData.ok || !mixData.masterAudioUrl) {
+                        throw new Error(mixData.message || 'A trilha não pôde ser preparada.');
+                    }
+                    updateAdData({ masterAudioUrl: `${apiBase}${mixData.masterAudioUrl}` });
+                    if (!auto) toast.success('Narração e música preparadas no preset da voz!');
+                } catch (mixError) {
+                    console.error('Automatic audio mix error:', mixError);
+                    if (!auto) {
+                        toast.warning(
+                            `A narração foi gerada, mas a trilha ainda precisa ser preparada: ${mixError instanceof Error ? mixError.message : 'erro desconhecido'}`,
+                            { duration: 7000 },
+                        );
+                    }
+                }
+            } else if (!auto) {
+                toast.success('Narração gerada com sucesso!');
+            }
         } catch (error: unknown) {
             console.error(error);
             const errMsg = error instanceof Error ? error.message : 'Erro desconhecido';
@@ -338,6 +411,10 @@ export const Step1 = () => {
                 </p>
             </header>
 
+            <div className="mb-4">
+                <OpsProjectCompanyPicker onRequirementChange={setOpsCompanyState} />
+            </div>
+
             {/* 5/7 em vez de 50/50: a coluna de voz tem grade de cards e precisa de mais largura. */}
             <div className="grid min-h-0 flex-1 grid-cols-1 items-stretch gap-4 lg:grid-cols-12">
                 {/* Left Column: Form */}
@@ -546,7 +623,7 @@ export const Step1 = () => {
                                     </button>
                                 </div>
                                 <div className="bg-background rounded-2xl p-4 border border-black/5 dark:border-white/5 shadow-inner">
-                                    <AudioPlayer src={adData.narrationAudioUrl || ''} />
+                                    <AudioPlayer src={adData.masterAudioUrl || adData.narrationAudioUrl || ''} />
                                 </div>
                                 <button
                                     onClick={handleResynthesizeNarration}

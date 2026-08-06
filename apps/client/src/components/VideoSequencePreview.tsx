@@ -26,6 +26,8 @@ import selfHostedFontCss from '../fonts-selfhosted.css?raw';
 import { toast } from 'sonner';
 import { normalizedTakeProgress, takeMotionScale } from '../lib/takeMotion';
 import { EditableTitleOverlay } from './EditableTitleOverlay';
+import { EditableCaptionOverlay } from './EditableCaptionOverlay';
+import { recoverOpsTakeSource } from '../lib/opsMediaRecovery';
 import {
     enhancementPreviewCss,
     resolveTakeEnhancement,
@@ -58,6 +60,7 @@ export interface VideoSequencePreviewProps {
     showTakeList?: boolean;
     showHeaderMute?: boolean;
     compactViewport?: boolean;
+    compactViewportWidth?: string;
     captions?: CaptionTrack; // Add captions prop
     dynamicTitles?: TitleHook[];
     isHybridMode?: boolean; // Propaga a intenção Híbrida p/ o extrator
@@ -67,6 +70,8 @@ export interface VideoSequencePreviewProps {
     onTitleDelete?: (_id: string) => void;
     adDataOverride?: AdData;
     captionStyleOverride?: CaptionStyle | null;
+    captionEditingEnabled?: boolean;
+    onCaptionStyleChange?: (_updates: Partial<CaptionStyle>) => void;
     debugModeOverride?: boolean;
 }
 
@@ -81,6 +86,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             showTakeList = true,
             showHeaderMute = true,
             compactViewport = false,
+            compactViewportWidth,
             captions, // Extract captions
             dynamicTitles = [],
             isHybridMode = false, // Modo Overlay-only
@@ -90,6 +96,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             onTitleDelete,
             adDataOverride,
             captionStyleOverride,
+            captionEditingEnabled = false,
+            onCaptionStyleChange,
             debugModeOverride,
         },
         ref
@@ -134,6 +142,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const [canvasReadyTakeId, setCanvasReadyTakeId] = useState<string | null>(null);
         const [canvasFallbackTakeId, setCanvasFallbackTakeId] = useState<string | null>(null);
         const [overlayPreviewScale, setOverlayPreviewScale] = useState(1);
+        const [captionSelected, setCaptionSelected] = useState(false);
         const pendingSeekTimeRef = useRef<number | null>(null);
         const transitionTriggeredRef = useRef<boolean>(false);
         const progressBarRef = useRef<HTMLDivElement>(null);
@@ -157,6 +166,10 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             observer.observe(videoArea);
             return () => observer.disconnect();
         }, [adData.format]);
+
+        useEffect(() => {
+            if (!captionEditingEnabled) setCaptionSelected(false);
+        }, [captionEditingEnabled]);
         const wasPlayingBeforeScrubRef = useRef(false);
         const previewRepairAttemptsRef = useRef(new Set<string>());
         const sequenceFirstIdRef = useRef<string | null>(null);
@@ -472,7 +485,17 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const repairUnsupportedLocalVideo = useCallback(async (take: MediaTake) => {
             if (previewRepairAttemptsRef.current.has(take.id)) return;
             previewRepairAttemptsRef.current.add(take.id);
+            const isOpsTake = take.externalMedia?.source === 'mileto_ops';
             try {
+                if (isOpsTake) {
+                    setIsBuffering(true);
+                    const refreshed = await recoverOpsTakeSource(take);
+                    setPlaybackSourceOverrides((current) => ({
+                        ...current,
+                        [take.id]: refreshed.proxyUrl || refreshed.fileUrl || refreshed.url,
+                    }));
+                    return;
+                }
                 const source = take.url || take.fileUrl || '';
                 const parsed = new URL(source, window.location.origin);
                 const marker = '/files/';
@@ -502,6 +525,11 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 toast.error(`Este take não pôde ser reproduzido: ${(error as Error).message}`);
             } finally {
                 setIsBuffering(false);
+                // URLs do Ops expiram por contrato. Libera uma nova renovação se
+                // o mesmo take continuar aberto além da validade desta entrega.
+                if (isOpsTake) {
+                    window.setTimeout(() => previewRepairAttemptsRef.current.delete(take.id), 1500);
+                }
             }
         }, []);
 
@@ -1692,9 +1720,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     compactViewport
                         ? {
                               width:
-                                  adData.format === '1:1'
-                                      ? 'min(100%, clamp(290px, calc(100dvh - 440px), 420px))'
-                                      : 'min(100%, clamp(168.75px, calc((100dvh - 430px) * 0.5625), 247.5px))',
+                                  compactViewportWidth || (adData.format === '1:1'
+                                       ? 'min(100%, clamp(290px, calc(100dvh - 440px), 420px))'
+                                      : 'min(100%, clamp(168.75px, calc((100dvh - 430px) * 0.5625), 247.5px))'),
                           }
                         : undefined
                 }
@@ -1754,6 +1782,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     )}
                     style={{ aspectRatio: adData.format === '1:1' ? '1 / 1' : '9 / 16' }}
                     onClick={() => {
+                        if (captionEditingEnabled) setCaptionSelected(false);
                         if (isPlaying) pause();
                     }}
                 >
@@ -1981,7 +2010,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                         'absolute inset-x-0 flex items-center justify-center pointer-events-none z-30 px-6',
                                         isHybridMode ? 'transition-none duration-0' : 'transition-all duration-200'
                                     )}
-                                    style={{ bottom: `${captionStyle?.verticalPosition ?? 15}%` }}
+                                    style={{ bottom: `${captionStyle?.verticalPosition ?? 23}%` }}
                                 >
                                     {(() => {
                                         const activeSegment = captions.segments.find(
@@ -1990,15 +2019,15 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                         );
                                         if (!activeSegment || !activeSegment.words) return null;
 
-                                        return (
+                                        const renderedCaption = (
                                             <div
                                                 className="font-black text-center uppercase tracking-wide leading-[1.2] flex flex-wrap justify-center drop-shadow-2xl px-4"
                                                 style={{
-                                                    fontFamily: captionStyle?.fontFamily || 'Poppins',
+                                                    fontFamily: captionStyle?.fontFamily || 'Montserrat',
                                                     fontSize: captionStyle?.fontSize
                                                         ? `${captionStyle.fontSize}px`
-                                                        : '48px',
-                                                    WebkitTextStroke: `${captionStyle?.strokeWidth || 6}px ${captionStyle?.strokeColor || 'black'}`,
+                                                        : '20px',
+                                                    WebkitTextStroke: `${captionStyle?.strokeWidth ?? 4}px ${captionStyle?.strokeColor || 'black'}`,
                                                     paintOrder: 'stroke fill',
                                                     textShadow: '0px 6px 12px rgba(0,0,0,0.8)',
                                                 }}
@@ -2031,6 +2060,27 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                                     );
                                                 })}
                                             </div>
+                                        );
+
+                                        if (!captionStyle) return renderedCaption;
+
+                                        return (
+                                            <EditableCaptionOverlay
+                                                style={captionStyle}
+                                                selected={captionSelected && !isExportingFrame}
+                                                editingEnabled={
+                                                    captionEditingEnabled && Boolean(onCaptionStyleChange) && !isExportingFrame
+                                                }
+                                                designHeight={overlayDesignHeight}
+                                                previewScale={overlayPreviewScale}
+                                                onSelect={() => {
+                                                    if (isPlaying) pause();
+                                                    setCaptionSelected(true);
+                                                }}
+                                                onChange={(updates) => onCaptionStyleChange?.(updates)}
+                                            >
+                                                {renderedCaption}
+                                            </EditableCaptionOverlay>
                                         );
                                     })()}
                                 </div>

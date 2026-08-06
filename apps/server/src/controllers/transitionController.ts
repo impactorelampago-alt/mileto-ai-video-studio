@@ -6,6 +6,28 @@ import ffmpeg from 'fluent-ffmpeg';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const transitionsDir = path.join(BASE_DATA_PATH, 'public/transitions');
+const builtInTransitionsDir = process.env.BUILTIN_TRANSITIONS_PATH
+    || path.join(__dirname, '..', '..', 'public', 'transitions', 'builtins');
+
+const FILM_BURN_TRANSITION = {
+    id: 'builtin-film-burn-08',
+    originalName: 'Film Burn 08.mp4',
+    publicUrl: '/system-transitions/film-burn-08.mp4',
+    filePath: path.join(builtInTransitionsDir, 'film-burn-08.mp4'),
+    durationSec: 1,
+    category: 'Essencial',
+    isBuiltIn: true,
+    identityCode: 'mileto:film-burn-08',
+    createdAt: '2026-08-05T00:00:00.000Z',
+};
+
+const normalizedTransitionName = (value: string) => value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\.[a-z0-9]{2,5}$/i, '')
+    .replace(/[^a-z0-9]+/gi, ' ')
+    .trim()
+    .toLocaleLowerCase('pt-BR');
 
 // Ensure directory exists
 if (!fs.existsSync(transitionsDir)) {
@@ -71,8 +93,11 @@ export const uploadTransition = async (req: Request, res: Response) => {
 
 export const listTransitions = async (_req: Request, res: Response) => {
     try {
-        const userTransitions = readUserTransitions().map((transition) => ({ ...transition, isBuiltIn: false }));
-        res.json({ ok: true, transitions: userTransitions });
+        const reservedName = normalizedTransitionName(FILM_BURN_TRANSITION.originalName);
+        const userTransitions = readUserTransitions()
+            .filter((transition) => normalizedTransitionName(String(transition.originalName || '')) !== reservedName)
+            .map((transition) => ({ ...transition, isBuiltIn: false }));
+        res.json({ ok: true, transitions: [FILM_BURN_TRANSITION, ...userTransitions] });
     } catch (e: unknown) {
         console.error('[Transitions] Error listing transitions:', e);
         res.status(500).json({ ok: false, message: (e as Error).message });

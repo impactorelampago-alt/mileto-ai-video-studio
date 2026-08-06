@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useWizard, ENABLE_MEDIA_AI } from '../context/WizardContext';
@@ -20,8 +20,10 @@ import {
     Minimize,
     ZoomIn,
     Layers3,
+    Loader2,
     Volume2,
     VolumeX,
+    Zap,
 } from 'lucide-react';
 import { TransitionsModal } from '../components/TransitionsModal';
 import { cn } from '../lib/utils';
@@ -42,7 +44,7 @@ import {
     verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { MediaTake } from '../types';
+import type { MediaTake, TransitionAsset } from '../types';
 import { SpeedPresetType } from '../lib/speedRemapping';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ZoomEffectsModal } from '../components/ZoomEffectsModal';
@@ -50,6 +52,81 @@ import { takeMotionLabel } from '../lib/takeMotion';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 import { VideoEnhancementModal } from '../components/VideoEnhancementModal';
 import { normalizeVideoEnhancement, sharpnessLabel } from '../lib/videoEnhancement';
+import { API_BASE_URL as API } from '../lib/apiBase';
+import { recoverOpsTakeSource } from '../lib/opsMediaRecovery';
+
+const QUICK_EDIT_SHARPNESS = 25;
+
+const automaticCutTakes = (sourceTakes: MediaTake[], effectiveAudioDuration: number) => {
+    let remainingAudioTime = effectiveAudioDuration;
+    const finalDurations = new Map<string, number>();
+    let activeTakes = [...sourceTakes];
+    let attempts = 0;
+
+    while (activeTakes.length > 0 && remainingAudioTime > 0.001 && attempts < 100) {
+        attempts += 1;
+        const slice = remainingAudioTime / activeTakes.length;
+        const shortTakes = activeTakes.filter((take) => {
+            const maximum = take.type === 'video' && take.originalDurationSeconds > 0
+                ? take.originalDurationSeconds
+                : Number.MAX_VALUE;
+            return maximum < slice + 0.05;
+        });
+
+        if (shortTakes.length === 0) {
+            activeTakes.forEach((take) => finalDurations.set(take.id, slice));
+            remainingAudioTime = 0;
+            break;
+        }
+
+        shortTakes.forEach((take) => {
+            const maximum = take.type === 'video' && take.originalDurationSeconds > 0
+                ? take.originalDurationSeconds
+                : 0;
+            finalDurations.set(take.id, maximum);
+            remainingAudioTime -= maximum;
+        });
+        const lockedIds = new Set(shortTakes.map((take) => take.id));
+        activeTakes = activeTakes.filter((take) => !lockedIds.has(take.id));
+    }
+
+    const adjustedTakes = sourceTakes.map((take) => ({
+        ...take,
+        trim: { start: 0, end: Math.max(0, finalDurations.get(take.id) || 0) },
+        speedPresetId: 'normal' as const,
+    }));
+
+    if (remainingAudioTime <= 0.5) return { takes: adjustedTakes, looped: false };
+
+    const loopedTakes = [...adjustedTakes];
+    let loopIndex = 0;
+    let timeToFill = remainingAudioTime;
+    while (timeToFill > 0.5 && loopedTakes.length < 800) {
+        const source = sourceTakes[loopIndex % sourceTakes.length];
+        const sourceDuration = source.type === 'video' && source.originalDurationSeconds > 0
+            ? source.originalDurationSeconds
+            : timeToFill;
+        const duration = Math.min(sourceDuration, timeToFill);
+        loopedTakes.push({
+            ...source,
+            id: `${source.id}-loop-${Date.now()}-${loopIndex}`,
+            trim: { start: 0, end: Math.max(0, duration) },
+            speedPresetId: 'normal' as const,
+        });
+        timeToFill -= duration;
+        loopIndex += 1;
+    }
+    return { takes: loopedTakes, looped: true };
+};
+
+const isFilmBurnTransition = (transition?: TransitionAsset | null) => {
+    if (!transition) return false;
+    const identity = `${transition.id} ${transition.identityCode || ''} ${transition.originalName || ''}`
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLocaleLowerCase('pt-BR');
+    return identity.includes('film-burn') || identity.includes('film burn');
+};
 
 interface SortableTakeProps {
     take: MediaTake;
@@ -163,6 +240,14 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, o
             {/* Actions */}
             <div className="flex shrink-0 items-center gap-1 rounded-xl border border-white/7 bg-black/10 p-1">
                 <button
+                    onClick={() => onEdit(take)}
+                    className="grid h-8 w-8 place-items-center rounded-lg bg-blue-500/10 text-blue-300 transition hover:bg-blue-500/18"
+                    title="Primeiro ajuste: cortar este take"
+                    aria-label="Cortar este take"
+                >
+                    <Scissors className="h-4 w-4" />
+                </button>
+                <button
                     onClick={() => onMute(take.id)}
                     className={cn(
                         'grid h-8 w-8 place-items-center rounded-lg transition',
@@ -210,13 +295,6 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, o
                     {take.transition && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-fuchsia-300" />}
                 </button>
                 <button
-                    onClick={() => onEdit(take)}
-                    className="grid h-8 w-8 place-items-center rounded-lg text-blue-400/75 transition hover:bg-blue-500/10 hover:text-blue-300"
-                    title="Cortar este take"
-                >
-                    <Scissors className="w-4 h-4" />
-                </button>
-                <button
                     onClick={() => onRemove(take.id)}
                     className="grid h-8 w-8 place-items-center rounded-lg text-brand-muted transition hover:bg-red-500/10 hover:text-red-400"
                     title="Remover take"
@@ -242,7 +320,42 @@ export const Step2 = () => {
     const [enhancementTargetTakeId, setEnhancementTargetTakeId] = useState<string | null>(null);
     const [targetTakeId, setTargetTakeId] = useState<string | null>(null);
     const [confirmClear, setConfirmClear] = useState(false);
+    const [isQuickEditing, setIsQuickEditing] = useState(false);
     const previewRef = useRef<VideoSequencePreviewRef>(null);
+    const opsSourceRepairsRef = useRef(new Set<string>());
+
+    // Fast Refresh pode preservar o estado React enquanto troca o código. Se o
+    // projeto já estava aberto com URLs expiradas/vazias, recupera os cards no
+    // próprio Step 2 sem exigir que a pessoa volte à Home ou refaça os cortes.
+    useEffect(() => {
+        for (const take of mediaTakes) {
+            const needsSource = take.externalMedia?.source === 'mileto_ops' &&
+                !(take.proxyUrl || take.fileUrl || take.url);
+            if (!needsSource || opsSourceRepairsRef.current.has(take.id)) continue;
+
+            opsSourceRepairsRef.current.add(take.id);
+            void recoverOpsTakeSource(take)
+                .then((recoveredTake) => {
+                    setMediaTakes((current) => current.map((candidate) => candidate.id === take.id ? {
+                        ...candidate,
+                        ...recoveredTake,
+                        // Configurações que possam ter mudado durante a recuperação
+                        // continuam pertencendo ao estado mais recente do editor.
+                        trim: candidate.trim,
+                        motionEffect: candidate.motionEffect,
+                        transition: candidate.transition,
+                        enhancement: candidate.enhancement,
+                        muteOriginalAudio: candidate.muteOriginalAudio,
+                    } : candidate));
+                })
+                .catch((error) => {
+                    console.warn('[Step2] Não foi possível renovar um take do Mileto Ops:', (error as Error)?.message);
+                })
+                .finally(() => {
+                    opsSourceRepairsRef.current.delete(take.id);
+                });
+        }
+    }, [mediaTakes, setMediaTakes]);
 
     const sensors = useSensors(
         useSensor(PointerSensor, {
@@ -269,6 +382,28 @@ export const Step2 = () => {
     const isDurationShort = narrationDuration > 0 && durationDelta < -0.05;
     const hasDurationReserve = narrationDuration > 0 && durationDelta > 0.05;
     const allTakesMuted = mediaTakes.length > 0 && mediaTakes.every((take) => take.muteOriginalAudio);
+    const selectedMusic = musicLibrary.find((music) => music.id === selectedMusicId);
+    const narrationTrackDuration = (() => {
+        if (adData.audioConfig?.narration?.enabled === false) return 0;
+        const narration = adData.audioConfig?.narration;
+        const start = narration?.trimStart ?? 0;
+        const end = narration?.trimEnd ?? narrationDuration;
+        return end > start ? (narration?.offsetSec ?? 0) + (end - start) : 0;
+    })();
+    const backgroundTrackDuration = (() => {
+        if (adData.audioConfig?.background?.enabled === false) return 0;
+        if (!adData.musicAudioUrl && !selectedMusic) return 0;
+        const background = adData.audioConfig?.background;
+        const start = background?.trimStart ?? 0;
+        const end = background?.trimEnd ?? selectedMusic?.durationSec ?? 0;
+        return end > start ? (background?.offsetSec ?? 0) + (end - start) : 0;
+    })();
+    const automaticCutDuration = narrationTrackDuration || narrationDuration || backgroundTrackDuration;
+    const quickEditTargetDuration = backgroundTrackDuration || automaticCutDuration;
+    const quickEditRemaining = Math.max(0, quickEditTargetDuration - rawTakesDuration);
+    const canQuickEdit = mediaTakes.length > 0
+        && quickEditTargetDuration > 0
+        && quickEditRemaining <= 0.05;
 
     const handleNext = () => {
         const missing = missingBeforeStep(3, adData, mediaTakes);
@@ -435,6 +570,55 @@ export const Step2 = () => {
         toast.success(`Cortes automáticos ajustados para ${effectiveAudioDuration.toFixed(1)}s.`);
     };
 
+    const handleQuickEdit = async () => {
+        if (!canQuickEdit || isQuickEditing) return;
+        setIsQuickEditing(true);
+        try {
+            let filmBurn = isFilmBurnTransition(adData.globalTransition) ? adData.globalTransition! : null;
+            if (!filmBurn) {
+                const response = await fetch(`${API}/api/transitions/list`);
+                const data = await response.json() as { ok?: boolean; transitions?: TransitionAsset[]; message?: string };
+                if (!response.ok || !data.ok) throw new Error(data.message || 'Não foi possível carregar os efeitos.');
+                filmBurn = (data.transitions || []).find(isFilmBurnTransition) || null;
+            }
+            if (!filmBurn) throw new Error('O efeito Film Burn do sistema não foi encontrado.');
+
+            // O recorte é sempre o primeiro ajuste. Os demais efeitos são aplicados
+            // sobre a sequência final, já sincronizada com a música.
+            const cutResult = automaticCutTakes(mediaTakes, quickEditTargetDuration);
+            const quickEditedTakes: MediaTake[] = cutResult.takes.map((take) => ({
+                ...take,
+                transition: undefined,
+                muteOriginalAudio: true,
+                objectFit: 'cover',
+                sharpness: { mode: 'custom', amount: QUICK_EDIT_SHARPNESS },
+                motionEffect: {
+                    type: 'zoom-in-out',
+                    intensity: 0.12,
+                    focalX: 50,
+                    focalY: 50,
+                    easing: 'smooth',
+                },
+            }));
+
+            setMediaTakes(quickEditedTakes);
+            updateAdData({
+                globalTransition: filmBurn,
+                transitionPath: filmBurn.filePath,
+                transitionRotation: 0,
+                transitionVolume: 1,
+                transitionMuted: false,
+            });
+            toast.success(`Edição rápida aplicada em ${quickEditedTakes.length} ${quickEditedTakes.length === 1 ? 'take' : 'takes'}.`, {
+                description: 'Cortes, preenchimento, nitidez suave, In + Out, áudio mudo e Film Burn configurados.',
+            });
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Não foi possível aplicar a edição rápida.');
+        } finally {
+            setIsQuickEditing(false);
+        }
+    };
+
 
 
     return (
@@ -525,6 +709,43 @@ export const Step2 = () => {
                                 <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
                                     <button
                                         type="button"
+                                        onClick={handleQuickEdit}
+                                        disabled={!canQuickEdit || isQuickEditing}
+                                        className={cn(
+                                            'mr-1 inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-[10px] font-black uppercase tracking-wider transition disabled:cursor-not-allowed',
+                                            canQuickEdit
+                                                ? 'border-brand-lime/25 bg-brand-lime/[0.075] text-brand-lime hover:border-brand-lime/45 hover:bg-brand-lime/[0.12]'
+                                                : 'border-white/8 bg-white/[0.035] text-brand-muted/45'
+                                        )}
+                                        title={
+                                            canQuickEdit
+                                                ? 'Aplicar cortes e acabamento rápido em todos os takes'
+                                                : quickEditTargetDuration <= 0
+                                                  ? 'Gere ou selecione a trilha do projeto primeiro'
+                                                  : `Adicione mais ${quickEditRemaining.toFixed(1)}s de takes para liberar`
+                                        }
+                                        aria-label="Edição rápida"
+                                    >
+                                        {isQuickEditing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                                        Edição rápida
+                                        {!canQuickEdit && quickEditTargetDuration > 0 && (
+                                            <span className="font-mono text-[8px] opacity-70">{rawTakesDuration.toFixed(0)}/{quickEditTargetDuration.toFixed(0)}s</span>
+                                        )}
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        onClick={handleAutomaticCuts}
+                                        disabled={mediaTakes.length === 0}
+                                        className="grid h-9 w-9 place-items-center rounded-lg border border-blue-500/20 bg-blue-500/10 text-blue-300 transition hover:bg-blue-500/18 disabled:cursor-not-allowed disabled:opacity-35"
+                                        title="Primeiro ajuste: cortes automáticos em todos os takes"
+                                        aria-label="Cortes automáticos em todos os takes"
+                                    >
+                                        <Scissors className="h-4 w-4" />
+                                    </button>
+
+                                    <button
+                                        type="button"
                                         onClick={() => handleMuteAll(!allTakesMuted)}
                                         disabled={mediaTakes.length === 0}
                                         className={cn(
@@ -600,17 +821,6 @@ export const Step2 = () => {
                                     >
                                         <Sparkles className="h-4 w-4" />
                                         {adData.globalTransition && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-fuchsia-300" />}
-                                    </button>
-
-                                    <button
-                                        type="button"
-                                        onClick={handleAutomaticCuts}
-                                        disabled={mediaTakes.length === 0}
-                                        className="grid h-9 w-9 place-items-center rounded-lg border border-blue-500/15 bg-blue-500/[0.07] text-blue-300/80 transition hover:bg-blue-500/15 disabled:cursor-not-allowed disabled:opacity-35"
-                                        title="Cortes automáticos em todos os takes"
-                                        aria-label="Cortes automáticos em todos os takes"
-                                    >
-                                        <Scissors className="h-4 w-4" />
                                     </button>
 
                                     <button

@@ -3,8 +3,9 @@ import { useWizard } from '../context/WizardContext';
 import { ArrowLeft, Play, Plus, Loader2, KeyRound, Pencil, Check, X, Copy, ExternalLink } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { toast } from 'sonner';
-import { TTS_PROVIDERS, type TtsProvider } from '../types';
+import { DEFAULT_VOICE_SETTINGS, TTS_PROVIDERS, type TtsProvider, type VoicePreset } from '../types';
 import { SYSTEM_VOICES, SYSTEM_VOICE_IDS } from '../lib/systemVoices';
+import { DEFAULT_PRESET_AUDIO_CONFIG, SYSTEM_MUSIC_TRACKS } from '../lib/systemMusic';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { invalidatedNarrationDerivatives } from '../lib/narrationState';
 
@@ -32,7 +33,16 @@ const ProviderBadge = ({ provider }: { provider: TtsProvider }) => (
 );
 
 export const VoiceSelector = () => {
-    const { adData, updateAdData, customVoices, addCustomVoice, removeCustomVoice, renameCustomVoice } = useWizard();
+    const {
+        adData,
+        updateAdData,
+        customVoices,
+        addCustomVoice,
+        removeCustomVoice,
+        renameCustomVoice,
+        musicLibrary,
+        setSelectedMusicId,
+    } = useWizard();
     const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
 
     // Custom Voice State
@@ -40,6 +50,10 @@ export const VoiceSelector = () => {
     const [newVoiceName, setNewVoiceName] = useState('');
     const [newVoiceId, setNewVoiceId] = useState('');
     const [newVoiceProvider, setNewVoiceProvider] = useState<TtsProvider>('fishAudio');
+    const [newVoiceSpeed, setNewVoiceSpeed] = useState(1);
+    const [newVoiceVolume, setNewVoiceVolume] = useState(0);
+    const [newVoiceMusicId, setNewVoiceMusicId] = useState<string | null>(null);
+    const [newVoiceMusicVolume, setNewVoiceMusicVolume] = useState(0.3);
 
     const [editingVoiceId, setEditingVoiceId] = useState<string | null>(null);
     const [editingName, setEditingName] = useState('');
@@ -58,9 +72,34 @@ export const VoiceSelector = () => {
     };
 
     const apiBase = (window as unknown as { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
+    const presetMusicName = (id?: string | null) =>
+        [...SYSTEM_MUSIC_TRACKS, ...musicLibrary].find((track) => track.id === id)?.displayName;
 
     const selectVoice = (id: string, provider: TtsProvider) => {
-        if (adData.selectedVoiceId === id && (adData.selectedVoiceProvider ?? 'fishAudio') === provider) return;
+        const systemVoice = SYSTEM_VOICES.find((voice) => voice.id === id);
+        const customVoice = customVoices.find((voice) => voice.id === id);
+        const preset: VoicePreset = systemVoice?.preset || customVoice?.preset || {
+            voiceSettings: { ...DEFAULT_VOICE_SETTINGS },
+            musicTrackId: null,
+            audioConfig: {
+                narration: { ...DEFAULT_PRESET_AUDIO_CONFIG.narration },
+                background: { ...DEFAULT_PRESET_AUDIO_CONFIG.background },
+            },
+        };
+        if (adData.selectedVoiceId === id && (adData.selectedVoiceProvider ?? 'fishAudio') === provider) {
+            updateAdData({
+                masterAudioUrl: undefined,
+                sharedMasterAssetId: undefined,
+                voiceSettings: { ...preset.voiceSettings },
+                audioConfig: {
+                    narration: { ...preset.audioConfig.narration },
+                    background: { ...preset.audioConfig.background },
+                },
+                audioTimeline: undefined,
+            });
+            setSelectedMusicId(preset.musicTrackId);
+            return;
+        }
         // Trocar a voz também invalida tudo que foi produzido a partir do áudio anterior.
         updateAdData({
             ...invalidatedNarrationDerivatives(),
@@ -71,12 +110,30 @@ export const VoiceSelector = () => {
             narrationAudioPath: null,
             sharedNarrationAssetId: undefined,
             narrationDuration: 0,
+            voiceSettings: { ...preset.voiceSettings },
+            audioConfig: {
+                narration: { ...preset.audioConfig.narration },
+                background: { ...preset.audioConfig.background },
+            },
+            audioTimeline: undefined,
         });
+        const presetTrackExists =
+            !preset.musicTrackId ||
+            musicLibrary.some((track) => track.id === preset.musicTrackId) ||
+            SYSTEM_MUSIC_TRACKS.some((track) => track.id === preset.musicTrackId);
+        setSelectedMusicId(presetTrackExists ? preset.musicTrackId : null);
+        if (preset.musicTrackId && !presetTrackExists) {
+            toast.warning('A música vinculada a esta voz não está disponível neste dispositivo.');
+        }
     };
 
     const resetAddForm = () => {
         setNewVoiceName('');
         setNewVoiceId('');
+        setNewVoiceSpeed(1);
+        setNewVoiceVolume(0);
+        setNewVoiceMusicId(null);
+        setNewVoiceMusicVolume(0.3);
         setAddMode('none');
     };
 
@@ -106,6 +163,21 @@ export const VoiceSelector = () => {
             name: newVoiceName,
             description: 'Voz Personalizada',
             provider: newVoiceProvider,
+            preset: {
+                voiceSettings: {
+                    ...DEFAULT_VOICE_SETTINGS,
+                    speed: newVoiceSpeed,
+                    volume: newVoiceProvider === 'fishAudio' ? newVoiceVolume : 0,
+                },
+                musicTrackId: newVoiceMusicId,
+                audioConfig: {
+                    narration: { ...DEFAULT_PRESET_AUDIO_CONFIG.narration },
+                    background: {
+                        ...DEFAULT_PRESET_AUDIO_CONFIG.background,
+                        volume: newVoiceMusicVolume,
+                    },
+                },
+            },
         });
         resetAddForm();
     };
@@ -117,6 +189,10 @@ export const VoiceSelector = () => {
         setPlayingVoiceId(voiceId);
 
         try {
+            const previewVoiceSettings =
+                SYSTEM_VOICES.find((voice) => voice.id === voiceId)?.preset.voiceSettings ||
+                customVoices.find((voice) => voice.id === voiceId)?.preset?.voiceSettings ||
+                adData.voiceSettings;
             // Frase de anúncio de verdade — julgar uma voz de vendas por ela é
             // mais útil que por uma frase neutra de demonstração.
             const previewText = 'Promoção imperdível! Só até domingo, com condições especiais pra você.';
@@ -128,7 +204,7 @@ export const VoiceSelector = () => {
                     text: previewText,
                     voiceId,
                     provider,
-                    voiceSettings: adData.voiceSettings,
+                    voiceSettings: previewVoiceSettings,
                 }),
             });
             const data = await response.json();
@@ -204,6 +280,11 @@ export const VoiceSelector = () => {
 
                         <div className="flex items-center gap-1.5">
                             <ProviderBadge provider={voice.provider} />
+                            {presetMusicName(voice.preset.musicTrackId) && (
+                                <span className="truncate text-[9px] font-semibold text-brand-accent/80">
+                                    + {presetMusicName(voice.preset.musicTrackId)}
+                                </span>
+                            )}
                         </div>
 
                         {adData.selectedVoiceId === voice.id && (
@@ -288,6 +369,11 @@ export const VoiceSelector = () => {
                                             <span className="inline-block px-2 py-0.5 rounded-full text-[9px] uppercase tracking-widest font-bold bg-brand-accent/10 text-brand-accent border border-brand-accent/20">
                                                 Personalizada
                                             </span>
+                                            {presetMusicName(voice.preset?.musicTrackId) && (
+                                                <span className="text-[9px] font-semibold text-brand-accent/80">
+                                                    + {presetMusicName(voice.preset?.musicTrackId)}
+                                                </span>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
@@ -436,6 +522,92 @@ export const VoiceSelector = () => {
                             value={newVoiceId}
                             onChange={(e) => setNewVoiceId(e.target.value)}
                         />
+                        <div className="rounded-xl border border-black/10 bg-background/60 p-3 dark:border-white/10 space-y-3">
+                            <div>
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-brand-accent">
+                                    Padrão automático da voz
+                                </div>
+                                <p className="mt-1 text-[9px] leading-relaxed text-brand-muted">
+                                    Estes valores entram selecionados em todo novo projeto e continuam ajustáveis.
+                                </p>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <label className="space-y-1 text-[9px] font-bold uppercase tracking-wider text-brand-muted">
+                                    <span className="flex justify-between"><span>Velocidade</span><b className="text-foreground">{newVoiceSpeed.toFixed(2)}x</b></span>
+                                    <input
+                                        type="range"
+                                        min={0.5}
+                                        max={2}
+                                        step={0.05}
+                                        value={newVoiceSpeed}
+                                        onChange={(event) => setNewVoiceSpeed(Number(event.target.value))}
+                                        className="w-full accent-brand-accent"
+                                    />
+                                </label>
+                                <label className="space-y-1 text-[9px] font-bold uppercase tracking-wider text-brand-muted">
+                                    <span className="flex justify-between"><span>Volume da voz</span><b className="text-foreground">{newVoiceProvider === 'fishAudio' ? `${newVoiceVolume > 0 ? '+' : ''}${newVoiceVolume} dB` : 'Padrão'}</b></span>
+                                    <input
+                                        type="range"
+                                        min={-5}
+                                        max={5}
+                                        step={1}
+                                        value={newVoiceVolume}
+                                        disabled={newVoiceProvider !== 'fishAudio'}
+                                        onChange={(event) => setNewVoiceVolume(Number(event.target.value))}
+                                        className="w-full accent-brand-accent disabled:opacity-30"
+                                    />
+                                </label>
+                            </div>
+
+                            <div className="space-y-2">
+                                <div className="text-[9px] font-bold uppercase tracking-wider text-brand-muted">Música vinculada</div>
+                                <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto pr-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => setNewVoiceMusicId(null)}
+                                        className={cn(
+                                            'rounded-lg border px-2.5 py-1.5 text-[9px] font-bold transition-all',
+                                            newVoiceMusicId === null
+                                                ? 'border-brand-accent bg-brand-accent/15 text-brand-accent'
+                                                : 'border-black/10 text-brand-muted hover:border-brand-accent/40 dark:border-white/10',
+                                        )}
+                                    >
+                                        Sem música
+                                    </button>
+                                    {musicLibrary.map((track) => (
+                                        <button
+                                            key={track.id}
+                                            type="button"
+                                            onClick={() => setNewVoiceMusicId(track.id)}
+                                            className={cn(
+                                                'rounded-lg border px-2.5 py-1.5 text-[9px] font-bold transition-all',
+                                                newVoiceMusicId === track.id
+                                                    ? 'border-brand-accent bg-brand-accent/15 text-brand-accent'
+                                                    : 'border-black/10 text-brand-muted hover:border-brand-accent/40 dark:border-white/10',
+                                            )}
+                                        >
+                                            {track.displayName}{track.source === 'system' ? ' · Sistema' : ''}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {newVoiceMusicId && (
+                                <label className="block space-y-1 text-[9px] font-bold uppercase tracking-wider text-brand-muted">
+                                    <span className="flex justify-between"><span>Volume da música</span><b className="text-foreground">{Math.round(newVoiceMusicVolume * 100)}%</b></span>
+                                    <input
+                                        type="range"
+                                        min={0.05}
+                                        max={0.6}
+                                        step={0.05}
+                                        value={newVoiceMusicVolume}
+                                        onChange={(event) => setNewVoiceMusicVolume(Number(event.target.value))}
+                                        className="w-full accent-brand-accent"
+                                    />
+                                </label>
+                            )}
+                        </div>
                         <button
                             onClick={handleSaveCustomVoice}
                             disabled={!newVoiceId || !newVoiceName}

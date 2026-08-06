@@ -10,6 +10,7 @@ import { useExportJobs } from '../context/ExportJobsContext';
 import { API_BASE_URL } from '../lib/apiBase';
 import { gatewayApi, type OpsCompany, type OpsFolder } from '../lib/gateway';
 import { localAuthHeaders } from '../lib/serverAuth';
+import { bindTitlesToBrandPalette, resolveOpsProjectBrand } from '../lib/opsProjectBrand';
 
 type DestinationKind = 'local' | 'shared' | 'ops';
 type FolderOption = { label: string; value: string };
@@ -84,7 +85,7 @@ interface ExportModalProps {
 }
 
 export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPath, transitionRotation = 0 }: ExportModalProps) => {
-    const { adData, captionStyle, projectId, saveProject } = useWizard();
+    const { adData, captionStyle, projectId, saveProject, updateAdData } = useWizard();
     const { isExporting, startExport } = useExportJobs();
     const navigate = useNavigate();
     // O título do projeto é a fonte única para o rascunho e para o MP4.
@@ -220,6 +221,32 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             setErrorMsg('Selecione a empresa de destino no Mileto Ops.');
             return;
         }
+        let exportAdData = adData;
+        if (adData.opsCompany?.id) {
+            try {
+                const resolvedBrand = await resolveOpsProjectBrand(adData.opsCompany);
+                if (resolvedBrand.required) {
+                    exportAdData = {
+                        ...adData,
+                        brandPalette: resolvedBrand.palette,
+                        brandPaletteUpdatedAt: resolvedBrand.paletteUpdatedAt,
+                    };
+                    exportAdData = {
+                        ...exportAdData,
+                        dynamicTitles: bindTitlesToBrandPalette(exportAdData),
+                    };
+                    updateAdData({
+                        brandPalette: exportAdData.brandPalette,
+                        brandPaletteUpdatedAt: exportAdData.brandPaletteUpdatedAt,
+                        dynamicTitles: exportAdData.dynamicTitles,
+                    });
+                }
+            } catch (error) {
+                setStarting(false);
+                setErrorMsg(error instanceof Error ? error.message : 'Não foi possível atualizar a paleta no Mileto Ops.');
+                return;
+            }
+        }
         const saved = await saveProject({ lastStep: 4 });
         if (!saved) {
             setStarting(false);
@@ -238,9 +265,9 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             transitionPath,
             transitionRotation,
             adData: {
-                ...adData,
-                dynamicTitles: [...(adData.dynamicTitles || [])],
-                captions: adData.captions ? { ...adData.captions, segments: [...adData.captions.segments] } : undefined,
+                ...exportAdData,
+                dynamicTitles: [...(exportAdData.dynamicTitles || [])],
+                captions: exportAdData.captions ? { ...exportAdData.captions, segments: [...exportAdData.captions.segments] } : undefined,
             },
             captionStyle: captionStyle ? { ...captionStyle } : null,
             projectId,
@@ -278,6 +305,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         totalDuration,
         transitionPath,
         transitionRotation,
+        updateAdData,
     ]);
 
     return createPortal(

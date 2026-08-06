@@ -32,7 +32,8 @@ import { ExportModal } from '../components/ExportModal';
 import { PREMIUM_TITLE_GROUPS, PREMIUM_TITLE_MODELS } from '../lib/premiumTitleModels';
 import { missingForCompletion, pendingWarningText } from '../lib/workflowWarnings';
 import { narrationSourceKey } from '../lib/narrationState';
-import { brandTitleColors } from '../lib/brandPalette';
+import { bindTitlesToBrandPalette, resolveOpsProjectBrand } from '../lib/opsProjectBrand';
+import { TITLE_EDITOR_PORTRAIT_PREVIEW_WIDTH } from '../lib/titlePreviewGeometry';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -330,20 +331,34 @@ export const Step4 = () => {
         const toastId = toast.loading('Lendo roteiro e gerando ganchos de atenção com IA...');
 
         try {
+            const resolvedBrand = await resolveOpsProjectBrand(adData.opsCompany);
+            const effectivePalette = resolvedBrand.required ? resolvedBrand.palette : adData.brandPalette;
+            if (resolvedBrand.required) {
+                const nextAdData = { ...adData, brandPalette: effectivePalette, brandPaletteUpdatedAt: resolvedBrand.paletteUpdatedAt };
+                updateAdData({
+                    brandPalette: effectivePalette,
+                    brandPaletteUpdatedAt: resolvedBrand.paletteUpdatedAt,
+                    dynamicTitles: bindTitlesToBrandPalette(nextAdData),
+                });
+            }
             const apiBaseUrl = (window as Window & { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
             const res = await axios.post(
                 `${apiBaseUrl}/api/video/generate-titles`,
                 {
                     script: adData.narrationText,
                     captions: currentCaptions,
+                    format: adData.format,
+                    brandPalette: effectivePalette,
+                    companyId: resolvedBrand.company?.id || null,
+                    opsViewContextId: resolvedBrand.context?.contextId || null,
                 },
                 { headers: await localAuthHeaders() }
             );
 
             if (res.data.ok && res.data.titles) {
-                const finalTitles = (res.data.titles || []).map((t: TitleHook, index: number) => ({
+                const finalTitles = (res.data.titles || []).map((t: TitleHook) => ({
                     ...t,
-                    ...(brandTitleColors(adData.brandPalette, index) || {}),
+                    isActive: true,
                     hasSound: true,
                 }));
                 updateAdData({ dynamicTitles: finalTitles, dynamicTitlesSourceKey: currentSourceKey });
@@ -379,7 +394,15 @@ export const Step4 = () => {
     const updateTitle = (id: string, updates: Partial<TitleHook>) => {
         const newTitles = titles.map((t) => {
             if (t.id === id) {
-                const updated = { ...t, ...updates };
+                const colorEdited = Object.prototype.hasOwnProperty.call(updates, 'primaryColor')
+                    || Object.prototype.hasOwnProperty.call(updates, 'secondaryColor');
+                const updated = {
+                    ...t,
+                    ...updates,
+                    ...(colorEdited && !Object.prototype.hasOwnProperty.call(updates, 'colorBinding')
+                        ? { colorBinding: undefined }
+                        : {}),
+                };
                 // Also jump the video preview so they can instantly see the new font/color/position
                 if (
                     updates.fontFamily ||
@@ -1408,6 +1431,7 @@ export const Step4 = () => {
                             showTakeList={false}
                             showHeaderMute={false}
                             compactViewport
+                            compactViewportWidth={TITLE_EDITOR_PORTRAIT_PREVIEW_WIDTH}
                             dynamicTitles={titles.filter((t) => t.isActive)}
                             selectedTitleId={selectedTitleId}
                             onTitleSelect={setSelectedTitleId}

@@ -1,6 +1,13 @@
 import { query, pool } from './db.js';
 import { hashPassword } from './crypto.js';
 import { PLAN_SEATS } from './admin.js';
+import { getAgents as getGlobalAgents } from './settings.js';
+import {
+    getOrgTitleGeneratorConfig,
+    listOrgAgentPromptOverrides,
+    setOrgAgentPrompt,
+    setOrgTitleGeneratorConfig,
+} from './orgAi.js';
 
 /**
  * Rotas do CLIENTE (owner/member), sempre escopadas em req.user.orgId.
@@ -105,4 +112,70 @@ export const removeMember = async (req, res) => {
     } finally {
         client.release();
     }
+};
+
+const orgChatSettings = async (orgId) => {
+    const [global, overrideRows] = await Promise.all([
+        getGlobalAgents(),
+        listOrgAgentPromptOverrides(orgId),
+    ]);
+    const overrides = new Map(overrideRows.map((row) => [row.agent_id, row]));
+    return global.agents.map((agent) => {
+        const override = overrides.get(agent.id);
+        return {
+            id: agent.id,
+            label: agent.label,
+            shortLabel: agent.shortLabel,
+            description: agent.description,
+            defaultPrompt: agent.config.systemPrompt,
+            customPrompt: override?.system_prompt || null,
+            effectivePrompt: override?.system_prompt || agent.config.systemPrompt,
+            usesDefault: !override,
+            updatedAt: override?.updated_at || agent.config.publishedAt || null,
+        };
+    });
+};
+
+/** GET /account/ai/chat - prompts efetivos da propria agencia (somente owner). */
+export const getAiChat = async (req, res) => {
+    res.json({ ok: true, agents: await orgChatSettings(req.user.orgId) });
+};
+
+/** PUT /account/ai/chat/:agentId - salva sobreposicao ou null para herdar o global. */
+export const setAiChatPrompt = async (req, res) => {
+    try {
+        if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'prompt')) {
+            return res.status(400).json({ ok: false, message: 'Informe prompt ou null para restaurar o padrão.' });
+        }
+        await setOrgAgentPrompt(req.user.orgId, req.params.agentId, req.body?.prompt, req.user.id);
+        res.json({ ok: true, agents: await orgChatSettings(req.user.orgId) });
+    } catch (error) {
+        res.status(400).json({ ok: false, message: error.message || 'Prompt invalido.' });
+    }
+};
+
+/** GET /account/ai/title-generator - editor da agencia (somente owner). */
+export const getAiTitleGenerator = async (req, res) => {
+    res.json({ ok: true, ...(await getOrgTitleGeneratorConfig(req.user.orgId)) });
+};
+
+/** PUT /account/ai/title-generator - salva config ou null para voltar ao global. */
+export const setAiTitleGenerator = async (req, res) => {
+    try {
+        if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'config')) {
+            return res.status(400).json({ ok: false, message: 'Informe config ou null para restaurar o padrão.' });
+        }
+        res.json({
+            ok: true,
+            ...(await setOrgTitleGeneratorConfig(req.user.orgId, req.body?.config, req.user.id)),
+        });
+    } catch (error) {
+        res.status(400).json({ ok: false, message: error.message || 'Configuracao de titulos invalida.' });
+    }
+};
+
+/** GET /v1/ai/title-generator - config efetiva para owner e equipe. */
+export const effectiveAiTitleGenerator = async (req, res) => {
+    const result = await getOrgTitleGeneratorConfig(req.user.orgId);
+    res.json({ ok: true, config: result.config, source: result.usesDefault ? 'global' : 'organization', updatedAt: result.updatedAt });
 };

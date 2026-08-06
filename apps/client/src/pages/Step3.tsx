@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
 import { Play, Sparkles, AlertCircle, CheckCircle2, Type } from 'lucide-react';
@@ -9,13 +9,35 @@ import { CaptionStudio } from '../components/CaptionStudio';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 import { narrationSourceKey } from '../lib/narrationState';
+import { repairCaptionCurrencySegments } from '../lib/captionCurrency';
 
 export const Step3 = () => {
-    const { adData, updateAdData, mediaTakes, setMediaTakes, captionStyle } = useWizard();
+    const { adData, updateAdData, mediaTakes, setMediaTakes, captionStyle, setCaptionStyle } = useWizard();
     const navigate = useNavigate();
     const [isGenerating, setIsGenerating] = useState(false);
     const currentSourceKey = narrationSourceKey(adData);
     const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
+
+    // Projetos que já haviam sido transcritos com `R`, `199`, `00` podem ser
+    // corrigidos localmente, preservando todos os tempos e sem consumir outra
+    // chamada de STT. O helper é idempotente e devolve a mesma referência
+    // quando não há nada a migrar.
+    useEffect(() => {
+        if (!currentCaptions?.segments?.length) return;
+        const repairedSegments = repairCaptionCurrencySegments(currentCaptions.segments);
+        if (repairedSegments === currentCaptions.segments) return;
+        updateAdData({
+            captions: {
+                ...currentCaptions,
+                segments: repairedSegments,
+                review: {
+                    sourceApplied: currentCaptions.review?.sourceApplied ?? true,
+                    correctedWords: currentCaptions.review?.correctedWords ?? 0,
+                    formattedValues: (currentCaptions.review?.formattedValues ?? 0) + 1,
+                },
+            },
+        });
+    }, [currentCaptions, updateAdData]);
 
     // Preview 9:16: mede o espaço vertical REAL disponível (topo do preview → base menos a
     // barra fixa "Próximo" de 64px) e limita a largura pra a altura caber sempre na tela,
@@ -97,7 +119,7 @@ export const Step3 = () => {
                     enabled: true,
                     language: 'pt-BR',
                     presetId: 'karaoke-yellow', // Internal identifier for the backend rendering
-                    segments: data.segments,
+                    segments: repairCaptionCurrencySegments(data.segments),
                     sourceKey: currentSourceKey,
                     review: data.review,
                 },
@@ -164,6 +186,10 @@ export const Step3 = () => {
                                 takes={mediaTakes}
                                 masterAudioUrl={adData.masterAudioUrl || adData.narrationAudioUrl || undefined}
                                 captions={currentCaptions}
+                                captionEditingEnabled={Boolean(currentCaptions?.segments?.length)}
+                                onCaptionStyleChange={(updates) => {
+                                    if (captionStyle) setCaptionStyle({ ...captionStyle, ...updates });
+                                }}
                                 hideControls={true}
                                 onMuteToggle={(id) => {
                                     setMediaTakes(

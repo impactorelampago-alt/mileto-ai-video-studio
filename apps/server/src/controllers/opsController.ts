@@ -12,7 +12,6 @@ import { getVideoEncoderArgs, getVideoMetadata } from '../services/ffmpeg';
 import { isSafeRemoteUrl, safeResolve } from '../utils/safePath';
 
 const CACHE_ROOT = path.join(BASE_DATA_PATH, 'ops-cache');
-const PROJECTS_ROOT = path.join(BASE_DATA_PATH, 'data/projects');
 // O índice contém capabilities locais e nunca pode ficar sob uma rota estática.
 const INDEX_PATH = path.join(CACHE_ROOT, 'index.json');
 const MAX_BYTES = Math.max(1024 * 1024 * 1024, Number(process.env.OPS_CACHE_MAX_BYTES || 20 * 1024 ** 3));
@@ -113,6 +112,50 @@ const readIndex = (): CacheEntry[] => {
     }
 };
 
+const PROJECTS_ROOT = path.join(BASE_DATA_PATH, 'data', 'projects');
+
+/**
+ * Arquivos do Ops usados por um rascunho deixam de ser cache descartável: eles
+ * são a cópia local persistente daquele take. A varredura é propositalmente
+ * tolerante a rascunhos antigos/corrompidos para nunca interromper a limpeza.
+ */
+const draftReferencedOpsIdentities = () => {
+    const cacheIds = new Set<string>();
+    const referenceIds = new Set<string>();
+    const assetIds = new Set<string>();
+    if (!fs.existsSync(PROJECTS_ROOT)) return { cacheIds, referenceIds, assetIds };
+
+    for (const project of fs.readdirSync(PROJECTS_ROOT, { withFileTypes: true })) {
+        if (!project.isDirectory()) continue;
+        const dataPath = path.join(PROJECTS_ROOT, project.name, 'ad-data.json');
+        if (!fs.existsSync(dataPath)) continue;
+        try {
+            const parsed = JSON.parse(fs.readFileSync(dataPath, 'utf8')) as {
+                mediaTakes?: Array<{
+                    externalMedia?: {
+                        source?: string;
+                        cacheId?: string | null;
+                        referenceId?: string | null;
+                        assetId?: string | null;
+                    };
+                }>;
+            };
+            for (const take of parsed.mediaTakes || []) {
+                if (take.externalMedia?.source !== 'mileto_ops') continue;
+                const cacheId = String(take.externalMedia.cacheId || '');
+                const referenceId = String(take.externalMedia.referenceId || '');
+                const assetId = String(take.externalMedia.assetId || '');
+                if (/^[0-9a-f]{32}$/i.test(cacheId)) cacheIds.add(cacheId);
+                if (/^[0-9a-f-]{36}$/i.test(referenceId)) referenceIds.add(referenceId);
+                if (/^[0-9a-f-]{36}$/i.test(assetId)) assetIds.add(assetId);
+            }
+        } catch {
+            // Um projeto ilegível não deve impedir que os demais sejam protegidos.
+        }
+    }
+    return { cacheIds, referenceIds, assetIds };
+};
+
 const writeIndex = (entries: CacheEntry[]) => {
     const temporary = `${INDEX_PATH}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify(entries, null, 2), 'utf8');
@@ -188,57 +231,18 @@ const removeEntryFiles = (entry: CacheEntry) => {
     fs.rmSync(directory, { recursive: true, force: true });
 };
 
-const purgeReferenceCache = (referenceId: string) => {
-    const entries = readIndex();
-    const removed = entries.filter((entry) => entry.referenceId === referenceId);
-    if (!removed.length) return;
-    for (const entry of removed) removeEntryFiles(entry);
-    writeIndex(entries.filter((entry) => entry.referenceId !== referenceId));
-};
-
-const purgeReferenceFromLocalProjects = (referenceId: string) => {
-    if (!fs.existsSync(PROJECTS_ROOT)) return;
-    const projectDirectories = fs.readdirSync(PROJECTS_ROOT, { withFileTypes: true });
-    for (const projectDirectory of projectDirectories) {
-        if (!projectDirectory.isDirectory()) continue;
-        const dataPath = path.join(PROJECTS_ROOT, projectDirectory.name, 'ad-data.json');
-        if (!fs.existsSync(dataPath)) continue;
-        try {
-            const project = JSON.parse(fs.readFileSync(dataPath, 'utf8')) as Record<string, unknown>;
-            if (!Array.isArray(project.mediaTakes)) continue;
-            const remainingTakes = project.mediaTakes.filter((take) => {
-                if (!take || typeof take !== 'object') return true;
-                const externalMedia = (take as Record<string, unknown>).externalMedia;
-                return !(
-                    externalMedia &&
-                    typeof externalMedia === 'object' &&
-                    String((externalMedia as Record<string, unknown>).referenceId || '') === referenceId
-                );
-            });
-            if (remainingTakes.length === project.mediaTakes.length) continue;
-            project.mediaTakes = remainingTakes;
-            project.updatedAt = new Date().toISOString();
-            project.saveRevision = Math.max(Number(project.saveRevision || 0) + 1, Date.now() * 1000);
-            const temporaryPath = `${dataPath}.${process.pid}.${Date.now()}.tmp`;
-            fs.writeFileSync(temporaryPath, JSON.stringify(project, null, 2), { encoding: 'utf8', flag: 'wx' });
-            fs.renameSync(temporaryPath, dataPath);
-        } catch (error) {
-            console.warn('[Ops cache] Não foi possível remover referência indisponível do rascunho:', error);
-        }
-    }
-};
-
-const purgeUnavailableReference = (referenceId: string) => {
-    purgeReferenceCache(referenceId);
-    purgeReferenceFromLocalProjects(referenceId);
-};
-
 const cleanupCache = (protectedCacheId?: string) => {
     const now = Date.now();
+    const protectedIdentities = draftReferencedOpsIdentities();
+    if (protectedCacheId) protectedIdentities.cacheIds.add(protectedCacheId);
+    const isProtected = (entry: CacheEntry) =>
+        protectedIdentities.cacheIds.has(entry.cacheId) ||
+        protectedIdentities.referenceIds.has(entry.referenceId) ||
+        protectedIdentities.assetIds.has(entry.assetId);
     let entries = readIndex().filter((entry) => {
         const exists = fs.existsSync(entry.filePath);
         const expired = now - new Date(entry.lastAccessedAt).getTime() > TTL_MS;
-        if ((!exists || expired) && entry.cacheId !== protectedCacheId) {
+        if ((!exists || expired) && !isProtected(entry)) {
             removeEntryFiles(entry);
             return false;
         }
@@ -253,7 +257,7 @@ const cleanupCache = (protectedCacheId?: string) => {
         const removed = new Set<string>();
         for (const entry of oldestFirst) {
             if (total <= MAX_BYTES * 0.75) break;
-            if (entry.cacheId === protectedCacheId) continue;
+            if (isProtected(entry)) continue;
             removeEntryFiles(entry);
             total -= Number(entry.sizeBytes || 0);
             removed.add(entry.cacheId);
@@ -287,6 +291,27 @@ const responseSource = (entry: CacheEntry, reference: ExternalReference) => {
             version: reference.version || null,
             checksum: reference.checksum || null,
             opsUpdatedAt: reference.opsUpdatedAt || null,
+            cacheId: entry.cacheId,
+        },
+    };
+};
+
+const restoredCacheSource = (entry: CacheEntry) => {
+    const accessCapability = ensureAccessCapability(entry);
+    return {
+        id: entry.cacheId,
+        path: entry.filePath,
+        fileName: entry.name,
+        duration: entry.duration,
+        frames: [],
+        type: entry.kind,
+        url: cacheFileUrl(entry.cacheId, entry.filePath, accessCapability),
+        proxyUrl: entry.proxyPath ? cacheFileUrl(entry.cacheId, entry.proxyPath, accessCapability) : '',
+        cacheId: entry.cacheId,
+        externalMedia: {
+            source: 'mileto_ops',
+            referenceId: entry.referenceId,
+            assetId: entry.assetId,
             cacheId: entry.cacheId,
         },
     };
@@ -695,7 +720,8 @@ export const materialize = async (req: Request, res: Response) => {
     } catch (error) {
         if (downloadAbort.signal.aborted || res.destroyed) return;
         const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 500;
-        if (status === 404 || status === 410) purgeUnavailableReference(referenceId);
+        // Indisponibilidade, troca de delegação ou remoção no Ops não
+        // autoriza apagar a cópia local usada por um projeto existente.
         res.status(status).json({
             ok: false,
             code: error instanceof GatewayHttpError ? error.code : null,
@@ -704,6 +730,66 @@ export const materialize = async (req: Request, res: Response) => {
     } finally {
         res.off('close', abortOnClose);
     }
+};
+
+/**
+ * POST /api/ops/cache/restore — reabre um take já materializado sem depender
+ * da disponibilidade momentânea do Ops. A referência continua sendo validada
+ * na importação original; esta rota apenas devolve uma capability nova para o
+ * arquivo privado que já existe neste computador.
+ */
+export const restoreCached = (req: Request, res: Response) => {
+    if (!bearerFrom(req)) {
+        return res.status(401).json({ ok: false, message: 'Sessão Mileto ausente ou expirada.' });
+    }
+
+    const referenceId = String(req.body?.referenceId || '').trim();
+    const assetId = String(req.body?.assetId || '').trim();
+    const cacheId = String(req.body?.cacheId || '').trim();
+    const validReference = /^[0-9a-f-]{36}$/i.test(referenceId);
+    const validAsset = /^[0-9a-f-]{36}$/i.test(assetId);
+    const validCache = /^[0-9a-f]{32}$/i.test(cacheId);
+    if (!validReference && !validAsset && !validCache) {
+        return res.status(400).json({ ok: false, message: 'Referência local do Mileto Ops inválida.' });
+    }
+
+    const entries = readIndex();
+    const candidates = entries
+        .filter((entry) => {
+            if (!fs.existsSync(entry.filePath)) return false;
+            if (validCache && entry.cacheId === cacheId) {
+                return (!validReference || entry.referenceId === referenceId) &&
+                    (!validAsset || entry.assetId === assetId);
+            }
+            if (validReference && entry.referenceId === referenceId) {
+                return !validAsset || entry.assetId === assetId;
+            }
+            return validAsset && entry.assetId === assetId;
+        })
+        .sort((left, right) => {
+            const score = (entry: CacheEntry) => {
+                if (validCache && entry.cacheId === cacheId) return 3;
+                if (validReference && entry.referenceId === referenceId) return 2;
+                if (validAsset && entry.assetId === assetId) return 1;
+                return 0;
+            };
+            const scoreDifference = score(right) - score(left);
+            if (scoreDifference) return scoreDifference;
+            return new Date(right.lastAccessedAt).getTime() - new Date(left.lastAccessedAt).getTime();
+        });
+    const entry = candidates[0];
+    if (!entry) {
+        return res.status(404).json({
+            ok: false,
+            code: 'ops_local_cache_miss',
+            message: 'A cópia local deste take ainda não está disponível.',
+        });
+    }
+
+    entry.lastAccessedAt = new Date().toISOString();
+    ensureAccessCapability(entry);
+    writeIndex(entries);
+    return res.json({ ok: true, cached: true, source: restoredCacheSource(entry) });
 };
 
 /** GET /api/ops/cache/file/:cacheId/:filename — serve somente o arquivo autorizado pela URL-capability local. */
@@ -741,6 +827,7 @@ export const cacheStatus = (_req: Request, res: Response) => {
     const entries = readIndex();
     res.json({
         ok: true,
+        preservesDraftReferences: true,
         entries: entries.length,
         bytes: entries.reduce((sum, entry) => sum + Number(entry.sizeBytes || 0), 0),
         maxBytes: MAX_BYTES,

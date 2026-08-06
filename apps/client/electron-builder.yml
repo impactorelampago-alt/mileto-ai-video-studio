@@ -61,6 +61,7 @@ extraResources:
           - 'data/transition_library.json'
           - 'public/transitions/**/*'
           - 'public/narrations/default-narration.mp3'
+          - 'assets/system-music/**/*'
           - 'package.json'
           - 'node_modules/**/*'
           - '!uploads/**/*'

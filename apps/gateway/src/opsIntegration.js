@@ -1029,6 +1029,18 @@ export const listCompanies = async (req, res) => {
     res.json({ ok: true, data: unwrapOpsData(payload), meta: payload.meta || {} });
 };
 
+/** Resolve uma empresa específica dentro da delegação e do X-Ops-View-Context atuais. */
+export const getCompany = async (req, res) => {
+    const companyId = encodeURIComponent(String(req.params.companyId || '').trim());
+    if (!companyId) throw httpError(400, 'invalid_company', 'Informe a empresa do Mileto Ops.');
+    const { payload } = await delegatedGet(req, `/v1/companies/${companyId}`);
+    const company = unwrapOpsData(payload);
+    if (!company || company.kind === 'archive') {
+        throw httpError(404, 'company_not_found', 'Empresa não encontrada no contexto delegado.');
+    }
+    res.json({ ok: true, data: company, meta: payload.meta || {} });
+};
+
 export const listFolders = async (req, res) => {
     const companyId = encodeURIComponent(String(req.params.companyId));
     const { payload } = await delegatedGet(req, `/v1/companies/${companyId}/folders`);

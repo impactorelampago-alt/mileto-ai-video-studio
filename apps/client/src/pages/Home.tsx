@@ -6,6 +6,8 @@ import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
 import { gatewayApi } from '../lib/gateway';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { refreshOpsTakeUrl } from '../lib/opsMediaRecovery';
+import type { MediaTake } from '../types';
 
 interface DraftSummary {
     projectId: string;
@@ -103,9 +105,11 @@ export const Home = () => {
                 const visual = takes.find((t) => t.type === 'video' || t.type === 'image');
                 const ext = visual && isRecord(visual.externalMedia) ? visual.externalMedia : null;
                 const assetId = typeof ext?.assetId === 'string' ? ext.assetId : null;
-                if (!assetId) continue;
+                const companyId = typeof ext?.companyId === 'string' ? ext.companyId : null;
+                if (!assetId || !companyId) continue;
                 const vtype: 'image' | 'video' = visual?.type === 'image' ? 'image' : 'video';
-                const media = await gatewayApi.opsAssetUrl(assetId, vtype === 'image' ? 'thumbnail' : 'stream');
+                const restored = await refreshOpsTakeUrl(visual as unknown as MediaTake);
+                const media = restored.media;
                 if (media?.url) {
                     setDrafts((prev) =>
                         prev.map((d) =>

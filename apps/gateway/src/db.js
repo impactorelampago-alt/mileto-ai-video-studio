@@ -116,6 +116,25 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Personalizacoes de IA da agencia. O prompt global continua em settings;
+-- estas linhas guardam somente a sobreposicao da propria organizacao.
+CREATE TABLE IF NOT EXISTS org_agent_prompt_overrides (
+    org_id        BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    agent_id      TEXT NOT NULL,
+    system_prompt TEXT NOT NULL,
+    updated_by    BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, agent_id),
+    CHECK (agent_id IN ('director', 'prompt_sales', 'image_director', 'video_director'))
+);
+
+CREATE TABLE IF NOT EXISTS org_title_generator_settings (
+    org_id     BIGINT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+    config     JSONB NOT NULL,
+    updated_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Movimentações de crédito lançadas pelo super admin (auditoria de quem creditou o quê).
 CREATE TABLE IF NOT EXISTS credit_events (
     id         BIGSERIAL PRIMARY KEY,
@@ -165,12 +184,14 @@ CREATE TABLE IF NOT EXISTS media_items (
     category     TEXT NOT NULL,
     name         TEXT NOT NULL,
     media_type   TEXT NOT NULL,
+    visibility   TEXT NOT NULL DEFAULT 'library' CHECK (visibility IN ('library', 'project')),
     duration_sec NUMERIC,
     created_by   BIGINT REFERENCES users(id) ON DELETE SET NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     trashed_at   TIMESTAMPTZ,
     purge_after  TIMESTAMPTZ
 );
+ALTER TABLE media_items ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'library';
 CREATE INDEX IF NOT EXISTS idx_media_items_org_path ON media_items(org_id, parent_path) WHERE trashed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_media_items_trash ON media_items(org_id, trashed_at DESC) WHERE trashed_at IS NOT NULL;
 
@@ -200,6 +221,22 @@ CREATE TABLE IF NOT EXISTS shared_draft_assets (
     PRIMARY KEY (draft_id, asset_item_id)
 );
 CREATE INDEX IF NOT EXISTS idx_shared_draft_assets_item ON shared_draft_assets(asset_item_id);
+
+-- Narrações e mixagens já referenciadas por rascunhos antigos são arquivos
+-- internos do projeto. Mantemos o item acessível ao rascunho, mas fora da
+-- biblioteca compartilhada visível.
+UPDATE media_items i
+   SET visibility = 'project'
+ WHERE visibility = 'library'
+   AND EXISTS (
+       SELECT 1
+         FROM shared_drafts d
+        WHERE d.org_id = i.org_id
+          AND (
+              d.data #>> '{adData,sharedNarrationAssetId}' = i.id::text
+              OR d.data #>> '{adData,sharedMasterAssetId}' = i.id::text
+          )
+   );
 
 -- Integração Mileto Ops. Estas tabelas guardam somente identidade, vínculos,
 -- metadados sanitizados e credenciais cifradas; nunca bytes de mídia do Ops.
@@ -329,5 +366,6 @@ export const RESET = `
 DROP TABLE IF EXISTS ai_generation_jobs, ops_audit_events, external_media_references, ops_sync_conflicts, ops_sync_runs,
     ops_user_links, ops_authorization_attempts, ops_connections,
     shared_draft_assets, shared_drafts, media_items, shared_folders, media_blobs,
+    org_title_generator_settings, org_agent_prompt_overrides,
     credit_events, settings, usage_ledger, credits, tokens, users, organizations CASCADE;
 `;

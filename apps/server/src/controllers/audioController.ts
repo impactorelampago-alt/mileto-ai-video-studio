@@ -7,6 +7,14 @@ import axios from 'axios';
 import { safeResolve, isSafeRemoteUrl } from '../utils/safePath';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
+const builtinMusicCandidates = [
+    path.join(__dirname, '..', 'assets', 'system-music'),
+    path.join(__dirname, '..', '..', 'assets', 'system-music'),
+];
+const BUILTIN_MUSIC_PATH =
+    process.env.BUILTIN_MUSIC_PATH ||
+    builtinMusicCandidates.find((candidate) => fs.existsSync(candidate)) ||
+    builtinMusicCandidates[0];
 const AUDIO_MIXES_DIR = path.join(BASE_DATA_PATH, 'public/mixes');
 
 if (!fs.existsSync(AUDIO_MIXES_DIR)) {
@@ -23,11 +31,18 @@ export const mixAudio = async (req: Request, res: Response) => {
 
         // Parse volumes from frontend config
         const narrationVol = audioConfig?.narration?.enabled ? (audioConfig.narration.volume ?? 1) : 0;
-        const musicVol = audioConfig?.background?.enabled ? (audioConfig.background.volume ?? 0.2) : 0;
+        const musicVol = audioConfig?.background?.enabled ? (audioConfig.background.volume ?? 0.3) : 0;
 
         // Resolve o input do ffmpeg com CONTAINMENT (nada de `../../etc/passwd`) e
         // bloqueia SSRF (URL externa tem que ser http(s) para host público).
         const LOCAL_HOSTS = ['localhost', '127.0.0.1'];
+        const resolveLocalPath = (pathname: string): string => {
+            const relative = decodeURIComponent(pathname).replace(/^\/+/, '');
+            if (relative === 'system-music' || relative.startsWith('system-music/')) {
+                return safeResolve(BUILTIN_MUSIC_PATH, relative.replace(/^system-music\/?/, ''));
+            }
+            return safeResolve(BASE_DATA_PATH, relative);
+        };
         const resolveAudioInput = (url: string): string => {
             if (!url) return '';
             let parsed: URL | null = null;
@@ -35,12 +50,12 @@ export const mixAudio = async (req: Request, res: Response) => {
                 parsed = new URL(url);
             } catch {
                 // Caminho relativo tipo /narrations/xxx.mp3 → sob BASE_DATA_PATH, sem escapar.
-                return safeResolve(BASE_DATA_PATH, decodeURIComponent(url).replace(/^\/+/, ''));
+                return resolveLocalPath(url);
             }
             if (LOCAL_HOSTS.includes(parsed.hostname)) {
                 // URL.pathname mantém %C3%BA etc. Sem decodificar, "Músicas" virava
                 // uma pasta literal "M%C3%BAsicas" e a faixa era descartada da mixagem.
-                return safeResolve(BASE_DATA_PATH, decodeURIComponent(parsed.pathname).replace(/^\/+/, ''));
+                return resolveLocalPath(parsed.pathname);
             }
             // Externa (ex.: https://cdn.pixabay.com/...): só se for host público válido.
             if (!isSafeRemoteUrl(url)) throw new Error('URL de áudio não permitida.');

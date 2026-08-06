@@ -2,7 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
     Bell,
+    BrainCircuit,
     CheckCircle2,
+    ChevronDown,
     Download,
     Film,
     FolderOpen,
@@ -11,11 +13,13 @@ import {
     Loader2,
     Link2,
     LogOut,
+    MessageSquareText,
     Music,
     RefreshCw,
     Trash2,
     User,
     Wallet,
+    WandSparkles,
     XCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -38,6 +42,7 @@ const PLAN_LABEL: Record<string, string> = {
 export const MainLayout = () => {
     const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
     const [isDownloadPanelOpen, setIsDownloadPanelOpen] = useState(false);
+    const [isAiMenuOpen, setIsAiMenuOpen] = useState(false);
     const navigate = useNavigate();
     const location = useLocation();
     const progressToastId = useRef<string | number | null>(null);
@@ -46,6 +51,10 @@ export const MainLayout = () => {
     const { activeCount, jobs, clearHistory } = useDownloadJobs();
     const prevPathRef = useRef<string>(location.pathname);
     const downloadPanelRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        if (location.pathname.startsWith('/ai/')) setIsAiMenuOpen(true);
+    }, [location.pathname]);
 
     // Auto-save do rascunho quando o usuário sai de qualquer /wizard/step/*.
     // Isso cobre tanto o clique no logo quanto navegação via StepHeader e back do browser.
@@ -184,7 +193,8 @@ export const MainLayout = () => {
                 location.pathname === '/files' ||
                 location.pathname === '/downloads' ||
                 location.pathname === '/account' ||
-                location.pathname === '/integrations') && (
+                location.pathname === '/integrations' ||
+                location.pathname.startsWith('/ai/')) && (
                 <aside className="w-[260px] flex-shrink-0 bg-[#0a0f12] border-r border-border/50 flex flex-col justify-between py-6 z-40 relative transition-all">
                     {/* Parte Superior */}
                     <div className="flex flex-col gap-10 px-6">
@@ -298,6 +308,48 @@ export const MainLayout = () => {
                                 <Link2 className="w-5 h-5" />
                                 <span className="text-sm font-bold">Integrações</span>
                             </button>
+                            {user?.role === 'owner' && (
+                                <div className="space-y-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsAiMenuOpen((open) => !open)}
+                                        className={cn(
+                                            'flex w-full items-center gap-3 rounded-xl border px-4 py-3 transition-all',
+                                            location.pathname.startsWith('/ai/')
+                                                ? 'border-brand-lime/20 bg-brand-lime/10 text-brand-lime'
+                                                : 'border-transparent text-muted-foreground hover:bg-white/5 hover:text-foreground'
+                                        )}
+                                    >
+                                        <BrainCircuit className="h-5 w-5" />
+                                        <span className="text-sm font-bold">IA</span>
+                                        <ChevronDown className={cn('ml-auto h-4 w-4 transition-transform', isAiMenuOpen && 'rotate-180')} />
+                                    </button>
+                                    {isAiMenuOpen && (
+                                        <div className="ml-5 space-y-1 border-l border-white/10 pl-3">
+                                            <button
+                                                type="button"
+                                                onClick={() => navigate('/ai/chat')}
+                                                className={cn(
+                                                    'flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-xs font-bold transition',
+                                                    location.pathname === '/ai/chat' ? 'bg-brand-lime/10 text-brand-lime' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
+                                                )}
+                                            >
+                                                <MessageSquareText className="h-4 w-4" /> Chat
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => navigate('/ai/title-generator')}
+                                                className={cn(
+                                                    'flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-xs font-bold transition',
+                                                    location.pathname === '/ai/title-generator' ? 'bg-brand-lime/10 text-brand-lime' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground'
+                                                )}
+                                            >
+                                                <WandSparkles className="h-4 w-4" /> Gerador de Títulos
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </nav>
                     </div>
 

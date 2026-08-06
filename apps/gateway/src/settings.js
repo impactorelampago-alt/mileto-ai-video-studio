@@ -8,6 +8,7 @@ import {
     DEFAULT_AGENT_CONFIGS,
     upgradeBundledAgentSystemPrompt,
 } from './agentDefaults.js';
+import { getOrgAgentPrompt } from './orgAi.js';
 
 export const PROVIDERS = [
     { id: 'fishAudio', label: 'Fish Audio', help: 'Narração (TTS). Cobra por byte UTF-8.' },
@@ -358,13 +359,15 @@ export const rollbackAgentConfig = async (id, version, actorId = null) => {
 };
 
 /** Resolve somente no gateway: o renderer nunca recebe prompt, provedor ou modelo reais. */
-export const resolveAgent = async (id, locale = 'pt-BR', requestedTier = 'mileto') => {
+export const resolveAgent = async (id, locale = 'pt-BR', requestedTier = 'mileto', orgId = null) => {
     const definition = agentDefinition(id);
     if (!definition) throw new Error('Agente inválido.');
     const config = await getAgentConfig(id);
     const tierId = normalizeAgentTierId(requestedTier);
     const tier = config.tiers[tierId];
     const key = String(locale).toLowerCase();
+    const orgOverride = orgId ? await getOrgAgentPrompt(orgId, id) : null;
+    const effectivePrompt = orgOverride?.prompt || config.systemPrompt;
     const language = LANG_NAMES[key] || LANG_NAMES[key.split('-')[0]] || 'Português do Brasil';
     return {
         id,
@@ -379,7 +382,9 @@ export const resolveAgent = async (id, locale = 'pt-BR', requestedTier = 'mileto
         generationProvider: tier.generationProvider,
         generationModel: tier.generationModel,
         generationCostUsd: tier.generationCostUsd,
-        systemPrompt: config.systemPrompt.split('{idioma}').join(language),
+        systemPrompt: effectivePrompt.split('{idioma}').join(language),
+        promptSource: orgOverride ? 'organization' : 'global',
+        promptUpdatedAt: orgOverride?.updatedAt || config.publishedAt || null,
         version: config.version,
     };
 };

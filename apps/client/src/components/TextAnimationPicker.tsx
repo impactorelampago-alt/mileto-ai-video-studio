@@ -8,9 +8,9 @@ interface TextAnimationPickerProps {
 }
 
 const ANIMATIONS = [
-    { id: 'pop', name: 'Impacto elástico', note: 'Entrada forte', icon: Zap, preview: 'animate-[pulse_900ms_ease-in-out_infinite]' },
-    { id: 'fade', name: 'Esmaecer suave', note: 'Elegante e limpo', icon: Sparkles, preview: 'animate-pulse' },
-    { id: 'slide', name: 'Deslize rápido', note: 'Movimento lateral', icon: MoveRight, preview: 'animate-[bounce_1.2s_ease-in-out_infinite]' },
+    { id: 'pop', name: 'Impacto elástico', note: 'Entrada forte', icon: Zap, preview: 'anim-title-pop' },
+    { id: 'fade', name: 'Esmaecer suave', note: 'Elegante e limpo', icon: Sparkles, preview: 'anim-title-fade' },
+    { id: 'slide', name: 'Deslize rápido', note: 'Movimento lateral', icon: MoveRight, preview: 'anim-title-slide' },
     { id: 'blink', name: 'Pulso piscante', note: 'Pisca para chamar atenção', icon: Radio, preview: 'animate-[pulse_420ms_ease-in-out_infinite]' },
     { id: 'none', name: 'Estático', note: 'Sem movimento', icon: Sparkles, preview: '' },
 ] as const;

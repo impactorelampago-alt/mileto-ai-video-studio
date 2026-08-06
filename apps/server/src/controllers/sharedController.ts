@@ -101,7 +101,7 @@ const uploadPath = async (
     originalName: string,
     mimeType: string,
     parentPath: string,
-    options: { preventDuplicate?: boolean } = {},
+    options: { preventDuplicate?: boolean; visibility?: 'library' | 'project' } = {},
 ) => {
     const stat = await fs.promises.stat(filePath);
     if (!stat.isFile()) throw new Error('A origem local não é um arquivo.');
@@ -114,6 +114,7 @@ const uploadPath = async (
         name: originalName,
         parentPath,
         category,
+        visibility: options.visibility === 'project' ? 'project' : 'library',
     };
 
     if (options.preventDuplicate) {
@@ -374,7 +375,10 @@ export const importLocalFile = async (req: Request, res: Response) => {
             name,
             String(req.body.mimeType || ''),
             parentPath,
-            { preventDuplicate: req.body.preventDuplicate === true }
+            {
+                preventDuplicate: req.body.preventDuplicate === true,
+                visibility: req.body.visibility === 'project' ? 'project' : 'library',
+            }
         ));
     } catch (error) {
         const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 400;

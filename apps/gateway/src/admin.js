@@ -9,6 +9,7 @@ import {
 } from './settings.js';
 import { proxyChat } from './providers.js';
 import { agentRequiresStrictJsonOutput } from './agentDefaults.js';
+import { getGlobalTitleGeneratorConfig, setGlobalTitleGeneratorConfig } from './orgAi.js';
 
 /** Assentos por plano. Define quantos usuários a organização pode ter. */
 export const PLAN_SEATS = { solo: 1, business: 5, enterprise: 25 };
@@ -256,6 +257,18 @@ export const setChatPrompt = async (req, res) => {
     if (typeof prompt !== 'string') return res.status(400).json({ ok: false, message: 'Prompt inválido.' });
     await setPrompt(prompt);
     res.json({ ok: true });
+};
+
+export const getTitleGenerator = async (_req, res) => {
+    res.json({ ok: true, ...(await getGlobalTitleGeneratorConfig()) });
+};
+
+export const setTitleGenerator = async (req, res) => {
+    try {
+        res.json({ ok: true, ...(await setGlobalTitleGeneratorConfig(req.body?.config)) });
+    } catch (error) {
+        res.status(400).json({ ok: false, message: error.message || 'Configuracao de titulos invalida.' });
+    }
 };
 
 // ── Aba IA → Agentes: cérebros especializados, prompts e versões ───────────

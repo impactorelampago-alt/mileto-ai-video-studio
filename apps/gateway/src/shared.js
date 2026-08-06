@@ -112,6 +112,7 @@ const mapItem = async (row) => ({
     scope: 'shared',
     trashedAt: row.trashed_at,
     purgeAfter: row.purge_after,
+    visibility: row.visibility,
 });
 
 const itemSelect = `
@@ -119,14 +120,15 @@ const itemSelect = `
       FROM media_items i
       JOIN media_blobs b ON b.id = i.blob_id`;
 
-const createItem = async (client, { orgId, userId, blobId, parentPath, category, name, durationSec, mediaType: itemMediaType }) => {
+const createItem = async (client, { orgId, userId, blobId, parentPath, category, name, durationSec, mediaType: itemMediaType, visibility = 'library' }) => {
     const id = randomUUID();
     const result = await client.query(
         `INSERT INTO media_items
-             (id, org_id, blob_id, parent_path, category, name, media_type, duration_sec, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+             (id, org_id, blob_id, parent_path, category, name, media_type, duration_sec, created_by, visibility, purge_after)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                 CASE WHEN $10 = 'project' THEN now() + interval '1 day' ELSE NULL END)
          RETURNING *`,
-        [id, orgId, blobId, parentPath, category, name, itemMediaType || mediaType(category, '', name), durationSec ?? null, userId]
+        [id, orgId, blobId, parentPath, category, name, itemMediaType || mediaType(category, '', name), durationSec ?? null, userId, visibility]
     );
     return result.rows[0];
 };
@@ -170,7 +172,7 @@ export const list = async (req, res) => {
             orgId,
             parentPath,
         ]),
-        query(`${itemSelect} WHERE i.org_id = $1 AND i.parent_path = $2 AND i.trashed_at IS NULL ORDER BY i.created_at DESC`, [
+        query(`${itemSelect} WHERE i.org_id = $1 AND i.parent_path = $2 AND i.trashed_at IS NULL AND i.visibility = 'library' ORDER BY i.created_at DESC`, [
             orgId,
             parentPath,
         ]),
@@ -185,7 +187,7 @@ export const list = async (req, res) => {
 export const trash = async (req, res) => {
     const orgId = orgIdOf(req);
     const rows = (
-        await query(`${itemSelect} WHERE i.org_id = $1 AND i.trashed_at IS NOT NULL ORDER BY i.trashed_at DESC`, [orgId])
+        await query(`${itemSelect} WHERE i.org_id = $1 AND i.trashed_at IS NOT NULL AND i.visibility = 'library' ORDER BY i.trashed_at DESC`, [orgId])
     ).rows;
     res.json({ ok: true, files: await Promise.all(rows.map(mapItem)) });
 };
@@ -219,6 +221,7 @@ export const prepareUpload = async (req, res) => {
     const category = categoryFromPath(parentPath, 'Vídeos');
     const name = cleanName(req.body.name);
     const durationSec = req.body.durationSec == null ? null : Number(req.body.durationSec);
+    const visibility = req.body.visibility === 'project' ? 'project' : 'library';
     if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(size) || size <= 0) {
         return res.status(400).json({ ok: false, message: 'Hash ou tamanho do arquivo inválido.' });
     }
@@ -242,6 +245,7 @@ export const prepareUpload = async (req, res) => {
                 name,
                 durationSec,
                 mediaType: mediaType(category, mimeType, name),
+                visibility,
             });
             return res.json({
                 ok: true,
@@ -289,6 +293,7 @@ export const completeUpload = async (req, res) => {
     const category = categoryFromPath(parentPath, 'Vídeos');
     const name = cleanName(req.body.name);
     const durationSec = req.body.durationSec == null ? null : Number(req.body.durationSec);
+    const visibility = req.body.visibility === 'project' ? 'project' : 'library';
     if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(size) || size <= 0) {
         return res.status(400).json({ ok: false, message: 'Upload inválido.' });
     }
@@ -344,6 +349,7 @@ export const completeUpload = async (req, res) => {
             name,
             durationSec,
             mediaType: mediaType(category, mimeType, name),
+            visibility,
         });
         await client.query('COMMIT');
         res.json({ ok: true, deduplicated, item: await mapItem({ ...blob, ...item }) });
@@ -448,6 +454,16 @@ export const restoreItem = async (req, res) => {
 
 export const purgeExpired = async () => {
     if (!s3) return;
+    await query('DELETE FROM shared_drafts WHERE purge_after <= now()');
+    await query(
+        `UPDATE media_items i
+            SET purge_after = now()
+          WHERE i.visibility = 'project'
+            AND i.purge_after IS NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM shared_draft_assets da WHERE da.asset_item_id = i.id
+            )`
+    );
     const expired = (
         await query(
             `DELETE FROM media_items i
@@ -471,7 +487,6 @@ export const purgeExpired = async () => {
         await s3.send(new DeleteObjectCommand({ Bucket: config.r2.bucket, Key: blob.object_key }));
         await query('DELETE FROM media_blobs WHERE id = $1', [blob.id]);
     }
-    await query('DELETE FROM shared_drafts WHERE purge_after <= now()');
 };
 
 export const listDrafts = async (req, res) => {
@@ -535,7 +550,25 @@ export const saveDraft = async (req, res) => {
                   WHERE i.org_id = $2 AND i.id = ANY($3::uuid[])`,
                 [req.params.draftId, orgId, assetIds]
             );
+            await client.query(
+                `UPDATE media_items i
+                    SET purge_after = NULL
+                  WHERE i.org_id = $1
+                    AND i.visibility = 'project'
+                    AND i.id = ANY($2::uuid[])`,
+                [orgId, assetIds]
+            );
         }
+        await client.query(
+            `UPDATE media_items i
+                SET purge_after = COALESCE(i.purge_after, now())
+              WHERE i.org_id = $1
+                AND i.visibility = 'project'
+                AND NOT EXISTS (
+                    SELECT 1 FROM shared_draft_assets da WHERE da.asset_item_id = i.id
+                )`,
+            [orgId]
+        );
         await client.query('COMMIT');
     } catch (error) {
         await client.query('ROLLBACK');

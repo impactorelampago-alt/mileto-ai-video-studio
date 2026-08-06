@@ -4,6 +4,8 @@ import { useWizard } from '../context/WizardContext';
 import { DEFAULT_VOICE_SETTINGS, FISH_MODELS, type TtsProvider, type VoiceSettings } from '../types';
 import { cn } from '../lib/utils';
 import { invalidatedNarrationDerivatives } from '../lib/narrationState';
+import { SYSTEM_VOICES } from '../lib/systemVoices';
+import { DEFAULT_PRESET_AUDIO_CONFIG, SYSTEM_MUSIC_TRACKS } from '../lib/systemMusic';
 
 interface SliderRowProps {
     label: string;
@@ -71,13 +73,23 @@ const SliderRow = ({
 );
 
 export const VoiceSettingsPanel = () => {
-    const { adData, updateAdData } = useWizard();
+    const { adData, updateAdData, customVoices, musicLibrary, selectedMusicId, setSelectedMusicId } = useWizard();
     // Fechado por padrão: é ajuste opcional e não pode empurrar o botão de
     // gerar narração para fora da tela.
     const [isOpen, setIsOpen] = useState(false);
 
     const provider: TtsProvider = adData.selectedVoiceProvider ?? 'fishAudio';
     const settings: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS, ...adData.voiceSettings };
+    const selectedPreset =
+        SYSTEM_VOICES.find((voice) => voice.id === adData.selectedVoiceId)?.preset ||
+        customVoices.find((voice) => voice.id === adData.selectedVoiceId)?.preset || {
+            voiceSettings: { ...DEFAULT_VOICE_SETTINGS },
+            musicTrackId: null,
+            audioConfig: {
+                narration: { ...DEFAULT_PRESET_AUDIO_CONFIG.narration },
+                background: { ...DEFAULT_PRESET_AUDIO_CONFIG.background },
+            },
+        };
 
     const patch = (changes: Partial<VoiceSettings>) =>
         updateAdData({
@@ -91,9 +103,34 @@ export const VoiceSettingsPanel = () => {
             narrationDuration: 0,
         });
 
-    const isDefault = (Object.keys(DEFAULT_VOICE_SETTINGS) as (keyof VoiceSettings)[]).every(
-        (k) => settings[k] === DEFAULT_VOICE_SETTINGS[k]
-    );
+    const isDefault =
+        (Object.keys(selectedPreset.voiceSettings) as (keyof VoiceSettings)[]).every(
+            (k) => settings[k] === selectedPreset.voiceSettings[k],
+        ) &&
+        selectedMusicId === selectedPreset.musicTrackId &&
+        JSON.stringify(adData.audioConfig) === JSON.stringify(selectedPreset.audioConfig);
+
+    const resetToVoicePreset = () => {
+        updateAdData({
+            ...invalidatedNarrationDerivatives(),
+            voiceSettings: { ...selectedPreset.voiceSettings },
+            audioConfig: {
+                narration: { ...selectedPreset.audioConfig.narration },
+                background: { ...selectedPreset.audioConfig.background },
+            },
+            audioTimeline: undefined,
+            isNarrationGenerated: false,
+            narrationAudioUrl: null,
+            narrationAudioPath: null,
+            sharedNarrationAssetId: undefined,
+            narrationDuration: 0,
+        });
+        const musicExists =
+            !selectedPreset.musicTrackId ||
+            musicLibrary.some((track) => track.id === selectedPreset.musicTrackId) ||
+            SYSTEM_MUSIC_TRACKS.some((track) => track.id === selectedPreset.musicTrackId);
+        setSelectedMusicId(musicExists ? selectedPreset.musicTrackId : null);
+    };
 
     const currentModelHasTags = FISH_MODELS.find((m) => m.id === settings.fishModel)?.tags ?? false;
 
@@ -130,7 +167,7 @@ export const VoiceSettingsPanel = () => {
 
                 {isOpen && (
                     <button
-                        onClick={() => patch(DEFAULT_VOICE_SETTINGS)}
+                        onClick={resetToVoicePreset}
                         disabled={isDefault}
                         className={cn(
                             'flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider transition-colors shrink-0',
@@ -140,7 +177,7 @@ export const VoiceSettingsPanel = () => {
                         )}
                     >
                         <RotateCcw className="w-3 h-3" />
-                        Padrão
+                        Preset da voz
                     </button>
                 )}
             </div>

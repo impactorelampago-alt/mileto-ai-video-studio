@@ -8,6 +8,10 @@ dotenv.config();
 
 // Base path for persistent data (critical for installed version)
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..');
+const BUILTIN_MUSIC_PATH =
+    process.env.BUILTIN_MUSIC_PATH || path.join(__dirname, '..', 'assets', 'system-music');
+const BUILTIN_TRANSITIONS_PATH =
+    process.env.BUILTIN_TRANSITIONS_PATH || path.join(__dirname, '..', 'public', 'transitions', 'builtins');
 console.log(`[Server] Base Data Path: ${BASE_DATA_PATH}`);
 
 // Ensure directories exist in the persistent path
@@ -92,6 +96,8 @@ app.use(express.json({ limit: '50mb' }));
 // Static Routes pointing to persistent data
 app.use('/data', express.static(path.join(BASE_DATA_PATH, 'data')));
 app.use('/music', express.static(path.join(BASE_DATA_PATH, 'music')));
+app.use('/system-music', express.static(BUILTIN_MUSIC_PATH, { fallthrough: false }));
+app.use('/system-transitions', express.static(BUILTIN_TRANSITIONS_PATH, { fallthrough: false }));
 app.use('/uploads', express.static(path.join(BASE_DATA_PATH, 'uploads')));
 app.use('/narrations', express.static(path.join(BASE_DATA_PATH, 'narrations')));
 app.use('/videos', express.static(path.join(BASE_DATA_PATH, 'videos')));
@@ -118,6 +124,7 @@ app.get('/debug', (_req, res) => {
         __dirname,
         USER_DATA_PATH: process.env.USER_DATA_PATH,
         narrations: path.join(BASE_DATA_PATH, 'narrations'),
+        builtinMusic: BUILTIN_MUSIC_PATH,
     });
 });
 

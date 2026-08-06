@@ -4,8 +4,49 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { randomUUID as uuidv4 } from 'crypto';
-import { bearerFrom, gatewayChat, GatewayHttpError } from '../services/gatewayClient';
+import { bearerFrom, gatewayChat, gatewayJson, GatewayHttpError } from '../services/gatewayClient';
+import {
+    loadEffectiveTitleGeneratorConfig,
+    type TitleGeneratorConfig,
+    type VideoFormat,
+} from '../services/titleGeneratorConfig';
+import {
+    deterministicTitleCandidates,
+    normalizeTriggerKey,
+    preventTitleOverlaps,
+    resolveLiteralCaptionText,
+    resolveTitleColors,
+    triggerMapWithAliases,
+    type BrandPaletteInput,
+} from '../services/titleGenerationRules';
 import { storeAiGeneratedMedia } from './fileExplorerController';
+
+const titleExtractionPrompt = (config: TitleGeneratorConfig) => {
+    const enabled = config.triggers.filter((trigger) => trigger.enabled);
+    const triggerRules = enabled.map((trigger) => {
+        const examples = trigger.examples.length ? ` Exemplos de referência: ${trigger.examples.join(' | ')}.` : '';
+        return `- kind "${trigger.id}" (${trigger.name}), no maximo ${trigger.maxOccurrences}: ${trigger.instructions}${examples}`;
+    }).join('\n');
+    const kinds = enabled.map((trigger) => `"${trigger.id}"`).join(', ');
+    return `Voce e diretor criativo especializado em titulos de retencao para videos curtos.
+
+Objetivo da agencia:
+${config.extractionPrompt}
+
+Gatilhos permitidos:
+${triggerRules}
+
+Regras obrigatorias:
+1. Cada titulo deve ter entre 1 e 8 palavras e ser uma sequencia literal e continua das legendas.
+2. Nao resuma, nao parafraseie, nao invente texto nem informacao comercial.
+3. O startSec deve ser exatamente o tempo de uma palavra fornecida.
+4. Use kind somente entre: ${kinds}.
+5. Exemplos sao referencias, nao uma lista fechada: identifique outras cidades, regioes, precos e beneficios realmente pronunciados.
+6. Uma cidade ou estado pode aparecer depois de "atencao" ou "alo". Preco inclui expressoes como "a partir de R$ 199".
+7. Respeite o limite de cada gatilho e gere no maximo ${config.maxTitles} titulos no total.
+
+Responda exclusivamente em JSON valido: {"titles":[{"text":"trecho literal","startSec":0.5,"kind":${kinds.split(', ')[0] || '"hook"'}}]}`;
+};
 
 // --- Replicate Integration ---
 
@@ -369,7 +410,14 @@ export const getRunwayJobStatus = async (req: Request, res: Response) => {
 };
 
 export const generateTitles = async (req: Request, res: Response) => {
-    const { script, captions } = req.body;
+    const {
+        script,
+        captions,
+        format = '9:16',
+        brandPalette = null,
+        companyId = null,
+        opsViewContextId = null,
+    } = req.body;
     const token = bearerFrom(req);
 
     if (!script || !captions || !captions.segments) {
@@ -384,7 +432,7 @@ export const generateTitles = async (req: Request, res: Response) => {
         .flatMap((seg: any) => (seg.words || []).map((w: any) => `[${w.start.toFixed(2)}s] ${w.text}`))
         .join(' ');
 
-    const systemPrompt = `Você é diretor criativo especializado em títulos de retenção para vídeos curtos (Reels, TikTok e anúncios).
+    const fallbackSystemPrompt = `Você é diretor criativo especializado em títulos de retenção para vídeos curtos (Reels, TikTok e anúncios).
 Sua missão é selecionar apenas os textos que realmente melhoram a atenção e a conversão do vídeo, sempre coerentes com a narração e com o instante em que aparecem.
 
 Você receberá o roteiro e as legendas com o tempo de cada palavra. Não existe quantidade fixa de títulos: escolha somente os momentos que realmente merecem destaque. A quantidade deve seguir os gatilhos legítimos encontrados no vídeo; nunca invente frases, repita a mesma ideia ou preencha espaço sem motivo.
@@ -410,6 +458,49 @@ Responda exclusivamente em JSON válido, nesta estrutura:
 }`;
 
     try {
+        let effectiveBrandPalette: BrandPaletteInput = brandPalette;
+        if (companyId) {
+            const contextHeaders: Record<string, string> = opsViewContextId
+                ? { 'X-Ops-View-Context': String(opsViewContextId) }
+                : {};
+            try {
+                const companyResponse = await gatewayJson<{ data?: { palette?: BrandPaletteInput } }>(
+                    token,
+                    `/v1/integrations/mileto-ops/companies/${encodeURIComponent(String(companyId))}`,
+                    { headers: contextHeaders }
+                );
+                effectiveBrandPalette = companyResponse.data?.palette || null;
+            } catch (error) {
+                if (!(error instanceof GatewayHttpError) || error.status !== 404) throw error;
+                // Compatibilidade com o gateway de produção anterior à rota de
+                // detalhe: refazemos a validação no servidor pela listagem delegada
+                // e pelo mesmo X-Ops-View-Context; não confiamos na paleta do body.
+                let cursor: string | null = null;
+                let delegatedCompany: { id?: string; kind?: string; palette?: BrandPaletteInput } | null = null;
+                for (let page = 0; page < 100 && !delegatedCompany; page += 1) {
+                    const query = new URLSearchParams({ limit: '100' });
+                    if (cursor) query.set('cursor', cursor);
+                    const listing = await gatewayJson<{
+                        data?: { id?: string; kind?: string; palette?: BrandPaletteInput }[];
+                        meta?: { nextCursor?: string | null };
+                    }>(token, `/v1/integrations/mileto-ops/companies?${query}`, { headers: contextHeaders });
+                    delegatedCompany = (listing.data || []).find((company) =>
+                        String(company.id || '') === String(companyId) && company.kind !== 'archive'
+                    ) || null;
+                    cursor = listing.meta?.nextCursor || null;
+                    if (!cursor) break;
+                }
+                if (!delegatedCompany) {
+                    throw new GatewayHttpError(404, 'A empresa não pertence ao contexto delegado do Mileto Ops.');
+                }
+                effectiveBrandPalette = delegatedCompany.palette || null;
+            }
+        }
+        const titleSettings = await loadEffectiveTitleGeneratorConfig(token);
+        const titleConfig = titleSettings.config;
+        const systemPrompt = titleConfig?.triggers?.some((trigger) => trigger.enabled)
+            ? titleExtractionPrompt(titleConfig)
+            : fallbackSystemPrompt;
         // Títulos usam o tier mais barato (Lite) com system próprio e saída JSON.
         // O gateway resolve o modelo real e mede o consumo como chat.
         const result = await gatewayChat(token, {
@@ -440,89 +531,77 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             .replace(/[\u0300-\u036f]/g, '')
             .toLocaleLowerCase('pt-BR')
             .replace(/[^a-z0-9%]+/g, '');
-        const resolveLiteralCaptionText = (candidate: unknown, requestedStart: unknown) => {
-            const tokens = String(candidate || '').trim().split(/\s+/).map(normalizeTitleWord).filter(Boolean);
-            if (!tokens.length || tokens.length > 6) return null;
-            const matches: { text: string; startSec: number }[] = [];
-            for (let start = 0; start <= spokenWords.length - tokens.length; start += 1) {
-                const isMatch = tokens.every((token, offset) => normalizeTitleWord(spokenWords[start + offset].text) === token);
-                if (isMatch) {
-                    matches.push({
-                        text: spokenWords.slice(start, start + tokens.length).map((word: { text: string }) => word.text).join(' '),
-                        startSec: spokenWords[start].start,
-                    });
-                }
-            }
-            if (!matches.length) return null;
-            const requested = Number(requestedStart);
-            if (!Number.isFinite(requested)) return matches[0];
-            return matches.reduce((closest, match) =>
-                Math.abs(match.startSec - requested) < Math.abs(closest.startSec - requested) ? match : closest
-            );
-        };
-        const captionStarts = captions.segments
-            .flatMap((seg: any) => {
-                const wordStarts = (seg.words || []).map((word: any) => Number(word.start));
-                return wordStarts.length ? wordStarts : [Number(seg.start)];
-            })
-            .filter((time: number) => Number.isFinite(time))
-            .sort((a: number, b: number) => a - b);
-        const closestCaptionStart = (requestedStart: unknown) => {
-            const requested = Number(requestedStart);
-            if (!captionStarts.length || !Number.isFinite(requested)) return 0;
-            return captionStarts.reduce((closest: number, candidate: number) =>
-                Math.abs(candidate - requested) < Math.abs(closest - requested) ? candidate : closest
-            );
-        };
-        const seenTitles = new Set<string>();
-        let ctaAdded = false;
+        const seenTitlesByTrigger = new Map<string, string[]>();
+        const occurrenceByTrigger = new Map<string, number>();
+        const enabledTriggers = titleConfig.triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length);
+        const triggerById = triggerMapWithAliases(enabledTriggers);
+        const videoFormat = (['9:16', '16:9', '4:5', '1:1'].includes(String(format)) ? format : '9:16') as VideoFormat;
+        const configuredLiteralCandidates = enabledTriggers.flatMap((trigger) =>
+            [...trigger.examples, trigger.sample]
+                .filter(Boolean)
+                .map((candidate) => ({ text: candidate, kind: trigger.id }))
+        );
+        const titleCandidates = [
+            // Sinais determinísticos de preço/local têm prioridade; os exemplos
+            // da agência e a IA completam os demais casos sem inventar texto.
+            ...deterministicTitleCandidates(script),
+            ...configuredLiteralCandidates,
+            ...(Array.isArray(titlesArr) ? titlesArr : []),
+        ];
 
         // Format titles, snap them to a real spoken word, and reject duplicates.
-        // A small safety ceiling avoids a malformed model response flooding the editor;
-        // it is not a creative quota — the model decides how many moments matter.
-        const finalTitles = (Array.isArray(titlesArr) ? titlesArr : [])
-            .map((title: any) => ({ title, literal: resolveLiteralCaptionText(title?.text, title?.startSec) }))
-            .filter(({ literal }: { literal: { text: string; startSec: number } | null }) => {
+        // The effective organization settings own style, size, position and color.
+        const generatedTitles = titleCandidates
+            .map((title: any) => {
+                const trigger = triggerById.get(normalizeTriggerKey(title?.kind));
+                return {
+                    trigger,
+                    literal: trigger
+                        ? resolveLiteralCaptionText(spokenWords, title?.text, title?.startSec, trigger.id)
+                        : null,
+                };
+            })
+            .filter(({ trigger, literal }: { trigger?: { id: string }; literal: { text: string; startSec: number } | null }) => {
                 const key = normalizeTitleWord(literal?.text);
-                if (!literal || !key || seenTitles.has(key)) return false;
-                seenTitles.add(key);
+                if (!trigger || !literal || !key) return false;
+                const triggerId = normalizeTriggerKey(trigger.id);
+                const seen = seenTitlesByTrigger.get(triggerId) || [];
+                if (seen.some((existing) => existing.includes(key) || key.includes(existing))) return false;
+                seenTitlesByTrigger.set(triggerId, [...seen, key]);
                 return true;
             })
-            .slice(0, 8)
-            .flatMap(({ title, literal }: any) => {
-                const kind = String(title?.kind || 'hook').toLowerCase();
-                if (kind === 'cta') {
-                    if (ctaAdded) return [];
-                    ctaAdded = true;
-                    return [{
-                        id: uuidv4(),
-                        text: literal.text,
-                        startSec: literal.startSec,
-                        durationSec: 2,
-                        isActive: false,
-                        posY: 55,
-                        posX: 50,
-                        scale: 0.72,
-                        textBoxWidthPct: 50,
-                        styleId: 'cta-whatsapp',
-                        primaryColor: '#54a812',
-                        secondaryColor: '#ffffff',
-                        fontFamily: 'Poppins',
-                    }];
-                }
-
+            .flatMap(({ trigger, literal }: any) => {
+                if (!trigger) return [];
+                const triggerId = normalizeTriggerKey(trigger.id);
+                const occurrence = occurrenceByTrigger.get(triggerId) || 0;
+                if (occurrence >= trigger.maxOccurrences) return [];
+                occurrenceByTrigger.set(triggerId, occurrence + 1);
+                const titleType = trigger.titleTypes[occurrence % trigger.titleTypes.length];
+                const layout = titleType.layouts[videoFormat] || titleType.layouts['9:16'];
+                const colors = resolveTitleColors(titleType.color || trigger.color, effectiveBrandPalette, occurrence);
                 return [{
                     id: uuidv4(),
                     text: literal.text.slice(0, 90),
-                    startSec: literal.startSec || closestCaptionStart(title.startSec),
-                    durationSec: 2,
-                    isActive: false,
-                    posY: 30,
-                    scale: 1,
+                    startSec: literal.startSec,
+                    durationSec: titleType.durationSec,
+                    isActive: true,
+                    posX: layout.posX,
+                    posY: layout.posY,
+                    scale: layout.scale,
+                    scaleX: layout.scaleX,
+                    scaleY: layout.scaleY,
+                    textBoxWidthPct: layout.textBoxWidthPct,
+                    styleId: titleType.styleId,
+                    fontFamily: titleType.fontFamily,
+                    animationId: titleType.animationId,
+                    ...colors,
                 }];
-            });
+            })
+            .slice(0, titleConfig.maxTitles);
 
-        res.json({ ok: true, titles: finalTitles });
+        const finalTitles = preventTitleOverlaps(generatedTitles);
+
+        res.json({ ok: true, titles: finalTitles, configSource: titleSettings.source });
     } catch (error: any) {
         if (error instanceof GatewayHttpError) {
             const msg =

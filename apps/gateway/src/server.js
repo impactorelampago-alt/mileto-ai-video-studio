@@ -218,7 +218,7 @@ app.post(
         // solicitado), cuja configuraÃ§Ã£o real nunca sai deste gateway.
         const selectedAgent = hasCustomSystem
             ? null
-            : await resolveAgent(String(agentId || 'director'), locale, model);
+            : await resolveAgent(String(agentId || 'director'), locale, model, req.user.orgId);
         if (selectedAgent && !selectedAgent.enabled) {
             return res.status(409).json({
                 ok: false,
@@ -430,6 +430,8 @@ app.post('/admin/agents/:agentId', sa, asyncHandler(admin.setAgent));
 app.get('/admin/agents/:agentId/history', sa, asyncHandler(admin.getAgentHistory));
 app.post('/admin/agents/:agentId/rollback', sa, asyncHandler(admin.rollbackAgent));
 app.post('/admin/agents/:agentId/test', sa, asyncHandler(admin.testAgent));
+app.get('/admin/title-generator', sa, asyncHandler(admin.getTitleGenerator));
+app.post('/admin/title-generator', sa, asyncHandler(admin.setTitleGenerator));
 app.get('/admin/credits', sa, asyncHandler(admin.getCredits));
 app.post('/admin/credits', sa, asyncHandler(admin.setCredit));
 
@@ -438,6 +440,11 @@ app.get('/account/usage', asyncHandler(requireAuth), asyncHandler(account.usage)
 app.get('/account/team', asyncHandler(requireAuth), asyncHandler(account.listTeam));
 app.post('/account/team', asyncHandler(requireAuth), requireOwner, asyncHandler(account.addMember));
 app.delete('/account/team/:userId', asyncHandler(requireAuth), requireOwner, asyncHandler(account.removeMember));
+app.get('/account/ai/chat', asyncHandler(requireAuth), requireOwner, asyncHandler(account.getAiChat));
+app.put('/account/ai/chat/:agentId', asyncHandler(requireAuth), requireOwner, asyncHandler(account.setAiChatPrompt));
+app.get('/account/ai/title-generator', asyncHandler(requireAuth), requireOwner, asyncHandler(account.getAiTitleGenerator));
+app.put('/account/ai/title-generator', asyncHandler(requireAuth), requireOwner, asyncHandler(account.setAiTitleGenerator));
+app.get('/v1/ai/title-generator', asyncHandler(requireAuth), asyncHandler(account.effectiveAiTitleGenerator));
 
 // Ambiente compartilhado (R2 + metadados por organização)
 const authed = asyncHandler(requireAuth);
@@ -453,6 +460,7 @@ app.put('/v1/integrations/mileto-ops/user-links/:aiUserId', authed, requireOwner
 app.delete('/v1/integrations/mileto-ops/user-links/:aiUserId', authed, requireOwner, asyncHandler(opsIntegration.removeUserLink));
 app.get('/v1/integrations/mileto-ops/view-contexts', authed, asyncHandler(opsIntegration.listViewContexts));
 app.get('/v1/integrations/mileto-ops/companies', authed, asyncHandler(opsIntegration.listCompanies));
+app.get('/v1/integrations/mileto-ops/companies/:companyId', authed, asyncHandler(opsIntegration.getCompany));
 app.get('/v1/integrations/mileto-ops/companies/:companyId/folders', authed, asyncHandler(opsIntegration.listFolders));
 app.post('/v1/integrations/mileto-ops/companies/:companyId/folders', authed, asyncHandler(opsIntegration.createFolder));
 app.patch('/v1/integrations/mileto-ops/folders/:folderId', authed, asyncHandler(opsIntegration.updateFolder));

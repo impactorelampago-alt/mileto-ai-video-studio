@@ -1,23 +1,127 @@
-import React from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useWizard } from '../context/WizardContext';
-import { Settings2, Type, PaintBucket } from 'lucide-react';
+import { Check, ChevronDown, PaintBucket, Search, Settings2, Type } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { CaptionStyle } from '../types';
 
-type Preset = { name: string; s: Partial<CaptionStyle> };
+type Preset = { id: string; name: string; s: Partial<CaptionStyle> };
 
 const PRESETS: Preset[] = [
-    { name: 'Amarelo Impacto', s: { activeColor: '#FFFF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Anton', fontSize: 42 } },
-    { name: 'Estilo Flix', s: { activeColor: '#E50914', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Bebas Neue', fontSize: 46 } },
-    { name: 'Cyan Clean', s: { activeColor: '#00D1FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 3, fontFamily: 'Inter', fontSize: 38 } },
-    { name: 'Cinematic Gold', s: { activeColor: '#FFD700', baseColor: '#F5F5F5', strokeColor: '#1A1A1A', strokeWidth: 6, fontFamily: 'Playfair Display', fontSize: 50 } },
-    { name: 'Cyberpunk', s: { activeColor: '#FF00FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Impact', fontSize: 44 } },
-    { name: 'Hacker Matrix', s: { activeColor: '#00FF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 4, fontFamily: 'Montserrat', fontSize: 36 } },
-    { name: 'Minimalista', s: { activeColor: '#FFFFFF', baseColor: '#A0A0A0', strokeColor: '#000000', strokeWidth: 2, fontFamily: 'Roboto', fontSize: 32 } },
-    { name: 'Youtuber Kids', s: { activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Comic Sans MS', fontSize: 40 } },
+    { id: 'yellow-impact', name: 'Amarelo Impacto', s: { activeColor: '#FFFF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Anton', fontSize: 42 } },
+    { id: 'flix', name: 'Estilo Flix', s: { activeColor: '#E50914', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Bebas Neue', fontSize: 46 } },
+    { id: 'cyan-clean', name: 'Cyan Clean', s: { activeColor: '#00D1FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 3, fontFamily: 'Inter', fontSize: 38 } },
+    { id: 'cinematic-gold', name: 'Cinematic Gold', s: { activeColor: '#FFD700', baseColor: '#F5F5F5', strokeColor: '#1A1A1A', strokeWidth: 6, fontFamily: 'Playfair Display', fontSize: 50 } },
+    { id: 'cyberpunk', name: 'Cyberpunk', s: { activeColor: '#FF00FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Impact', fontSize: 44 } },
+    { id: 'hacker-matrix', name: 'Hacker Matrix', s: { activeColor: '#00E676', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 4, fontFamily: 'Montserrat', fontSize: 20, verticalPosition: 23 } },
+    { id: 'minimal', name: 'Minimalista', s: { activeColor: '#FFFFFF', baseColor: '#A0A0A0', strokeColor: '#000000', strokeWidth: 2, fontFamily: 'Roboto', fontSize: 32 } },
+    { id: 'youtuber-kids', name: 'Youtuber Kids', s: { activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Comic Sans MS', fontSize: 40 } },
 ];
 
 const FONTS = ['Poppins', 'Roboto', 'Inter', 'Impact', 'Montserrat', 'Anton', 'Bebas Neue', 'Playfair Display', 'Comic Sans MS'];
+
+const normalizeSearch = (value: string) =>
+    value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR');
+
+const FontPicker: React.FC<{ value: string; onChange: (_font: string) => void }> = ({ value, onChange }) => {
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState('');
+    const rootRef = useRef<HTMLDivElement>(null);
+    const searchRef = useRef<HTMLInputElement>(null);
+    const visibleFonts = useMemo(
+        () => FONTS.filter((font) => normalizeSearch(font).includes(normalizeSearch(query))),
+        [query]
+    );
+
+    useEffect(() => {
+        if (!open) return;
+        const close = (event: MouseEvent) => {
+            if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+        };
+        const escape = (event: globalThis.KeyboardEvent) => {
+            if (event.key === 'Escape') setOpen(false);
+        };
+        document.addEventListener('mousedown', close);
+        document.addEventListener('keydown', escape);
+        const frame = requestAnimationFrame(() => searchRef.current?.focus());
+        return () => {
+            cancelAnimationFrame(frame);
+            document.removeEventListener('mousedown', close);
+            document.removeEventListener('keydown', escape);
+        };
+    }, [open]);
+
+    return (
+        <div ref={rootRef} className="relative">
+            <button
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                onClick={() => setOpen((current) => !current)}
+                className={cn(
+                    'flex w-full items-center gap-3 rounded-xl border bg-black/[0.03] px-3 py-2.5 text-left transition dark:bg-black/25',
+                    open
+                        ? 'border-brand-accent/45 ring-2 ring-brand-accent/8'
+                        : 'border-black/10 hover:border-brand-accent/30 dark:border-white/8'
+                )}
+            >
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-accent/10 text-brand-accent">
+                    <Type className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground" style={{ fontFamily: value }}>
+                    {value}
+                </span>
+                <ChevronDown className={cn('h-4 w-4 shrink-0 text-brand-muted transition', open && 'rotate-180 text-brand-accent')} />
+            </button>
+
+            {open && (
+                <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-[80] overflow-hidden rounded-2xl border border-brand-accent/25 bg-[#0b1115]/98 shadow-[0_24px_70px_rgba(0,0,0,.62)] backdrop-blur-xl">
+                    <div className="border-b border-white/7 p-2.5">
+                        <label className="flex h-9 items-center gap-2 rounded-xl border border-white/9 bg-black/25 px-3 transition focus-within:border-brand-accent/40">
+                            <Search className="h-3.5 w-3.5 shrink-0 text-brand-accent/70" />
+                            <input
+                                ref={searchRef}
+                                value={query}
+                                onChange={(event) => setQuery(event.target.value)}
+                                placeholder="Buscar fonte"
+                                className="min-w-0 flex-1 bg-transparent text-xs text-white outline-none placeholder:text-white/30"
+                            />
+                        </label>
+                    </div>
+                    <div role="listbox" aria-label="Fonte da legenda" className="custom-scrollbar max-h-56 overflow-y-auto p-2">
+                        {visibleFonts.map((font) => {
+                            const active = font === value;
+                            return (
+                                <button
+                                    key={font}
+                                    type="button"
+                                    role="option"
+                                    aria-selected={active}
+                                    onClick={() => {
+                                        onChange(font);
+                                        setOpen(false);
+                                        setQuery('');
+                                    }}
+                                    className={cn(
+                                        'mb-1 flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition',
+                                        active
+                                            ? 'border-brand-accent/30 bg-brand-accent/10 text-white'
+                                            : 'border-transparent text-white/75 hover:border-white/8 hover:bg-white/5 hover:text-white'
+                                    )}
+                                >
+                                    <span className="min-w-0 flex-1 truncate text-sm" style={{ fontFamily: font }}>{font}</span>
+                                    {active && <Check className="h-4 w-4 shrink-0 text-brand-accent" />}
+                                </button>
+                            );
+                        })}
+                        {visibleFonts.length === 0 && (
+                            <p className="px-3 py-5 text-center text-xs text-white/40">Nenhuma fonte encontrada.</p>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
 
 /** Slider estilizado: trilha preenchida em verde da marca + thumb com glow. */
 const Slider: React.FC<{
@@ -114,14 +218,26 @@ export const CaptionStudio: React.FC = () => {
                     </h4>
                     <div className="grid grid-cols-4 gap-2">
                         {PRESETS.map((p) => {
-                            const active =
-                                captionStyle.activeColor === p.s.activeColor && captionStyle.fontFamily === p.s.fontFamily;
+                            const active = captionStyle.id === p.id;
+                            const previewActiveColor =
+                                p.id === 'hacker-matrix'
+                                    ? adData.brandPalette?.primary || p.s.activeColor
+                                    : p.s.activeColor;
                             return (
                                 <button
                                     key={p.name}
                                     type="button"
                                     title={p.name}
-                                    onClick={() => updateStyle(p.s)}
+                                    onClick={() =>
+                                        updateStyle({
+                                            id: p.id,
+                                            name: p.name,
+                                            ...p.s,
+                                            ...(p.id === 'hacker-matrix' && adData.brandPalette?.primary
+                                                ? { activeColor: adData.brandPalette.primary }
+                                                : {}),
+                                        })
+                                    }
                                     className={cn(
                                         'group flex flex-col items-center gap-1.5 rounded-xl border p-2 transition-all',
                                         active
@@ -138,7 +254,7 @@ export const CaptionStudio: React.FC = () => {
                                             paintOrder: 'stroke fill',
                                         }}
                                     >
-                                        A<span style={{ color: p.s.activeColor }}>a</span>
+                                        A<span style={{ color: previewActiveColor }}>a</span>
                                     </span>
                                     <span className="w-full truncate text-center text-[8px] font-bold uppercase tracking-wide text-brand-muted/70">
                                         {p.name}
@@ -155,17 +271,10 @@ export const CaptionStudio: React.FC = () => {
                         <label className="text-[11px] font-semibold uppercase tracking-wider text-brand-muted">Fonte</label>
                         <span className="font-mono text-[10px] text-foreground/60">{captionStyle.fontFamily || 'Poppins'}</span>
                     </div>
-                    <select
-                        value={captionStyle.fontFamily || 'Poppins'}
-                        onChange={(e) => updateStyle({ fontFamily: e.target.value })}
-                        className="w-full cursor-pointer rounded-lg border border-black/10 bg-black/[0.03] px-3 py-2 text-sm text-foreground outline-none transition focus:border-brand-accent/50 dark:border-white/8 dark:bg-black/25"
-                    >
-                        {FONTS.map((f) => (
-                            <option key={f} value={f}>
-                                {f}
-                            </option>
-                        ))}
-                    </select>
+                    <FontPicker
+                        value={captionStyle.fontFamily || 'Montserrat'}
+                        onChange={(fontFamily) => updateStyle({ fontFamily })}
+                    />
                 </div>
 
                 {/* Ajustes */}
@@ -173,9 +282,12 @@ export const CaptionStudio: React.FC = () => {
                     <Slider label="Tamanho" value={captionStyle.fontSize} min={8} max={80} step={2} unit="px" onChange={(v) => updateStyle({ fontSize: v })} />
                     <Slider label="Contorno" value={captionStyle.strokeWidth} min={0} max={12} step={1} unit="px" onChange={(v) => updateStyle({ strokeWidth: v })} />
                     <div className="col-span-2">
-                        <Slider label="Altura (posição)" value={captionStyle.verticalPosition ?? 15} min={5} max={50} step={1} unit="%" onChange={(v) => updateStyle({ verticalPosition: v })} />
+                        <Slider label="Altura (posição)" value={captionStyle.verticalPosition ?? 23} min={5} max={85} step={1} unit="%" onChange={(v) => updateStyle({ verticalPosition: v })} />
                     </div>
                 </div>
+                <p className="rounded-lg border border-brand-accent/12 bg-brand-accent/[0.045] px-3 py-2 text-[9px] leading-relaxed text-brand-muted">
+                    No preview, clique na legenda para arrastar a altura ou redimensionar pelos cantos.
+                </p>
 
                 {/* Cores */}
                 <section className="space-y-2">

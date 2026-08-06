@@ -150,7 +150,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                             name: 'Narração Gerada',
                             startSec: adData.audioConfig.narration.offsetSec,
                             inSec: adData.audioConfig.narration.trimStart,
-                            outSec: 0, // Will be auto-calculated
+                            outSec: adData.audioConfig.narration.trimEnd || 0,
                             fadeInSec: adData.audioConfig.narration.fadeInSec,
                             fadeOutSec: adData.audioConfig.narration.fadeOutSec,
                             volume: 1,
@@ -176,7 +176,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                             name: 'Música de Fundo',
                             startSec: adData.audioConfig.background.offsetSec,
                             inSec: adData.audioConfig.background.trimStart,
-                            outSec: 0,
+                            outSec: adData.audioConfig.background.trimEnd || 0,
                             fadeInSec: adData.audioConfig.background.fadeInSec,
                             fadeOutSec: adData.audioConfig.background.fadeOutSec,
                             volume: 1,

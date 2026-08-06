@@ -4,6 +4,22 @@ import { DEFAULT_VIDEO_ENHANCEMENT, normalizeVideoEnhancement } from '../lib/vid
 import { gatewayApi, type SharedAsset } from '../lib/gateway';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { API_BASE_URL } from '../lib/apiBase';
+import { DEFAULT_SYSTEM_VOICE } from '../lib/systemVoices';
+import {
+    invalidateOpsCompanyContext,
+    refreshOpsTakeUrl,
+    resolveOpsCompanyContext,
+    restoreCachedOpsTake,
+    withResolvedOpsContext,
+} from '../lib/opsMediaRecovery';
+import {
+    isSystemMusicId,
+    SYSTEM_MUSIC_IDS,
+    SYSTEM_MUSIC_PATHS,
+    SYSTEM_MUSIC_TRACKS,
+    systemMusicTrackFor,
+    withSystemMusicTracks,
+} from '../lib/systemMusic';
 
 export const SHOW_DEBUG_FEATURES = false;
 
@@ -14,6 +30,7 @@ export const ENABLE_MEDIA_AI = false;
 
 const ACTIVE_DRAFT_STORAGE_KEY = 'mileto_active_draft_id';
 const ACTIVE_DRAFT_SCOPE_KEY = 'mileto_active_draft_scope';
+const DRAFT_RECOVERY_STORAGE_PREFIX = 'mileto_draft_recovery_v1';
 
 const generateDraftId = (): string => {
     try {
@@ -80,6 +97,39 @@ type LoadedDraftData = {
     exported?: boolean;
     saveRevision?: number;
     lastStep?: number;
+    updatedAt?: string;
+};
+
+type DraftRecoveryEnvelope = {
+    capturedAt: number;
+    data: LoadedDraftData;
+};
+
+const draftRecoveryStorageKey = (projectId: string, scope: 'local' | 'shared') =>
+    `${DRAFT_RECOVERY_STORAGE_PREFIX}:${scope}:${projectId}`;
+
+const readDraftRecovery = (projectId: string, scope: 'local' | 'shared'): DraftRecoveryEnvelope | null => {
+    try {
+        const raw = localStorage.getItem(draftRecoveryStorageKey(projectId, scope));
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as DraftRecoveryEnvelope;
+        if (!parsed || !Number.isFinite(parsed.capturedAt) || !parsed.data || typeof parsed.data !== 'object') {
+            return null;
+        }
+        return parsed;
+    } catch {
+        return null;
+    }
+};
+
+const preferRecoverySnapshot = (
+    persisted: LoadedDraftData | null,
+    recovery: DraftRecoveryEnvelope | null
+): LoadedDraftData | null => {
+    if (!recovery) return persisted;
+    if (!persisted) return recovery.data;
+    const persistedAt = Date.parse(persisted.updatedAt || '');
+    return !Number.isFinite(persistedAt) || recovery.capturedAt > persistedAt ? recovery.data : persisted;
 };
 
 const serializeTakeForDraft = (take: MediaTake): MediaTake => {
@@ -88,12 +138,14 @@ const serializeTakeForDraft = (take: MediaTake): MediaTake => {
     if (take.externalMedia?.source !== 'mileto_ops') return serializableTake;
     return {
         ...serializableTake,
-        // URLs-capability e caminhos do cache pertencem somente a este PC.
+        // URLs-capability e caminhos absolutos nunca entram no rascunho. O
+        // cacheId, porém, é a chave estável e não secreta que permite a este
+        // computador reabrir o take sem depender novamente do Ops.
         url: '',
         fileUrl: '',
         proxyUrl: '',
         backendPath: undefined,
-        externalMedia: { ...take.externalMedia, cacheId: null },
+        externalMedia: { ...take.externalMedia },
     };
 };
 
@@ -103,28 +155,16 @@ const defaultAdData: AdData = {
     title: '',
     format: '9:16',
     narrationText: DEFAULT_NARRATION_TEXT,
-    selectedVoiceId: 'd7cdad0d54464bcfade4be58791c6f3d', // Thales Impacto
+    selectedVoiceId: DEFAULT_SYSTEM_VOICE.id,
+    selectedVoiceProvider: DEFAULT_SYSTEM_VOICE.provider,
+    voiceSettings: { ...DEFAULT_SYSTEM_VOICE.preset.voiceSettings },
     narrationAudioUrl: null,
     narrationAudioPath: null,
     isNarrationGenerated: false,
-    musicAudioUrl: null,
+    musicAudioUrl: `${API_BASE_URL}${SYSTEM_MUSIC_PATHS[SYSTEM_MUSIC_IDS.batida]}`,
     audioConfig: {
-        narration: {
-            enabled: true,
-            volume: 1,
-            offsetSec: 0,
-            trimStart: 0,
-            fadeInSec: 0,
-            fadeOutSec: 1, // Slight fade out for narration
-        },
-        background: {
-            enabled: true,
-            volume: 0.05, // Lower background volume
-            offsetSec: 0,
-            trimStart: 0,
-            fadeInSec: 2, // Smooth fade in
-            fadeOutSec: 2, // Smooth fade out
-        },
+        narration: { ...DEFAULT_SYSTEM_VOICE.preset.audioConfig.narration },
+        background: { ...DEFAULT_SYSTEM_VOICE.preset.audioConfig.background },
     },
     globalTransition: null,
     videoEnhancement: DEFAULT_VIDEO_ENHANCEMENT,
@@ -172,9 +212,8 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             '6607173b195648c580bda6f4e15497de',
             'b9b6ca3a75c940ad96cc7833bd803669',
         ]);
-        const REVOKED_OPENAI_KEYS = new Set([
-            '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',
-        ]);
+        // Nunca embutir a credencial revogada no aplicativo distribuído.
+        const REVOKED_OPENAI_KEYS = new Set<string>();
         try {
             const stored = localStorage.getItem('mileto_api_keys');
             if (stored) {
@@ -203,22 +242,24 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     const [adData, setAdData] = useState<AdData>(defaultAdData);
     const [mediaTakes, setMediaTakes] = useState<MediaTake[]>([]);
 
-    // Default Caption Style is the new advanced Karaoke style
+    // Padrão visual da primeira geração de legendas em todo projeto novo.
+    // Ao selecionar a empresa, o Ops substitui o verde pela cor primária da marca.
     const defaultCaptionStyle: CaptionStyle = {
-        id: 'karaoke-dynamic',
-        name: 'Karaokê Dinâmico',
+        id: 'hacker-matrix',
+        name: 'Hacker Matrix',
         previewClass: '',
-        fontFamily: 'Poppins',
-        fontSize: 24,
-        strokeWidth: 2,
-        activeColor: '#FF0000', // Red
-        baseColor: '#FFFFFF', // White
-        strokeColor: '#000000', // Black
-        verticalPosition: 15, // 15% from bottom by default
+        fontFamily: 'Montserrat',
+        fontSize: 20,
+        strokeWidth: 4,
+        activeColor: '#00E676',
+        baseColor: '#FFFFFF',
+        strokeColor: '#000000',
+        verticalPosition: 23,
     };
     const [captionStyle, setCaptionStyle] = useState<CaptionStyle | null>(defaultCaptionStyle);
-    const [musicLibrary, setMusicLibrary] = useState<MusicTrack[]>([]);
-    const [selectedMusicId, setSelectedMusicIdState] = useState<string | null>(null); // Start with no music selected
+    const [musicLibrary, setMusicLibrary] = useState<MusicTrack[]>(SYSTEM_MUSIC_TRACKS);
+    const [selectedMusicId, setSelectedMusicIdState] = useState<string | null>(SYSTEM_MUSIC_IDS.batida);
+    const systemMusicAliasesRef = useRef<Record<string, string>>({});
     const [projectId, setProjectId] = useState<string>(() => {
         // Sobrevive ao refresh do Electron: se havia um rascunho ativo, reuso o id.
         try {
@@ -320,13 +361,50 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         );
     }, []);
 
+    // Checkpoint síncrono no armazenamento do renderer. Ele não substitui o
+    // arquivo oficial do projeto; serve como rede de proteção enquanto o POST
+    // assíncrono ainda está na fila ou quando o Vite/Electron recarrega a tela.
+    const writeRecoverySnapshot = React.useCallback(() => {
+        if (!initialDraftLoadCompleteRef.current || !hasDraftContent()) return;
+        const s = stateRef.current;
+        const routeStep = Number(window.location.pathname.match(/\/wizard\/step\/(\d+)/)?.[1] || 1);
+        const title =
+            s.adData.title?.trim() ||
+            s.draftTitle.trim() ||
+            s.adData.narrationText?.trim().slice(0, 60) ||
+            'Rascunho sem título';
+        const capturedAt = Date.now();
+        const envelope: DraftRecoveryEnvelope = {
+            capturedAt,
+            data: {
+                adData: { ...s.adData, title },
+                mediaTakes: s.mediaTakes.map(serializeTakeForDraft),
+                captionStyle: s.captionStyle,
+                selectedMusicId: s.selectedMusicId,
+                exported: false,
+                title,
+                saveRevision: saveRevisionRef.current,
+                lastStep: Math.max(1, Math.min(4, routeStep)),
+                updatedAt: new Date(capturedAt).toISOString(),
+            },
+        };
+        try {
+            localStorage.setItem(draftRecoveryStorageKey(s.projectId, s.draftScope), JSON.stringify(envelope));
+        } catch (error) {
+            // Quota cheia não pode interromper a edição; o autosave em arquivo
+            // continua sendo a camada principal.
+            console.warn('[Draft] Checkpoint local indisponível:', error);
+        }
+    }, [hasDraftContent]);
+
     const importLocalAsset = React.useCallback(async (input: {
         sourceUrl?: string | null;
         backendPath?: string | null;
         name: string;
         parent: 'Músicas' | 'Imagens' | 'Vídeos';
+        visibility?: 'library' | 'project';
     }): Promise<SharedAsset> => {
-        const cacheKey = input.backendPath || input.sourceUrl || '';
+        const cacheKey = `${input.visibility || 'library'}:${input.backendPath || input.sourceUrl || ''}`;
         const cached = sharedAssetCacheRef.current.get(cacheKey);
         if (cached) return cached;
 
@@ -382,6 +460,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             idKey: 'sharedNarrationAssetId' | 'sharedMusicAssetId' | 'sharedMasterAssetId',
             fallbackName: string,
             backendPath?: string | null,
+            visibility: 'library' | 'project' = 'library',
         ) => {
             const sourceUrl = nextAd[urlKey];
             if (isLocalMedia(sourceUrl, backendPath)) {
@@ -390,6 +469,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                     backendPath,
                     name: fileNameFrom(sourceUrl, fallbackName),
                     parent: 'Músicas',
+                    visibility,
                 });
                 nextAd[urlKey] = entry.publicUrl;
                 nextAd[idKey] = entry.id;
@@ -403,11 +483,17 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             'sharedNarrationAssetId',
             'narracao.mp3',
             nextAd.narrationAudioPath,
+            'project',
         );
-        const musicEntry = await syncAudio('musicAudioUrl', 'sharedMusicAssetId', 'musica.mp3');
-        await syncAudio('masterAudioUrl', 'sharedMasterAssetId', 'mixagem.mp3');
-        if (!musicEntry && nextAd.musicAudioUrl && payload.selectedMusicId) {
+        const musicEntry = isSystemMusicId(payload.selectedMusicId)
+            ? null
+            : await syncAudio('musicAudioUrl', 'sharedMusicAssetId', 'musica.mp3');
+        await syncAudio('masterAudioUrl', 'sharedMasterAssetId', 'mixagem.mp3', null, 'project');
+        if (!musicEntry && nextAd.musicAudioUrl && payload.selectedMusicId && !isSystemMusicId(payload.selectedMusicId)) {
             nextAd.sharedMusicAssetId = payload.selectedMusicId;
+        }
+        if (isSystemMusicId(payload.selectedMusicId)) {
+            nextAd.sharedMusicAssetId = undefined;
         }
         nextAd.narrationAudioPath = null;
 
@@ -467,49 +553,128 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 take.proxyUrl = asset.publicUrl;
             }
         }
-        const unavailableOpsTakeIds = new Set<string>();
+        const hasOpsReferences = nextTakes.some(
+            (take) => take.externalMedia?.source === 'mileto_ops' && Boolean(take.externalMedia.referenceId)
+        );
+        let canMaterializeOpsLocally = false;
+        if (hasOpsReferences) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/ops/cache/status`);
+                const status = await response.json();
+                // Durante uma atualização, o renderer novo pode voltar antes do
+                // servidor interno. A versão antiga removia referências ao receber
+                // um 404 do Ops; portanto só materializamos quando o servidor já
+                // confirma explicitamente a política segura.
+                canMaterializeOpsLocally = response.ok && status?.preservesDraftReferences === true;
+            } catch {
+                // Builds antigos do servidor local ainda podem exibir o stream remoto.
+                canMaterializeOpsLocally = false;
+            }
+        }
         await Promise.all(nextTakes.map(async (take) => {
             if (take.externalMedia?.source !== 'mileto_ops' || !take.externalMedia.referenceId) return;
             const referenceId = take.externalMedia.referenceId;
+            const originalReference = take.externalMedia;
+            const previousDuration = Number(take.originalDurationSeconds || 0);
+            const followedFullDuration =
+                Number(take.trim?.end || 0) <= 0 ||
+                (previousDuration > 0 && Math.abs(Number(take.trim?.end || 0) - previousDuration) < 0.05);
             // Remove qualquer capability/caminho persistido por versões anteriores
             // antes de pedir uma materialização novamente autorizada.
             take.url = '';
             take.fileUrl = '';
             take.proxyUrl = '';
             take.backendPath = undefined;
-            take.externalMedia = { ...take.externalMedia, cacheId: null };
+            take.externalMedia = { ...take.externalMedia };
             let lastError: unknown = null;
-            for (let attempt = 0; attempt < 5; attempt += 1) {
+            let resolvedContext = null;
+            try {
+                const restored = await restoreCachedOpsTake(take);
+                Object.assign(take, restored);
+                return;
+            } catch (error) {
+                // Cache ausente é a única situação em que voltamos ao Ops.
+                // Os cards, cortes e efeitos permanecem no rascunho mesmo se o
+                // serviço remoto estiver temporariamente indisponível.
+                lastError = error;
+            }
+            try {
+                resolvedContext = await resolveOpsCompanyContext(
+                    originalReference.companyId,
+                    originalReference.viewContext
+                );
+                take.externalMedia = withResolvedOpsContext(take.externalMedia, resolvedContext);
+            } catch (error) {
+                lastError = error;
+            }
+            for (let attempt = 0; canMaterializeOpsLocally && resolvedContext && attempt < 5; attempt += 1) {
                 try {
                     const response = await fetch(`${API_BASE_URL}/api/ops/cache/materialize`, {
                         method: 'POST',
-                        headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json' },
+                        headers: {
+                            ...(await localAuthHeaders()),
+                            'Content-Type': 'application/json',
+                            'X-Ops-View-Context': resolvedContext.contextId,
+                        },
                         body: JSON.stringify({ referenceId }),
                     });
-                    const result = await response.json();
+                    const result = await response.json().catch(() => ({}));
                     if (!response.ok || !result.ok || !result.source) {
-                        if (response.status === 404 || response.status === 410) {
-                            unavailableOpsTakeIds.add(take.id);
-                            return;
+                        if ([401, 403].includes(response.status)) {
+                            invalidateOpsCompanyContext(originalReference.companyId);
+                            resolvedContext = await resolveOpsCompanyContext(
+                                originalReference.companyId,
+                                originalReference.viewContext,
+                                true
+                            );
+                            take.externalMedia = withResolvedOpsContext(take.externalMedia, resolvedContext);
                         }
-                        throw new Error(result.message || 'Falha ao recuperar mídia do Mileto Ops.');
+                        const responseError = new Error(result.message || 'Falha ao recuperar mídia do Mileto Ops.');
+                        Object.assign(responseError, { status: response.status });
+                        throw responseError;
                     }
                     const source = result.source;
                     const absoluteUrl = (url?: string | null) =>
                         !url ? '' : /^https?:\/\//i.test(url) ? url : `${API_BASE_URL}${url}`;
                     take.url = absoluteUrl(source.url);
                     take.fileUrl = absoluteUrl(source.url);
-                    take.proxyUrl = absoluteUrl(source.proxyUrl);
+                    take.proxyUrl = absoluteUrl(source.proxyUrl) || take.url;
                     take.backendPath = source.path;
-                    take.originalDurationSeconds = Number(source.duration || take.originalDurationSeconds || 0);
-                    take.externalMedia = source.externalMedia || take.externalMedia;
+                    const materializedDuration = Number(source.duration || previousDuration || 0);
+                    take.originalDurationSeconds = materializedDuration;
+                    if (materializedDuration > 0) {
+                        const nextEnd = followedFullDuration
+                            ? materializedDuration
+                            : Math.min(Math.max(0, Number(take.trim?.end || 0)), materializedDuration);
+                        take.trim = {
+                            start: Math.min(Math.max(0, Number(take.trim?.start || 0)), Math.max(0, nextEnd - 0.05)),
+                            end: nextEnd,
+                        };
+                    }
+                    take.externalMedia = withResolvedOpsContext(
+                        { ...take.externalMedia, ...(source.externalMedia || {}), source: 'mileto_ops' },
+                        resolvedContext
+                    );
                     return;
                 } catch (error) {
                     lastError = error;
+                    const status = Number((error as { status?: number })?.status || 0);
+                    if ([404, 410, 422].includes(status)) break;
                     if (attempt < 4) await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)));
                 }
             }
-            console.warn('[Draft] Não foi possível materializar referência do Mileto Ops:', (lastError as Error)?.message);
+            // O cache local é uma otimização. Se ele não estiver pronto, renovamos
+            // a URL assinada do Ops para o take jamais reaparecer como um card vazio.
+            try {
+                const refreshed = await refreshOpsTakeUrl(take);
+                take.url = refreshed.media.url;
+                take.fileUrl = refreshed.media.url;
+                take.proxyUrl = refreshed.media.url;
+                take.externalMedia = withResolvedOpsContext(take.externalMedia, refreshed.context);
+            } catch (error) {
+                lastError = error;
+                console.warn('[Draft] Não foi possível restaurar referência do Mileto Ops:', (lastError as Error)?.message);
+            }
         }));
         if (nextAd) {
             const narration = nextAd.sharedNarrationAssetId ? assets.get(nextAd.sharedNarrationAssetId) : null;
@@ -522,7 +687,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         return {
             ...data,
             adData: nextAd,
-            mediaTakes: nextTakes.filter((take) => !unavailableOpsTakeIds.has(take.id)),
+            mediaTakes: nextTakes,
         };
     }, []);
 
@@ -654,43 +819,68 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     }, []);
 
     const loadProject = React.useCallback(async () => {
+        const recovery = readDraftRecovery(projectId, draftScopeState);
         try {
             if (draftScopeState === 'shared') {
                 const json = await gatewayApi.sharedDraft(projectId);
-                if (json.ok && json.data) {
-                    applyLoadedDraft(await hydrateSharedPayload(json.data as LoadedDraftData));
+                const selected = preferRecoverySnapshot(
+                    json.ok && json.data ? json.data as LoadedDraftData : null,
+                    recovery
+                );
+                if (selected) {
+                    applyLoadedDraft(await hydrateSharedPayload(selected));
                 }
                 return;
             }
             const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/projects/${projectId}`);
-            if (res.status === 404) return;
+            if (res.status === 404) {
+                if (recovery) applyLoadedDraft(await hydrateSharedPayload(recovery.data));
+                return;
+            }
 
             const json = await res.json();
-            if (json.ok && json.data) {
-                applyLoadedDraft(await hydrateSharedPayload(json.data as LoadedDraftData));
-                console.log('Project loaded, updated at:', json.data.updatedAt);
+            const selected = preferRecoverySnapshot(
+                json.ok && json.data ? json.data as LoadedDraftData : null,
+                recovery
+            );
+            if (selected) {
+                applyLoadedDraft(await hydrateSharedPayload(selected));
+                console.log('Project loaded, updated at:', selected.updatedAt);
             }
         } catch (err) {
             console.error('Failed to load project:', err);
+            if (recovery) {
+                try {
+                    applyLoadedDraft(await hydrateSharedPayload(recovery.data));
+                } catch (recoveryError) {
+                    console.error('Failed to recover local project checkpoint:', recoveryError);
+                }
+            }
         }
     }, [projectId, draftScopeState, applyLoadedDraft, hydrateSharedPayload]);
 
     const loadDraft = React.useCallback(async (id: string, scope: 'local' | 'shared' = draftScopeState): Promise<number | null> => {
         initialDraftLoadCompleteRef.current = false;
         if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+        const recovery = readDraftRecovery(id, scope);
         try {
-            let data: LoadedDraftData;
+            let persisted: LoadedDraftData | null = null;
             if (scope === 'shared') {
                 const json = await gatewayApi.sharedDraft(id);
-                if (!json.ok || !json.data) return null;
-                data = await hydrateSharedPayload(json.data as LoadedDraftData);
+                if (json.ok && json.data) persisted = json.data as LoadedDraftData;
             } else {
                 const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/projects/${id}`);
-                if (!res.ok) return null;
-                const json = await res.json();
-                if (!json.ok || !json.data) return null;
-                data = await hydrateSharedPayload(json.data as LoadedDraftData);
+                if (res.ok) {
+                    const json = await res.json();
+                    if (json.ok && json.data) persisted = json.data as LoadedDraftData;
+                }
             }
+            const selected = preferRecoverySnapshot(persisted, recovery);
+            if (!selected) {
+                initialDraftLoadCompleteRef.current = true;
+                return null;
+            }
+            const data = await hydrateSharedPayload(selected);
 
             setProjectId(id);
             setDraftScope(scope);
@@ -707,6 +897,18 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             return Math.max(1, Math.min(4, Number(data.lastStep) || 1));
         } catch (err) {
             console.error('Failed to load draft:', err);
+            if (recovery) {
+                try {
+                    const data = await hydrateSharedPayload(recovery.data);
+                    setProjectId(id);
+                    setDraftScope(scope);
+                    applyLoadedDraft(data);
+                    initialDraftLoadCompleteRef.current = true;
+                    return Math.max(1, Math.min(4, Number(data.lastStep) || 1));
+                } catch (recoveryError) {
+                    console.error('Failed to recover selected draft checkpoint:', recoveryError);
+                }
+            }
             initialDraftLoadCompleteRef.current = true;
             return null;
         }
@@ -730,7 +932,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         setAdData({ ...defaultAdData, title });
         setMediaTakes([]);
         setCaptionStyle(defaultCaptionStyle);
-        setSelectedMusicIdState(null);
+        setSelectedMusicIdState(SYSTEM_MUSIC_IDS.batida);
         lastSavedFingerprintRef.current = '';
         window.setTimeout(() => {
             initialDraftLoadCompleteRef.current = true;
@@ -754,6 +956,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     // qualquer mudança: takes, cortes, ordem, legendas, títulos, áudio e estilo.
     useEffect(() => {
         if (!initialDraftLoadCompleteRef.current) return;
+        writeRecoverySnapshot();
         if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
         autosaveTimerRef.current = setTimeout(() => {
             void saveProject();
@@ -761,7 +964,30 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         return () => {
             if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
         };
-    }, [adData, captionStyle, draftScopeState, draftTitle, mediaTakes, projectId, saveProject, selectedMusicId]);
+    }, [adData, captionStyle, draftScopeState, draftTitle, mediaTakes, projectId, saveProject, selectedMusicId, writeRecoverySnapshot]);
+
+    useEffect(() => {
+        const persistBeforeLeave = () => {
+            if (!initialDraftLoadCompleteRef.current) return;
+            writeRecoverySnapshot();
+            void saveProject({ keepalive: true });
+        };
+        const persistWhenHidden = () => {
+            if (document.visibilityState === 'hidden') persistBeforeLeave();
+        };
+
+        window.addEventListener('beforeunload', persistBeforeLeave);
+        window.addEventListener('pagehide', persistBeforeLeave);
+        document.addEventListener('visibilitychange', persistWhenHidden);
+        return () => {
+            window.removeEventListener('beforeunload', persistBeforeLeave);
+            window.removeEventListener('pagehide', persistBeforeLeave);
+            document.removeEventListener('visibilitychange', persistWhenHidden);
+            // Fast Refresh desmonta o provider sem necessariamente disparar
+            // beforeunload. O checkpoint síncrono garante o estado mesmo assim.
+            persistBeforeLeave();
+        };
+    }, [saveProject, writeRecoverySnapshot]);
 
     // Persist API keys whenever they change
     useEffect(() => {
@@ -817,7 +1043,12 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/music/list`);
             const data = await res.json();
             if (data.ok) {
-                setMusicLibrary(data.tracks);
+                const tracks = Array.isArray(data.tracks) ? data.tracks as MusicTrack[] : [];
+                for (const track of tracks) {
+                    const systemTrack = systemMusicTrackFor(track);
+                    if (systemTrack) systemMusicAliasesRef.current[track.id] = systemTrack.id;
+                }
+                setMusicLibrary(withSystemMusicTracks(tracks));
             }
         } catch (err) {
             console.error('Failed to load music library', err);
@@ -829,15 +1060,42 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         loadMusicLibrary();
     }, [loadMusicLibrary]);
 
+    // Instalações anteriores guardavam Batida/Blogueira como uploads comuns com
+    // UUID. Convertemos silenciosamente esses IDs para os IDs estáveis do sistema,
+    // preservando a URL que já funciona naquela instalação.
+    useEffect(() => {
+        if (!selectedMusicId) return;
+        const canonicalTrack = systemMusicTrackFor(selectedMusicId)
+            || systemMusicTrackFor(systemMusicAliasesRef.current[selectedMusicId]);
+        if (!canonicalTrack) return;
+        const runtimeTrack = musicLibrary.find((track) => track.id === canonicalTrack.id);
+        if (!runtimeTrack) return;
+
+        if (selectedMusicId !== canonicalTrack.id) setSelectedMusicIdState(canonicalTrack.id);
+        const runtimeUrl = /^https?:\/\//.test(runtimeTrack.publicUrl)
+            ? runtimeTrack.publicUrl
+            : `${API_BASE_URL}${runtimeTrack.publicUrl}`;
+        setAdData((current) => {
+            if (current.musicAudioUrl === runtimeUrl && !current.sharedMusicAssetId) return current;
+            return { ...current, musicAudioUrl: runtimeUrl, sharedMusicAssetId: undefined };
+        });
+    }, [musicLibrary, selectedMusicId]);
+
     // Trocar a música cria uma nova fonte de áudio. Cortes e offsets pertenciam à
     // faixa anterior; reaproveitá-los pode deixar a nova faixa com duração negativa
     // (spinner eterno/onda vazia no editor). A seleção só muda quando o ID existe na
     // biblioteca atualmente visível e o mix antigo é invalidado.
     const setSelectedMusicId = React.useCallback((id: string | null) => {
-        const track = id ? musicLibrary.find((candidate) => candidate.id === id) : null;
+        const requestedTrack = id ? musicLibrary.find((candidate) => candidate.id === id) : null;
+        const canonicalSystemTrack = systemMusicTrackFor(requestedTrack || id);
+        const canonicalId = canonicalSystemTrack?.id || id;
+        const track = canonicalId
+            ? musicLibrary.find((candidate) => candidate.id === canonicalId) ||
+              SYSTEM_MUSIC_TRACKS.find((candidate) => candidate.id === canonicalId)
+            : null;
         if (id && !track) return;
 
-        setSelectedMusicIdState(id);
+        setSelectedMusicIdState(canonicalId);
         const nextUrl = track
             ? (/^https?:\/\//.test(track.publicUrl)
                 ? track.publicUrl

@@ -132,6 +132,7 @@ router.post('/shared/files/item/:assetId/materialize-transition', sharedControll
 // Mileto Ops: o renderer envia apenas uma referência opaca. O servidor local
 // busca uma URL curta via gateway e materializa o arquivo no cache privado.
 router.post('/ops/cache/materialize', opsController.materialize);
+router.post('/ops/cache/restore', opsController.restoreCached);
 router.get('/ops/cache/status', opsController.cacheStatus);
 router.get('/ops/cache/file/:cacheId/:filename', opsController.serveCacheFile);
 router.post('/ops/exports/upload', opsController.uploadExport);

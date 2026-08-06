@@ -109,7 +109,31 @@ const stripFishAudioTags = (value: string): string =>
     );
 
 const sourceTokensFromNarration = (narrationText: string): string[] =>
-    stripFishAudioTags(narrationText).match(/[\p{L}\p{N}]+(?:[.,][\p{N}]+)?|R\$|%/gu) || [];
+    // Símbolos precisam vir antes da alternativa genérica de letras. Caso
+    // contrário, `R$ 199,00` é tokenizado como `R`, `199,00` e perdemos o `$`.
+    stripFishAudioTags(narrationText).match(/R\$|%|[\p{L}\p{N}]+(?:[.,][\p{N}]+)?/gu) || [];
+
+const formatPtBrCurrency = (majorRaw: string, centsRaw = ''): string | null => {
+    const majorDigits = String(majorRaw).replace(/\D/g, '');
+    if (!majorDigits) return null;
+    const major = Number(majorDigits);
+    const cents = centsRaw ? Number(String(centsRaw).replace(/\D/g, '').padEnd(2, '0').slice(0, 2)) : 0;
+    if (!Number.isSafeInteger(major) || !Number.isInteger(cents)) return null;
+    return `R$ ${(major + cents / 100).toLocaleString('pt-BR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    })}`;
+};
+
+const currencyValuesFromNarration = (narrationText: string): string[] =>
+    Array.from(stripFishAudioTags(narrationText).matchAll(/R\$\s*(\d+(?:\.\d{3})*)(?:,(\d{1,2}))?/giu))
+        .map((match) => formatPtBrCurrency(match[1], match[2]))
+        .filter((value): value is string => Boolean(value));
+
+const currencyLiteral = (value: string): string | null => {
+    const match = String(value || '').trim().match(/^R\s*\$?\s*(\d+(?:\.\d{3})*)(?:,(\d{1,2}))?$/iu);
+    return match ? formatPtBrCurrency(match[1], match[2]) : null;
+};
 
 const levenshteinDistance = (left: string, right: string): number => {
     if (left === right) return 0;
@@ -181,12 +205,65 @@ const parseNumberWords = (keys: string[]): number | null => {
     return total + current;
 };
 
-const formatCurrencyAndPercentages = (words: CaptionWord[]) => {
+const formatCurrencyAndPercentages = (words: CaptionWord[], narrationText = '') => {
     const result: CaptionWord[] = [];
     const keys = words.map((word) => normalize(word.text));
+    const sourceCurrencies = currencyValuesFromNarration(narrationText);
     let formattedValues = 0;
+    let currencyIndex = 0;
 
     for (let index = 0; index < words.length; ) {
+        // Alguns retornos do STT preservam o preço em um único token.
+        const literal = currencyLiteral(words[index].text);
+        if (literal) {
+            result.push({
+                text: sourceCurrencies[currencyIndex] || literal,
+                start: words[index].start,
+                end: words[index].end,
+            });
+            formattedValues++;
+            currencyIndex++;
+            index++;
+            continue;
+        }
+
+        // Outros separam `R$ 199,00` em `R`, `199`, `00`. Reconstruímos um
+        // único CaptionWord para que o valor não seja quebrado visualmente nem
+        // perca o símbolo, mantendo o intervalo completo dos tokens originais.
+        if ((keys[index] === 'r' || keys[index] === 'rs') && /^\d[\d.,]*$/.test(words[index + 1]?.text?.trim() || '')) {
+            const firstNumericToken = words[index + 1].text.trim();
+            const embeddedCents = firstNumericToken.match(/[,.](\d{1,2})$/)?.[1] || '';
+            const majorParts = [firstNumericToken.replace(/[,.]\d{1,2}$/, '')];
+            let lastIndex = index + 1;
+            let centsRaw = embeddedCents;
+            if (!embeddedCents) {
+                let cursor = index + 2;
+                // Também cobre milhares fragmentados pelo STT: `R`, `1`,
+                // `999`, `90` deve resultar em `R$ 1.999,90`.
+                while (/^\d{3}$/.test(words[cursor]?.text?.trim() || '')) {
+                    majorParts.push(words[cursor].text.trim());
+                    lastIndex = cursor;
+                    cursor++;
+                }
+                if (/^\d{1,2}$/.test(words[cursor]?.text?.trim() || '')) {
+                    centsRaw = words[cursor].text;
+                    lastIndex = cursor;
+                }
+            }
+            const reconstructed = formatPtBrCurrency(majorParts.join(''), centsRaw);
+            if (reconstructed) {
+                result.push({
+                    text: sourceCurrencies[currencyIndex] || reconstructed,
+                    start: words[index].start,
+                    end: words[lastIndex].end,
+                });
+                formattedValues++;
+                currencyIndex++;
+                index = lastIndex + 1;
+                continue;
+            }
+        }
+
         let currencyEnd = -1;
         const searchEnd = Math.min(words.length, index + 10);
         for (let candidate = index + 1; candidate < searchEnd; candidate++) {
@@ -223,15 +300,17 @@ const formatCurrencyAndPercentages = (words: CaptionWord[]) => {
                     }
                 }
 
-                result.push({
-                    text: `R$ ${(whole + cents / 100).toLocaleString('pt-BR', {
+                const formattedCurrency = `R$ ${(whole + cents / 100).toLocaleString('pt-BR', {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2,
-                    })}`,
+                    })}`;
+                result.push({
+                    text: sourceCurrencies[currencyIndex] || formattedCurrency,
                     start: words[index].start,
                     end: words[lastIndex].end,
                 });
                 formattedValues++;
+                currencyIndex++;
                 index = lastIndex + 1;
                 continue;
             }
@@ -263,19 +342,23 @@ export const reconcileCaptionWords = (transcriptWords: TranscriptWord[], narrati
     const repairedWords = transcriptWords
         .filter((word) => Number.isFinite(word.start) && Number.isFinite(word.end) && word.word?.trim())
         .map((word) => {
+            // Preserve um preço que o STT já devolveu inteiro. O alinhador é
+            // palavra-a-palavra e poderia aproximar `R$199,00` apenas do token
+            // `199,00` do roteiro, removendo novamente o símbolo.
+            const transcriptCurrency = currencyLiteral(word.word);
             const sourceMatch = sourceTokens.length ? findSourceToken(word.word, sourceTokens, sourceIndex) : null;
             const sourceText = sourceMatch ? sourceTokens[sourceMatch.index] : null;
             if (sourceMatch) sourceIndex = sourceMatch.index + 1;
             if (sourceText && normalize(sourceText) !== normalize(word.word)) correctedWords++;
 
             return {
-                text: (sourceText || word.word).trim().toUpperCase(),
+                text: (transcriptCurrency || sourceText || word.word).trim().toUpperCase(),
                 start: Number(word.start.toFixed(2)),
                 end: Number(word.end.toFixed(2)),
             };
         });
 
-    const formatted = formatCurrencyAndPercentages(repairedWords);
+    const formatted = formatCurrencyAndPercentages(repairedWords, narrationText || '');
     return {
         words: formatted.words,
         review: {

@@ -46,6 +46,63 @@ export interface TeamMember {
     created_at: string;
 }
 
+export type AiAgentId = 'director' | 'prompt_sales' | 'image_director' | 'video_director';
+
+export interface AiChatAgentSetting {
+    id: AiAgentId;
+    label: string;
+    shortLabel: string;
+    description: string;
+    defaultPrompt: string;
+    customPrompt: string | null;
+    effectivePrompt: string;
+    usesDefault: boolean;
+    updatedAt: string | null;
+}
+
+export type TitleVideoFormat = '9:16' | '16:9' | '4:5' | '1:1';
+export interface AiTitleColorRule {
+    mode: 'brand' | 'fixed';
+    paletteSlot: 'rotate' | 'primary' | 'secondary' | 'tertiary';
+    primary: string;
+    secondary: string;
+}
+export interface AiTitleLayout {
+    posX: number;
+    posY: number;
+    scale: number;
+    scaleX?: number;
+    scaleY?: number;
+    textBoxWidthPct: number;
+}
+export interface AiTitleTypeRule {
+    id: string;
+    name: string;
+    styleId: string;
+    fontFamily: string;
+    durationSec: number;
+    animationId: 'pop' | 'fade' | 'slide' | 'blink' | 'none';
+    color: AiTitleColorRule | null;
+    layouts: Record<TitleVideoFormat, AiTitleLayout>;
+}
+export interface AiTitleTriggerRule {
+    id: string;
+    name: string;
+    enabled: boolean;
+    maxOccurrences: number;
+    instructions: string;
+    examples: string[];
+    sample: string;
+    color: AiTitleColorRule;
+    titleTypes: AiTitleTypeRule[];
+}
+export interface AiTitleGeneratorConfig {
+    version: number;
+    extractionPrompt: string;
+    maxTitles: number;
+    triggers: AiTitleTriggerRule[];
+}
+
 export interface SharedDraftSummary {
     id: string;
     title: string;
@@ -236,7 +293,15 @@ export async function gatewayFetch<T = unknown>(
         try {
             data = JSON.parse(text);
         } catch {
-            data = { message: text };
+            const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+            const looksLikeHtml = contentType.includes('text/html') || /<\s*!doctype\s+html|<\s*html[\s>]/i.test(text);
+            data = {
+                message: looksLikeHtml
+                    ? 'Este recurso ainda não está disponível no servidor Mileto. Tente novamente em instantes.'
+                    : text.length <= 500
+                      ? text
+                      : `Erro ${res.status}`,
+            };
         }
     }
 
@@ -282,6 +347,38 @@ export const gatewayApi = {
 
     async removeMember(userId: number): Promise<void> {
         await gatewayFetch(`/account/team/${userId}`, { method: 'DELETE' });
+    },
+
+    async aiChatSettings(): Promise<{ agents: AiChatAgentSetting[] }> {
+        return gatewayFetch('/account/ai/chat');
+    },
+
+    async saveAiAgentPrompt(agentId: AiAgentId, prompt: string | null): Promise<{ agents: AiChatAgentSetting[] }> {
+        return gatewayFetch(`/account/ai/chat/${agentId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ prompt }),
+        });
+    },
+
+    async aiTitleGenerator(): Promise<{
+        config: AiTitleGeneratorConfig;
+        defaultConfig: AiTitleGeneratorConfig;
+        usesDefault: boolean;
+        updatedAt: string | null;
+    }> {
+        return gatewayFetch('/account/ai/title-generator');
+    },
+
+    async saveAiTitleGenerator(config: AiTitleGeneratorConfig | null): Promise<{
+        config: AiTitleGeneratorConfig;
+        defaultConfig: AiTitleGeneratorConfig;
+        usesDefault: boolean;
+        updatedAt: string | null;
+    }> {
+        return gatewayFetch('/account/ai/title-generator', {
+            method: 'PUT',
+            body: JSON.stringify({ config }),
+        });
     },
 
     async opsConnection(): Promise<OpsIntegrationStatus> {
@@ -345,6 +442,13 @@ export const gatewayApi = {
             if (!cursor) break;
         }
         return { data: companies, meta: { nextCursor: cursor } };
+    },
+
+    async opsCompany(companyId: string, viewContextId?: string | null): Promise<{ data: OpsCompany }> {
+        return gatewayFetch(
+            `/v1/integrations/mileto-ops/companies/${encodeURIComponent(companyId)}`,
+            { headers: opsContextHeaders(viewContextId) }
+        );
     },
 
     async opsFolders(

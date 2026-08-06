@@ -21,7 +21,6 @@ import { useWizard } from '../context/WizardContext';
 import type { MediaTake } from '../types';
 import { useDownloadJobs } from '../context/DownloadJobsContext';
 import { MiletoMediaPlayer } from './MiletoMediaPlayer';
-import { normalizeBrandPalette } from '../lib/brandPalette';
 
 const absoluteLocalUrl = (url?: string | null) => {
     if (!url) return '';
@@ -90,7 +89,7 @@ interface MaterializedOpsSource {
 }
 
 export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
-    const { addMediaTakes, setMediaTakes, updateAdData } = useWizard();
+    const { addMediaTakes, setMediaTakes } = useWizard();
     const { registerJob, registerClientJob, updateClientJob } = useDownloadJobs();
     const [ready, setReady] = useState(false);
     const [linked, setLinked] = useState(false);
@@ -229,13 +228,6 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
 
     const loadCompany = async (company: OpsCompany) => {
         setSelectedCompany(company);
-        if (company.kind !== 'archive') {
-            const brandPalette = normalizeBrandPalette(company.palette);
-            updateAdData({
-                brandPalette,
-                brandPaletteUpdatedAt: brandPalette ? company.paletteUpdatedAt ?? null : null,
-            });
-        }
         setSelectedFolder(null);
         setAssetQuery('');
         setLoading(true);
@@ -554,6 +546,11 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                                 version: reference.version,
                                 checksum: reference.checksum,
                                 opsUpdatedAt: reference.opsUpdatedAt,
+                                viewContext: selectedContextRef.current ? {
+                                    mode: selectedContextRef.current.mode,
+                                    label: selectedContextRef.current.label,
+                                    subtitle: selectedContextRef.current.subtitle,
+                                } : null,
                             },
                             type,
                             trim: { start: 0, end: duration },
@@ -815,7 +812,14 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
             fileUrl: absoluteLocalUrl(source.url),
             proxyUrl: absoluteLocalUrl(source.proxyUrl),
             backendPath: source.path,
-            externalMedia: source.externalMedia,
+            externalMedia: source.externalMedia ? {
+                ...source.externalMedia,
+                viewContext: selectedContextRef.current ? {
+                    mode: selectedContextRef.current.mode,
+                    label: selectedContextRef.current.label,
+                    subtitle: selectedContextRef.current.subtitle,
+                } : source.externalMedia.viewContext,
+            } : undefined,
             type,
             trim: { start: 0, end: duration },
         };

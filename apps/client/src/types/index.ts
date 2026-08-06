@@ -70,6 +70,12 @@ export interface ExternalMediaReference {
     checksum?: string | null;
     opsUpdatedAt?: string | null;
     cacheId?: string | null;
+    /** Identidade não secreta usada para obter um contextId novo ao restaurar o projeto. */
+    viewContext?: {
+        mode: 'self' | 'team' | 'profile';
+        label: string;
+        subtitle: string;
+    } | null;
 }
 
 export interface MediaTake {
@@ -184,6 +190,14 @@ export interface CustomVoice {
     description?: string;
     /** Vozes salvas antes do suporte multi-provedor não têm o campo — trata-se como Fish Audio. */
     provider?: TtsProvider;
+    /** Ajustes aplicados ao escolher esta voz. Ausente em vozes antigas. */
+    preset?: VoicePreset;
+}
+
+export interface VoicePreset {
+    voiceSettings: VoiceSettings;
+    musicTrackId: string | null;
+    audioConfig: AudioConfig;
 }
 
 export interface AudioTrackConfig {
@@ -274,6 +288,15 @@ export interface TitleHook {
     styleId?: string; // e.g., 'neo-pop', 'solid-ribbon', 'gradient-glow'
     primaryColor?: string; // Primary text or accent color
     secondaryColor?: string; // Secondary background or text color
+    /** Mantém títulos em modo marca ligados à paleta atual do projeto/empresa. */
+    colorBinding?: {
+        mode: 'brand';
+        paletteSlot: 'rotate' | 'primary' | 'secondary' | 'tertiary';
+        secondaryPaletteSlot?: 'rotate' | 'primary' | 'secondary' | 'tertiary';
+        rotationIndex?: number;
+        fallbackPrimary?: string;
+        fallbackSecondary?: string;
+    };
     animationId?: string; // Defines entrance/exit animation (e.g., 'pop', 'slide', 'fade', 'none')
     fontFamily?: string; // Título fonte (e.g. 'Inter', 'Anton')
     hasSound?: boolean; // Toggles the transition sound effect on/off
@@ -285,6 +308,14 @@ export interface BrandPalette {
     secondary: string;
     tertiary: string;
     all: string[];
+}
+
+export interface OpsProjectCompany {
+    id: string;
+    name: string;
+    /** Identidade não secreta usada apenas para reencontrar um contexto autorizado fresco. */
+    viewContextIdentity: string;
+    viewContextLabel?: string;
 }
 
 export interface AdData {
@@ -320,6 +351,8 @@ export interface AdData {
     /** Paleta recebida do Mileto Ops; o contraste de texto e derivado no cliente. */
     brandPalette?: BrandPalette | null;
     brandPaletteUpdatedAt?: string | null;
+    /** Empresa que define a marca do projeto; mídias podem vir de outras empresas autorizadas. */
+    opsCompany?: OpsProjectCompany | null;
     customOverlayUrl?: string; // Imagem customizada de logo/título no Step4
 }
 
@@ -344,6 +377,9 @@ export interface MusicTrack {
     filePath: string;
     durationSec: number;
     createdAt: string;
+    source?: 'system' | 'user';
+    systemKey?: string;
+    locked?: boolean;
 }
 
 // ─── Chat Mileto Types ──────────────────────────────────────────────────────

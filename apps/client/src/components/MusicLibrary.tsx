@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
-import { Music, Play, Pause, Pencil, Trash2, Check, X, Loader2, ArrowDownToLine, ArrowUpFromLine, HardDrive, Users } from 'lucide-react';
+import { Music, Play, Pause, Pencil, Trash2, Check, X, Loader2, ArrowDownToLine, ArrowUpFromLine, HardDrive, Users, LockKeyhole } from 'lucide-react';
 import { toast } from 'sonner';
 import type { MusicTrack } from '../types';
 
@@ -9,6 +9,7 @@ import { API_BASE_URL as API } from '../lib/apiBase';
 import { DownloadModal } from './DownloadModal';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { useDownloadJobs } from '../context/DownloadJobsContext';
+import { isSystemMusicTrack, withSystemMusicTracks } from '../lib/systemMusic';
 
 const formatDuration = (sec: number) => {
     const m = Math.floor(sec / 60);
@@ -68,7 +69,7 @@ export const MusicLibrary: React.FC = () => {
         setMusicLibrary((current) => {
             const currentIds = new Set(current.map((track) => track.id));
             const additions = completedTracks.filter((track) => !currentIds.has(track.id));
-            return additions.length > 0 ? [...current, ...additions] : current;
+            return additions.length > 0 ? withSystemMusicTracks([...current, ...additions]) : current;
         });
     }, [downloadJobs, scope, setMusicLibrary]);
 
@@ -185,7 +186,7 @@ export const MusicLibrary: React.FC = () => {
                 toast.success(data.deduplicated ? 'Música já existia; referência criada.' : 'Música compartilhada com a equipe.', { id: toastId });
                 return;
             }
-            setMusicLibrary((prev) => [...prev, data.track as MusicTrack]);
+            setMusicLibrary((prev) => withSystemMusicTracks([...prev, data.track as MusicTrack]));
             toast.success(`Música adicionada: ${data.track.displayName}`, { id: toastId });
         } catch (error: unknown) {
             let msg = error instanceof Error ? error.message : 'Erro desconhecido';
@@ -258,6 +259,10 @@ export const MusicLibrary: React.FC = () => {
 
     // ----- Rename (optimistic + offline fallback) -----
     const startRename = (track: MusicTrack) => {
+        if (isSystemMusicTrack(track)) {
+            toast.info('Esta música faz parte do Mileto e está sempre disponível.');
+            return;
+        }
         setEditingId(track.id);
         setEditValue(track.displayName);
     };
@@ -332,6 +337,10 @@ export const MusicLibrary: React.FC = () => {
 
     // ----- Delete -----
     const handleDelete = async (track: MusicTrack) => {
+        if (isSystemMusicTrack(track)) {
+            toast.info('As músicas do sistema não podem ser removidas.');
+            return;
+        }
         if (playingId === track.id) {
             audioRef.current?.pause();
             stopTimeTracking();
@@ -374,6 +383,10 @@ export const MusicLibrary: React.FC = () => {
     };
 
     const handleShare = async (track: MusicTrack) => {
+        if (isSystemMusicTrack(track)) {
+            toast.info('Esta faixa já acompanha o Mileto em todas as instalações.');
+            return;
+        }
         try {
             const headers = { ...(await localAuthHeaders()), 'Content-Type': 'application/json' };
             const response = await fetch(`${API}/api/shared/files/import-local`, {
@@ -564,9 +577,16 @@ export const MusicLibrary: React.FC = () => {
                                                 <p className="text-sm font-semibold text-foreground truncate leading-tight">
                                                     {track.displayName}
                                                 </p>
-                                                <p className="text-xs text-brand-muted/70 font-mono mt-0.5">
-                                                    {formatDuration(track.durationSec)}
-                                                </p>
+                                                <div className="mt-0.5 flex items-center gap-2">
+                                                    <p className="text-xs text-brand-muted/70 font-mono">
+                                                        {formatDuration(track.durationSec)}
+                                                    </p>
+                                                    {isSystemMusicTrack(track) && (
+                                                        <span className="inline-flex items-center gap-1 rounded-full border border-brand-accent/20 bg-brand-accent/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-brand-accent">
+                                                            <LockKeyhole className="h-2.5 w-2.5" /> Sistema
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </>
                                         )}
                                     </div>
@@ -574,7 +594,7 @@ export const MusicLibrary: React.FC = () => {
                                     {/* Actions */}
                                     {!isEditing && (
                                         <div className="flex items-center gap-1 shrink-0">
-                                            {scope === 'local' && (
+                                            {scope === 'local' && track.source !== 'system' && (
                                                 <button
                                                     onClick={() => void handleShare(track)}
                                                     className="p-1.5 text-brand-muted hover:text-brand-accent hover:bg-brand-accent/10 rounded-lg transition-colors"
@@ -599,20 +619,24 @@ export const MusicLibrary: React.FC = () => {
                                                     <span className="px-2">Usar</span>
                                                 )}
                                             </button>
-                                            <button
-                                                onClick={() => startRename(track)}
-                                                className="p-1.5 text-brand-muted hover:text-foreground hover:bg-black/10 dark:bg-white/10 rounded-lg transition-colors"
-                                                title="Renomear"
-                                            >
-                                                <Pencil className="w-3.5 h-3.5" />
-                                            </button>
-                                            <button
-                                                onClick={() => handleDelete(track)}
-                                                className="p-1.5 text-brand-muted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                                                title="Remover"
-                                            >
-                                                <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
+                                            {track.source !== 'system' && (
+                                                <>
+                                                    <button
+                                                        onClick={() => startRename(track)}
+                                                        className="p-1.5 text-brand-muted hover:text-foreground hover:bg-black/10 dark:bg-white/10 rounded-lg transition-colors"
+                                                        title="Renomear"
+                                                    >
+                                                        <Pencil className="w-3.5 h-3.5" />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDelete(track)}
+                                                        className="p-1.5 text-brand-muted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                                                        title="Remover"
+                                                    >
+                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                </>
+                                            )}
                                         </div>
                                     )}
                                 </div>
@@ -652,7 +676,7 @@ export const MusicLibrary: React.FC = () => {
                 <DownloadModal
                     onClose={() => setIsDownloadOpen(false)}
                     onDownloaded={(media) => {
-                        if (media.type === 'audio') setMusicLibrary((prev) => [...prev, media]);
+                        if (media.type === 'audio') setMusicLibrary((prev) => withSystemMusicTracks([...prev, media]));
                     }}
                 />
             )}

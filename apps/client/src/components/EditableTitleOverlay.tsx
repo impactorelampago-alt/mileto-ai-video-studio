@@ -301,7 +301,7 @@ export const EditableTitleOverlay = ({
             startPosY: title.posY,
             startScale: title.scale ?? 1,
             startVisualScale: visualScale,
-            startTextBoxWidthPct: title.textBoxWidthPct ?? clamp(measuredLogicalWidthPct, 12, 100),
+            startTextBoxWidthPct: title.textBoxWidthPct ?? clamp(measuredLogicalWidthPct, 12, 300),
             startRect: elementRect,
         };
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -326,8 +326,6 @@ export const EditableTitleOverlay = ({
         const handle = gesture.resizeHandle;
         if (!handle) return;
 
-        const deltaX = event.clientX - gesture.startX;
-        const deltaY = event.clientY - gesture.startY;
         const changesLeft = handle.includes('w');
         const changesRight = handle.includes('e');
         const changesTop = handle.includes('n');
@@ -357,24 +355,34 @@ export const EditableTitleOverlay = ({
             updates.posX = clamp(((nextLeft + nextWidth / 2 - stage.left) / stage.width) * 100, 3, 97);
             updates.posY = clamp(((nextTop - stage.top) / stage.height) * 100, 0, 92);
         } else if (changesLeft || changesRight) {
-            // As alças laterais alteram a largura de composição, não a escala do desenho.
-            // O delta visual é convertido de volta para a largura lógica porque o título
-            // inteiro é renderizado com escala no preview.
-            const signedVisualDelta = changesRight ? deltaX : -deltaX;
+            // As alças laterais ampliam a área de composição. A tipografia mantém
+            // sua proporção e apenas reorganiza as palavras entre as linhas.
+            const signedVisualDelta = changesRight
+                ? event.clientX - gesture.startX
+                : gesture.startX - event.clientX;
             const logicalDeltaPct = (signedVisualDelta / stage.width / gesture.startVisualScale) * 100;
-            const nextTextBoxWidthPct = clamp(gesture.startTextBoxWidthPct + logicalDeltaPct, 10, 100);
+            // A caixa é definida antes da escala visual. Por isso ela pode passar
+            // de 100% internamente e ainda permanecer totalmente dentro do vídeo.
+            const maximumLogicalWidthPct = clamp(100 / gesture.startVisualScale, 20, 300);
+            const nextTextBoxWidthPct = clamp(
+                gesture.startTextBoxWidthPct + logicalDeltaPct,
+                10,
+                maximumLogicalWidthPct
+            );
             const appliedVisualDeltaPct =
                 (nextTextBoxWidthPct - gesture.startTextBoxWidthPct) * gesture.startVisualScale;
             const centerDirection = changesRight ? 1 : -1;
             const nextCenter = gesture.startPosX + centerDirection * (appliedVisualDeltaPct / 2);
+            const halfVisibleWidth = (nextTextBoxWidthPct * gesture.startVisualScale) / 2;
 
             updates.textBoxWidthPct = nextTextBoxWidthPct;
             updates.scaleX = 1;
-            const halfVisibleWidth = (nextTextBoxWidthPct * gesture.startVisualScale) / 2;
-            updates.posX = clamp(nextCenter, Math.min(50, halfVisibleWidth), Math.max(50, 100 - halfVisibleWidth));
+            updates.posX = halfVisibleWidth >= 50
+                ? 50
+                : clamp(nextCenter, halfVisibleWidth, 100 - halfVisibleWidth);
         } else if (changesTop || changesBottom) {
-            let nextTop = gesture.startRect.top + (changesTop ? deltaY : 0);
-            let nextBottom = gesture.startRect.bottom + (changesBottom ? deltaY : 0);
+            let nextTop = gesture.startRect.top + (changesTop ? event.clientY - gesture.startY : 0);
+            let nextBottom = gesture.startRect.bottom + (changesBottom ? event.clientY - gesture.startY : 0);
             const minimumHeight = 22;
             if (nextBottom - nextTop < minimumHeight) {
                 if (changesTop) nextTop = nextBottom - minimumHeight;

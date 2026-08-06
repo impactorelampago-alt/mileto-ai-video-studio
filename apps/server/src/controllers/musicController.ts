@@ -29,6 +29,48 @@ interface MusicTrack {
     publicUrl: string;
     durationSec: number;
     createdAt: string;
+    source?: 'system' | 'user';
+    systemKey?: string;
+    locked?: boolean;
+}
+
+const SYSTEM_TRACKS: MusicTrack[] = [
+    {
+        id: 'system-music:batida-1',
+        originalName: 'Batida 1.mp3',
+        displayName: 'Batida 1',
+        filePath: 'system-music/batida-1.mp3',
+        publicUrl: '/system-music/batida-1.mp3',
+        durationSec: 76.584,
+        createdAt: '2026-08-05T00:00:00.000Z',
+        source: 'system',
+        systemKey: 'batida-1',
+        locked: true,
+    },
+    {
+        id: 'system-music:blogueira-1',
+        originalName: 'Blogueira 1.mp3',
+        displayName: 'Blogueira 1',
+        filePath: 'system-music/blogueira-1.mp3',
+        publicUrl: '/system-music/blogueira-1.mp3',
+        durationSec: 94.272,
+        createdAt: '2026-08-05T00:00:00.000Z',
+        source: 'system',
+        systemKey: 'blogueira-1',
+        locked: true,
+    },
+];
+
+function withSystemTracks(tracks: MusicTrack[]): MusicTrack[] {
+    const reservedNames = new Set(
+        SYSTEM_TRACKS.map((track) => track.displayName.toLocaleLowerCase('pt-BR')),
+    );
+    return [
+        ...SYSTEM_TRACKS,
+        ...tracks
+            .filter((track) => !reservedNames.has(track.displayName.trim().toLocaleLowerCase('pt-BR')))
+            .map((track) => ({ ...track, source: 'user' as const })),
+    ];
 }
 
 /** Converte uma entrada do índice (categoria Músicas) no formato MusicTrack do frontend. */
@@ -51,16 +93,16 @@ function readLibrary(): MusicTrack[] {
     const fromIndex = readIndex()
         .filter((e) => e.category === 'Músicas')
         .map(toTrack);
-    if (fromIndex.length > 0) return fromIndex;
+    if (fromIndex.length > 0) return withSystemTracks(fromIndex);
     // Fallback legado: mostra o que existia antes da migração rodar.
     try {
         if (fs.existsSync(LEGACY_LIBRARY_JSON)) {
-            return JSON.parse(fs.readFileSync(LEGACY_LIBRARY_JSON, 'utf-8'));
+            return withSystemTracks(JSON.parse(fs.readFileSync(LEGACY_LIBRARY_JSON, 'utf-8')));
         }
     } catch {
         /* corrompido: ignora */
     }
-    return [];
+    return [...SYSTEM_TRACKS];
 }
 
 // POST /api/music/upload

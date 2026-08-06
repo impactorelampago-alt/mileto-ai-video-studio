@@ -89,12 +89,21 @@ function startServer() {
 
     const nodeExecutable = process.execPath;
 
-    const args = isDev ? ['--require', 'ts-node/register', serverEntry] : [serverEntry];
+    // O renderer já usa HMR, mas o servidor TypeScript era iniciado uma única
+    // vez e continuava executando módulos antigos até o Electron ser fechado.
+    // O watch nativo do Node reinicia somente o filho local quando qualquer
+    // dependência do backend muda, preservando a janela e o projeto em edição.
+    const args = isDev
+        ? ['--watch', '--watch-preserve-output', '--require', 'ts-node/register', serverEntry]
+        : [serverEntry];
 
     const serverCwd = isDev ? path.join(appPath, '../server') : path.join(process.resourcesPath, 'server');
     const builtInTransitionsPath = isDev
         ? path.join(appPath, '../server/public/transitions/builtins')
         : path.join(process.resourcesPath, 'server/public/transitions/builtins');
+    const builtInMusicPath = isDev
+        ? path.join(appPath, '../server/assets/system-music')
+        : path.join(process.resourcesPath, 'server/assets/system-music');
 
     serverProcess = spawn(nodeExecutable, args, {
         cwd: serverCwd,
@@ -107,6 +116,7 @@ function startServer() {
             FFPROBE_PATH: ffprobePath,
             YTDLP_PATH: ytdlpPath,
             BUILTIN_TRANSITIONS_PATH: builtInTransitionsPath,
+            BUILTIN_MUSIC_PATH: builtInMusicPath,
             LOCAL_FILE_IMPORT_TOKEN: localFileImportToken,
             NODE_ENV: process.env.NODE_ENV || 'production',
         },
