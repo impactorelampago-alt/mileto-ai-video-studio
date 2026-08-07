@@ -161,6 +161,7 @@ export const Step1 = () => {
             updateAdData({
                 ...invalidatedNarrationDerivatives(),
                 isNarrationGenerated: true,
+                narrationSource: 'tts',
                 narrationAudioUrl: narrationUrl,
                 narrationDuration,
                 audioConfig: nextAudioConfig,
@@ -235,6 +236,7 @@ export const Step1 = () => {
             updateAdData({
                 ...invalidatedNarrationDerivatives(),
                 isNarrationGenerated: true,
+                narrationSource: 'recording',
                 narrationAudioUrl: `${apiBase}${data.url}`,
                 narrationDuration: data.duration,
             });

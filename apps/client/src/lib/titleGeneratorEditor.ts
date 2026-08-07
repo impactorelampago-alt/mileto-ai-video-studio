@@ -29,6 +29,7 @@ export interface TitleTriggerEditor {
     examples: string[];
     sample: string;
     enabled: boolean;
+    maxWords: number;
     maxOccurrences: number;
     color: AiTitleColorRule;
     models: Record<string, TitleModelEditorSettings>;
@@ -83,6 +84,7 @@ export const titleGeneratorConfigToEditor = (config: AiTitleGeneratorConfig): Ti
         examples: trigger.examples || [],
         sample: trigger.sample || trigger.name.toLocaleUpperCase('pt-BR'),
         enabled: trigger.enabled,
+        maxWords: trigger.maxWords || Math.max(3, ...trigger.titleTypes.map((type) => type.maxWords || 3)),
         maxOccurrences: trigger.maxOccurrences,
         color: trigger.color,
         models: Object.fromEntries(trigger.titleTypes
@@ -107,6 +109,7 @@ export const titleGeneratorEditorToConfig = (
         id: trigger.id,
         name: trigger.name,
         enabled: trigger.enabled,
+        maxWords: trigger.maxWords,
         maxOccurrences: trigger.maxOccurrences,
         instructions: trigger.hint,
         examples: trigger.examples,
@@ -136,6 +139,7 @@ export const newCustomTriggerEditor = (name: string): TitleTriggerEditor => ({
     examples: [],
     sample: name.toLocaleUpperCase('pt-BR'),
     enabled: true,
+    maxWords: 3,
     maxOccurrences: 1,
     color: { mode: 'brand', paletteSlot: 'rotate', primary: '#00e676', secondary: '#07110d' },
     models: {},

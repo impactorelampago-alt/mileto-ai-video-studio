@@ -70,7 +70,7 @@ const LEGACY_TITLE_GENERATOR_CONFIG = {
         },
         {
             id: 'cta', name: 'Chamada para ação', enabled: true, maxOccurrences: 1,
-            instructions: 'Clique, chame, agende, compre, visite ou outra ação explicitamente pronunciada.',
+            instructions: 'Clique, chame, agende, compre, aproveite, garanta, acesse, reserve ou outra ação explicitamente pronunciada.',
             color: { mode: 'fixed', paletteSlot: 'primary', primary: '#54a812', secondary: '#ffffff' },
             titleTypes: [{ id: 'whatsapp', name: 'WhatsApp', styleId: 'cta-whatsapp', fontFamily: 'Poppins', durationSec: 2, color: null, layouts: layouts(55, 62, 0.72, 50) }],
         },
@@ -88,6 +88,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
     triggers: [
         {
             id: 'scarcity', name: 'Escassez e urgência', enabled: true, maxOccurrences: 2,
+            maxWords: 3,
             instructions: 'Prazo, quantidade, vagas, lote ou estoque limitado somente quando forem pronunciados explicitamente.',
             examples: ['Somente até sábado', 'Últimas 8 unidades', '3 vagas'], sample: 'SOMENTE ATÉ SÁBADO', color: brandColor('primary'),
             titleTypes: [
@@ -97,6 +98,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
         },
         {
             id: 'region', name: 'Região', enabled: true, maxOccurrences: 1,
+            maxWords: 3,
             instructions: 'Cidade, estado, país, bairro, região ou área atendida. Nunca invente nem repita a localização.',
             examples: ['Casimiro de Abreu', 'Rio de Janeiro', 'Todo o Brasil'], sample: 'CASIMIRO DE ABREU', color: brandColor('tertiary'),
             titleTypes: [
@@ -106,8 +108,9 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
         },
         {
             id: 'cta', name: 'CTA', enabled: true, maxOccurrences: 1,
-            instructions: 'Clique, chame, agende, compre, visite ou outra ação explicitamente pronunciada.',
-            examples: ['Clique aqui', 'Chame no WhatsApp', 'Saiba mais'], sample: 'CLIQUE AQUI', color: brandColor('primary'),
+            maxWords: 3,
+            instructions: 'Clique, chame, agende, compre, aproveite, garanta, acesse, reserve ou outra ação explicitamente pronunciada.',
+            examples: ['Clique no botão', 'Chame no WhatsApp', 'Saiba mais'], sample: 'CLIQUE NO BOTÃO', color: brandColor('primary'),
             titleTypes: [
                 titleType('cta-whatsapp', 'Balão WhatsApp', 'Inter', layouts(58, 64, 0.72, 52), 'pop', fixedColor('#A3E635', '#FFFFFF')),
                 titleType('cta-tap', 'Botão de Clique', 'Poppins', layouts(60, 66, 0.72, 52), 'pop', fixedColor('#A3E635', '#FFFFFF')),
@@ -115,6 +118,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
         },
         {
             id: 'price', name: 'Preço', enabled: true, maxOccurrences: 2,
+            maxWords: 3,
             instructions: 'Valor, desconto, parcela, condição de pagamento ou economia somente quando forem ditos.',
             examples: ['R$ 199', '12x sem juros', '50% OFF'], sample: 'R$ 199', color: brandColor('secondary'),
             titleTypes: [
@@ -124,6 +128,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
         },
         {
             id: 'benefit', name: 'Benefício / bônus', enabled: true, maxOccurrences: 2,
+            maxWords: 4,
             instructions: 'Benefício concreto, bônus, transformação, diferenciador ou prova realmente pronunciada.',
             examples: ['Exame por nossa conta', 'Bônus incluso', 'Entrega grátis'], sample: 'EXAME POR NOSSA CONTA', color: brandColor('rotate'),
             titleTypes: [
@@ -146,9 +151,9 @@ const DEFAULT_TRIGGER_COPY_MIGRATIONS = {
         legacyExamples: ['Belo Horizonte', 'Minas Gerais', 'Todo o Brasil'],
     },
     cta: {
-        sample: 'CLIQUE AQUI', legacySamples: ['CHAME AGORA NO WHATSAPP'],
-        examples: ['Clique aqui', 'Chame no WhatsApp', 'Saiba mais'],
-        legacyExamples: ['Chame no WhatsApp', 'Clique agora', 'Saiba mais'],
+        sample: 'CLIQUE NO BOTÃO', legacySamples: ['CHAME AGORA NO WHATSAPP', 'CLIQUE AQUI'],
+        examples: ['Clique no botão', 'Chame no WhatsApp', 'Saiba mais'],
+        legacyExamples: ['Clique aqui', 'Chame no WhatsApp', 'Saiba mais'],
     },
     price: {
         sample: 'R$ 199', legacySamples: ['POR APENAS R$ 99'],
@@ -215,6 +220,7 @@ const normalizeTitleType = (input, fallback, index) => {
 const normalizeTrigger = (input, fallback, index) => {
     const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
     const sourceTypes = Array.isArray(source.titleTypes) ? source.titleTypes.slice(0, 20) : fallback.titleTypes;
+    const legacyMaxWords = sourceTypes.reduce((highest, item) => Math.max(highest, Number(item?.maxWords) || 0), 0);
     const normalizedTypes = sourceTypes.map((item, typeIndex) => normalizeTitleType(item, fallback.titleTypes[typeIndex] || fallback.titleTypes[0], typeIndex));
     const seen = new Set();
     normalizedTypes.forEach((item, typeIndex) => {
@@ -225,6 +231,7 @@ const normalizeTrigger = (input, fallback, index) => {
         id: id(source.id, fallback?.id || `gatilho-${index + 1}`),
         name: text(source.name, fallback?.name || `Gatilho ${index + 1}`, 80),
         enabled: source.enabled === undefined ? Boolean(fallback.enabled) : Boolean(source.enabled),
+        maxWords: Math.round(number(source.maxWords, legacyMaxWords || fallback.maxWords || 3, 1, 12)),
         maxOccurrences: Math.round(number(source.maxOccurrences, fallback.maxOccurrences || 1, 1, 6)),
         instructions: text(source.instructions, fallback.instructions, 3000),
         examples: (Array.isArray(source.examples) ? source.examples : fallback.examples || [])

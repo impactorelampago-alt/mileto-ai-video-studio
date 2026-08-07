@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Download, Film, HardDrive, Search, Users, Building2, Loader2, X, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -6,11 +6,12 @@ import { toast } from 'sonner';
 import { cn } from '../lib/utils';
 import type { MediaTake } from '../types';
 import { useWizard } from '../context/WizardContext';
-import { useExportJobs } from '../context/ExportJobsContext';
+import { useExportJobs, type OpsExportMetadata } from '../context/ExportJobsContext';
 import { API_BASE_URL } from '../lib/apiBase';
 import { gatewayApi, type OpsCompany, type OpsFolder } from '../lib/gateway';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { bindTitlesToBrandPalette, resolveOpsProjectBrand } from '../lib/opsProjectBrand';
+import { narrationSourceKey } from '../lib/narrationState';
 
 type DestinationKind = 'local' | 'shared' | 'ops';
 type FolderOption = { label: string; value: string };
@@ -102,6 +103,8 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
     const [opsFolders, setOpsFolders] = useState<OpsFolder[]>([]);
     const [opsFolderId, setOpsFolderId] = useState('');
     const [opsViewContextId, setOpsViewContextId] = useState<string | null>(null);
+    const [opsMetadata, setOpsMetadata] = useState<OpsExportMetadata | null>(null);
+    const [opsMetadataLoading, setOpsMetadataLoading] = useState(false);
     const [targetDims, setTargetDims] = useState({ w: 1080, h: 1920 });
 
     useEffect(() => {
@@ -148,6 +151,20 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
 
     const takesDuration = mediaTakes.reduce((total, take) => total + (take.trim.end - take.trim.start), 0);
     const totalDuration = Number(adData.narrationDuration || 0) > 0 ? Number(adData.narrationDuration) : takesDuration;
+    const finalNarrationText = useMemo(() => {
+        const captions = adData.captions;
+        if (captions?.sourceKey === narrationSourceKey(adData) && captions.segments.length) {
+            return captions.segments
+                .slice()
+                .sort((left, right) => left.start - right.start)
+                .map((segment) => segment.text.trim())
+                .filter(Boolean)
+                .join(' ');
+        }
+        const audioIdentity = `${adData.narrationAudioPath || ''} ${adData.narrationAudioUrl || ''}`;
+        const isUntranscribedRecording = adData.narrationSource === 'recording' || /narration-rec-/i.test(audioIdentity);
+        return isUntranscribedRecording ? '' : (adData.narrationText || '');
+    }, [adData]);
 
     const formatDuration = (seconds: number) => {
         const minutes = Math.floor(seconds / 60);
@@ -191,6 +208,51 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         }).catch((error) => setErrorMsg(error instanceof Error ? error.message : 'Não foi possível carregar as pastas da empresa.'));
     }, [destinationKind, opsCompanyId, opsViewContextId]);
 
+    const prepareOpsMetadata = useCallback(async (revision?: Pick<OpsExportMetadata, 'title' | 'description'>) => {
+        const response = await fetch(`${API_BASE_URL}/api/ops/exports/metadata`, {
+            method: 'POST',
+            headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                projectId,
+                projectTitle: adData.title,
+                narrationText: finalNarrationText,
+                mediaTakeCount: mediaTakes.length,
+                ...(revision || {}),
+            }),
+        });
+        const data = await response.json() as {
+            ok?: boolean;
+            code?: string;
+            message?: string;
+            data?: OpsExportMetadata;
+        };
+        if (!response.ok || !data.ok || !data.data) {
+            throw new Error(`${data.code || `HTTP_${response.status}`}: ${data.message || 'Não foi possível preparar os metadados da exportação.'}`);
+        }
+        return data.data;
+    }, [adData.title, finalNarrationText, mediaTakes.length, projectId]);
+
+    useEffect(() => {
+        if (destinationKind !== 'ops') return;
+        let cancelled = false;
+        setOpsMetadataLoading(true);
+        void prepareOpsMetadata()
+            .then((metadata) => {
+                if (cancelled) return;
+                setOpsMetadata(metadata);
+                setErrorMsg('');
+            })
+            .catch((error) => {
+                if (cancelled) return;
+                setOpsMetadata(null);
+                setErrorMsg(error instanceof Error ? error.message : 'Não foi possível preparar os metadados da exportação.');
+            })
+            .finally(() => {
+                if (!cancelled) setOpsMetadataLoading(false);
+            });
+        return () => { cancelled = true; };
+    }, [destinationKind, prepareOpsMetadata]);
+
     const handleFinishWithoutExport = useCallback(async () => {
         setStarting(true);
         const saved = await saveProject({ lastStep: 4 });
@@ -220,6 +282,25 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             setStarting(false);
             setErrorMsg('Selecione a empresa de destino no Mileto Ops.');
             return;
+        }
+        let exportOpsMetadata = opsMetadata;
+        if (destinationKind === 'ops') {
+            if (opsMetadataLoading || !opsMetadata) {
+                setStarting(false);
+                setErrorMsg('Aguarde a preparação do título e da descrição para o Mileto Ops.');
+                return;
+            }
+            try {
+                exportOpsMetadata = await prepareOpsMetadata({
+                    title: opsMetadata.title,
+                    description: opsMetadata.description,
+                });
+                setOpsMetadata(exportOpsMetadata);
+            } catch (error) {
+                setStarting(false);
+                setErrorMsg(error instanceof Error ? error.message : 'Não foi possível validar os metadados da exportação.');
+                return;
+            }
         }
         let exportAdData = adData;
         if (adData.opsCompany?.id) {
@@ -271,6 +352,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             },
             captionStyle: captionStyle ? { ...captionStyle } : null,
             projectId,
+            opsMetadata: exportOpsMetadata || undefined,
             destination: { kind: destinationKind, folderPath: destinationFolder, companyId: opsCompanyId, opsFolderId: opsFolderId || null, viewContextId: opsViewContextId },
         });
         setStarting(false);
@@ -296,7 +378,10 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         destinationKind,
         opsCompanyId,
         opsFolderId,
+        opsMetadata,
+        opsMetadataLoading,
         opsViewContextId,
+        prepareOpsMetadata,
         projectId,
         saveProject,
         startExport,
@@ -308,9 +393,12 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         updateAdData,
     ]);
 
+    const selectedOpsCompany = companies.find((company) => company.id === opsCompanyId);
+    const selectedOpsFolder = opsFolders.find((folder) => folder.id === opsFolderId);
+
     return createPortal(
         <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md">
-            <div className="relative z-101 flex w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-brand-accent/30 bg-brand-dark/95 shadow-[0_0_50px_rgba(0,230,118,0.15)] ring-1 ring-white/5">
+            <div className="relative z-101 flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-brand-accent/30 bg-brand-dark/95 shadow-[0_0_50px_rgba(0,230,118,0.15)] ring-1 ring-white/5">
                 <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-size-[20px_20px] opacity-20" />
                 <div className="relative z-10 flex shrink-0 items-center justify-between border-b border-white/10 bg-brand-card/50 px-6 py-5">
                     <div className="flex items-center gap-4">
@@ -336,7 +424,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                     </button>
                 </div>
 
-                <div className="relative z-10 flex flex-col gap-6 p-8">
+                <div className="relative z-10 flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-8">
                     <div className="flex flex-col gap-2.5">
                         <label className="text-[10px] font-bold uppercase tracking-widest text-brand-accent">
                             Título do projeto e nome do arquivo
@@ -366,6 +454,55 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                         {destinationKind === 'ops' ? <div className="grid grid-cols-2 gap-2"><PremiumSelect value={opsCompanyId} placeholder="Selecionar empresa" searchable searchPlaceholder="Buscar empresa..." options={companies.map((company) => ({ value: company.id, label: company.name || company.nome || 'Empresa sem nome' }))} onChange={(value) => { setOpsCompanyId(value); setOpsFolderId(''); }} /><PremiumSelect value={opsFolderId} placeholder="Pasta raiz" searchable searchPlaceholder="Buscar pasta..." options={[{ value: '', label: 'Pasta raiz' }, ...opsFolders.map((folder) => ({ value: folder.id, label: folder.name }))]} onChange={setOpsFolderId} /></div> : <PremiumSelect value={destinationFolder} placeholder="Selecionar pasta" searchable searchPlaceholder="Buscar pasta..." options={libraryFolders} onChange={setDestinationFolder} />}
                         <p className="text-[11px] text-brand-muted">{destinationKind === 'local' ? 'O MP4 será salvo diretamente na biblioteca deste programa.' : destinationKind === 'shared' ? 'O MP4 será enviado para a pasta compartilhada da equipe.' : 'Escolha a empresa e a pasta que receberão o vídeo no Mileto Ops.'}</p>
                     </div>
+
+                    {destinationKind === 'ops' && (
+                        <div className="rounded-2xl border border-brand-accent/25 bg-brand-accent/[0.055] p-4">
+                            <div className="mb-4 flex items-start justify-between gap-4">
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">Confirmar envio ao Mileto Ops</p>
+                                    <p className="mt-1 text-[11px] leading-relaxed text-brand-muted">Revise os metadados antes de o MP4 ser enviado. O resumo completo da narração também seguirá no contrato.</p>
+                                </div>
+                                {opsMetadataLoading && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-brand-accent" />}
+                            </div>
+                            <div className="mb-4 grid grid-cols-2 gap-2 text-[11px]">
+                                <div className="rounded-xl border border-white/8 bg-black/30 px-3 py-2.5">
+                                    <span className="block text-[9px] font-bold uppercase tracking-widest text-brand-muted">Empresa</span>
+                                    <strong className="mt-1 block truncate text-foreground">{selectedOpsCompany?.name || selectedOpsCompany?.nome || 'Selecione uma empresa'}</strong>
+                                </div>
+                                <div className="rounded-xl border border-white/8 bg-black/30 px-3 py-2.5">
+                                    <span className="block text-[9px] font-bold uppercase tracking-widest text-brand-muted">Pasta</span>
+                                    <strong className="mt-1 block truncate text-foreground">{selectedOpsFolder?.name || 'Pasta raiz'}</strong>
+                                </div>
+                            </div>
+                            {opsMetadata && (
+                                <div className="space-y-3">
+                                    <label className="block">
+                                        <span className="mb-1.5 flex items-center justify-between text-[9px] font-bold uppercase tracking-widest text-brand-muted">
+                                            <span>Título</span><span>{opsMetadata.title.length}/200</span>
+                                        </span>
+                                        <input
+                                            value={opsMetadata.title}
+                                            maxLength={200}
+                                            onChange={(event) => setOpsMetadata((current) => current ? { ...current, title: event.target.value } : current)}
+                                            className="w-full rounded-xl border border-white/10 bg-black/45 px-3.5 py-3 text-sm font-semibold text-foreground outline-none transition focus:border-brand-accent/70"
+                                        />
+                                    </label>
+                                    <label className="block">
+                                        <span className="mb-1.5 flex items-center justify-between text-[9px] font-bold uppercase tracking-widest text-brand-muted">
+                                            <span>Descrição</span><span>{opsMetadata.description.length}/2000</span>
+                                        </span>
+                                        <textarea
+                                            value={opsMetadata.description}
+                                            maxLength={2000}
+                                            rows={4}
+                                            onChange={(event) => setOpsMetadata((current) => current ? { ...current, description: event.target.value } : current)}
+                                            className="w-full resize-y rounded-xl border border-white/10 bg-black/45 px-3.5 py-3 text-xs leading-relaxed text-foreground outline-none transition focus:border-brand-accent/70"
+                                        />
+                                    </label>
+                                </div>
+                            )}
+                        </div>
+                    )}
 
                     <div className="flex flex-col gap-3">
                         <label className="text-[10px] font-bold uppercase tracking-widest text-brand-accent">

@@ -285,6 +285,7 @@ export interface TitleHook {
     scaleX?: number; // Independent horizontal size multiplier, default 1.0
     scaleY?: number; // Independent vertical size multiplier, default 1.0
     textBoxWidthPct?: number; // Text composition width as a percentage of the video frame
+    maxWords?: number; // Maximum number of words accepted by the source trigger
     styleId?: string; // e.g., 'neo-pop', 'solid-ribbon', 'gradient-glow'
     primaryColor?: string; // Primary text or accent color
     secondaryColor?: string; // Secondary background or text color
@@ -328,6 +329,8 @@ export interface AdData {
     narrationVoiceId?: string;
     narrationAudioUrl: string | null;
     narrationAudioPath: string | null; // For backend reference
+    /** Distingue a síntese baseada no roteiro de uma gravação sem transcrição confiável. */
+    narrationSource?: 'tts' | 'recording';
     sharedNarrationAssetId?: string;
     isNarrationGenerated: boolean;
     musicAudioUrl?: string | null;

@@ -24,9 +24,11 @@ import {
     Volume2,
     VolumeX,
     Zap,
+    Shuffle,
+    CopyPlus,
 } from 'lucide-react';
 import { TransitionsModal } from '../components/TransitionsModal';
-import { cn } from '../lib/utils';
+import { cn, generateId } from '../lib/utils';
 import {
     DndContext,
     closestCenter,
@@ -44,7 +46,7 @@ import {
     verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { MediaTake, TransitionAsset } from '../types';
+import type { MediaTake } from '../types';
 import { SpeedPresetType } from '../lib/speedRemapping';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ZoomEffectsModal } from '../components/ZoomEffectsModal';
@@ -52,87 +54,43 @@ import { takeMotionLabel } from '../lib/takeMotion';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 import { VideoEnhancementModal } from '../components/VideoEnhancementModal';
 import { normalizeVideoEnhancement, sharpnessLabel } from '../lib/videoEnhancement';
-import { API_BASE_URL as API } from '../lib/apiBase';
 import { recoverOpsTakeSource } from '../lib/opsMediaRecovery';
+import { applyQuickEdit } from '../lib/quickEdit';
 
-const QUICK_EDIT_SHARPNESS = 25;
+const copyTakeFileName = (fileName: string, label: string) => {
+    const extensionIndex = fileName.lastIndexOf('.');
+    if (extensionIndex <= 0) return `${fileName} (${label})`;
+    return `${fileName.slice(0, extensionIndex)} (${label})${fileName.slice(extensionIndex)}`;
+};
 
-const automaticCutTakes = (sourceTakes: MediaTake[], effectiveAudioDuration: number) => {
-    let remainingAudioTime = effectiveAudioDuration;
-    const finalDurations = new Map<string, number>();
-    let activeTakes = [...sourceTakes];
-    let attempts = 0;
-
-    while (activeTakes.length > 0 && remainingAudioTime > 0.001 && attempts < 100) {
-        attempts += 1;
-        const slice = remainingAudioTime / activeTakes.length;
-        const shortTakes = activeTakes.filter((take) => {
-            const maximum = take.type === 'video' && take.originalDurationSeconds > 0
-                ? take.originalDurationSeconds
-                : Number.MAX_VALUE;
-            return maximum < slice + 0.05;
-        });
-
-        if (shortTakes.length === 0) {
-            activeTakes.forEach((take) => finalDurations.set(take.id, slice));
-            remainingAudioTime = 0;
-            break;
+const cloneMediaTake = (
+    take: MediaTake,
+    options?: { trim?: { start: number; end: number }; label?: string }
+): MediaTake => ({
+    ...take,
+    id: generateId(),
+    fileName: copyTakeFileName(take.fileName, options?.label || 'cópia'),
+    trim: { ...(options?.trim || take.trim) },
+    externalMedia: take.externalMedia
+        ? {
+            ...take.externalMedia,
+            viewContext: take.externalMedia.viewContext ? { ...take.externalMedia.viewContext } : take.externalMedia.viewContext,
         }
-
-        shortTakes.forEach((take) => {
-            const maximum = take.type === 'video' && take.originalDurationSeconds > 0
-                ? take.originalDurationSeconds
-                : 0;
-            finalDurations.set(take.id, maximum);
-            remainingAudioTime -= maximum;
-        });
-        const lockedIds = new Set(shortTakes.map((take) => take.id));
-        activeTakes = activeTakes.filter((take) => !lockedIds.has(take.id));
-    }
-
-    const adjustedTakes = sourceTakes.map((take) => ({
-        ...take,
-        trim: { start: 0, end: Math.max(0, finalDurations.get(take.id) || 0) },
-        speedPresetId: 'normal' as const,
-    }));
-
-    if (remainingAudioTime <= 0.5) return { takes: adjustedTakes, looped: false };
-
-    const loopedTakes = [...adjustedTakes];
-    let loopIndex = 0;
-    let timeToFill = remainingAudioTime;
-    while (timeToFill > 0.5 && loopedTakes.length < 800) {
-        const source = sourceTakes[loopIndex % sourceTakes.length];
-        const sourceDuration = source.type === 'video' && source.originalDurationSeconds > 0
-            ? source.originalDurationSeconds
-            : timeToFill;
-        const duration = Math.min(sourceDuration, timeToFill);
-        loopedTakes.push({
-            ...source,
-            id: `${source.id}-loop-${Date.now()}-${loopIndex}`,
-            trim: { start: 0, end: Math.max(0, duration) },
-            speedPresetId: 'normal' as const,
-        });
-        timeToFill -= duration;
-        loopIndex += 1;
-    }
-    return { takes: loopedTakes, looped: true };
-};
-
-const isFilmBurnTransition = (transition?: TransitionAsset | null) => {
-    if (!transition) return false;
-    const identity = `${transition.id} ${transition.identityCode || ''} ${transition.originalName || ''}`
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .toLocaleLowerCase('pt-BR');
-    return identity.includes('film-burn') || identity.includes('film burn');
-};
+        : undefined,
+    motionEffect: take.motionEffect ? { ...take.motionEffect } : undefined,
+    enhancement: take.enhancement ? { ...take.enhancement } : undefined,
+    sharpness: take.sharpness ? { ...take.sharpness } : undefined,
+    // A transição pertence ao encontro entre duas posições da sequência; um
+    // clone nasce sem uma transição individual para não herdar um vínculo antigo.
+    transition: undefined,
+});
 
 interface SortableTakeProps {
     take: MediaTake;
     index: number;
     onRemove: (_id: string) => void;
     onEdit: (_take: MediaTake) => void;
+    onDuplicate: (_takeId: string) => void;
     onToggleFit: (_id: string) => void;
     onEnhance: (_id: string) => void;
     onZoom: (_id: string) => void;
@@ -143,7 +101,7 @@ interface SortableTakeProps {
     format: string;
 }
 
-const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, onZoom, onTransition, onMute, onSeek, isLast, format }: SortableTakeProps) => {
+const SortableTake = ({ take, index, onRemove, onEdit, onDuplicate, onToggleFit, onEnhance, onZoom, onTransition, onMute, onSeek, isLast, format }: SortableTakeProps) => {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
         id: take.id,
     });
@@ -246,6 +204,14 @@ const SortableTake = ({ take, index, onRemove, onEdit, onToggleFit, onEnhance, o
                     aria-label="Cortar este take"
                 >
                     <Scissors className="h-4 w-4" />
+                </button>
+                <button
+                    onClick={() => onDuplicate(take.id)}
+                    className="grid h-8 w-8 place-items-center rounded-lg bg-violet-500/10 text-violet-300 transition hover:bg-violet-500/18"
+                    title="Duplicar este take"
+                    aria-label="Duplicar este take"
+                >
+                    <CopyPlus className="h-4 w-4" />
                 </button>
                 <button
                     onClick={() => onMute(take.id)}
@@ -433,22 +399,78 @@ export const Step2 = () => {
         previewRef.current?.seekToTake(index);
     };
 
+    const handleDuplicateTake = (takeId: string) => {
+        setMediaTakes((current) => {
+            const sourceIndex = current.findIndex((take) => take.id === takeId);
+            if (sourceIndex < 0) return current;
+            const next = [...current];
+            next.splice(sourceIndex + 1, 0, cloneMediaTake(current[sourceIndex]));
+            return next;
+        });
+        toast.success('Take duplicado e inserido logo abaixo do original.');
+    };
+
+    const handleShuffleTakes = () => {
+        if (mediaTakes.length < 2) {
+            toast.info('Adicione pelo menos dois takes para embaralhar.');
+            return;
+        }
+        setMediaTakes((current) => {
+            const shuffled = current.map((take) => ({ ...take, transition: undefined }));
+            for (let index = shuffled.length - 1; index > 0; index -= 1) {
+                const target = Math.floor(Math.random() * (index + 1));
+                [shuffled[index], shuffled[target]] = [shuffled[target], shuffled[index]];
+            }
+            if (shuffled.every((take, index) => take.id === current[index]?.id)) {
+                shuffled.push(shuffled.shift()!);
+            }
+            return shuffled;
+        });
+        toast.success('Takes embaralhados.', {
+            description: 'As transições individuais foram removidas porque a ordem mudou.',
+        });
+    };
+
     const handleSaveTake = (
         takeId: string,
-        newTrim: { start: number; end: number; speedPresetId?: SpeedPresetType }
+        newTrims: Array<{
+            start: number;
+            end: number;
+            speedPresetId?: SpeedPresetType;
+            kind: 'primary' | 'created';
+        }>
     ) => {
-        setMediaTakes((prev) =>
-            prev.map((t) => {
-                if (t.id === takeId) {
+        setMediaTakes((current) => {
+            const sourceIndex = current.findIndex((take) => take.id === takeId);
+            if (sourceIndex < 0 || newTrims.length === 0) return current;
+            const source = current[sourceIndex];
+            const orderedTrims = [
+                ...newTrims.filter((trim) => trim.kind === 'primary').sort((a, b) => a.start - b.start),
+                ...newTrims.filter((trim) => trim.kind === 'created').sort((a, b) => a.start - b.start),
+            ];
+            const replacements = orderedTrims.map((trim, index) => {
+                if (index === 0) {
                     return {
-                        ...t,
-                        trim: { start: newTrim.start, end: newTrim.end },
-                        speedPresetId: newTrim.speedPresetId ?? t.speedPresetId,
+                        ...source,
+                        trim: { start: trim.start, end: trim.end },
+                        speedPresetId: trim.speedPresetId ?? source.speedPresetId,
                     };
                 }
-                return t;
-            })
-        );
+                return {
+                    ...cloneMediaTake(source, {
+                        trim: { start: trim.start, end: trim.end },
+                        label: trim.kind === 'created' ? 'novo take' : `corte ${index + 1}`,
+                    }),
+                    speedPresetId: trim.speedPresetId ?? source.speedPresetId,
+                };
+            });
+            const next = [...current];
+            next.splice(sourceIndex, 1, ...replacements);
+            return next;
+        });
+        if (newTrims.length > 1) {
+            toast.success(`${newTrims.length} takes criados a partir da mesma mídia.`);
+        }
         setEditingTake(null);
     };
 
@@ -574,37 +596,13 @@ export const Step2 = () => {
         if (!canQuickEdit || isQuickEditing) return;
         setIsQuickEditing(true);
         try {
-            let filmBurn = isFilmBurnTransition(adData.globalTransition) ? adData.globalTransition! : null;
-            if (!filmBurn) {
-                const response = await fetch(`${API}/api/transitions/list`);
-                const data = await response.json() as { ok?: boolean; transitions?: TransitionAsset[]; message?: string };
-                if (!response.ok || !data.ok) throw new Error(data.message || 'Não foi possível carregar os efeitos.');
-                filmBurn = (data.transitions || []).find(isFilmBurnTransition) || null;
-            }
-            if (!filmBurn) throw new Error('O efeito Film Burn do sistema não foi encontrado.');
-
-            // O recorte é sempre o primeiro ajuste. Os demais efeitos são aplicados
-            // sobre a sequência final, já sincronizada com a música.
-            const cutResult = automaticCutTakes(mediaTakes, quickEditTargetDuration);
-            const quickEditedTakes: MediaTake[] = cutResult.takes.map((take) => ({
-                ...take,
-                transition: undefined,
-                muteOriginalAudio: true,
-                objectFit: 'cover',
-                sharpness: { mode: 'custom', amount: QUICK_EDIT_SHARPNESS },
-                motionEffect: {
-                    type: 'zoom-in-out',
-                    intensity: 0.12,
-                    focalX: 50,
-                    focalY: 50,
-                    easing: 'smooth',
-                },
-            }));
+            const quickEdit = await applyQuickEdit(mediaTakes, quickEditTargetDuration, adData.globalTransition);
+            const quickEditedTakes = quickEdit.takes;
 
             setMediaTakes(quickEditedTakes);
             updateAdData({
-                globalTransition: filmBurn,
-                transitionPath: filmBurn.filePath,
+                globalTransition: quickEdit.transition,
+                transitionPath: quickEdit.transition.filePath,
                 transitionRotation: 0,
                 transitionVolume: 1,
                 transitionMuted: false,
@@ -731,6 +729,17 @@ export const Step2 = () => {
                                         {!canQuickEdit && quickEditTargetDuration > 0 && (
                                             <span className="font-mono text-[8px] opacity-70">{rawTakesDuration.toFixed(0)}/{quickEditTargetDuration.toFixed(0)}s</span>
                                         )}
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        onClick={handleShuffleTakes}
+                                        disabled={mediaTakes.length < 2}
+                                        className="grid h-9 w-9 place-items-center rounded-lg border border-violet-500/20 bg-violet-500/10 text-violet-300 transition hover:bg-violet-500/18 disabled:cursor-not-allowed disabled:opacity-35"
+                                        title="Embaralhar a ordem dos takes"
+                                        aria-label="Embaralhar a ordem dos takes"
+                                    >
+                                        <Shuffle className="h-4 w-4" />
                                     </button>
 
                                     <button
@@ -867,6 +876,7 @@ export const Step2 = () => {
                                                     index={index}
                                                     onRemove={removeMediaTake}
                                                     onEdit={setEditingTake}
+                                                    onDuplicate={handleDuplicateTake}
                                                     onToggleFit={handleToggleFit}
                                                     onEnhance={(takeId) => {
                                                         setEnhancementTargetTakeId(takeId);

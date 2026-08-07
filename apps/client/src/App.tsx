@@ -10,6 +10,7 @@ import { LoginScreen } from './components/LoginScreen';
 import { DownloadJobsProvider } from './context/DownloadJobsContext';
 import { ExportJobsProvider } from './context/ExportJobsContext';
 import { OpsCompanyGuard } from './components/OpsCompanyGuard';
+import { OpsVideoJobCoordinator } from './components/OpsVideoJobCoordinator';
 
 const Home = lazy(() => import('./pages/Home').then((m) => ({ default: m.Home })));
 const Downloads = lazy(() => import('./pages/Downloads').then((m) => ({ default: m.Downloads })));
@@ -46,6 +47,7 @@ function App() {
             <HashRouter>
                 <DownloadJobsProvider>
                     <ExportJobsProvider>
+                        <OpsVideoJobCoordinator />
                         <Suspense
                             fallback={
                                 <div className="flex h-screen w-full items-center justify-center text-foreground/50">

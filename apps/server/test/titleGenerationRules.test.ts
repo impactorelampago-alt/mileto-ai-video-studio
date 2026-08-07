@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     deterministicTitleCandidates,
+    limitTitleWords,
     preventTitleOverlaps,
     resolveLiteralCaptionText,
     resolveTitleColors,
+    rotatingTitleTypeIndex,
     triggerMapWithAliases,
 } from '../src/services/titleGenerationRules';
 import type { TitleTriggerRule } from '../src/services/titleGeneratorConfig';
@@ -13,6 +15,7 @@ const trigger = (id: string, name: string): TitleTriggerRule => ({
     id,
     name,
     enabled: true,
+    maxWords: 3,
     maxOccurrences: 1,
     instructions: '',
     examples: [],
@@ -26,6 +29,23 @@ test('detecta região após atenção e preço com prefixo a partir de', () => {
     assert.deepEqual(candidates, [
         { text: 'a partir de R$ 199', kind: 'price' },
         { text: 'Piracicaba', kind: 'region' },
+    ]);
+});
+
+test('detecta CTA literal mesmo quando a chamada usa verbo no infinitivo', () => {
+    const candidates = deterministicTitleCandidates('Conheça nossas condições e aproveitar essa oferta.');
+    assert.deepEqual(candidates, [
+        { text: 'aproveitar essa oferta', kind: 'cta' },
+    ]);
+});
+
+test('prioriza CTA direta sobre uma menção genérica à oferta', () => {
+    const candidates = deterministicTitleCandidates(
+        'Você pode aproveitar essa oferta. Para continuar, clique no botão.'
+    );
+    assert.deepEqual(candidates, [
+        { text: 'clique no botão', kind: 'cta' },
+        { text: 'aproveitar essa oferta', kind: 'cta' },
     ]);
 });
 
@@ -99,4 +119,21 @@ test('descarta candidato simultâneo que não teria tempo útil de exibição', 
 
     assert.deepEqual(titles.map((title) => title.id), ['second', 'third']);
     assert.equal(titles[0].durationSec, 1.88);
+});
+
+test('limita títulos por palavras sem quebrar preço brasileiro', () => {
+    assert.equal(limitTitleWords('EXAME POR NOSSA CONTA', 3), 'EXAME POR NOSSA');
+    assert.equal(limitTitleWords('R$ 199,00', 3), 'R$ 199,00');
+    assert.equal(limitTitleWords('CLIQUE AQUI', 3), 'CLIQUE AQUI');
+});
+
+test('faz rodízio entre todas as opções marcadas em gerações sucessivas', () => {
+    assert.deepEqual(
+        [0, 1, 2, 3, 4].map((assignment) => rotatingTitleTypeIndex(3, 0, assignment)),
+        [0, 1, 2, 0, 1]
+    );
+    assert.deepEqual(
+        [0, 1, 2].map((assignment) => rotatingTitleTypeIndex(3, 1, assignment)),
+        [1, 2, 0]
+    );
 });

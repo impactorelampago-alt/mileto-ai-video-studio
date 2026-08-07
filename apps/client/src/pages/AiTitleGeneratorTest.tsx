@@ -51,6 +51,8 @@ import { toast } from 'sonner';
 import { loadOpsBrandDirectory, opsProjectCompanyName } from '../lib/opsProjectBrand';
 import { normalizeBrandPalette } from '../lib/brandPalette';
 import type { OpsCompany } from '../lib/gateway';
+import { limitTitleWords } from '../lib/titleText';
+import { captionSafeTopPercent } from '../lib/titleSafeArea';
 
 type ColorMode = 'ops' | 'custom';
 type TitleLibrary = TitleModelLibrary;
@@ -58,6 +60,7 @@ type PrototypeTitleModel = TitleModelDefinition;
 
 const TITLE_PREVIEW_CAPTION_STORAGE_KEY = 'mileto_ai_title_preview_caption_v1';
 const TITLE_GENERATOR_DRAFT_STORAGE_PREFIX = 'mileto_ai_title_generator_draft_v1';
+const TITLE_PREVIEW_IMAGE_SRC = `${import.meta.env.BASE_URL}title-preview-store.webp`;
 
 interface StoredTitleGeneratorDraft {
     version: 1;
@@ -114,6 +117,7 @@ interface TriggerPrototype {
     examples: string[];
     sample: string;
     enabled: boolean;
+    maxWords: number;
     maxOccurrences: number;
     color: AiTitleColorRule;
     models: Record<string, ModelSettings>;
@@ -151,6 +155,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
     {
         id: 'scarcity',
         enabled: true,
+        maxWords: 3,
         maxOccurrences: 2,
         color: { mode: 'brand', paletteSlot: 'primary', primary: '#00e676', secondary: '#07110d' },
         name: 'Escassez e urgência',
@@ -162,6 +167,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
     {
         id: 'region',
         enabled: true,
+        maxWords: 3,
         maxOccurrences: 1,
         color: { mode: 'brand', paletteSlot: 'tertiary', primary: '#00e676', secondary: '#07110d' },
         name: 'Região',
@@ -173,17 +179,19 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
     {
         id: 'cta',
         enabled: true,
+        maxWords: 3,
         maxOccurrences: 1,
         color: { mode: 'brand', paletteSlot: 'primary', primary: '#00e676', secondary: '#07110d' },
         name: 'CTA',
         hint: 'Ação esperada depois que a pessoa assistir ao trecho.',
-        examples: ['Clique aqui', 'Chame no WhatsApp', 'Saiba mais'],
-        sample: 'CLIQUE AQUI',
+        examples: ['Clique no botão', 'Chame no WhatsApp', 'Saiba mais'],
+        sample: 'CLIQUE NO BOTÃO',
         models: seededModels('cta-whatsapp', 'cta-tap'),
     },
     {
         id: 'price',
         enabled: true,
+        maxWords: 3,
         maxOccurrences: 2,
         color: { mode: 'brand', paletteSlot: 'secondary', primary: '#00e676', secondary: '#07110d' },
         name: 'Preço',
@@ -195,6 +203,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
     {
         id: 'benefit',
         enabled: true,
+        maxWords: 4,
         maxOccurrences: 2,
         color: { mode: 'brand', paletteSlot: 'rotate', primary: '#00e676', secondary: '#07110d' },
         name: 'Benefício / bônus',
@@ -219,10 +228,10 @@ const DEFAULT_TRIGGER_COPY_MIGRATIONS: Record<string, { sample: string; legacySa
         legacyExamples: ['Belo Horizonte', 'Minas Gerais', 'Todo o Brasil'],
     },
     cta: {
-        sample: 'CLIQUE AQUI',
-        legacySamples: ['CHAME AGORA NO WHATSAPP'],
-        examples: ['Clique aqui', 'Chame no WhatsApp', 'Saiba mais'],
-        legacyExamples: ['Chame no WhatsApp', 'Clique agora', 'Saiba mais'],
+        sample: 'CLIQUE NO BOTÃO',
+        legacySamples: ['CHAME AGORA NO WHATSAPP', 'CLIQUE AQUI'],
+        examples: ['Clique no botão', 'Chame no WhatsApp', 'Saiba mais'],
+        legacyExamples: ['Clique aqui', 'Chame no WhatsApp', 'Saiba mais'],
     },
     price: {
         sample: 'R$ 199',
@@ -485,6 +494,7 @@ const prototypeToEditor = (triggers: TriggerPrototype[], format: TitleVideoForma
 const layoutFingerprint = (config: AiTitleGeneratorConfig) => JSON.stringify(
     config.triggers.map((trigger) => ({
         id: trigger.id,
+        maxWords: trigger.maxWords,
         titleTypes: trigger.titleTypes.map((type) => ({
             styleId: type.styleId,
             layouts: type.layouts,
@@ -712,7 +722,7 @@ export const AiTitleGeneratorTest = () => {
     const previewTitle: TitleHook | null = activeModel && activeSettings
         ? {
               id: `prototype-${activeModel.id}`,
-              text: selectedTrigger.sample,
+              text: limitTitleWords(selectedTrigger.sample, selectedTrigger.maxWords),
               startSec: 0,
               durationSec: activeSettings.durationSec,
               isActive: true,
@@ -722,6 +732,7 @@ export const AiTitleGeneratorTest = () => {
               scaleX: activeSettings.scaleX,
               scaleY: activeSettings.scaleY,
               textBoxWidthPct: activeSettings.textBoxWidthPct,
+              maxWords: selectedTrigger.maxWords,
               styleId: activeModel.id,
               primaryColor: previewColors[0],
               secondaryColor: previewColors[1],
@@ -832,6 +843,7 @@ export const AiTitleGeneratorTest = () => {
         const trigger: TriggerPrototype = {
             id: `custom-${generateId()}`,
             enabled: true,
+            maxWords: 3,
             maxOccurrences: 1,
             color: { mode: 'brand', paletteSlot: 'rotate', primary: '#00e676', secondary: '#07110d' },
             name,
@@ -1001,7 +1013,17 @@ export const AiTitleGeneratorTest = () => {
                                             : 'border-white/7 bg-black/10 hover:border-brand-lime/25 hover:bg-brand-lime/[0.045]'
                                     )}
                                 >
-                                    <button type="button" onClick={() => selectTrigger(trigger)} className="w-full p-3 text-left">
+                                    <button
+                                        type="button"
+                                        onClick={(event) => {
+                                            const card = event.currentTarget.parentElement;
+                                            selectTrigger(trigger);
+                                            window.requestAnimationFrame(() => {
+                                                card?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                                            });
+                                        }}
+                                        className="w-full p-3 text-left"
+                                    >
                                         <span className="flex items-start gap-3">
                                             <span className={cn(
                                                 'mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border',
@@ -1020,6 +1042,14 @@ export const AiTitleGeneratorTest = () => {
                                                 <span className="mt-2 block text-[8px] font-black uppercase tracking-wider text-brand-lime/60">
                                                     {count} {count === 1 ? 'título marcado' : 'títulos marcados'}
                                                 </span>
+                                                <span className="mt-2 flex flex-wrap gap-1.5">
+                                                    <span className="rounded-full border border-brand-lime/20 bg-brand-lime/[0.07] px-2 py-1 text-[7px] font-black uppercase tracking-wide text-brand-lime/75">
+                                                        Máx. {trigger.maxWords} {trigger.maxWords === 1 ? 'palavra' : 'palavras'}
+                                                    </span>
+                                                    <span className="rounded-full border border-brand-lime/20 bg-brand-lime/[0.07] px-2 py-1 text-[7px] font-black uppercase tracking-wide text-brand-lime/75">
+                                                        Máx. {trigger.maxOccurrences} {trigger.maxOccurrences === 1 ? 'título' : 'títulos'}
+                                                    </span>
+                                                </span>
                                             </span>
                                         </span>
                                     </button>
@@ -1027,9 +1057,10 @@ export const AiTitleGeneratorTest = () => {
                                         <div className="space-y-2 border-t border-brand-lime/15 bg-black/15 p-3">
                                             <label className="block text-[8px] font-bold uppercase tracking-wider text-brand-muted">Quando identificar<textarea value={selectedTrigger.hint} onChange={(event) => patchSelectedTrigger({ hint: event.target.value })} className="mt-1 min-h-16 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-2 text-[9px] font-normal normal-case tracking-normal text-foreground outline-none focus:border-brand-lime/35" /></label>
                                             <label className="block text-[8px] font-bold uppercase tracking-wider text-brand-muted">Texto de exemplo do título<input value={selectedTrigger.sample} maxLength={120} onChange={(event) => patchSelectedTrigger({ sample: event.target.value })} className="mt-1 h-9 w-full rounded-lg border border-white/8 bg-black/20 px-2 text-[9px] font-normal uppercase tracking-normal text-foreground outline-none focus:border-brand-lime/35" /></label>
-                                            <div className="grid grid-cols-[1fr_74px] gap-2">
-                                                <label className="text-[8px] font-bold uppercase tracking-wider text-brand-muted">Exemplos<input value={selectedTrigger.examples.join(', ')} onChange={(event) => patchSelectedTrigger({ examples: event.target.value.split(',').map((item) => item.trim()).filter(Boolean).slice(0, 8) })} className="mt-1 h-9 w-full rounded-lg border border-white/8 bg-black/20 px-2 text-[9px] font-normal normal-case tracking-normal text-foreground outline-none" /></label>
-                                                <label className="text-[8px] font-bold uppercase tracking-wider text-brand-muted">Máximo<input type="number" min={1} max={6} value={selectedTrigger.maxOccurrences} onChange={(event) => patchSelectedTrigger({ maxOccurrences: Number(event.target.value) })} className="mt-1 h-9 w-full rounded-lg border border-white/8 bg-black/20 px-2 text-xs text-foreground outline-none" /></label>
+                                            <label className="block text-[8px] font-bold uppercase tracking-wider text-brand-muted">Exemplos<input value={selectedTrigger.examples.join(', ')} onChange={(event) => patchSelectedTrigger({ examples: event.target.value.split(',').map((item) => item.trim()).filter(Boolean).slice(0, 8) })} className="mt-1 h-9 w-full rounded-lg border border-white/8 bg-black/20 px-2 text-[9px] font-normal normal-case tracking-normal text-foreground outline-none" /></label>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <label className="text-[8px] font-bold uppercase leading-tight tracking-wider text-brand-muted">Máx. palavras por título<input type="number" min={1} max={12} value={selectedTrigger.maxWords} onChange={(event) => patchSelectedTrigger({ maxWords: Math.max(1, Math.min(12, Number(event.target.value) || 1)) })} className="mt-1 h-9 w-full rounded-lg border border-white/8 bg-black/20 px-2 text-xs text-foreground outline-none focus:border-brand-lime/35" /></label>
+                                                <label className="text-[8px] font-bold uppercase leading-tight tracking-wider text-brand-muted">Máx. títulos por gatilho<input type="number" min={1} max={6} value={selectedTrigger.maxOccurrences} onChange={(event) => patchSelectedTrigger({ maxOccurrences: Math.max(1, Math.min(6, Number(event.target.value) || 1)) })} className="mt-1 h-9 w-full rounded-lg border border-white/8 bg-black/20 px-2 text-xs text-foreground outline-none focus:border-brand-lime/35" /></label>
                                             </div>
                                             {selectedTrigger.id.startsWith('custom-') && <button type="button" onClick={() => { const remaining = triggersRef.current.filter((item) => item.id !== selectedTrigger.id); triggersRef.current = remaining; setTriggers(remaining); selectTrigger(remaining[0]); }} className="text-[8px] font-black uppercase tracking-wider text-red-300 hover:text-red-200">Excluir gatilho personalizado</button>}
                                         </div>
@@ -1279,7 +1310,7 @@ export const AiTitleGeneratorTest = () => {
                                 className="relative aspect-[9/16] w-full overflow-hidden rounded-2xl border border-white/8 bg-[#151b1d]"
                             >
                                 <img
-                                    src="/title-preview-store.webp"
+                                    src={TITLE_PREVIEW_IMAGE_SRC}
                                     alt="Apresentadora mostrando o interior de uma loja"
                                     className="absolute inset-0 h-full w-full object-cover"
                                     draggable={false}
@@ -1313,6 +1344,14 @@ export const AiTitleGeneratorTest = () => {
                                         onSelect={() => undefined}
                                         onChange={handleOverlayChange}
                                         onDelete={() => activeModel && toggleModel(activeModel, false)}
+                                        captionSafeTopPct={
+                                            showPreviewCaption
+                                                ? captionSafeTopPercent(
+                                                      { fontSize: 20, strokeWidth: 4, verticalPosition: 23 },
+                                                      format
+                                                  )
+                                                : undefined
+                                        }
                                     >
                                 <div
                                     key={`${previewTitle.styleId}-${previewTitle.animationId || 'none'}`}

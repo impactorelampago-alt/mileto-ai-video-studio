@@ -22,6 +22,8 @@ export type TitleTypeRule = {
     name: string;
     styleId: string;
     fontFamily: string;
+    /** Campo legado: o limite atual pertence ao gatilho. */
+    maxWords?: number;
     durationSec: number;
     animationId: 'pop' | 'fade' | 'slide' | 'blink' | 'none';
     color: TitleColorRule | null;
@@ -32,6 +34,7 @@ export type TitleTriggerRule = {
     id: string;
     name: string;
     enabled: boolean;
+    maxWords: number;
     maxOccurrences: number;
     instructions: string;
     examples: string[];
@@ -120,6 +123,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             id: 'scarcity',
             name: 'Escassez e urgência',
             enabled: true,
+            maxWords: 3,
             maxOccurrences: 2,
             instructions: 'Prazo, quantidade, vagas, lote ou estoque limitado somente quando forem pronunciados explicitamente.',
             examples: ['Somente até sábado', 'Últimas 8 unidades', '3 vagas'],
@@ -134,6 +138,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             id: 'region',
             name: 'Região',
             enabled: true,
+            maxWords: 3,
             maxOccurrences: 1,
             instructions: 'Cidade, estado, país, bairro, região ou área atendida. Nunca invente nem repita a localização.',
             examples: ['Casimiro de Abreu', 'Rio de Janeiro', 'Todo o Brasil'],
@@ -148,10 +153,11 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             id: 'cta',
             name: 'CTA',
             enabled: true,
+            maxWords: 3,
             maxOccurrences: 1,
-            instructions: 'Clique, chame, agende, compre, visite ou outra ação explicitamente pronunciada.',
-            examples: ['Clique aqui', 'Chame no WhatsApp', 'Saiba mais'],
-            sample: 'CLIQUE AQUI',
+            instructions: 'Clique, chame, agende, compre, aproveite, garanta, acesse, reserve ou outra ação explicitamente pronunciada.',
+            examples: ['Clique no botão', 'Chame no WhatsApp', 'Saiba mais'],
+            sample: 'CLIQUE NO BOTÃO',
             color: brandColor('primary'),
             titleTypes: [
                 titleType('cta-whatsapp', 'Balão WhatsApp', 'Inter', layouts(58, 64, 0.72, 52), 'pop', fixedColor('#a3e635', '#ffffff')),
@@ -162,6 +168,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             id: 'price',
             name: 'Preço',
             enabled: true,
+            maxWords: 3,
             maxOccurrences: 2,
             instructions: 'Valor, desconto, parcela, condição de pagamento ou economia somente quando forem ditos.',
             examples: ['R$ 199', '12x sem juros', '50% OFF'],
@@ -176,6 +183,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             id: 'benefit',
             name: 'Benefício / bônus',
             enabled: true,
+            maxWords: 4,
             maxOccurrences: 2,
             instructions: 'Benefício concreto, bônus, transformação, diferenciador ou prova realmente pronunciada.',
             examples: ['Exame por nossa conta', 'Bônus incluso', 'Entrega grátis'],
@@ -227,6 +235,10 @@ const normalizeConfig = (input: unknown): TitleGeneratorConfig => {
             || DEFAULT_TITLE_GENERATOR_CONFIG.triggers[triggerIndex % DEFAULT_TITLE_GENERATOR_CONFIG.triggers.length];
         const trigger = rawTrigger && typeof rawTrigger === 'object' ? rawTrigger as Partial<TitleTriggerRule> : {};
         const rawTypes = Array.isArray(trigger.titleTypes) ? trigger.titleTypes.slice(0, 20) : [];
+        const legacyMaxWords = rawTypes.reduce((highest, rawType) => Math.max(
+            highest,
+            Number((rawType as TitleTypeRule | undefined)?.maxWords) || 0
+        ), 0);
         const titleTypes = rawTypes.map((rawType, typeIndex) => {
             const typeFallback = fallback.titleTypes[typeIndex % fallback.titleTypes.length];
             const type = rawType && typeof rawType === 'object' ? rawType as Partial<TitleTypeRule> : {};
@@ -247,6 +259,7 @@ const normalizeConfig = (input: unknown): TitleGeneratorConfig => {
             id: text(trigger.id, fallback.id, 80).toLocaleLowerCase('pt-BR'),
             name: text(trigger.name, fallback.name, 80),
             enabled: trigger.enabled === undefined ? fallback.enabled : Boolean(trigger.enabled),
+            maxWords: Math.round(numberInRange(trigger.maxWords, legacyMaxWords || fallback.maxWords || 3, 1, 12)),
             maxOccurrences: Math.round(numberInRange(trigger.maxOccurrences, fallback.maxOccurrences, 1, 6)),
             instructions: text(trigger.instructions, fallback.instructions, 3000),
             examples: (Array.isArray(trigger.examples) ? trigger.examples : fallback.examples)

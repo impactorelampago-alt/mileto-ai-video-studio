@@ -19,6 +19,27 @@ export const MIN_GENERATED_TITLE_DURATION_SEC = 0.25;
 
 const roundTimelineSecond = (value: number) => Math.round(value * 1000) / 1000;
 
+export const limitTitleWords = (value: unknown, maxWords = 3) => {
+    const words = String(value || '').trim().split(/\s+/).filter(Boolean);
+    const limit = Math.max(1, Math.min(12, Math.round(Number(maxWords) || 3)));
+    return words.slice(0, limit).join(' ');
+};
+
+/**
+ * Faz rodízio entre os modelos marcados. O índice da geração muda a cada clique
+ * e o índice de atribuição alterna os modelos dentro da mesma resposta.
+ */
+export const rotatingTitleTypeIndex = (
+    optionCount: number,
+    generationIndex: number,
+    assignmentIndex: number
+) => {
+    const count = Math.max(1, Math.floor(Number(optionCount) || 1));
+    const generation = Math.max(0, Math.floor(Number(generationIndex) || 0));
+    const assignment = Math.max(0, Math.floor(Number(assignmentIndex) || 0));
+    return (generation + assignment) % count;
+};
+
 /**
  * Ordena os titulos gerados e encurta cada um antes do proximo comecar.
  * Candidatos praticamente simultaneos, que ficariam curtos demais, sao descartados.
@@ -191,11 +212,11 @@ export const resolveLiteralCaptionText = (
     const candidateText = String(candidate || '').trim();
     const candidateWordCount = candidateText.split(/\s+/).filter(Boolean).length;
     const candidateKey = normalizeLiteralPhrase(candidateText);
-    if (!candidateKey || candidateWordCount > 8) return null;
+    if (!candidateKey || candidateWordCount > 12) return null;
 
     const matches: { text: string; startSec: number }[] = [];
     for (let start = 0; start < spokenWords.length; start += 1) {
-        for (let length = 1; length <= Math.min(8, spokenWords.length - start); length += 1) {
+        for (let length = 1; length <= Math.min(12, spokenWords.length - start); length += 1) {
             const words = spokenWords.slice(start, start + length);
             const text = words.map((word) => word.text).join(' ');
             if (normalizeLiteralPhrase(text) !== candidateKey) continue;
@@ -214,14 +235,14 @@ export const resolveLiteralCaptionText = (
     );
 };
 
-/** Casos de alto sinal não dependem da IA: preço explícito e cidade logo após “atenção/alô”. */
+/** Casos de alto sinal não dependem da IA: preço, localização e CTA explicitamente pronunciados. */
 export const deterministicTitleCandidates = (script: string) => {
     const clean = String(script || '').replace(/\[[^\]]+\]/g, ' ');
     const candidates: { text: string; kind: string }[] = [];
     const prices = clean.match(/(?:a\s+partir\s+de\s+|por\s+|apenas\s+|s[oó]\s+)?R\$\s*\d+(?:\.\d{3})*(?:,\d{1,2})?/giu) || [];
     for (const price of prices) candidates.push({ text: price.trim(), kind: 'price' });
 
-    const locationCue = clean.match(/\b(?:aten[cç][aã]o|al[oô])\s*[,!:\-]?\s*([^,.!?;\n]{2,60})/iu)?.[1]?.trim();
+    const locationCue = clean.match(/\b(?:aten[cç][aã]o|al[oô])\s*[,!:-]?\s*([^,.!?;\n]{2,60})/iu)?.[1]?.trim();
     if (locationCue) {
         const words = locationCue.split(/\s+/).slice(0, 4);
         // Uma frase comercial logo após o chamado não deve virar região por engano.
@@ -230,5 +251,33 @@ export const deterministicTitleCandidates = (script: string) => {
             candidates.push({ text: words.join(' '), kind: 'region' });
         }
     }
+
+    // A IA tende a reconhecer bem ordens diretas como “clique”, mas pode deixar
+    // passar chamadas igualmente explícitas no infinitivo, como “aproveitar essa
+    // oferta”. A captura continua literal e para antes de uma nova oração.
+    const ctaPattern = /\b(?:clique|clicar|chame|chamar|mande|mandar|fale|falar|agende|agendar|compre|comprar|garanta|garantir|aproveite|aproveitar|visite|visitar|venha|peça|pedir|acesse|acessar|saiba|confira|reserve|reservar)\b(?:\s+(?!(?:e|mas|porque|porém|então)\b)[\p{L}\p{N}$%@-]+){0,5}/giu;
+    const directCtaVerbs = new Set([
+        'clique', 'clicar', 'chame', 'chamar', 'mande', 'mandar', 'fale', 'falar',
+        'agende', 'agendar', 'acesse', 'acessar', 'peca', 'pedir',
+    ]);
+    const transactionalCtaVerbs = new Set([
+        'compre', 'comprar', 'garanta', 'garantir', 'visite', 'visitar', 'venha',
+        'confira', 'reserve', 'reservar', 'saiba',
+    ]);
+    const ctaCandidates: { text: string; kind: string; priority: number; index: number }[] = [];
+    for (const match of clean.matchAll(ctaPattern)) {
+        const text = String(match[0] || '').replace(/[\s,.;:!?-]+$/g, '').trim();
+        if (!text) continue;
+        const verb = normalizeTriggerKey(text.split(/\s+/)[0]);
+        ctaCandidates.push({
+            text,
+            kind: 'cta',
+            priority: directCtaVerbs.has(verb) ? 3 : transactionalCtaVerbs.has(verb) ? 2 : 1,
+            index: Number(match.index) || 0,
+        });
+    }
+    ctaCandidates
+        .sort((left, right) => right.priority - left.priority || left.index - right.index)
+        .forEach(({ text, kind }) => candidates.push({ text, kind }));
     return candidates;
 };

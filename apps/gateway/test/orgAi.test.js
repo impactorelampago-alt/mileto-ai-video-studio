@@ -16,6 +16,7 @@ test('normaliza regras de titulo, cores e layouts por proporcao', () => {
     input.triggers[0].color = { mode: 'fixed', paletteSlot: 'primary', primary: '#ABCDEF', secondary: '#123456' };
     input.triggers[0].titleTypes[0].layouts['9:16'] = { posX: 150, posY: -20, scale: 9, textBoxWidthPct: 2 };
     input.triggers[0].titleTypes[0].layouts['16:9'].textBoxWidthPct = 999;
+    input.triggers[0].maxWords = 99;
 
     const result = normalizeTitleGeneratorConfig(input);
     assert.equal(result.maxTitles, 12);
@@ -26,6 +27,21 @@ test('normaliza regras de titulo, cores e layouts por proporcao', () => {
         posX: 100, posY: 0, scale: 4, scaleX: 1, scaleY: 1, textBoxWidthPct: 20,
     });
     assert.equal(result.triggers[0].titleTypes[0].layouts['16:9'].textBoxWidthPct, 300);
+    assert.equal(result.triggers[0].maxWords, 12);
+    assert.equal('maxWords' in result.triggers[0].titleTypes[0], false);
+});
+
+test('migra limite antigo do modelo para o gatilho e preserva ajuste atual', () => {
+    const input = structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
+    delete input.triggers[0].maxWords;
+    delete input.triggers[0].titleTypes[0].maxWords;
+    input.triggers[0].titleTypes[1].maxWords = 5;
+
+    const result = normalizeTitleGeneratorConfig(input);
+    assert.equal(result.triggers[0].maxWords, 5);
+
+    input.triggers[0].maxWords = 4;
+    assert.equal(normalizeTitleGeneratorConfig(input).triggers[0].maxWords, 4);
 });
 
 test('preserva largura ampliada e escalas independentes do editor visual', () => {

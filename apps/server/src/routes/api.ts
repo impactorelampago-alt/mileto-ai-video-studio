@@ -135,6 +135,7 @@ router.post('/ops/cache/materialize', opsController.materialize);
 router.post('/ops/cache/restore', opsController.restoreCached);
 router.get('/ops/cache/status', opsController.cacheStatus);
 router.get('/ops/cache/file/:cacheId/:filename', opsController.serveCacheFile);
+router.post('/ops/exports/metadata', opsController.prepareExportMetadata);
 router.post('/ops/exports/upload', opsController.uploadExport);
 router.post('/ops/files/import-local', opsController.importLocalFile);
 

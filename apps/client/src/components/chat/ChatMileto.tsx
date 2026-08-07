@@ -26,6 +26,9 @@ import {
     Image as ImageIcon,
     Video,
     Sparkles,
+    PanelLeftClose,
+    FileText,
+    Save,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import * as chatApi from '../../lib/chatApi';
@@ -34,6 +37,31 @@ import { ChatAgentId, ChatFolder, ChatSession, ChatMessage } from '../../types';
 import { useDownloadJobs } from '../../context/DownloadJobsContext';
 
 type StructuredAgentResult = Record<string, unknown>;
+
+interface SavedChatScript {
+    id: string;
+    title: string;
+    content: string;
+    createdAt: number;
+    updatedAt: number;
+}
+
+const SAVED_CHAT_SCRIPTS_STORAGE_KEY = 'mileto_chat_saved_scripts_v1';
+
+const readSavedChatScripts = (): SavedChatScript[] => {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(SAVED_CHAT_SCRIPTS_STORAGE_KEY) || '[]');
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((item): item is SavedChatScript => Boolean(
+            item
+            && typeof item.id === 'string'
+            && typeof item.title === 'string'
+            && typeof item.content === 'string'
+        ));
+    } catch {
+        return [];
+    }
+};
 
 const parseStructuredResult = (content: string): StructuredAgentResult | null => {
     const trimmed = (content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
@@ -409,6 +437,11 @@ export const ChatMileto: React.FC = () => {
     const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputText, setInputText] = useState('');
+    const [savedScripts, setSavedScripts] = useState<SavedChatScript[]>(readSavedChatScripts);
+    const [isScriptLibraryOpen, setIsScriptLibraryOpen] = useState(false);
+    const [isCreatingScript, setIsCreatingScript] = useState(false);
+    const [newScriptTitle, setNewScriptTitle] = useState('');
+    const [newScriptContent, setNewScriptContent] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
     // O renderer conhece somente o nível público. Cérebro, modelo, raciocínio e
@@ -427,6 +460,45 @@ export const ChatMileto: React.FC = () => {
     const { registerClientJob, updateClientJob } = useDownloadJobs();
     const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
     const [generatingMessageIds, setGeneratingMessageIds] = useState<Set<string>>(new Set());
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(SAVED_CHAT_SCRIPTS_STORAGE_KEY, JSON.stringify(savedScripts));
+        } catch {
+            // O chat continua utilizável mesmo quando o armazenamento local está indisponível.
+        }
+    }, [savedScripts]);
+
+    const handleSaveScript = useCallback(() => {
+        const content = newScriptContent.trim();
+        if (!content) {
+            toast.warning('Cole um roteiro antes de salvar.');
+            return;
+        }
+        const now = Date.now();
+        const fallbackTitle = content.replace(/\s+/g, ' ').slice(0, 42);
+        setSavedScripts((current) => [{
+            id: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : `script-${now}-${Math.random().toString(36).slice(2)}`,
+            title: newScriptTitle.trim() || fallbackTitle || 'Roteiro salvo',
+            content,
+            createdAt: now,
+            updatedAt: now,
+        }, ...current]);
+        setNewScriptTitle('');
+        setNewScriptContent('');
+        setIsCreatingScript(false);
+        toast.success('Roteiro salvo na sua biblioteca.');
+    }, [newScriptContent, newScriptTitle]);
+
+    const handleUseSavedScript = useCallback((script: SavedChatScript) => {
+        setInputText(script.content);
+        window.setTimeout(() => {
+            textareaRef.current?.focus();
+            textareaRef.current?.setSelectionRange(script.content.length, script.content.length);
+        }, 0);
+    }, []);
 
     // Copia SÓ o roteiro (o bloco entre os "---" que a IA marca), não o texto de
     // explicação nem o "Aviso" — é o que o usuário quer levar pra narração.
@@ -1303,12 +1375,120 @@ export const ChatMileto: React.FC = () => {
                             )}
                         </div>
 
+                        {/* Biblioteca local de roteiros */}
+                        <div className="shrink-0 border-t border-black/5 dark:border-white/5">
+                            <div className="flex items-center gap-1 px-2 py-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setIsScriptLibraryOpen((open) => !open)}
+                                    className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-semibold text-foreground/80 transition hover:bg-black/5 hover:text-foreground dark:hover:bg-white/5"
+                                    aria-expanded={isScriptLibraryOpen}
+                                >
+                                    {isScriptLibraryOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                                    <FolderOpen className="h-4 w-4 text-brand-lime" />
+                                    <span className="min-w-0 flex-1 truncate">Roteiros salvos</span>
+                                    <span className="rounded-full bg-brand-lime/10 px-1.5 py-0.5 font-mono text-[9px] text-brand-lime">
+                                        {savedScripts.length}
+                                    </span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setIsScriptLibraryOpen(true);
+                                        setIsCreatingScript((creating) => !creating);
+                                    }}
+                                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-brand-lime/20 bg-brand-lime/8 text-brand-lime transition hover:bg-brand-lime/15"
+                                    title="Colar e salvar roteiro"
+                                    aria-label="Colar e salvar roteiro"
+                                >
+                                    <Plus className="h-4 w-4" />
+                                </button>
+                            </div>
+
+                            {isScriptLibraryOpen && (
+                                <div className="max-h-72 space-y-1.5 overflow-y-auto px-2 pb-2 custom-scrollbar">
+                                    {isCreatingScript && (
+                                        <div className="space-y-2 rounded-xl border border-brand-lime/20 bg-brand-dark/70 p-2.5">
+                                            <input
+                                                value={newScriptTitle}
+                                                onChange={(event) => setNewScriptTitle(event.target.value)}
+                                                placeholder="Nome do roteiro"
+                                                className="w-full rounded-lg border border-white/8 bg-black/20 px-2.5 py-2 text-xs text-foreground outline-none transition placeholder:text-brand-muted focus:border-brand-lime/40"
+                                            />
+                                            <textarea
+                                                value={newScriptContent}
+                                                onChange={(event) => setNewScriptContent(event.target.value)}
+                                                placeholder="Cole o roteiro aqui..."
+                                                rows={5}
+                                                className="w-full resize-none rounded-lg border border-white/8 bg-black/20 px-2.5 py-2 text-xs leading-relaxed text-foreground outline-none transition placeholder:text-brand-muted focus:border-brand-lime/40"
+                                            />
+                                            <div className="flex justify-end gap-1.5">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setIsCreatingScript(false);
+                                                        setNewScriptTitle('');
+                                                        setNewScriptContent('');
+                                                    }}
+                                                    className="rounded-lg px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide text-brand-muted transition hover:bg-white/5 hover:text-foreground"
+                                                >
+                                                    Cancelar
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleSaveScript}
+                                                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-lime px-2.5 py-1.5 text-[10px] font-black uppercase tracking-wide text-brand-dark transition hover:brightness-110"
+                                                >
+                                                    <Save className="h-3.5 w-3.5" /> Salvar
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {savedScripts.map((script) => (
+                                        <div
+                                            key={script.id}
+                                            className="group flex items-center gap-1 rounded-xl border border-white/6 bg-black/10 p-1.5 transition hover:border-brand-lime/20 hover:bg-brand-lime/[0.04]"
+                                        >
+                                            <button
+                                                type="button"
+                                                onClick={() => handleUseSavedScript(script)}
+                                                className="flex min-w-0 flex-1 items-center gap-2 rounded-lg p-1.5 text-left"
+                                                title="Colocar este roteiro na mensagem"
+                                            >
+                                                <FileText className="h-4 w-4 shrink-0 text-brand-accent" />
+                                                <span className="min-w-0">
+                                                    <span className="block truncate text-[11px] font-bold text-foreground/90">{script.title}</span>
+                                                    <span className="block truncate text-[9px] text-brand-muted">{script.content}</span>
+                                                </span>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setSavedScripts((current) => current.filter((item) => item.id !== script.id))}
+                                                className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-brand-muted opacity-0 transition hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100"
+                                                title="Excluir roteiro salvo"
+                                                aria-label={`Excluir ${script.title}`}
+                                            >
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                            </button>
+                                        </div>
+                                    ))}
+
+                                    {!isCreatingScript && savedScripts.length === 0 && (
+                                        <p className="px-3 py-3 text-center text-[10px] leading-relaxed text-brand-muted">
+                                            Cole aqui os roteiros que deseja reutilizar depois.
+                                        </p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
                         {/* Sidebar Toggle */}
                         <button
                             onClick={() => setIsSidebarOpen(false)}
-                            className="py-2.5 text-xs text-brand-muted hover:text-foreground border-t border-black/5 dark:border-white/5 hover:bg-black/5 dark:bg-white/5 transition-colors font-medium tracking-wide"
+                            className="flex items-center justify-center gap-1.5 border-t border-black/5 py-2.5 text-xs font-medium tracking-wide text-brand-muted transition-colors hover:bg-black/5 hover:text-foreground dark:border-white/5 dark:hover:bg-white/5"
                         >
-                            ◀ Recolher
+                            <PanelLeftClose className="h-3.5 w-3.5" /> Recolher
                         </button>
                     </div>
                 )}

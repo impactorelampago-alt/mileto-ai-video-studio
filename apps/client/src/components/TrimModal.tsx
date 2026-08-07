@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Play, Check, RotateCcw, Trash2, Scissors, Split, Undo2, GripVertical } from 'lucide-react';
+import { X, Play, Check, RotateCcw, Trash2, Scissors, Split, Undo2, GripVertical, CopyPlus } from 'lucide-react';
 import { toast } from 'sonner';
 import { MediaTake } from '../types';
 import { cn, generateId } from '../lib/utils';
@@ -9,7 +9,10 @@ import { ConfirmDialog } from './ConfirmDialog';
 
 interface TrimModalProps {
     take: MediaTake;
-    onSave: (takeId: string, newTrim: { start: number; end: number; speedPresetId?: SpeedPresetType }) => void;
+    onSave: (
+        takeId: string,
+        newTrims: Array<{ start: number; end: number; speedPresetId?: SpeedPresetType; kind: 'primary' | 'created' }>
+    ) => void;
     onClose: () => void;
 }
 
@@ -17,6 +20,7 @@ interface LocalSegment {
     id: string;
     start: number;
     end: number;
+    kind: 'primary' | 'created';
 }
 
 export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
@@ -42,6 +46,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
             id: generateId(),
             start: take.trim.start,
             end: take.trim.end,
+            kind: 'primary',
         },
     ]);
     const [activeSegmentId, setActiveSegmentId] = useState<string>(segments[0].id);
@@ -150,6 +155,10 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
     const handleSplit = () => {
         const activeSeg = segments.find((s) => s.id === activeSegmentId);
         if (!activeSeg) return;
+        if (activeSeg.kind === 'created') {
+            toast.info('O novo take mantém a mesma duração do recorte de origem. Arraste a faixa azul para escolher outro trecho.');
+            return;
+        }
 
         if (currentTime > activeSeg.start + 0.1 && currentTime < activeSeg.end - 0.1) {
             addToHistory();
@@ -158,6 +167,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                 id: generateId(),
                 start: currentTime,
                 end: activeSeg.end,
+                kind: 'primary' as const,
             };
 
             setSegments((prev) => {
@@ -170,6 +180,37 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
         } else {
             toast.warning('Posicione a agulha dentro do segmento selecionado para dividir.');
         }
+    };
+
+    // Cria uma segunda seleção com exatamente a duração do recorte verde. A
+    // faixa azul pode ser arrastada pelo vídeo e será salva como um novo take.
+    const handleCreateTake = () => {
+        const active = segments.find((segment) => segment.id === activeSegmentId);
+        const source = active?.kind === 'primary'
+            ? active
+            : segments.find((segment) => segment.kind === 'primary');
+        if (!source || duration <= 0) return;
+
+        const segmentDuration = Math.min(duration, Math.max(0.2, source.end - source.start));
+        let start = source.end;
+        if (start + segmentDuration > duration) {
+            start = Math.max(0, source.start - segmentDuration);
+        }
+        const created: LocalSegment = {
+            id: generateId(),
+            start,
+            end: Math.min(duration, start + segmentDuration),
+            kind: 'created',
+        };
+
+        addToHistory();
+        setSegments((current) => [...current, created]);
+        setActiveSegmentId(created.id);
+        setCurrentTime(created.start);
+        if (videoRef.current) videoRef.current.currentTime = created.start;
+        toast.success('Faixa azul criada.', {
+            description: 'Arraste-a para o trecho que deseja transformar em um novo take.',
+        });
     };
 
     // --- DELETE LOGIC ---
@@ -201,7 +242,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                 setConfirmDialog(null);
                 addToHistory();
                 const newId = generateId();
-                setSegments([{ id: newId, start: 0, end: duration }]);
+                setSegments([{ id: newId, start: 0, end: duration, kind: 'primary' }]);
                 setActiveSegmentId(newId);
                 setHistory([]);
                 if (videoRef.current) videoRef.current.currentTime = 0;
@@ -211,19 +252,20 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
 
     // --- SAVE ---
     const handleSave = () => {
-        // Enforce Single Segment Rule
-        if (segments.length !== 1) {
-            toast.error('Para confirmar, deixe apenas UM segmento contínuo. Exclua os cortes indesejados antes de salvar.');
+        const validSegments = segments
+            .filter((segment) => segment.end - segment.start >= 0.2)
+            .sort((first, second) => first.start - second.start);
+        if (validSegments.length === 0) {
+            toast.error('Mantenha ao menos um trecho válido antes de confirmar.');
             return;
         }
 
-        const finalSeg = segments[0];
-        // Now include the speed config as well if changed
-        onSave(take.id, {
-            start: finalSeg.start,
-            end: finalSeg.end,
+        onSave(take.id, validSegments.map((segment) => ({
+            start: segment.start,
+            end: segment.end,
             speedPresetId: localSpeedPreset,
-        });
+            kind: segment.kind,
+        })));
     };
 
     // --- DRAGGING HANDLES & SCRUBBING ---
@@ -436,7 +478,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
 
                                         <button
                                             onClick={handleSplit}
-                                            disabled={!activeSegment}
+                                            disabled={!activeSegment || activeSegment.kind === 'created'}
                                             className="flex flex-col items-center gap-1 text-muted-foreground hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed group transition-all"
                                         >
                                             <div className="p-2.5 rounded-full bg-muted group-enabled:group-hover:bg-primary group-enabled:group-hover:text-primary-foreground transition-colors">
@@ -444,6 +486,19 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                             </div>
                                             <span className="text-[10px] uppercase font-bold tracking-wider">
                                                 Dividir
+                                            </span>
+                                        </button>
+
+                                        <button
+                                            onClick={handleCreateTake}
+                                            disabled={duration <= 0}
+                                            className="group flex flex-col items-center gap-1 text-blue-300 transition-all hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                            <div className="rounded-full bg-blue-500/15 p-2.5 transition-colors group-enabled:group-hover:bg-blue-500/25">
+                                                <CopyPlus className="h-4 w-4" />
+                                            </div>
+                                            <span className="text-[10px] font-bold uppercase tracking-wider">
+                                                Criar
                                             </span>
                                         </button>
 
@@ -468,6 +523,18 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                     ref={timelineRef}
                                     onMouseDown={(e) => handleMouseDown(e, 'playhead')}
                                 >
+                                    <div className="mb-2 flex items-center gap-4 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                        <span className="inline-flex items-center gap-1.5">
+                                            <span className="h-2.5 w-2.5 rounded-sm border border-primary bg-primary/30" />
+                                            Take atual
+                                        </span>
+                                        {segments.some((segment) => segment.kind === 'created') && (
+                                            <span className="inline-flex items-center gap-1.5 text-blue-300">
+                                                <span className="h-2.5 w-2.5 rounded-sm border border-blue-400 bg-blue-500/35" />
+                                                Novo take · arraste para escolher o trecho
+                                            </span>
+                                        )}
+                                    </div>
                                     {/* Time Ruler */}
                                     <div className="flex justify-between text-xs font-mono text-muted-foreground mb-1 pointer-events-none">
                                         <span>{formatTime(0)}</span>
@@ -479,14 +546,19 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                         {/* Segments Loop */}
                                         {segments.map((seg) => {
                                             const isActive = seg.id === activeSegmentId;
+                                            const isCreated = seg.kind === 'created';
                                             return (
                                                 <div
                                                     key={seg.id}
                                                     className={cn(
                                                         'absolute top-2 bottom-2 rounded-md border cursor-pointer transition-all overflow-visible',
                                                         isActive
-                                                            ? 'bg-primary/20 border-primary z-10 shadow-[0_0_15px_rgba(34,197,94,0.3)]'
-                                                            : 'bg-muted/50 border-border hover:bg-muted'
+                                                            ? isCreated
+                                                                ? 'z-20 border-blue-300 bg-blue-500/35 shadow-[0_0_18px_rgba(59,130,246,0.45)]'
+                                                                : 'z-10 border-primary bg-primary/20 shadow-[0_0_15px_rgba(34,197,94,0.3)]'
+                                                            : isCreated
+                                                                ? 'z-10 border-blue-500/60 bg-blue-500/20 hover:bg-blue-500/30'
+                                                                : 'border-border bg-muted/50 hover:bg-muted'
                                                     )}
                                                     style={{
                                                         left: `${getPercent(seg.start)}%`,
@@ -516,7 +588,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                                     </div>
 
                                                     {/* Drag Handles */}
-                                                    {isActive && (
+                                                    {isActive && !isCreated && (
                                                         <>
                                                             <div
                                                                 className="absolute top-1/2 -translate-y-1/2 left-0 w-8 -ml-4 h-12 cursor-ew-resize flex items-center justify-center group/handle z-20 select-none touch-none"
@@ -579,7 +651,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                         className="px-8 py-2 bg-primary hover:bg-primary/90 text-primary-foreground font-bold rounded-lg transition-transform hover:scale-105 active:scale-95 flex items-center gap-2 text-sm shadow-lg shadow-green-900/10"
                     >
                         <Check className="w-4 h-4" />
-                        Confirmar ({segments.length} cortes)
+                        Confirmar ({segments.length} {segments.length === 1 ? 'take' : 'takes'})
                     </button>
                 </div>
             </div>

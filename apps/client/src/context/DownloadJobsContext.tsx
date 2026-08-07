@@ -30,6 +30,7 @@ export interface DownloadJobSnapshot {
     statusText?: string;
     cancellable?: boolean;
     outputPath?: string;
+    assetId?: string;
 }
 
 export interface InternetDownloadRequest {

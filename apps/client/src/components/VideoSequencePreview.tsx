@@ -28,6 +28,7 @@ import { normalizedTakeProgress, takeMotionScale } from '../lib/takeMotion';
 import { EditableTitleOverlay } from './EditableTitleOverlay';
 import { EditableCaptionOverlay } from './EditableCaptionOverlay';
 import { recoverOpsTakeSource } from '../lib/opsMediaRecovery';
+import { captionSafeTopPercent } from '../lib/titleSafeArea';
 import {
     enhancementPreviewCss,
     resolveTakeEnhancement,
@@ -150,6 +151,16 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         const overlayDesignHeight =
             adData.format === '1:1' ? OVERLAY_DESIGN_WIDTH : OVERLAY_DESIGN_HEIGHT_PORTRAIT;
+        const titleCaptionSafeTop = useMemo(
+            () =>
+                captions?.enabled !== false && captions?.segments?.length
+                    ? captionSafeTopPercent(
+                          captionStyle || { fontSize: 20, strokeWidth: 4, verticalPosition: 23 },
+                          adData.format
+                      )
+                    : undefined,
+            [adData.format, captionStyle, captions?.enabled, captions?.segments?.length]
+        );
 
         useLayoutEffect(() => {
             const videoArea = videoAreaRef.current;
@@ -2188,6 +2199,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                                 onSelect={onTitleSelect}
                                                 onChange={onTitleTransformChange}
                                                 onDelete={onTitleDelete}
+                                                captionSafeTopPct={titleCaptionSafeTop}
                                             >
                                                 <div className="origin-center" style={inlineStyles}>
                                                     <DynamicTitleRenderer

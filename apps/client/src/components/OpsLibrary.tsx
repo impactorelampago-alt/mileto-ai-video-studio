@@ -308,7 +308,11 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                 }),
             });
             const opsData = await opsRes.json().catch(() => ({}));
-            if (!opsRes.ok || !opsData.ok) throw new Error(opsData.message || 'Falha ao enviar ao Mileto Ops.');
+            if (!opsRes.ok || !opsData.ok) {
+                const message = String(opsData.message || 'Falha ao enviar ao Mileto Ops.');
+                const code = String(opsData.code || '').trim();
+                throw new Error(code ? `${code}: ${message}` : message);
+            }
 
             toast.success(`"${file.name}" enviado ao Mileto Ops e salvo em Arquivos.`, { id: toastId });
             void loadAssets();

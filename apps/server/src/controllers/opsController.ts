@@ -10,6 +10,11 @@ import { BASE_DATA_PATH } from './fileExplorerController';
 import { resolveLocalSource } from './sharedController';
 import { getVideoEncoderArgs, getVideoMetadata } from '../services/ffmpeg';
 import { isSafeRemoteUrl, safeResolve } from '../utils/safePath';
+import {
+    compactOpsText,
+    prepareOpsExportMetadata,
+    validateOpsExportMetadata,
+} from '../services/opsExportMetadata';
 
 const CACHE_ROOT = path.join(BASE_DATA_PATH, 'ops-cache');
 // O índice contém capabilities locais e nunca pode ficar sob uma rota estática.
@@ -835,6 +840,27 @@ export const cacheStatus = (_req: Request, res: Response) => {
     });
 };
 
+/** POST /api/ops/exports/metadata — prepara os metadados editoriais revisáveis. */
+export const prepareExportMetadata = (req: Request, res: Response) => {
+    try {
+        const metadata = prepareOpsExportMetadata({
+            projectId: String(req.body?.projectId || ''),
+            projectTitle: String(req.body?.projectTitle || ''),
+            narrationText: typeof req.body?.narrationText === 'string' ? req.body.narrationText : '',
+            mediaTakeCount: Number(req.body?.mediaTakeCount || 0),
+            title: Object.prototype.hasOwnProperty.call(req.body || {}, 'title') ? req.body.title : null,
+            description: Object.prototype.hasOwnProperty.call(req.body || {}, 'description') ? req.body.description : null,
+        });
+        res.json({ ok: true, data: metadata });
+    } catch (error) {
+        res.status(422).json({
+            ok: false,
+            code: 'ops_export_metadata_invalid',
+            message: (error as Error).message || 'Os metadados editoriais da exportação são inválidos.',
+        });
+    }
+};
+
 /** POST /api/ops/exports/upload — ponte local para o upload seguro do gateway. */
 export const uploadExport = async (req: Request, res: Response) => {
     try {
@@ -850,14 +876,27 @@ export const uploadExport = async (req: Request, res: Response) => {
         const companyId = String(req.body?.companyId || '').trim();
         if (!companyId) throw new Error('Selecione uma empresa do Mileto Ops.');
         const fileName = String(req.body?.fileName || 'MeuVideo_Mileto.mp4').replace(/[\\/:*?"<>|]/g, '_');
+        const metadata = validateOpsExportMetadata({
+            title: req.body?.title,
+            description: req.body?.description,
+            narrationSummary: req.body?.narrationSummary,
+            sourceProjectId: req.body?.sourceProjectId,
+            sourceProjectTitle: req.body?.sourceProjectTitle,
+        });
         const viewContext = viewContextFrom(req);
         const result = await gatewayUploadFile(token || '', `/v1/integrations/mileto-ops/companies/${encodeURIComponent(companyId)}/assets/export`, sourcePath, {
-            folderId: String(req.body?.folderId || ''), fileName: fileName.endsWith('.mp4') ? fileName : `${fileName}.mp4`,
+            folderId: String(req.body?.folderId || ''),
+            fileName: fileName.endsWith('.mp4') ? fileName : `${fileName}.mp4`,
+            ...metadata,
         }, viewContext ? { 'X-Ops-View-Context': viewContext } : {});
         res.json(result);
     } catch (error) {
         const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 400;
-        res.status(status).json({ ok: false, message: (error as Error).message || 'Não foi possível enviar ao Mileto Ops.' });
+        res.status(status).json({
+            ok: false,
+            code: error instanceof GatewayHttpError ? (error.code || 'mileto_ops_error') : 'ops_export_invalid',
+            message: (error as Error).message || 'Não foi possível enviar ao Mileto Ops.',
+        });
     }
 };
 
@@ -881,17 +920,32 @@ export const importLocalFile = async (req: Request, res: Response) => {
         if (!companyId) throw new Error('Selecione uma empresa do Mileto Ops.');
         const requestedName = String(req.body?.fileName || path.basename(sourcePath)).replace(/[\\/:*?"<>|]/g, '_');
         const fileName = requestedName.toLowerCase().endsWith('.mp4') ? requestedName : `${requestedName}.mp4`;
+        const localTitle = compactOpsText(req.body?.title || path.parse(fileName).name);
+        const localDescription = compactOpsText(
+            req.body?.description || `Vídeo “${localTitle}” enviado da biblioteca local do Mileto AI Video.`
+        );
+        const metadata = validateOpsExportMetadata({
+            title: localTitle,
+            description: localDescription,
+            narrationSummary: req.body?.narrationSummary || localDescription,
+            sourceProjectId: req.body?.sourceProjectId || `local-file:${crypto.createHash('sha256').update(sourcePath).digest('hex')}`,
+            sourceProjectTitle: req.body?.sourceProjectTitle || localTitle,
+        });
         const viewContext = viewContextFrom(req);
         const result = await gatewayUploadFile(
             token || '',
             `/v1/integrations/mileto-ops/companies/${encodeURIComponent(companyId)}/assets/export`,
             sourcePath,
-            { folderId: String(req.body?.folderId || ''), fileName },
+            { folderId: String(req.body?.folderId || ''), fileName, ...metadata },
             viewContext ? { 'X-Ops-View-Context': viewContext } : {},
         );
         res.json(result);
     } catch (error) {
         const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 400;
-        res.status(status).json({ ok: false, message: (error as Error).message || 'Não foi possível enviar o arquivo local ao Mileto Ops.' });
+        res.status(status).json({
+            ok: false,
+            code: error instanceof GatewayHttpError ? (error.code || 'mileto_ops_error') : 'ops_export_invalid',
+            message: (error as Error).message || 'Não foi possível enviar o arquivo local ao Mileto Ops.',
+        });
     }
 };

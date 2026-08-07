@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { cn } from '../lib/utils';
 import { API_BASE_URL } from '../lib/apiBase';
 import { TitleHook } from '../types';
@@ -10,6 +10,79 @@ interface Props {
     isHybridMode?: boolean;
     previewMode?: boolean;
 }
+
+interface AutoFitTextProps {
+    text: string;
+    className?: string;
+    style?: React.CSSProperties;
+    minFontSize?: number;
+    maxFontSize?: number;
+    targetFill?: number;
+}
+
+/**
+ * Ajusta a tipografia ao espaço real do modelo sem deformar os glifos.
+ * A caixa cadastrada continua sendo o limite visual; textos curtos crescem e
+ * textos longos recuam até caber. O cálculo acontece antes da pintura, por isso
+ * o preview e os frames de exportação recebem a mesma geometria.
+ */
+const AutoFitText: React.FC<AutoFitTextProps> = ({
+    text,
+    className,
+    style,
+    minFontSize = 16,
+    maxFontSize = 58,
+    targetFill = 0.88,
+}) => {
+    const hostRef = useRef<HTMLSpanElement>(null);
+    const sampleRef = useRef<HTMLSpanElement>(null);
+
+    useLayoutEffect(() => {
+        const host = hostRef.current;
+        const sample = sampleRef.current;
+        if (!host || !sample) return;
+
+        let animationFrame = 0;
+        const applyFit = () => {
+            const availableWidth = host.clientWidth;
+            if (availableWidth <= 0) return;
+
+            // Medir sempre na mesma base elimina oscilação entre renders.
+            host.style.fontSize = '100px';
+            const naturalWidth = sample.scrollWidth;
+            if (naturalWidth <= 0) return;
+
+            const fitted = Math.max(
+                minFontSize,
+                Math.min(maxFontSize, (availableWidth * targetFill * 100) / naturalWidth)
+            );
+            host.style.fontSize = `${fitted.toFixed(2)}px`;
+        };
+        const scheduleFit = () => {
+            window.cancelAnimationFrame(animationFrame);
+            animationFrame = window.requestAnimationFrame(applyFit);
+        };
+
+        // Primeira medição síncrona: o frame de exportação nunca captura a
+        // fonte no tamanho provisório antes do autoajuste.
+        applyFit();
+        const resizeObserver = new ResizeObserver(scheduleFit);
+        resizeObserver.observe(host);
+        if (host.parentElement) resizeObserver.observe(host.parentElement);
+        void document.fonts?.ready.then(scheduleFit).catch(() => undefined);
+
+        return () => {
+            window.cancelAnimationFrame(animationFrame);
+            resizeObserver.disconnect();
+        };
+    }, [maxFontSize, minFontSize, targetFill, text]);
+
+    return (
+        <span ref={hostRef} className={cn('block min-w-0', className)} style={style}>
+            <span ref={sampleRef} className="inline-block whitespace-nowrap">{text}</span>
+        </span>
+    );
+};
 
 import {
     Search,
@@ -479,10 +552,10 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'loc-pin-viagem':
             return (
-                <div className={cn('relative anim-loc-entrance', className)}>
+                <div className={cn('relative w-full anim-loc-entrance', className)}>
                     <div
-                        className="flex items-center gap-4 px-6 py-3 rounded-full shadow-2xl backdrop-blur-lg"
-                        style={{ backgroundColor: `${primary}99` }}
+                        className="flex w-full min-w-0 items-center gap-4 rounded-full px-6 py-3 shadow-2xl"
+                        style={{ backgroundColor: primary }}
                     >
                         <div className="anim-loc-pin-bounce shrink-0">
                             <MapPin
@@ -493,35 +566,39 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                             />
                         </div>
                         <div className="w-px h-6 opacity-40" style={{ backgroundColor: secondary }} />
-                        <span
-                            className="text-2xl md:text-3xl font-semibold tracking-tight whitespace-nowrap"
+                        <AutoFitText
+                            text={text}
+                            minFontSize={16}
+                            maxFontSize={52}
+                            targetFill={0.9}
+                            className="min-w-0 flex-1 font-semibold tracking-tight"
                             style={{ color: secondary, fontFamily: title.fontFamily || 'Inter' }}
-                        >
-                            {text}
-                        </span>
+                        />
                     </div>
                 </div>
             );
 
         case 'loc-minimal-urbano':
             return (
-                <div className={cn('relative anim-loc-entrance flex flex-col items-start gap-1', className)}>
-                    <div className="flex items-center gap-3">
+                <div className={cn('relative flex w-full min-w-0 flex-col items-start gap-1 anim-loc-entrance', className)}>
+                    <div className="flex w-full min-w-0 items-center gap-3">
                         <Navigation
                             className="w-5 h-5 shrink-0 drop-shadow-[0_0_8px_var(--glow)]"
                             style={{ color: primary, '--glow': `${primary}88` } as React.CSSProperties}
                             fill={primary}
                             strokeWidth={0}
                         />
-                        <span
-                            className="text-3xl md:text-4xl font-extralight tracking-wide"
+                        <AutoFitText
+                            text={text}
+                            minFontSize={18}
+                            maxFontSize={60}
+                            targetFill={0.9}
+                            className="min-w-0 flex-1 font-extralight tracking-wide"
                             style={{ color: secondary, fontFamily: title.fontFamily || 'Inter' }}
-                        >
-                            {text}
-                        </span>
+                        />
                     </div>
                     <div
-                        className="anim-loc-line-grow h-[2px] w-full origin-left"
+                        className="h-[2px] w-full origin-left anim-loc-line-grow"
                         style={{ backgroundColor: primary }}
                     />
                 </div>
@@ -529,15 +606,17 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 
         case 'loc-tag-geo':
             return (
-                <div className={cn('relative anim-loc-tag-entrance', className)}>
-                    <div className="flex items-center gap-3 px-5 py-3 shadow-xl" style={{ backgroundColor: primary }}>
+                <div className={cn('relative w-full anim-loc-tag-entrance', className)}>
+                    <div className="flex w-full min-w-0 items-center gap-3 px-5 py-3 shadow-xl" style={{ backgroundColor: primary }}>
                         <Globe className="w-6 h-6 shrink-0" style={{ color: secondary }} strokeWidth={2} />
-                        <span
-                            className="text-2xl md:text-3xl font-bold tracking-wider uppercase"
+                        <AutoFitText
+                            text={text}
+                            minFontSize={16}
+                            maxFontSize={54}
+                            targetFill={0.88}
+                            className="min-w-0 flex-1 font-bold uppercase tracking-wider"
                             style={{ color: secondary, fontFamily: title.fontFamily || 'Oswald' }}
-                        >
-                            {text}
-                        </span>
+                        />
                     </div>
                 </div>
             );
@@ -767,7 +846,7 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
             return (
                 <div
                     className={cn(
-                        'relative flex max-w-[500px] items-center gap-4 rounded-2xl border-2 bg-black/90 px-5 py-4 shadow-2xl',
+                        'relative flex w-full max-w-[500px] min-w-0 items-center gap-4 rounded-2xl border-2 bg-black/90 px-5 py-4 shadow-2xl',
                         className
                     )}
                     style={{
@@ -782,16 +861,18 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                     >
                         <Clock3 className="h-7 w-7" />
                     </div>
-                    <div>
+                    <div className="min-w-0 flex-1">
                         <p className="text-[9px] font-black uppercase tracking-[.28em]" style={{ color: primary }}>
                             Acaba em breve
                         </p>
-                        <h2
-                            className="mt-1 text-2xl font-black uppercase leading-none md:text-4xl"
+                        <AutoFitText
+                            text={text}
+                            minFontSize={17}
+                            maxFontSize={58}
+                            targetFill={0.9}
+                            className="mt-1 min-w-0 font-black uppercase leading-none"
                             style={{ color: secondary, fontFamily: fontStack('Anton') }}
-                        >
-                            {text}
-                        </h2>
+                        />
                     </div>
                 </div>
             );

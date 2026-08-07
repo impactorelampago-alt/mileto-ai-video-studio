@@ -12,10 +12,12 @@ import {
 } from '../services/titleGeneratorConfig';
 import {
     deterministicTitleCandidates,
+    limitTitleWords,
     normalizeTriggerKey,
     preventTitleOverlaps,
     resolveLiteralCaptionText,
     resolveTitleColors,
+    rotatingTitleTypeIndex,
     triggerMapWithAliases,
     type BrandPaletteInput,
 } from '../services/titleGenerationRules';
@@ -25,9 +27,10 @@ const titleExtractionPrompt = (config: TitleGeneratorConfig) => {
     const enabled = config.triggers.filter((trigger) => trigger.enabled);
     const triggerRules = enabled.map((trigger) => {
         const examples = trigger.examples.length ? ` Exemplos de referência: ${trigger.examples.join(' | ')}.` : '';
-        return `- kind "${trigger.id}" (${trigger.name}), no maximo ${trigger.maxOccurrences}: ${trigger.instructions}${examples}`;
+        return `- kind "${trigger.id}" (${trigger.name}), no maximo ${trigger.maxOccurrences}, com ate ${trigger.maxWords} palavras por titulo: ${trigger.instructions}${examples}`;
     }).join('\n');
     const kinds = enabled.map((trigger) => `"${trigger.id}"`).join(', ');
+    const maxConfiguredWords = Math.max(1, ...enabled.map((trigger) => trigger.maxWords));
     return `Voce e diretor criativo especializado em titulos de retencao para videos curtos.
 
 Objetivo da agencia:
@@ -37,7 +40,7 @@ Gatilhos permitidos:
 ${triggerRules}
 
 Regras obrigatorias:
-1. Cada titulo deve ter entre 1 e 8 palavras e ser uma sequencia literal e continua das legendas.
+1. Cada titulo deve ter entre 1 e ${maxConfiguredWords} palavras e ser uma sequencia literal e continua das legendas.
 2. Nao resuma, nao parafraseie, nao invente texto nem informacao comercial.
 3. O startSec deve ser exatamente o tempo de uma palavra fornecida.
 4. Use kind somente entre: ${kinds}.
@@ -46,6 +49,13 @@ Regras obrigatorias:
 7. Respeite o limite de cada gatilho e gere no maximo ${config.maxTitles} titulos no total.
 
 Responda exclusivamente em JSON valido: {"titles":[{"text":"trecho literal","startSec":0.5,"kind":${kinds.split(', ')[0] || '"hook"'}}]}`;
+};
+
+let titleGenerationSequence = 0;
+const nextTitleGenerationSequence = () => {
+    const current = titleGenerationSequence;
+    titleGenerationSequence = (titleGenerationSequence + 1) % 100_000;
+    return current;
 };
 
 // --- Replicate Integration ---
@@ -440,7 +450,7 @@ Você receberá o roteiro e as legendas com o tempo de cada palavra. Não existe
 Critérios de escolha, em ordem de prioridade:
 1. Gancho inicial, benefício concreto, preço/oferta, prova, quebra de padrão, urgência legítima e chamada para ação real.
 2. Se o roteiro mencionar claramente uma cidade, bairro, região ou endereço, crie exatamente um título de conexão local usando esse nome, no instante em que ele for dito. Nunca invente localização e não repita a região em outros títulos.
-3. Se houver uma CTA explícita (por exemplo: clique, chame no WhatsApp, agende, compre ou venha), inclua no máximo um item com "kind": "cta" no momento dessa CTA. Use exatamente as palavras pronunciadas; nunca substitua por "CLIQUE AQUI" se essa frase não existir no áudio.
+3. Se houver uma CTA explícita (por exemplo: clique no botão, chame no WhatsApp, agende, compre, garanta, acesse, reserve ou venha), inclua no máximo um item com "kind": "cta" no momento dessa CTA. Quando houver mais de uma possibilidade, priorize a ação direta que informa o que o espectador deve fazer, como "clique no botão", em vez de uma frase genérica sobre a oferta. Use exatamente as palavras pronunciadas; nunca invente uma CTA que não exista no áudio.
 
 Regras obrigatórias:
 1. Cada título deve ter entre 1 e 6 palavras e ser uma sequência literal e contínua das palavras fornecidas nas legendas. Não resuma, não parafraseie e não invente texto.
@@ -533,6 +543,8 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             .replace(/[^a-z0-9%]+/g, '');
         const seenTitlesByTrigger = new Map<string, string[]>();
         const occurrenceByTrigger = new Map<string, number>();
+        const generationSequence = nextTitleGenerationSequence();
+        let modelAssignmentIndex = 0;
         const enabledTriggers = titleConfig.triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length);
         const triggerById = triggerMapWithAliases(enabledTriggers);
         const videoFormat = (['9:16', '16:9', '4:5', '1:1'].includes(String(format)) ? format : '9:16') as VideoFormat;
@@ -542,7 +554,7 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 .map((candidate) => ({ text: candidate, kind: trigger.id }))
         );
         const titleCandidates = [
-            // Sinais determinísticos de preço/local têm prioridade; os exemplos
+            // Sinais determinísticos de preço/local/CTA têm prioridade; os exemplos
             // da agência e a IA completam os demais casos sem inventar texto.
             ...deterministicTitleCandidates(script),
             ...configuredLiteralCandidates,
@@ -576,12 +588,17 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 const occurrence = occurrenceByTrigger.get(triggerId) || 0;
                 if (occurrence >= trigger.maxOccurrences) return [];
                 occurrenceByTrigger.set(triggerId, occurrence + 1);
-                const titleType = trigger.titleTypes[occurrence % trigger.titleTypes.length];
+                const titleType = trigger.titleTypes[rotatingTitleTypeIndex(
+                    trigger.titleTypes.length,
+                    generationSequence,
+                    modelAssignmentIndex
+                )];
+                modelAssignmentIndex += 1;
                 const layout = titleType.layouts[videoFormat] || titleType.layouts['9:16'];
                 const colors = resolveTitleColors(titleType.color || trigger.color, effectiveBrandPalette, occurrence);
                 return [{
                     id: uuidv4(),
-                    text: literal.text.slice(0, 90),
+                    text: limitTitleWords(literal.text, trigger.maxWords).slice(0, 90),
                     startSec: literal.startSec,
                     durationSec: titleType.durationSec,
                     isActive: true,
@@ -591,6 +608,7 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                     scaleX: layout.scaleX,
                     scaleY: layout.scaleY,
                     textBoxWidthPct: layout.textBoxWidthPct,
+                    maxWords: trigger.maxWords,
                     styleId: titleType.styleId,
                     fontFamily: titleType.fontFamily,
                     animationId: titleType.animationId,

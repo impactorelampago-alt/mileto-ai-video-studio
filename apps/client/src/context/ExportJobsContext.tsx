@@ -8,6 +8,14 @@ import { useWizard } from './WizardContext';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { resolveTakeEnhancement, resolveTakeSharpness } from '../lib/videoEnhancement';
 
+export interface OpsExportMetadata {
+    title: string;
+    description: string;
+    narrationSummary: string;
+    sourceProjectId: string;
+    sourceProjectTitle: string;
+}
+
 export interface BackgroundExportRequest {
     fileName: string;
     outputFolder: string;
@@ -21,6 +29,7 @@ export interface BackgroundExportRequest {
     adData: AdData;
     captionStyle: CaptionStyle | null;
     projectId: string;
+    opsMetadata?: OpsExportMetadata;
     destination: { kind: 'local' | 'shared' | 'ops'; folderPath?: string; companyId?: string; opsFolderId?: string | null; viewContextId?: string | null };
 }
 
@@ -227,6 +236,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                 const sourcePath = result.finalPath || result.outputPath || tempFinalPath;
                 const fileName = `${safeName}.mp4`;
                 let outputPath = activeExport.outputFolder;
+                let assetId: string | undefined;
                 if (activeExport.destination.kind === 'local') {
                     const response = await fetch(`${API_BASE_URL}/api/files/import-export`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -245,21 +255,34 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                     if (!response.ok || !data.ok) throw new Error(data.message || 'Não foi possível enviar ao ambiente compartilhado.');
                     outputPath = `Compartilhado › ${activeExport.destination.folderPath || 'Vídeos'}`;
                 } else {
+                    if (!activeExport.opsMetadata) {
+                        throw new Error('ops_export_metadata_missing: Revise o título e a descrição antes de enviar ao Mileto Ops.');
+                    }
                     const response = await fetch(`${API_BASE_URL}/api/ops/exports/upload`, {
                         method: 'POST',
                         headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json', ...(activeExport.destination.viewContextId ? { 'X-Ops-View-Context': activeExport.destination.viewContextId } : {}) },
-                        body: JSON.stringify({ sourcePath, fileName, companyId: activeExport.destination.companyId, folderId: activeExport.destination.opsFolderId || '' }),
+                        body: JSON.stringify({
+                            sourcePath,
+                            fileName,
+                            companyId: activeExport.destination.companyId,
+                            folderId: activeExport.destination.opsFolderId || '',
+                            ...activeExport.opsMetadata,
+                        }),
                     });
                     const responseText = await response.text();
-                    let data: { ok?: boolean; message?: string };
+                    let data: { ok?: boolean; code?: string; message?: string; data?: { assetId?: string } };
                     try {
                         data = responseText ? JSON.parse(responseText) : {};
                     } catch {
-                        throw new Error(
-                            'O servidor local do Mileto ainda não foi atualizado para enviar vídeos ao Ops. Feche e abra o Mileto novamente e tente exportar de novo.'
-                        );
+                        throw new Error(`ops_invalid_response: ${responseText.slice(0, 240) || 'O servidor local devolveu uma resposta vazia.'}`);
                     }
-                    if (!response.ok || !data.ok) throw new Error(data.message || 'Não foi possível enviar ao Mileto Ops.');
+                    if (!response.ok || !data.ok) {
+                        throw new Error(`${data.code || `HTTP_${response.status}`}: ${data.message || 'Não foi possível enviar ao Mileto Ops.'}`);
+                    }
+                    assetId = String(data.data?.assetId || '').trim() || undefined;
+                    if (!assetId) {
+                        throw new Error('ops_asset_id_missing: O Mileto Ops concluiu o envio sem devolver o assetId do vídeo.');
+                    }
                     outputPath = 'Mileto Ops';
                 }
 
@@ -274,7 +297,29 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                     completedAt: Date.now(),
                     statusText: 'Vídeo exportado e salvo',
                     outputPath,
+                    assetId,
                 });
+
+                if (assetId) {
+                    try {
+                        localStorage.setItem(`mileto:ops-export:${activeExport.projectId}`, JSON.stringify({
+                            assetId,
+                            companyId: activeExport.destination.kind === 'ops' ? activeExport.destination.companyId : undefined,
+                            folderId: activeExport.destination.kind === 'ops' ? (activeExport.destination.opsFolderId || null) : null,
+                            exportedAt: new Date().toISOString(),
+                        }));
+                    } catch {
+                        // O assetId continua disponível no job e no evento mesmo se o
+                        // armazenamento local estiver desabilitado pelo sistema.
+                    }
+                    window.dispatchEvent(new CustomEvent('mileto:ops-export-complete', {
+                        detail: {
+                            assetId,
+                            projectId: activeExport.projectId,
+                            exportJobId: activeExport.jobId,
+                        },
+                    }));
+                }
 
                 if (currentProjectIdRef.current === activeExport.projectId) {
                     await saveProject({ exported: true });
@@ -296,6 +341,15 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                     completedAt: Date.now(),
                     error: message,
                 });
+                if (activeExport.destination.kind === 'ops') {
+                    window.dispatchEvent(new CustomEvent('mileto:ops-export-failed', {
+                        detail: {
+                            projectId: activeExport.projectId,
+                            exportJobId: activeExport.jobId,
+                            message,
+                        },
+                    }));
+                }
             } finally {
                 runningJobRef.current = null;
                 activeRef.current = null;

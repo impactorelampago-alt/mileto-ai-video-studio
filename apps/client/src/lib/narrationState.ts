@@ -20,6 +20,7 @@ export const narrationSourceKey = (adData: Pick<AdData, 'narrationText' | 'narra
 
 /** Tudo abaixo depende do áudio atual e precisa ser refeito ao trocar a voz. */
 export const invalidatedNarrationDerivatives = (): Partial<AdData> => ({
+    narrationSource: undefined,
     captions: undefined,
     dynamicTitles: [],
     dynamicTitlesSourceKey: undefined,

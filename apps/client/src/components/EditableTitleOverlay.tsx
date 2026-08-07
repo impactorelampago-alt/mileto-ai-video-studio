@@ -8,6 +8,7 @@ import type {
 import { Move, PencilLine } from 'lucide-react';
 import type { TitleHook } from '../types';
 import { cn } from '../lib/utils';
+import { limitTitleWords } from '../lib/titleText';
 
 interface EditableTitleOverlayProps {
     title: TitleHook;
@@ -16,6 +17,8 @@ interface EditableTitleOverlayProps {
     onSelect?: (_id: string | null) => void;
     onChange?: (_id: string, _updates: Partial<TitleHook>) => void;
     onDelete?: (_id: string) => void;
+    /** Limite inferior do título para preservar a faixa da legenda (0-100% do palco). */
+    captionSafeTopPct?: number;
     children: ReactNode;
 }
 
@@ -43,49 +46,49 @@ const RESIZE_HANDLES: Array<{
 }> = [
     {
         id: 'nw',
-        className: '-left-[17px] -top-[17px] h-3.5 w-3.5',
+        className: '-left-[19px] -top-[19px] h-[18px] w-[18px]',
         cursor: 'cursor-nwse-resize',
         label: 'Redimensionar pelo canto superior esquerdo',
     },
     {
         id: 'n',
-        className: '-top-[17px] left-1/2 h-2.5 w-7 -translate-x-1/2',
+        className: '-top-[19px] left-1/2 h-3.5 w-9 -translate-x-1/2',
         cursor: 'cursor-ns-resize',
         label: 'Alterar altura pelo topo',
     },
     {
         id: 'ne',
-        className: '-right-[17px] -top-[17px] h-3.5 w-3.5',
+        className: '-right-[19px] -top-[19px] h-[18px] w-[18px]',
         cursor: 'cursor-nesw-resize',
         label: 'Redimensionar pelo canto superior direito',
     },
     {
         id: 'e',
-        className: '-right-[17px] top-1/2 h-7 w-2.5 -translate-y-1/2',
+        className: '-right-[19px] top-1/2 h-9 w-3.5 -translate-y-1/2',
         cursor: 'cursor-ew-resize',
         label: 'Alterar largura pela direita',
     },
     {
         id: 'se',
-        className: '-bottom-[17px] -right-[17px] h-3.5 w-3.5',
+        className: '-bottom-[19px] -right-[19px] h-[18px] w-[18px]',
         cursor: 'cursor-nwse-resize',
         label: 'Redimensionar pelo canto inferior direito',
     },
     {
         id: 's',
-        className: '-bottom-[17px] left-1/2 h-2.5 w-7 -translate-x-1/2',
+        className: '-bottom-[19px] left-1/2 h-3.5 w-9 -translate-x-1/2',
         cursor: 'cursor-ns-resize',
         label: 'Alterar altura pela base',
     },
     {
         id: 'sw',
-        className: '-bottom-[17px] -left-[17px] h-3.5 w-3.5',
+        className: '-bottom-[19px] -left-[19px] h-[18px] w-[18px]',
         cursor: 'cursor-nesw-resize',
         label: 'Redimensionar pelo canto inferior esquerdo',
     },
     {
         id: 'w',
-        className: '-left-[17px] top-1/2 h-7 w-2.5 -translate-y-1/2',
+        className: '-left-[19px] top-1/2 h-9 w-3.5 -translate-y-1/2',
         cursor: 'cursor-ew-resize',
         label: 'Alterar largura pela esquerda',
     },
@@ -102,6 +105,7 @@ export const EditableTitleOverlay = ({
     onSelect,
     onChange,
     onDelete,
+    captionSafeTopPct,
     children,
 }: EditableTitleOverlayProps) => {
     const rootRef = useRef<HTMLDivElement>(null);
@@ -115,6 +119,66 @@ export const EditableTitleOverlay = ({
     const [draftText, setDraftText] = useState(title.text);
     const [editorBox, setEditorBox] = useState({ left: 0, top: 0, width: 100, height: 100 });
     const [editorTextStyle, setEditorTextStyle] = useState<CSSProperties>({});
+    const [safeGeometry, setSafeGeometry] = useState({ offsetY: 0, scale: 1 });
+
+    useLayoutEffect(() => {
+        const root = rootRef.current;
+        const stage = root?.parentElement;
+        if (!root || !stage || captionSafeTopPct == null) {
+            setSafeGeometry((current) =>
+                current.offsetY === 0 && current.scale === 1 ? current : { offsetY: 0, scale: 1 }
+            );
+            return;
+        }
+
+        const keepAboveCaption = () => {
+            const rootRect = root.getBoundingClientRect();
+            const stageRect = stage.getBoundingClientRect();
+            if (stageRect.height <= 0 || rootRect.height <= 0) return;
+
+            // Recupera a geometria sem a correção anterior para obter um resultado estável.
+            const baseTop = rootRect.top - safeGeometry.offsetY;
+            const baseHeight = rootRect.height / Math.max(0.01, safeGeometry.scale);
+            const safeBottom = stageRect.top + (captionSafeTopPct / 100) * stageRect.height;
+            const minimumTop = stageRect.top + stageRect.height * 0.025;
+
+            let nextScale = 1;
+            let nextOffsetY = 0;
+            const overflow = baseTop + baseHeight - safeBottom;
+
+            if (overflow > 0.5) {
+                nextOffsetY = -overflow;
+
+                // Só reduz quando subir não é suficiente. O texto e a arte mantêm proporção.
+                if (baseTop + nextOffsetY < minimumTop) {
+                    const availableHeight = Math.max(24, safeBottom - minimumTop);
+                    nextScale = clamp(availableHeight / baseHeight, 0.45, 1);
+                    nextOffsetY = minimumTop - baseTop;
+                }
+            }
+
+            setSafeGeometry((current) =>
+                Math.abs(current.offsetY - nextOffsetY) < 0.5 && Math.abs(current.scale - nextScale) < 0.002
+                    ? current
+                    : { offsetY: nextOffsetY, scale: nextScale }
+            );
+        };
+
+        keepAboveCaption();
+        const observer = new ResizeObserver(keepAboveCaption);
+        observer.observe(root);
+        observer.observe(stage);
+        return () => observer.disconnect();
+    }, [
+        captionSafeTopPct,
+        children,
+        safeGeometry.offsetY,
+        safeGeometry.scale,
+        title.posY,
+        title.scale,
+        title.text,
+        title.textBoxWidthPct,
+    ]);
 
     useEffect(() => {
         if (!isTextEditing) setDraftText(title.text);
@@ -316,9 +380,17 @@ export const EditableTitleOverlay = ({
         if (!stage) return;
 
         if (gesture.mode === 'move') {
+            const visualHeightPct = ((rootRef.current?.getBoundingClientRect().height || 0) / stage.height) * 100;
+            const maximumPosY = captionSafeTopPct == null
+                ? 92
+                : Math.max(0, captionSafeTopPct - visualHeightPct - 0.75);
             onChange(title.id, {
                 posX: clamp(gesture.startPosX + ((event.clientX - gesture.startX) / stage.width) * 100, 3, 97),
-                posY: clamp(gesture.startPosY + ((event.clientY - gesture.startY) / stage.height) * 100, 0, 92),
+                posY: clamp(
+                    gesture.startPosY + ((event.clientY - gesture.startY) / stage.height) * 100,
+                    0,
+                    maximumPosY
+                ),
             });
             return;
         }
@@ -437,6 +509,33 @@ export const EditableTitleOverlay = ({
             beginTextEditing();
             return;
         }
+        if (event.key.startsWith('Arrow')) {
+            event.preventDefault();
+            event.stopPropagation();
+            const step = event.shiftKey ? 2 : 0.5;
+            const stage = rootRef.current?.parentElement?.getBoundingClientRect();
+            const visualHeightPct = stage?.height
+                ? ((rootRef.current?.getBoundingClientRect().height || 0) / stage.height) * 100
+                : 0;
+            const maximumPosY = captionSafeTopPct == null
+                ? 92
+                : Math.max(0, captionSafeTopPct - visualHeightPct - 0.75);
+            const horizontal = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+            const vertical = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+            onChange?.(title.id, {
+                posX: clamp((title.posX ?? 50) + horizontal, 3, 97),
+                posY: clamp(title.posY + vertical, 0, maximumPosY),
+            });
+            return;
+        }
+        if (event.key === '+' || event.key === '=' || event.key === '-' || event.key === '_') {
+            event.preventDefault();
+            event.stopPropagation();
+            const direction = event.key === '+' || event.key === '=' ? 1 : -1;
+            const step = event.shiftKey ? 0.1 : 0.05;
+            onChange?.(title.id, { scale: clamp((title.scale ?? 1) + direction * step, 0.25, 4) });
+            return;
+        }
         if (event.key === 'Escape') {
             event.preventDefault();
             event.stopPropagation();
@@ -455,9 +554,9 @@ export const EditableTitleOverlay = ({
             tabIndex={editingEnabled ? 0 : undefined}
             style={{
                 left: `${title.posX ?? 50}%`,
-                top: `${title.posY}%`,
+                top: `calc(${title.posY}% + ${safeGeometry.offsetY}px)`,
                 width: title.textBoxWidthPct ? `${title.textBoxWidthPct}%` : undefined,
-                transform: `translateX(-50%) scale(${(title.scale ?? 1) * 0.85})`,
+                transform: `translateX(-50%) scale(${(title.scale ?? 1) * 0.85 * safeGeometry.scale})`,
                 transformOrigin: 'top center',
                 cursor: editingEnabled ? 'move' : undefined,
             }}
@@ -493,7 +592,7 @@ export const EditableTitleOverlay = ({
                             {isTextEditing ? <PencilLine className="h-3 w-3" /> : <Move className="h-3 w-3" />}
                             {isTextEditing
                                 ? 'Edite na própria arte · Ctrl+Enter conclui'
-                                : 'Arraste · duplo clique edita · Delete apaga'}
+                                : 'Arraste · alças ajustam · +/- tamanho'}
                         </div>
                         {isTextEditing && (
                             <div
@@ -511,7 +610,7 @@ export const EditableTitleOverlay = ({
                                     data-title-text-editor="true"
                                     value={draftText}
                                     onChange={(event) => {
-                                        const value = event.target.value;
+                                        const value = limitTitleWords(event.target.value, title.maxWords);
                                         setDraftText(value);
                                     }}
                                     onInput={(event) => {

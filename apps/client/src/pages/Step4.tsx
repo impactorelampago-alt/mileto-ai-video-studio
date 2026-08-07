@@ -34,6 +34,7 @@ import { missingForCompletion, pendingWarningText } from '../lib/workflowWarning
 import { narrationSourceKey } from '../lib/narrationState';
 import { bindTitlesToBrandPalette, resolveOpsProjectBrand } from '../lib/opsProjectBrand';
 import { TITLE_EDITOR_PORTRAIT_PREVIEW_WIDTH } from '../lib/titlePreviewGeometry';
+import { limitTitleWords } from '../lib/titleText';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -394,25 +395,28 @@ export const Step4 = () => {
     const updateTitle = (id: string, updates: Partial<TitleHook>) => {
         const newTitles = titles.map((t) => {
             if (t.id === id) {
-                const colorEdited = Object.prototype.hasOwnProperty.call(updates, 'primaryColor')
-                    || Object.prototype.hasOwnProperty.call(updates, 'secondaryColor');
+                const safeUpdates = Object.prototype.hasOwnProperty.call(updates, 'text')
+                    ? { ...updates, text: limitTitleWords(String(updates.text || ''), t.maxWords) }
+                    : updates;
+                const colorEdited = Object.prototype.hasOwnProperty.call(safeUpdates, 'primaryColor')
+                    || Object.prototype.hasOwnProperty.call(safeUpdates, 'secondaryColor');
                 const updated = {
                     ...t,
-                    ...updates,
-                    ...(colorEdited && !Object.prototype.hasOwnProperty.call(updates, 'colorBinding')
+                    ...safeUpdates,
+                    ...(colorEdited && !Object.prototype.hasOwnProperty.call(safeUpdates, 'colorBinding')
                         ? { colorBinding: undefined }
                         : {}),
                 };
                 // Also jump the video preview so they can instantly see the new font/color/position
                 if (
-                    updates.fontFamily ||
-                    updates.primaryColor ||
-                    updates.secondaryColor ||
-                    updates.posX !== undefined ||
-                    updates.posY !== undefined ||
-                    updates.scale !== undefined ||
-                    updates.text ||
-                    updates.styleId
+                    safeUpdates.fontFamily ||
+                    safeUpdates.primaryColor ||
+                    safeUpdates.secondaryColor ||
+                    safeUpdates.posX !== undefined ||
+                    safeUpdates.posY !== undefined ||
+                    safeUpdates.scale !== undefined ||
+                    safeUpdates.text ||
+                    safeUpdates.styleId
                 ) {
                     handleTargetTime(updated.startSec + (updated.durationSec || 3) / 2);
                 }
@@ -765,7 +769,7 @@ export const Step4 = () => {
                                                 </div>
                                                 <div className="flex items-center justify-between border-t border-white/5 pt-2">
                                                     <p className="text-[9px] font-semibold text-brand-muted">
-                                                        Arraste e redimensione diretamente no preview.
+                                                        Arraste, use as alças ou +/- para ajustar no preview. A legenda fica protegida.
                                                     </p>
                                                 <button
                                                     onClick={(event) => {

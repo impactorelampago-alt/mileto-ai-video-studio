@@ -22,6 +22,10 @@ import {
     sanitizeViewContexts,
 } from './opsViewContext.js';
 import { normalizeOpsFolderScope } from './opsAssetScope.js';
+import {
+    buildOpsUploadIntentPayload,
+    createOpsExportIdempotencyKey,
+} from './opsExportContract.js';
 
 const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
 const b64u = (buffer) => Buffer.from(buffer).toString('base64url');
@@ -1145,6 +1149,87 @@ export const listAssets = async (req, res) => {
 // O renderer nunca recebe a URL/grant temporário do Ops. Ele envia o MP4 ao
 // servidor local, que o encaminha ao gateway; só aqui a intenção é criada,
 // os bytes são transferidos e a conclusão é confirmada.
+// Fila do agente Video Maker. O gateway nunca executa a edição: ele somente
+// troca a sessão do usuário pela delegação correspondente e mantém o
+// X-Ops-View-Context e o escopo assets.write em todas as operações.
+export const nextVideoJob = async (req, res) => {
+    const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken, viewContextId }) => {
+        assertAssetsWriteScope(connection);
+        return {
+            connection,
+            payload: await opsApi(accessToken, '/v1/video-jobs/next', {
+                headers: viewContextId ? { [OPS_VIEW_CONTEXT_HEADER]: viewContextId } : {},
+            }),
+        };
+    });
+    const data = unwrapOpsData(payload);
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: 'ops.video_job.polled',
+        resourceType: data?.id ? 'video_job' : null,
+        resourceId: data?.id || null,
+        result: 'success',
+    });
+    res.json({ ok: true, data: data || null, meta: payload.meta || {} });
+};
+
+export const claimVideoJob = async (req, res) => {
+    const jobId = String(req.params.jobId || '').trim();
+    if (!jobId) throw httpError(400, 'invalid_video_job', 'Informe o trabalho de vídeo.');
+    const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken, viewContextId }) => {
+        assertAssetsWriteScope(connection);
+        return {
+            connection,
+            payload: await opsApi(accessToken, `/v1/video-jobs/${encodeURIComponent(jobId)}/claim`, {
+                method: 'POST',
+                headers: viewContextId ? { [OPS_VIEW_CONTEXT_HEADER]: viewContextId } : {},
+            }),
+        };
+    });
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: 'ops.video_job.claimed',
+        resourceType: 'video_job',
+        resourceId: jobId,
+        result: 'success',
+    });
+    res.json({ ok: true, data: unwrapOpsData(payload), meta: payload.meta || {} });
+};
+
+export const updateVideoJob = async (req, res) => {
+    const jobId = String(req.params.jobId || '').trim();
+    const claimToken = String(req.headers['x-mileto-job-token'] || '').trim();
+    if (!jobId || !claimToken) {
+        throw httpError(400, 'invalid_video_job_update', 'Informe o trabalho e o token de execução.');
+    }
+    const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken, viewContextId }) => {
+        assertAssetsWriteScope(connection);
+        return {
+            connection,
+            payload: await opsApi(accessToken, `/v1/video-jobs/${encodeURIComponent(jobId)}`, {
+                method: 'PATCH',
+                headers: {
+                    ...(viewContextId ? { [OPS_VIEW_CONTEXT_HEADER]: viewContextId } : {}),
+                    'X-Mileto-Job-Token': claimToken,
+                },
+                body: JSON.stringify(req.body || {}),
+            }),
+        };
+    });
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: 'ops.video_job.updated',
+        resourceType: 'video_job',
+        resourceId: jobId,
+        result: 'success',
+        detail: { status: req.body?.status, stage: req.body?.stage },
+    });
+    res.json({ ok: true, data: unwrapOpsData(payload), meta: payload.meta || {} });
+};
+
 export const uploadExport = async (req, res) => {
     const file = req.file;
     const companyId = String(req.params.companyId || '').trim();
@@ -1156,23 +1241,23 @@ export const uploadExport = async (req, res) => {
         }
 
         const checksum = await hashFile(file.path);
-        const idempotencyKey = crypto.randomUUID();
+        const intentPayload = buildOpsUploadIntentPayload({
+            folderId,
+            fileName: file.originalname,
+            sizeBytes: file.size,
+            checksum,
+            metadata: req.body,
+        });
+        const idempotencyKey = createOpsExportIdempotencyKey(intentPayload, companyId);
         const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken }) => {
             assertAssetsWriteScope(connection);
-            const intentPayload = {
-            folderId,
-            fileName: String(file.originalname).slice(0, 180),
-            mimeType: 'video/mp4',
-            sizeBytes: file.size,
-            checksum: { algorithm: 'sha256', value: checksum },
-            origin: 'mileto_ai_video',
-        };
         const intentResponse = await opsApi(
             accessToken,
             `/v1/companies/${encodeURIComponent(companyId)}/assets/upload-intents`,
             { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(intentPayload) }
         );
         const intent = unwrapOpsData(intentResponse) || {};
+        let completed = intent;
         if (!intent.deduplicated) {
             const upload = intent.upload || {};
             if (!upload.url || String(upload.method || 'PUT').toUpperCase() !== 'PUT') {
@@ -1189,16 +1274,39 @@ export const uploadExport = async (req, res) => {
             if (!uploadResponse.ok) {
                 throw httpError(502, 'ops_upload_failed', 'O Mileto Ops não aceitou os bytes do vídeo.');
             }
+            const completeResponse = await opsApi(accessToken, `/v1/assets/upload-intents/${encodeURIComponent(String(intent.uploadId))}/complete`, {
+                method: 'POST',
+                headers: { 'Idempotency-Key': idempotencyKey },
+                body: JSON.stringify({ sizeBytes: file.size, checksum: { algorithm: 'sha256', value: checksum } }),
+            });
+            completed = unwrapOpsData(completeResponse) || {};
         }
-        const completeResponse = await opsApi(accessToken, `/v1/assets/upload-intents/${encodeURIComponent(String(intent.uploadId))}/complete`, {
-            method: 'POST',
-            headers: { 'Idempotency-Key': idempotencyKey },
-            body: JSON.stringify({ sizeBytes: file.size, checksum: { algorithm: 'sha256', value: checksum } }),
+        const assetId = String(
+            completed.assetId
+            || completed.id
+            || completed.asset?.id
+            || intent.assetId
+            || intent.asset?.id
+            || ''
+        ).trim();
+        if (!assetId) {
+            throw httpError(502, 'ops_asset_id_missing', 'O Mileto Ops concluiu o envio sem devolver o assetId do vídeo.');
+        }
+        return {
+            connection,
+            payload: { ...completed, assetId, idempotencyKey, deduplicated: Boolean(intent.deduplicated) },
+        };
         });
-        return { connection, payload: completeResponse };
+        await audit({
+            req,
+            connectionId: connection.id,
+            action: 'ops.asset.exported',
+            resourceType: 'company',
+            resourceId: companyId,
+            result: 'success',
+            detail: { folderId, sizeBytes: file.size, sourceProjectId: intentPayload.sourceProjectId },
         });
-        await audit({ req, connectionId: connection.id, action: 'ops.asset.exported', resourceType: 'company', resourceId: companyId, result: 'success', detail: { folderId, sizeBytes: file.size } });
-        res.json({ ok: true, data: unwrapOpsData(payload) });
+        res.json({ ok: true, data: payload });
     } finally {
         if (file?.path) await fs.promises.unlink(file.path).catch(() => undefined);
     }

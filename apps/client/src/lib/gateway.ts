@@ -80,6 +80,8 @@ export interface AiTitleTypeRule {
     name: string;
     styleId: string;
     fontFamily: string;
+    /** Compatibilidade com rascunhos que ainda guardavam o limite no modelo visual. */
+    maxWords?: number;
     durationSec: number;
     animationId: 'pop' | 'fade' | 'slide' | 'blink' | 'none';
     color: AiTitleColorRule | null;
@@ -89,6 +91,7 @@ export interface AiTitleTriggerRule {
     id: string;
     name: string;
     enabled: boolean;
+    maxWords: number;
     maxOccurrences: number;
     instructions: string;
     examples: string[];
@@ -229,6 +232,58 @@ export interface OpsMediaUrl {
     delivery?: string;
     supportsRange?: boolean | null;
     requestId?: string;
+}
+
+export type OpsVideoJobStage =
+    | 'queued'
+    | 'narration'
+    | 'takes'
+    | 'quick_edit'
+    | 'captions'
+    | 'titles'
+    | 'export'
+    | 'completed'
+    | 'failed';
+
+export interface OpsVideoJob {
+    id: string;
+    workOrderId: string;
+    companyId: string;
+    status: 'queued' | 'claimed' | 'running' | 'completed' | 'failed';
+    stage: OpsVideoJobStage;
+    projectId: string;
+    projectTitle: string;
+    objective: string;
+    narration?: string | null;
+    voicePresetId?: string | null;
+    format: '9:16' | '1:1';
+    takeAssetIds: string[];
+    destinationFolderId?: string | null;
+    quickEdit: boolean;
+    shuffleTakes: boolean;
+    captions: boolean;
+    automaticTitles: boolean;
+    settings: Record<string, unknown>;
+    progress: { percent?: number; message?: string };
+    outputAssetId?: string | null;
+    error?: { code?: string | null; message?: string | null } | null;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface OpsVideoJobClaim {
+    job: OpsVideoJob;
+    claimToken: string;
+}
+
+export interface OpsVideoJobUpdate {
+    status?: 'running' | 'completed' | 'failed';
+    stage?: Exclude<OpsVideoJobStage, 'queued'>;
+    percent?: number;
+    message?: string;
+    outputAssetId?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
 }
 
 export interface OpsViewContext {
@@ -520,6 +575,42 @@ export const gatewayApi = {
             if (!cursor) break;
         }
         return { data: assets, meta: { nextCursor: cursor } };
+    },
+
+    async nextOpsVideoJob(viewContextId?: string | null): Promise<OpsVideoJob | null> {
+        const response = await gatewayFetch<{ data: OpsVideoJob | null }>(
+            '/v1/integrations/mileto-ops/video-jobs/next',
+            { headers: opsContextHeaders(viewContextId) }
+        );
+        return response.data || null;
+    },
+
+    async claimOpsVideoJob(jobId: string, viewContextId?: string | null): Promise<OpsVideoJobClaim> {
+        const response = await gatewayFetch<{ data: OpsVideoJobClaim }>(
+            `/v1/integrations/mileto-ops/video-jobs/${encodeURIComponent(jobId)}/claim`,
+            { method: 'POST', headers: opsContextHeaders(viewContextId) }
+        );
+        return response.data;
+    },
+
+    async updateOpsVideoJob(
+        jobId: string,
+        claimToken: string,
+        input: OpsVideoJobUpdate,
+        viewContextId?: string | null
+    ): Promise<OpsVideoJob> {
+        const response = await gatewayFetch<{ data: OpsVideoJob }>(
+            `/v1/integrations/mileto-ops/video-jobs/${encodeURIComponent(jobId)}`,
+            {
+                method: 'PATCH',
+                headers: {
+                    ...opsContextHeaders(viewContextId),
+                    'X-Mileto-Job-Token': claimToken,
+                },
+                body: JSON.stringify(input),
+            }
+        );
+        return response.data;
     },
 
     async opsAssetUrl(

@@ -74,7 +74,15 @@ interface WizardContextType {
     setDraftTitle: (_title: string) => void;
     saveProject: (_opts?: { exported?: boolean; keepalive?: boolean; lastStep?: number }) => Promise<boolean>;
     loadProject: () => Promise<void>;
-    startNewDraft: (_opts?: { scope?: 'local' | 'shared'; title?: string }) => string;
+    startNewDraft: (_opts?: { id?: string; scope?: 'local' | 'shared'; title?: string }) => string;
+    applyProjectSnapshot: (_snapshot: {
+        projectId: string;
+        title: string;
+        adData: AdData;
+        mediaTakes: MediaTake[];
+        captionStyle?: CaptionStyle | null;
+        selectedMusicId?: string | null;
+    }) => void;
     loadDraft: (_id: string, _scope?: 'local' | 'shared') => Promise<number | null>;
     publishDraftToShared: (_id: string) => Promise<boolean>;
     hasDraftContent: () => boolean;
@@ -173,6 +181,19 @@ const defaultAdData: AdData = {
     transitionMuted: false,
 };
 
+export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
+    id: 'hacker-matrix',
+    name: 'Hacker Matrix',
+    previewClass: '',
+    fontFamily: 'Montserrat',
+    fontSize: 20,
+    strokeWidth: 4,
+    activeColor: '#00E676',
+    baseColor: '#FFFFFF',
+    strokeColor: '#000000',
+    verticalPosition: 23,
+};
+
 const mergeAdData = (data?: Partial<AdData>): AdData => ({
     ...defaultAdData,
     ...(data || {}),
@@ -188,6 +209,8 @@ const mergeAdData = (data?: Partial<AdData>): AdData => ({
     },
     videoEnhancement: normalizeVideoEnhancement(data?.videoEnhancement),
 });
+
+export const createDefaultAdData = (input: Partial<AdData> = {}): AdData => mergeAdData(input);
 
 const WizardContext = createContext<WizardContextType | undefined>(undefined);
 
@@ -244,19 +267,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
 
     // Padrão visual da primeira geração de legendas em todo projeto novo.
     // Ao selecionar a empresa, o Ops substitui o verde pela cor primária da marca.
-    const defaultCaptionStyle: CaptionStyle = {
-        id: 'hacker-matrix',
-        name: 'Hacker Matrix',
-        previewClass: '',
-        fontFamily: 'Montserrat',
-        fontSize: 20,
-        strokeWidth: 4,
-        activeColor: '#00E676',
-        baseColor: '#FFFFFF',
-        strokeColor: '#000000',
-        verticalPosition: 23,
-    };
-    const [captionStyle, setCaptionStyle] = useState<CaptionStyle | null>(defaultCaptionStyle);
+    const [captionStyle, setCaptionStyle] = useState<CaptionStyle | null>({ ...DEFAULT_CAPTION_STYLE });
     const [musicLibrary, setMusicLibrary] = useState<MusicTrack[]>(SYSTEM_MUSIC_TRACKS);
     const [selectedMusicId, setSelectedMusicIdState] = useState<string | null>(SYSTEM_MUSIC_IDS.batida);
     const systemMusicAliasesRef = useRef<Record<string, string>>({});
@@ -914,10 +925,53 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         }
     }, [applyLoadedDraft, draftScopeState, hydrateSharedPayload, setDraftScope]);
 
-    const startNewDraft = React.useCallback((opts?: { scope?: 'local' | 'shared'; title?: string }): string => {
+    const applyProjectSnapshot = React.useCallback((snapshot: {
+        projectId: string;
+        title: string;
+        adData: AdData;
+        mediaTakes: MediaTake[];
+        captionStyle?: CaptionStyle | null;
+        selectedMusicId?: string | null;
+    }) => {
         initialDraftLoadCompleteRef.current = false;
         if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-        const newId = generateDraftId();
+        const title = snapshot.title.trim();
+        const nextCaptionStyle = snapshot.captionStyle === undefined
+            ? { ...DEFAULT_CAPTION_STYLE }
+            : snapshot.captionStyle;
+        const nextMusicId = snapshot.selectedMusicId === undefined
+            ? SYSTEM_MUSIC_IDS.batida
+            : snapshot.selectedMusicId;
+        setProjectId(snapshot.projectId);
+        setDraftScope('local');
+        setDraftTitle(title);
+        setAdData(snapshot.adData);
+        setMediaTakes(snapshot.mediaTakes);
+        setCaptionStyle(nextCaptionStyle);
+        setSelectedMusicIdState(nextMusicId);
+        stateRef.current = {
+            projectId: snapshot.projectId,
+            adData: snapshot.adData,
+            mediaTakes: snapshot.mediaTakes,
+            captionStyle: nextCaptionStyle,
+            selectedMusicId: nextMusicId,
+            draftScope: 'local',
+            draftTitle: title,
+        };
+        lastSavedFingerprintRef.current = '';
+        try {
+            localStorage.setItem(ACTIVE_DRAFT_STORAGE_KEY, snapshot.projectId);
+            localStorage.setItem(ACTIVE_DRAFT_SCOPE_KEY, 'local');
+        } catch {
+            // O estado em memória continua válido quando o armazenamento está indisponível.
+        }
+        initialDraftLoadCompleteRef.current = true;
+    }, [setDraftScope]);
+
+    const startNewDraft = React.useCallback((opts?: { id?: string; scope?: 'local' | 'shared'; title?: string }): string => {
+        initialDraftLoadCompleteRef.current = false;
+        if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+        const newId = opts?.id?.trim() || generateDraftId();
         setProjectId(newId);
         // Todo projeto nasce no computador. Compartilhar é uma ação posterior e
         // explícita, para não enviar rascunhos ou mídias ao R2 sem intenção.
@@ -931,14 +985,14 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         }
         setAdData({ ...defaultAdData, title });
         setMediaTakes([]);
-        setCaptionStyle(defaultCaptionStyle);
+        setCaptionStyle({ ...DEFAULT_CAPTION_STYLE });
         setSelectedMusicIdState(SYSTEM_MUSIC_IDS.batida);
         lastSavedFingerprintRef.current = '';
         window.setTimeout(() => {
             initialDraftLoadCompleteRef.current = true;
         }, 0);
         return newId;
-    }, [defaultCaptionStyle, setDraftScope]);
+    }, [setDraftScope]);
 
     // Tenta recuperar o rascunho ativo no mount (sobrevive a refresh do Electron).
     // Se não existir no servidor (404), mantém os defaults — é um projeto novo.
@@ -1155,6 +1209,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             saveProject,
             loadProject,
             startNewDraft,
+            applyProjectSnapshot,
             loadDraft,
             publishDraftToShared,
             hasDraftContent,
@@ -1187,6 +1242,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             saveProject,
             loadProject,
             startNewDraft,
+            applyProjectSnapshot,
             loadDraft,
             publishDraftToShared,
             hasDraftContent,
