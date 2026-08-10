@@ -40,7 +40,7 @@ import {
     type PersistedOpsVideoWorkerJob,
 } from '../lib/opsVideoWorkerState';
 import { applyQuickEdit } from '../lib/quickEdit';
-import { DEFAULT_SYSTEM_VOICE, SYSTEM_VOICES } from '../lib/systemVoices';
+import { canonicalSystemVoiceId, DEFAULT_SYSTEM_VOICE, SYSTEM_VOICES } from '../lib/systemVoices';
 import { systemMusicTrackFor } from '../lib/systemMusic';
 import {
     deterministicShuffle,
@@ -285,7 +285,7 @@ const resolvePersistedJob = async (state: PersistedOpsVideoWorkerJob): Promise<Q
 const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): Promise<PreparedJob> => {
     const company = (await gatewayApi.opsCompany(job.companyId, context.contextId)).data;
     const voice = job.voicePresetId
-        ? SYSTEM_VOICES.find((candidate) => candidate.id === job.voicePresetId)
+        ? SYSTEM_VOICES.find((candidate) => candidate.id === canonicalSystemVoiceId(job.voicePresetId))
         : DEFAULT_SYSTEM_VOICE;
     if (!voice) throw new Error(`voice_preset_not_found: A voz solicitada (${job.voicePresetId}) nao existe neste Mileto AI Video.`);
     const music = systemMusicTrackFor(voice.preset.musicTrackId) || systemMusicTrackFor(DEFAULT_SYSTEM_VOICE.preset.musicTrackId);

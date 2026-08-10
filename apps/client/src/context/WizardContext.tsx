@@ -4,7 +4,7 @@ import { DEFAULT_VIDEO_ENHANCEMENT, normalizeVideoEnhancement } from '../lib/vid
 import { gatewayApi, type SharedAsset } from '../lib/gateway';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { API_BASE_URL } from '../lib/apiBase';
-import { DEFAULT_SYSTEM_VOICE } from '../lib/systemVoices';
+import { canonicalSystemVoiceId, DEFAULT_SYSTEM_VOICE } from '../lib/systemVoices';
 import {
     invalidateOpsCompanyContext,
     refreshOpsTakeUrl,
@@ -198,6 +198,7 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
 const mergeAdData = (data?: Partial<AdData>): AdData => ({
     ...defaultAdData,
     ...(data || {}),
+    selectedVoiceId: canonicalSystemVoiceId(data?.selectedVoiceId ?? defaultAdData.selectedVoiceId) ?? null,
     audioConfig: {
         narration: {
             ...defaultAdData.audioConfig.narration,

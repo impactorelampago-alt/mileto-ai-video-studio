@@ -37,8 +37,8 @@ interface MusicTrack {
 const SYSTEM_TRACKS: MusicTrack[] = [
     {
         id: 'system-music:batida-1',
-        originalName: 'Batida 1.mp3',
-        displayName: 'Batida 1',
+        originalName: '1 - Batida.mp3',
+        displayName: '1 - Batida',
         filePath: 'system-music/batida-1.mp3',
         publicUrl: '/system-music/batida-1.mp3',
         durationSec: 76.584,
@@ -49,8 +49,8 @@ const SYSTEM_TRACKS: MusicTrack[] = [
     },
     {
         id: 'system-music:blogueira-1',
-        originalName: 'Blogueira 1.mp3',
-        displayName: 'Blogueira 1',
+        originalName: '1 - Blogueira.mp3',
+        displayName: '1 - Blogueira',
         filePath: 'system-music/blogueira-1.mp3',
         publicUrl: '/system-music/blogueira-1.mp3',
         durationSec: 94.272,
@@ -59,16 +59,53 @@ const SYSTEM_TRACKS: MusicTrack[] = [
         systemKey: 'blogueira-1',
         locked: true,
     },
+    {
+        id: 'system-music:rodeio-1',
+        originalName: '1 - Rodeio.mp3',
+        displayName: '1 - Rodeio',
+        filePath: 'system-music/rodeio-1.mp3',
+        publicUrl: '/system-music/rodeio-1.mp3',
+        durationSec: 304.632,
+        createdAt: '2026-08-09T00:00:00.000Z',
+        source: 'system',
+        systemKey: 'rodeio-1',
+        locked: true,
+    },
 ];
 
+const normalizeSystemTrackIdentity = (value: string): string => value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\.[a-z0-9]{2,5}$/i, '')
+    .replace(/[^a-z0-9]+/gi, ' ')
+    .trim()
+    .toLocaleLowerCase('pt-BR');
+
+const SYSTEM_TRACK_ALIASES: Record<string, string[]> = {
+    'system-music:batida-1': ['Batida 1', '1 - Batida', 'batida-1'],
+    'system-music:blogueira-1': ['Blogueira 1', '1 - Blogueira', 'blogueira-1'],
+    'system-music:rodeio-1': ['Rodeio', 'Rodeio 1', '1 - Rodeio', 'rodeio-1'],
+};
+
+function systemTrackFor(track: MusicTrack): MusicTrack | null {
+    const identities = [track.id, track.systemKey, track.displayName, track.originalName]
+        .filter((identity): identity is string => Boolean(identity));
+    return SYSTEM_TRACKS.find((systemTrack) => identities.some((identity) => {
+        if (systemTrack.id === identity || systemTrack.systemKey === identity) return true;
+        const normalized = normalizeSystemTrackIdentity(identity);
+        return normalizeSystemTrackIdentity(systemTrack.displayName) === normalized ||
+            normalizeSystemTrackIdentity(systemTrack.originalName) === normalized ||
+            (SYSTEM_TRACK_ALIASES[systemTrack.id] || []).some((alias) =>
+                normalizeSystemTrackIdentity(alias) === normalized
+            );
+    })) || null;
+}
+
 function withSystemTracks(tracks: MusicTrack[]): MusicTrack[] {
-    const reservedNames = new Set(
-        SYSTEM_TRACKS.map((track) => track.displayName.toLocaleLowerCase('pt-BR')),
-    );
     return [
         ...SYSTEM_TRACKS,
         ...tracks
-            .filter((track) => !reservedNames.has(track.displayName.trim().toLocaleLowerCase('pt-BR')))
+            .filter((track) => !systemTrackFor(track))
             .map((track) => ({ ...track, source: 'user' as const })),
     ];
 }

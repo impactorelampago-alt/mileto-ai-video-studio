@@ -3,18 +3,20 @@ import type { AudioConfig, MusicTrack } from '../types';
 export const SYSTEM_MUSIC_IDS = {
     batida: 'system-music:batida-1',
     blogueira: 'system-music:blogueira-1',
+    rodeio: 'system-music:rodeio-1',
 } as const;
 
 export const SYSTEM_MUSIC_PATHS = {
     [SYSTEM_MUSIC_IDS.batida]: '/system-music/batida-1.mp3',
     [SYSTEM_MUSIC_IDS.blogueira]: '/system-music/blogueira-1.mp3',
+    [SYSTEM_MUSIC_IDS.rodeio]: '/system-music/rodeio-1.mp3',
 } as const;
 
 export const SYSTEM_MUSIC_TRACKS: MusicTrack[] = [
     {
         id: SYSTEM_MUSIC_IDS.batida,
-        originalName: 'Batida 1.mp3',
-        displayName: 'Batida 1',
+        originalName: '1 - Batida.mp3',
+        displayName: '1 - Batida',
         filePath: 'system-music/batida-1.mp3',
         publicUrl: SYSTEM_MUSIC_PATHS[SYSTEM_MUSIC_IDS.batida],
         durationSec: 76.584,
@@ -25,14 +27,26 @@ export const SYSTEM_MUSIC_TRACKS: MusicTrack[] = [
     },
     {
         id: SYSTEM_MUSIC_IDS.blogueira,
-        originalName: 'Blogueira 1.mp3',
-        displayName: 'Blogueira 1',
+        originalName: '1 - Blogueira.mp3',
+        displayName: '1 - Blogueira',
         filePath: 'system-music/blogueira-1.mp3',
         publicUrl: SYSTEM_MUSIC_PATHS[SYSTEM_MUSIC_IDS.blogueira],
         durationSec: 94.272,
         createdAt: '2026-08-05T00:00:00.000Z',
         source: 'system',
         systemKey: 'blogueira-1',
+        locked: true,
+    },
+    {
+        id: SYSTEM_MUSIC_IDS.rodeio,
+        originalName: '1 - Rodeio.mp3',
+        displayName: '1 - Rodeio',
+        filePath: 'system-music/rodeio-1.mp3',
+        publicUrl: SYSTEM_MUSIC_PATHS[SYSTEM_MUSIC_IDS.rodeio],
+        durationSec: 304.632,
+        createdAt: '2026-08-09T00:00:00.000Z',
+        source: 'system',
+        systemKey: 'rodeio-1',
         locked: true,
     },
 ];
@@ -67,25 +81,33 @@ const normalizedSystemMusicIdentity = (value: string): string => value
     .trim()
     .toLocaleLowerCase('pt-BR');
 
+const SYSTEM_MUSIC_ALIASES: Record<string, string[]> = {
+    [SYSTEM_MUSIC_IDS.batida]: ['Batida 1', '1 - Batida', 'batida-1'],
+    [SYSTEM_MUSIC_IDS.blogueira]: ['Blogueira 1', '1 - Blogueira', 'blogueira-1'],
+    [SYSTEM_MUSIC_IDS.rodeio]: ['Rodeio', 'Rodeio 1', '1 - Rodeio', 'rodeio-1'],
+};
+
+const matchesSystemMusicIdentity = (track: MusicTrack, identity: string): boolean => {
+    if (track.id === identity || track.systemKey === identity) return true;
+    const normalized = normalizedSystemMusicIdentity(identity);
+    return normalizedSystemMusicIdentity(track.displayName) === normalized ||
+        normalizedSystemMusicIdentity(track.originalName) === normalized ||
+        (SYSTEM_MUSIC_ALIASES[track.id] || []).some((alias) =>
+            normalizedSystemMusicIdentity(alias) === normalized
+        );
+};
+
 export const systemMusicTrackFor = (value?: string | Partial<MusicTrack> | null): MusicTrack | null => {
     if (!value) return null;
     if (typeof value === 'string') {
-        return SYSTEM_MUSIC_TRACKS.find((track) =>
-            track.id === value ||
-            track.systemKey === value ||
-            normalizedSystemMusicIdentity(track.displayName) === normalizedSystemMusicIdentity(value) ||
-            normalizedSystemMusicIdentity(track.originalName) === normalizedSystemMusicIdentity(value)
-        ) || null;
+        return SYSTEM_MUSIC_TRACKS.find((track) => matchesSystemMusicIdentity(track, value)) || null;
     }
 
     const identities = [value.id, value.systemKey, value.displayName, value.originalName]
         .filter((identity): identity is string => Boolean(identity));
-    return SYSTEM_MUSIC_TRACKS.find((track) => identities.some((identity) =>
-        track.id === identity ||
-        track.systemKey === identity ||
-        normalizedSystemMusicIdentity(track.displayName) === normalizedSystemMusicIdentity(identity) ||
-        normalizedSystemMusicIdentity(track.originalName) === normalizedSystemMusicIdentity(identity)
-    )) || null;
+    return SYSTEM_MUSIC_TRACKS.find((track) =>
+        identities.some((identity) => matchesSystemMusicIdentity(track, identity))
+    ) || null;
 };
 
 export const isSystemMusicTrack = (track?: Partial<MusicTrack> | null): boolean =>
