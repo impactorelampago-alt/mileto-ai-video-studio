@@ -7,14 +7,14 @@ import type { CaptionStyle } from '../types';
 type Preset = { id: string; name: string; s: Partial<CaptionStyle> };
 
 const PRESETS: Preset[] = [
-    { id: 'yellow-impact', name: 'Amarelo Impacto', s: { activeColor: '#FFFF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Anton', fontSize: 42 } },
-    { id: 'flix', name: 'Estilo Flix', s: { activeColor: '#E50914', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Bebas Neue', fontSize: 46 } },
-    { id: 'cyan-clean', name: 'Cyan Clean', s: { activeColor: '#00D1FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 3, fontFamily: 'Inter', fontSize: 38 } },
-    { id: 'cinematic-gold', name: 'Cinematic Gold', s: { activeColor: '#FFD700', baseColor: '#F5F5F5', strokeColor: '#1A1A1A', strokeWidth: 6, fontFamily: 'Playfair Display', fontSize: 50 } },
-    { id: 'cyberpunk', name: 'Cyberpunk', s: { activeColor: '#FF00FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Impact', fontSize: 44 } },
-    { id: 'hacker-matrix', name: 'Hacker Matrix', s: { activeColor: '#00E676', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 4, fontFamily: 'Montserrat', fontSize: 20, verticalPosition: 23 } },
-    { id: 'minimal', name: 'Minimalista', s: { activeColor: '#FFFFFF', baseColor: '#A0A0A0', strokeColor: '#000000', strokeWidth: 2, fontFamily: 'Roboto', fontSize: 32 } },
-    { id: 'youtuber-kids', name: 'Youtuber Kids', s: { activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 5, fontFamily: 'Comic Sans MS', fontSize: 40 } },
+    { id: 'yellow-impact', name: 'Amarelo Impacto', s: { activeColor: '#FFFF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Anton', fontSize: 42, textCase: 'uppercase' } },
+    { id: 'flix', name: 'Estilo Flix', s: { activeColor: '#E50914', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Bebas Neue', fontSize: 46, textCase: 'uppercase' } },
+    { id: 'cyan-clean', name: 'Cyan Clean', s: { activeColor: '#00D1FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Inter', fontSize: 38, textCase: 'uppercase' } },
+    { id: 'cinematic-gold', name: 'Cinematic Gold', s: { activeColor: '#FFD700', baseColor: '#F5F5F5', strokeColor: '#1A1A1A', strokeWidth: 1, fontFamily: 'Playfair Display', fontSize: 50, textCase: 'uppercase' } },
+    { id: 'cyberpunk', name: 'Cyberpunk', s: { activeColor: '#FF00FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Impact', fontSize: 44, textCase: 'uppercase' } },
+    { id: 'hacker-matrix', name: 'Hacker Matrix', s: { activeColor: '#00E676', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Montserrat', fontSize: 20, verticalPosition: 23, textCase: 'uppercase' } },
+    { id: 'minimal', name: 'Minimalista', s: { activeColor: '#FFFFFF', baseColor: '#A0A0A0', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Roboto', fontSize: 32, textCase: 'uppercase' } },
+    { id: 'youtuber-kids', name: 'Youtuber Kids', s: { activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Comic Sans MS', fontSize: 40, textCase: 'uppercase' } },
 ];
 
 const FONTS = ['Poppins', 'Roboto', 'Inter', 'Impact', 'Montserrat', 'Anton', 'Bebas Neue', 'Playfair Display', 'Comic Sans MS'];
@@ -246,7 +246,10 @@ export const CaptionStudio: React.FC = () => {
                                     )}
                                 >
                                     <span
-                                        className="text-xl font-black uppercase leading-none"
+                                        className={cn(
+                                            'text-xl font-black leading-none',
+                                            (p.s.textCase ?? 'uppercase') === 'lowercase' ? 'lowercase' : 'uppercase'
+                                        )}
                                         style={{
                                             fontFamily: p.s.fontFamily,
                                             color: p.s.baseColor,
@@ -275,6 +278,36 @@ export const CaptionStudio: React.FC = () => {
                         value={captionStyle.fontFamily || 'Montserrat'}
                         onChange={(fontFamily) => updateStyle({ fontFamily })}
                     />
+                </div>
+
+                <div className="space-y-1.5">
+                    <label className="text-[11px] font-semibold uppercase tracking-wider text-brand-muted">Caixa do texto</label>
+                    <div className="grid grid-cols-2 gap-1 rounded-xl border border-black/10 bg-black/[0.03] p-1 dark:border-white/8 dark:bg-black/25">
+                        <button
+                            type="button"
+                            onClick={() => updateStyle({ textCase: 'uppercase' })}
+                            className={cn(
+                                'rounded-lg px-3 py-2 text-[10px] font-bold transition',
+                                (captionStyle.textCase ?? 'uppercase') === 'uppercase'
+                                    ? 'bg-brand-accent text-[#07110d] shadow-sm'
+                                    : 'text-brand-muted hover:bg-black/5 hover:text-foreground dark:hover:bg-white/5'
+                            )}
+                        >
+                            MAIÚSCULAS
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => updateStyle({ textCase: 'lowercase' })}
+                            className={cn(
+                                'rounded-lg px-3 py-2 text-[10px] font-bold transition',
+                                captionStyle.textCase === 'lowercase'
+                                    ? 'bg-brand-accent text-[#07110d] shadow-sm'
+                                    : 'text-brand-muted hover:bg-black/5 hover:text-foreground dark:hover:bg-white/5'
+                            )}
+                        >
+                            minúsculas
+                        </button>
+                    </div>
                 </div>
 
                 {/* Ajustes */}

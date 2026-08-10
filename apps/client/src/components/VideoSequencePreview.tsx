@@ -155,7 +155,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             () =>
                 captions?.enabled !== false && captions?.segments?.length
                     ? captionSafeTopPercent(
-                          captionStyle || { fontSize: 20, strokeWidth: 4, verticalPosition: 23 },
+                          captionStyle || { fontSize: 20, strokeWidth: 1, verticalPosition: 23 },
                           adData.format
                       )
                     : undefined,
@@ -2032,15 +2032,16 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
                                         const renderedCaption = (
                                             <div
-                                                className="font-black text-center uppercase tracking-wide leading-[1.2] flex flex-wrap justify-center drop-shadow-2xl px-4"
+                                                className="font-black text-center tracking-wide leading-[1.2] flex flex-wrap justify-center drop-shadow-2xl px-4"
                                                 style={{
                                                     fontFamily: captionStyle?.fontFamily || 'Montserrat',
                                                     fontSize: captionStyle?.fontSize
                                                         ? `${captionStyle.fontSize}px`
                                                         : '20px',
-                                                    WebkitTextStroke: `${captionStyle?.strokeWidth ?? 4}px ${captionStyle?.strokeColor || 'black'}`,
+                                                    WebkitTextStroke: `${captionStyle?.strokeWidth ?? 1}px ${captionStyle?.strokeColor || 'black'}`,
                                                     paintOrder: 'stroke fill',
                                                     textShadow: '0px 6px 12px rgba(0,0,0,0.8)',
+                                                    textTransform: captionStyle?.textCase === 'lowercase' ? 'lowercase' : 'uppercase',
                                                 }}
                                             >
                                                 {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}

@@ -1362,7 +1362,7 @@ export const AiTitleGeneratorTest = () => {
                                             style={{
                                                 fontFamily: 'Montserrat',
                                                 fontSize: '20px',
-                                                WebkitTextStroke: '4px #000000',
+                                                WebkitTextStroke: '1px #000000',
                                                 paintOrder: 'stroke fill',
                                                 textShadow: '0 6px 12px rgba(0,0,0,.8)',
                                             }}
@@ -1384,7 +1384,7 @@ export const AiTitleGeneratorTest = () => {
                                         captionSafeTopPct={
                                             showPreviewCaption
                                                 ? captionSafeTopPercent(
-                                                      { fontSize: 20, strokeWidth: 4, verticalPosition: 23 },
+                                                      { fontSize: 20, strokeWidth: 1, verticalPosition: 23 },
                                                       format
                                                   )
                                                 : undefined

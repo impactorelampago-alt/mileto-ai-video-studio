@@ -188,11 +188,12 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
     previewClass: '',
     fontFamily: 'Montserrat',
     fontSize: 20,
-    strokeWidth: 4,
+    strokeWidth: 1,
     activeColor: '#00E676',
     baseColor: '#FFFFFF',
     strokeColor: '#000000',
     verticalPosition: 23,
+    textCase: 'uppercase',
 };
 
 const mergeAdData = (data?: Partial<AdData>): AdData => ({

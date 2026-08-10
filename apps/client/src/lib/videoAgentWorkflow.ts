@@ -433,11 +433,12 @@ const DEFAULT_AUTOMATED_CAPTION_STYLE: CaptionStyle = {
     previewClass: '',
     fontFamily: 'Anton',
     fontSize: 20,
-    strokeWidth: 4,
+    strokeWidth: 1,
     activeColor: '#00e676',
     baseColor: '#ffffff',
     strokeColor: '#000000',
     verticalPosition: 23,
+    textCase: 'uppercase',
 };
 
 export const loadAutomatedProject = async (projectId: string): Promise<AutomatedProjectSnapshot | null> => {

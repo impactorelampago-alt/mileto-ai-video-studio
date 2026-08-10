@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
     Bell,
     BrainCircuit,
+    Building2,
     CheckCircle2,
     ChevronDown,
     Download,
@@ -20,6 +21,8 @@ import {
     User,
     Wallet,
     WandSparkles,
+    Wifi,
+    WifiOff,
     XCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -31,6 +34,13 @@ import { updater, UpdateStatus } from '../lib/updater';
 import { useWizard } from '../context/WizardContext';
 import { useAuth } from '../context/AuthContext';
 import { useDownloadJobs } from '../context/DownloadJobsContext';
+import {
+    getOpsExecutorActivity,
+    opsExecutorIsOnline,
+    opsExecutorIsWorking,
+    OPS_EXECUTOR_STAGE_LABELS,
+    subscribeOpsExecutorActivity,
+} from '../lib/opsExecutorActivity';
 
 /** Rótulo amigável do plano da organização. */
 const PLAN_LABEL: Record<string, string> = {
@@ -49,6 +59,11 @@ export const MainLayout = () => {
     const { saveProject } = useWizard();
     const { user, logout } = useAuth();
     const { activeCount, jobs, clearHistory } = useDownloadJobs();
+    const executorActivity = useSyncExternalStore(
+        subscribeOpsExecutorActivity,
+        getOpsExecutorActivity,
+        getOpsExecutorActivity
+    );
     const prevPathRef = useRef<string>(location.pathname);
     const downloadPanelRef = useRef<HTMLDivElement | null>(null);
 
@@ -176,6 +191,22 @@ export const MainLayout = () => {
         })
         .slice(0, 4);
     const finishedNotificationCount = jobs.filter((job) => job.phase !== 'downloading').length;
+    const executorOnline = opsExecutorIsOnline(executorActivity);
+    const executorWorking = opsExecutorIsWorking(executorActivity);
+    const totalActiveCount = activeCount + Number(executorWorking);
+    const executorStatusLabel = executorActivity.status === 'idle'
+        ? 'Disponível'
+        : executorActivity.status === 'paused'
+          ? 'Pausado'
+          : executorActivity.status === 'offline'
+            ? 'Offline'
+            : executorActivity.status === 'completed'
+              ? 'Concluído'
+              : executorActivity.status === 'failed'
+                ? 'Falhou'
+                : executorActivity.stage === 'export'
+                  ? 'Exportando'
+                  : 'Em produção';
 
     const clearNotificationHistory = async () => {
         try {
@@ -414,7 +445,20 @@ export const MainLayout = () => {
                         </span>
                     </button>
 
-                    <div ref={downloadPanelRef} className="relative">
+                    <div ref={downloadPanelRef} className="relative flex items-center gap-2">
+                        <span
+                            role="status"
+                            aria-label={executorOnline ? 'Executor local conectado' : 'Executor local offline'}
+                            title={executorOnline ? 'Executor local conectado' : 'Executor local offline'}
+                            className={cn(
+                                'grid h-8 w-8 place-items-center rounded-xl border transition-colors',
+                                executorOnline
+                                    ? 'border-brand-lime/20 bg-brand-lime/8 text-brand-lime'
+                                    : 'border-red-400/20 bg-red-400/8 text-red-400'
+                            )}
+                        >
+                            {executorOnline ? <Wifi className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
+                        </span>
                         <button
                             type="button"
                             onClick={() => setIsDownloadPanelOpen((open) => !open)}
@@ -429,9 +473,9 @@ export const MainLayout = () => {
                             )}
                         >
                             <Bell className="h-4.5 w-4.5" />
-                            {activeCount > 0 && (
+                            {totalActiveCount > 0 && (
                                 <span className="absolute -right-1.5 -top-1.5 flex min-w-5 h-5 items-center justify-center rounded-full border-2 border-background bg-brand-lime px-1 text-[9px] font-black text-[#0a0f12]">
-                                    {activeCount > 9 ? '9+' : activeCount}
+                                    {totalActiveCount > 9 ? '9+' : totalActiveCount}
                                 </span>
                             )}
                         </button>
@@ -442,8 +486,8 @@ export const MainLayout = () => {
                                     <div>
                                         <p className="text-sm font-black text-foreground">Atividades</p>
                                         <p className="mt-0.5 text-[10px] text-brand-muted">
-                                            {activeCount > 0
-                                                ? `${activeCount} ${activeCount === 1 ? 'atividade em andamento' : 'atividades em andamento'}`
+                                            {totalActiveCount > 0
+                                                ? `${totalActiveCount} ${totalActiveCount === 1 ? 'atividade em andamento' : 'atividades em andamento'}`
                                                 : 'Nenhuma atividade em andamento'}
                                         </p>
                                     </div>
@@ -458,19 +502,95 @@ export const MainLayout = () => {
                                                 <Trash2 className="h-3.5 w-3.5" />
                                             </button>
                                         )}
-                                        {activeCount > 0 && (
+                                        {totalActiveCount > 0 && (
                                             <span className="h-2 w-2 animate-pulse rounded-full bg-brand-lime" />
                                         )}
                                     </div>
                                 </div>
 
                                 <div className="max-h-80 overflow-y-auto">
+                                    <div className="border-b border-white/5 px-4 py-3">
+                                        <div className="flex gap-3">
+                                            <div
+                                                className={cn(
+                                                    'mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border',
+                                                    executorOnline
+                                                        ? 'border-brand-lime/20 bg-brand-lime/10 text-brand-lime'
+                                                        : 'border-red-400/20 bg-red-400/10 text-red-400'
+                                                )}
+                                            >
+                                                {executorOnline ? (
+                                                    <Wifi className="h-4 w-4" />
+                                                ) : (
+                                                    <WifiOff className="h-4 w-4" />
+                                                )}
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <p className="truncate text-xs font-black text-foreground">
+                                                        Executor local
+                                                    </p>
+                                                    <span
+                                                        className={cn(
+                                                            'shrink-0 rounded-full border px-2 py-0.5 text-[8px] font-black uppercase tracking-wider',
+                                                            executorOnline
+                                                                ? 'border-brand-lime/20 bg-brand-lime/10 text-brand-lime'
+                                                                : 'border-red-400/20 bg-red-400/10 text-red-400'
+                                                        )}
+                                                    >
+                                                        {executorStatusLabel}
+                                                    </span>
+                                                </div>
+                                                <p className="mt-1 truncate text-[11px] font-bold text-foreground/80">
+                                                    {executorActivity.projectTitle || 'Mileto Ops Video Maker'}
+                                                </p>
+                                                <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[9px] text-brand-muted">
+                                                    <Building2 className="h-3 w-3 shrink-0" />
+                                                    <span className="truncate">
+                                                        {executorActivity.companyName ||
+                                                            (executorOnline
+                                                                ? 'Aguardando trabalho do Mileto Ops'
+                                                                : 'Executor sem conexão')}
+                                                    </span>
+                                                </div>
+                                                <div className="mt-2 flex items-center justify-between gap-3 text-[9px] text-brand-muted">
+                                                    <span className="truncate">
+                                                        {executorActivity.jobId
+                                                            ? OPS_EXECUTOR_STAGE_LABELS[executorActivity.stage]
+                                                            : executorActivity.message}
+                                                    </span>
+                                                    {executorActivity.jobId && (
+                                                        <span className="shrink-0 font-black text-foreground/70">
+                                                            {Math.round(executorActivity.percent)}%
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                {executorActivity.jobId && (
+                                                    <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/5">
+                                                        <div
+                                                            className={cn(
+                                                                'h-full transition-all duration-500',
+                                                                executorActivity.status === 'failed'
+                                                                    ? 'bg-red-400'
+                                                                    : 'bg-linear-to-r from-brand-lime to-brand-accent'
+                                                            )}
+                                                            style={{
+                                                                width: `${Math.max(2, Math.min(100, executorActivity.percent))}%`,
+                                                            }}
+                                                        />
+                                                    </div>
+                                                )}
+                                                {executorActivity.errorCode && (
+                                                    <p className="mt-1.5 truncate text-[9px] text-red-300">
+                                                        {executorActivity.errorCode}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
                                     {notificationJobs.length === 0 ? (
-                                        <div className="flex flex-col items-center gap-2 px-5 py-8 text-center text-brand-muted">
-                                            <Bell className="h-7 w-7 opacity-40" />
-                                            <p className="text-xs">
-                                                Downloads, importações, gerações e exportações aparecerão aqui.
-                                            </p>
+                                        <div className="px-5 py-4 text-center text-brand-muted">
+                                            <p className="text-[10px]">Nenhuma outra atividade recente.</p>
                                         </div>
                                     ) : (
                                         <div className="divide-y divide-white/5">

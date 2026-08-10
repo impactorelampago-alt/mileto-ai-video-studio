@@ -36,6 +36,12 @@ test('detecta região após atenção e preço com prefixo a partir de', () => {
     ]);
 });
 
+test('prioriza cidade em frase de moradia e nunca confunde a empresa com região', () => {
+    const candidates = deterministicTitleCandidates('Se você mora em Rio das Ostras, na Ótica Olá, aproveite esta oferta.');
+    assert.ok(candidates.some((candidate) => candidate.kind === 'region' && candidate.text === 'Rio das Ostras'));
+    assert.ok(!candidates.some((candidate) => candidate.kind === 'region' && /Ótica Olá/iu.test(candidate.text)));
+});
+
 test('detecta CTA literal mesmo quando a chamada usa verbo no infinitivo', () => {
     const candidates = deterministicTitleCandidates('Conheça nossas condições e aproveitar essa oferta.');
     assert.deepEqual(candidates, [
@@ -181,6 +187,11 @@ test('separa evidencia literal de etiqueta visual curta por gatilho', () => {
 test('rejeita conectores sem fato e preço sem valor', () => {
     assert.equal(compactTitleDisplayText('A PARTIR DE', 'price', 3), null);
     assert.equal(compactTitleDisplayText('POR CONTA DE', 'benefit', 3), null);
+    assert.equal(compactTitleDisplayText('NA ÓTICA OLÁ', 'region', 3), null);
+    assert.deepEqual(compactTitleDisplayText('RIO DAS OSTRAS', 'region', 3), {
+        sourceText: 'RIO DAS OSTRAS',
+        text: 'RIO DAS OSTRAS',
+    });
 });
 
 test('transforma frases comerciais em rótulos nominais literais', () => {

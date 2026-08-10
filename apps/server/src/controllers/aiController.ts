@@ -503,6 +503,7 @@ Você receberá o roteiro e as legendas com o tempo de cada palavra. Não existe
 Critérios de escolha, em ordem de prioridade:
 1. Gancho inicial, benefício concreto, preço/oferta, prova, quebra de padrão, urgência legítima e chamada para ação real.
 2. Se o roteiro mencionar claramente uma cidade, bairro, região ou endereço, crie exatamente um título de conexão local usando esse nome, no instante em que ele for dito. Nunca invente localização e não repita a região em outros títulos.
+   Exemplo obrigatório: em "Se você mora em Rio das Ostras, na Ótica Olá", o título local é "RIO DAS OSTRAS". "Ótica Olá" é a empresa e nunca deve ser classificada como localização.
 3. Se houver uma CTA explícita (por exemplo: clique no botão, chame no WhatsApp, agende, compre, garanta, acesse, reserve ou venha), inclua no máximo um item com "kind": "cta" no momento dessa CTA. Quando houver mais de uma possibilidade, priorize a ação direta que informa o que o espectador deve fazer, como "clique no botão", em vez de uma frase genérica sobre a oferta. Use exatamente as palavras pronunciadas; nunca invente uma CTA que não exista no áudio.
 
 Regras obrigatórias:

@@ -326,6 +326,33 @@ const isConnectorOnlyTitle = (value: string) => {
     ]).has(normalized);
 };
 
+const REGION_BUSINESS_LEADS = new Set([
+    'otica', 'loja', 'empresa', 'clinica', 'consultorio', 'agencia',
+    'restaurante', 'mercado', 'academia', 'studio', 'estudio', 'salao',
+    'hospital', 'farmacia',
+]);
+
+const normalizeRegionDisplayText = (value: unknown) => {
+    const text = normalizeDisplayPhrase(value)
+        .replace(/^(?:aten[cç][aã]o|al[oô])\s*[,!:\-]?\s*/iu, '')
+        .replace(/^(?:(?:se\s+)?voc[eê]\s+mora|mora|atendemos|estamos|ficamos)\s+(?:aqui\s+)?(?:em|na|no)\s+/iu, '')
+        .replace(/^(?:na\s+cidade|no\s+bairro|na\s+regi[aã]o)\s+de\s+/iu, '')
+        .replace(/^(?:em|na|no)\s+/iu, '')
+        .trim();
+
+    if (!text) return null;
+
+    const firstWord = normalizeTriggerKey(text.split(/\s+/)[0]);
+    if (REGION_BUSINESS_LEADS.has(firstWord)) return null;
+
+    const normalized = normalizeTriggerKey(text);
+    if ([...REGION_BUSINESS_LEADS].some((lead) => normalized === lead || normalized.startsWith(`${lead}-`))) {
+        return null;
+    }
+
+    return text;
+};
+
 /**
  * Separa o trecho falado da etiqueta visual. A evidencia continua literal,
  * enquanto o texto desenhado vira o nucleo semantico curto de cada gatilho.
@@ -352,7 +379,9 @@ export const compactTitleDisplayText = (
         }
         if (currency) text = formatPriceText(currency);
     } else if (trigger === 'region') {
-        text = text.replace(/^(?:aten[cç][aã]o|al[oô])\s*[,!:\-]?\s*/iu, '').trim();
+        const regionText = normalizeRegionDisplayText(text);
+        if (!regionText) return null;
+        text = regionText;
     } else if (trigger === 'scarcity') {
         text = text.replace(/^(?:somente|s[oó])\s+(?=at[eé](?:\s|$))/iu, '').trim();
     } else if (['benefit', 'product', 'differentiator', 'audience'].includes(trigger)) {
@@ -414,14 +443,32 @@ export const deterministicTitleCandidates = (script: string) => {
     const prices = clean.match(/(?:a\s+partir\s+de\s+|por\s+|apenas\s+|s[oó]\s+)?R\$\s*\d+(?:\.\d{3})*(?:,\d{1,2})?/giu) || [];
     for (const price of prices) candidates.push({ text: price.trim(), kind: 'price' });
 
-    const locationCue = clean.match(/\b(?:aten[cç][aã]o|al[oô])\s*[,!:-]?\s*([^,.!?;\n]{2,60})/iu)?.[1]?.trim();
-    if (locationCue) {
-        const words = locationCue.split(/\s+/).slice(0, 4);
-        // Uma frase comercial logo após o chamado não deve virar região por engano.
-        const commercialWords = new Set(['so', 'somente', 'compre', 'aproveite', 'garanta', 'clique', 'chame']);
-        if (words.length && !commercialWords.has(normalizeTriggerKey(words[0]))) {
-            candidates.push({ text: words.join(' '), kind: 'region' });
+    const locationCues: string[] = [];
+    const explicitLocationPatterns = [
+        /\b(?:(?:se\s+)?voc[eê]\s+mora|mora|atendemos|estamos|ficamos)\s+(?:aqui\s+)?(?:em|na|no)\s+([^,.!?;\n]{2,60})/giu,
+        /\b(?:cidade|bairro|regi[aã]o)\s+(?:de|do|da)\s+([^,.!?;\n]{2,60})/giu,
+    ];
+    for (const pattern of explicitLocationPatterns) {
+        for (const match of clean.matchAll(pattern)) {
+            if (match[1]) locationCues.push(match[1].trim());
         }
+    }
+
+    const attentionLocation = clean.match(/\b(?:aten[cç][aã]o|al[oô])\s*[,!:-]?\s*([^,.!?;\n]{2,60})/iu)?.[1]?.trim();
+    if (attentionLocation) locationCues.push(attentionLocation);
+
+    const commercialWords = new Set(['so', 'somente', 'compre', 'aproveite', 'garanta', 'clique', 'chame']);
+    const seenRegions = new Set<string>();
+    for (const locationCue of locationCues) {
+        const normalizedCue = normalizeRegionDisplayText(locationCue);
+        if (!normalizedCue) continue;
+        const words = normalizedCue.split(/\s+/).slice(0, 5);
+        if (!words.length || commercialWords.has(normalizeTriggerKey(words[0]))) continue;
+        const region = words.join(' ');
+        const key = normalizeTriggerKey(region);
+        if (!key || seenRegions.has(key)) continue;
+        seenRegions.add(key);
+        candidates.push({ text: region, kind: 'region' });
     }
 
     // A IA tende a reconhecer bem ordens diretas como “clique”, mas pode deixar

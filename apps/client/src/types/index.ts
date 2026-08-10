@@ -374,6 +374,7 @@ export interface CaptionStyle {
     baseColor: string;
     strokeColor: string;
     verticalPosition?: number; // Distance from bottom (percentage 0-100)
+    textCase?: 'uppercase' | 'lowercase';
 }
 
 export interface MusicTrack {

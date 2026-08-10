@@ -250,12 +250,13 @@ export const Step3 = () => {
                                 <button className="group relative flex h-24 w-full items-center justify-center overflow-hidden rounded-xl border-2 border-brand-accent bg-background shadow-[0_0_20px_rgba(0,230,118,0.15)] transition-all hover:bg-black/5 dark:bg-white/5">
                                     {/* Subtitle Visual Preview */}
                                     <div
-                                        className="flex scale-110 items-center justify-center text-3xl font-black uppercase tracking-wide drop-shadow-xl"
+                                        className="flex scale-110 items-center justify-center text-3xl font-black tracking-wide drop-shadow-xl"
                                         style={{
                                             fontFamily: captionStyle?.fontFamily || 'Poppins',
-                                            WebkitTextStroke: `${captionStyle?.strokeWidth || 3}px ${captionStyle?.strokeColor || 'black'}`,
+                                            WebkitTextStroke: `${captionStyle?.strokeWidth ?? 1}px ${captionStyle?.strokeColor || 'black'}`,
                                             paintOrder: 'stroke fill',
                                             textShadow: '0px 8px 16px rgba(0,0,0,0.8)',
+                                            textTransform: captionStyle?.textCase === 'lowercase' ? 'lowercase' : 'uppercase',
                                         }}
                                     >
                                         <span style={{ color: captionStyle?.baseColor || '#FFFFFF' }}>A</span>

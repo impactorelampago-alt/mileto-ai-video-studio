@@ -17,7 +17,7 @@ export const captionSafeTopPercent = (
 
     const designHeight = format === '1:1' ? 360 : 640;
     const fontSize = clamp(style.fontSize ?? 20, 8, 80);
-    const strokeWidth = clamp(style.strokeWidth ?? 4, 0, 12);
+    const strokeWidth = clamp(style.strokeWidth ?? 1, 0, 12);
     const bottom = clamp(style.verticalPosition ?? 23, 0, 90);
     const twoLineHeightPx = fontSize * 2.4;
     const strokeOverflowPx = strokeWidth * 2;

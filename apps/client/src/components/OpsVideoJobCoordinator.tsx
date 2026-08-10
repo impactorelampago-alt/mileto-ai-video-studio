@@ -1,16 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-    AlertTriangle,
-    Building2,
-    CheckCircle2,
-    Film,
-    LoaderCircle,
-    MonitorUp,
-    PauseCircle,
-    Wifi,
-    WifiOff,
-    X,
-} from 'lucide-react';
 import { toast } from 'sonner';
 import { useExportJobs } from '../context/ExportJobsContext';
 import { createDefaultAdData, DEFAULT_CAPTION_STYLE } from '../context/WizardContext';
@@ -54,6 +42,11 @@ import {
 } from '../lib/videoAgentWorkflow';
 import { selectOpsTakesForNarration } from '../lib/opsTakeSelection';
 import { API_BASE_URL } from '../lib/apiBase';
+import {
+    IDLE_OPS_EXECUTOR_ACTIVITY,
+    publishOpsExecutorActivity,
+    type OpsExecutorActivity,
+} from '../lib/opsExecutorActivity';
 import type { AdData, MediaTake } from '../types';
 
 const POLL_INTERVAL_MS = 12_000;
@@ -62,20 +55,7 @@ const EXPORT_TIMEOUT_MS = 60 * 60 * 1_000;
 
 type QueuedJob = { job: OpsVideoJob; context: OpsViewContext; resume?: PersistedOpsVideoWorkerJob | null };
 type OpsExportEvent = { projectId?: string; assetId?: string; message?: string };
-type JobDisplayStatus = 'idle' | 'queued' | 'claimed' | 'running' | 'paused' | 'completed' | 'failed' | 'offline';
-type JobDisplayState = {
-    jobId?: string;
-    companyName?: string;
-    projectTitle?: string;
-    stage: OpsVideoJobStage;
-    status: JobDisplayStatus;
-    percent: number;
-    message: string;
-    assetId?: string;
-    errorCode?: string;
-    mode: OpsVideoWorkerExecutionMode;
-    heartbeat: 'pending' | 'online' | 'unsupported' | 'offline';
-};
+type JobDisplayState = OpsExecutorActivity;
 
 type ElectronIpc = {
     invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -91,26 +71,7 @@ type PreparedJob = {
     musicId: string | null;
 };
 
-const IDLE_DISPLAY: JobDisplayState = {
-    stage: 'queued',
-    status: 'idle',
-    percent: 0,
-    message: 'Executor pronto para receber trabalhos do Mileto Ops.',
-    mode: 'foreground',
-    heartbeat: 'pending',
-};
-
-const STAGE_LABELS: Record<OpsVideoJobStage, string> = {
-    queued: 'Na fila',
-    narration: 'Narracao',
-    takes: 'Takes',
-    quick_edit: 'Edicao rapida',
-    captions: 'Legendas',
-    titles: 'Titulos',
-    export: 'Exportacao',
-    completed: 'Concluido',
-    failed: 'Falha',
-};
+const IDLE_DISPLAY = IDLE_OPS_EXECUTOR_ACTIVITY;
 
 const electronIpc = (): ElectronIpc | null => {
     try {
@@ -347,6 +308,10 @@ export const OpsVideoJobCoordinator = () => {
     });
 
     useEffect(() => { exportingRef.current = isExporting; }, [isExporting]);
+
+    useEffect(() => {
+        publishOpsExecutorActivity(display);
+    }, [display]);
 
     const setMode = useCallback((mode: OpsVideoWorkerExecutionMode) => {
         modeRef.current = mode;
@@ -785,93 +750,5 @@ export const OpsVideoJobCoordinator = () => {
         return () => window.clearInterval(timer);
     }, [poll]);
 
-    const failed = display.status === 'failed';
-    const completed = display.status === 'completed';
-    const paused = display.status === 'paused';
-    const offline = display.status === 'offline';
-    const working = display.status === 'queued' || display.status === 'claimed' || display.status === 'running';
-    const Icon = failed ? AlertTriangle : completed ? CheckCircle2 : paused ? PauseCircle : offline ? WifiOff : working ? LoaderCircle : MonitorUp;
-    const statusLabel = display.status === 'idle'
-        ? 'Disponivel'
-        : paused
-          ? 'Pausado'
-          : offline
-            ? 'Offline'
-            : completed
-              ? 'Concluido'
-              : failed
-                ? 'Falhou'
-                : display.stage === 'export'
-                  ? 'Exportando'
-                  : 'Em producao';
-    const presenceLabel = display.heartbeat === 'unsupported'
-        ? 'Presenca aguardando Ops'
-        : display.heartbeat === 'online'
-          ? 'Online'
-          : display.heartbeat === 'offline'
-            ? 'Sem conexao'
-            : 'Conectando';
-
-    return (
-        <aside
-            aria-live="polite"
-            className={`fixed bottom-20 right-5 z-[9998] w-[min(390px,calc(100vw-2.5rem))] overflow-hidden rounded-2xl border bg-[#0b1212]/95 shadow-2xl backdrop-blur-xl ${
-                failed || offline ? 'border-red-400/30' : paused ? 'border-amber-400/30' : 'border-emerald-400/20'
-            }`}
-        >
-            <div className="flex items-start gap-3 px-4 pb-3 pt-4">
-                <span className={`mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-xl ${
-                    failed || offline ? 'bg-red-400/10 text-red-300' : paused ? 'bg-amber-400/10 text-amber-300' : 'bg-emerald-400/10 text-emerald-300'
-                }`}>
-                    <Icon className={`h-5 w-5 ${working ? 'animate-spin' : ''}`} />
-                </span>
-                <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <Film className="h-3.5 w-3.5 text-emerald-400" />
-                        <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-400">
-                            Executor local · {statusLabel}
-                        </p>
-                        <span className="flex items-center gap-1 text-[9px] font-bold uppercase text-white/45">
-                            {display.heartbeat === 'online' ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
-                            {presenceLabel}
-                        </span>
-                    </div>
-                    <h3 className="mt-1 truncate text-sm font-black text-white">
-                        {display.projectTitle || 'Mileto Ops Video Maker'}
-                    </h3>
-                    <p className="mt-1 flex items-center gap-1.5 truncate text-[11px] text-white/55">
-                        <Building2 className="h-3 w-3 shrink-0" />
-                        {display.companyName || `Aguardando trabalho · ${display.mode === 'background' ? 'Segundo plano' : 'Primeiro plano'}`}
-                    </p>
-                </div>
-                {(completed || failed) && (
-                    <button
-                        type="button"
-                        aria-label="Fechar andamento do agente"
-                        onClick={() => setDisplay((current) => ({ ...IDLE_DISPLAY, mode: current.mode, heartbeat: current.heartbeat }))}
-                        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-white/45 transition hover:bg-white/5 hover:text-white"
-                    >
-                        <X className="h-4 w-4" />
-                    </button>
-                )}
-            </div>
-            <div className="px-4 pb-4">
-                <div className="mb-2 flex items-center justify-between gap-3 text-[10px] font-bold uppercase tracking-wider text-white/45">
-                    <span className="line-clamp-2">{display.message}</span>
-                    <span className={failed || offline ? 'text-red-300' : paused ? 'text-amber-300' : 'text-emerald-300'}>
-                        {display.jobId ? `${STAGE_LABELS[display.stage]} · ${display.percent}%` : OPS_VIDEO_WORKER_APP_VERSION}
-                    </span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-white/8">
-                    <div
-                        className={`h-full rounded-full transition-[width] duration-500 ${failed || offline ? 'bg-red-400' : paused ? 'bg-amber-400' : 'bg-emerald-400'}`}
-                        style={{ width: `${display.jobId ? Math.max(1, Math.min(100, display.percent)) : 100}%` }}
-                    />
-                </div>
-                {display.jobId && <p className="mt-2 truncate font-mono text-[10px] text-white/40">Job: {display.jobId}</p>}
-                {display.errorCode && <p className="mt-1 font-mono text-[10px] text-red-300/80">{display.errorCode}</p>}
-                {display.assetId && <p className="mt-1 truncate font-mono text-[10px] text-white/45">Asset Ops: {display.assetId}</p>}
-            </div>
-        </aside>
-    );
+    return null;
 };

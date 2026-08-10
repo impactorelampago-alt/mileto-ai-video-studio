@@ -6,6 +6,8 @@ const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf
 const integration = read('../src/opsIntegration.js');
 const server = read('../src/server.js');
 const coordinator = read('../../client/src/components/OpsVideoJobCoordinator.tsx');
+const executorActivity = read('../../client/src/lib/opsExecutorActivity.ts');
+const mainLayout = read('../../client/src/layouts/MainLayout.tsx');
 const workerState = read('../../client/src/lib/opsVideoWorkerState.ts');
 const gatewayClient = read('../../client/src/lib/gateway.ts');
 const takeSelection = read('../../client/src/lib/opsTakeSelection.ts');
@@ -46,9 +48,9 @@ test('fila, leitura, presença, claim e PATCH preservam delegação, assets.writ
     }
 });
 
-test('heartbeat usa versão 1.4.24, campo oficial mode e job atual', () => {
+test('heartbeat usa versão 1.4.25, campo oficial mode e job atual', () => {
     const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
-    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.24'/);
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.25'/);
     assert.match(coordinator, /mode: modeRef\.current/);
     assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
     assert.match(coordinator, /resolvePersistedJob\(persisted\)/);
@@ -201,9 +203,13 @@ test('cliente Electron de desenvolvimento e instalado compartilham o mesmo worke
     assert.equal((coordinator.match(/export const OpsVideoJobCoordinator/g) || []).length, 1);
 });
 
-test('interface expõe presença, modo, job, empresa, etapa, percentual, erro e asset', () => {
-    for (const marker of ['presenceLabel', 'display.mode', 'display.jobId', 'display.companyName', 'STAGE_LABELS[display.stage]', 'display.percent', 'display.errorCode', 'display.assetId']) {
-        assert.match(coordinator, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+test('interface publica presença, modo, job, empresa, etapa, percentual, erro e asset no indicador global', () => {
+    assert.match(coordinator, /publishOpsExecutorActivity\(display\)/);
+    for (const marker of ['mode', 'jobId', 'companyName', 'stage', 'percent', 'errorCode', 'assetId']) {
+        assert.match(executorActivity, new RegExp(`\\b${marker}\\b`));
+    }
+    for (const marker of ['Wifi', 'WifiOff', 'executorActivity.companyName', 'OPS_EXECUTOR_STAGE_LABELS[executorActivity.stage]', 'executorActivity.percent', 'executorActivity.errorCode']) {
+        assert.match(mainLayout, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
 });
 
