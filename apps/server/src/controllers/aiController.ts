@@ -6,6 +6,7 @@ import path from 'path';
 import { randomUUID as uuidv4 } from 'crypto';
 import { bearerFrom, gatewayChat, gatewayJson, GatewayHttpError } from '../services/gatewayClient';
 import {
+    DEFAULT_TITLE_GENERATOR_CONFIG,
     loadEffectiveTitleGeneratorConfig,
     type TitleGeneratorConfig,
     type VideoFormat,
@@ -24,6 +25,13 @@ import {
     triggerMapWithAliases,
     type BrandPaletteInput,
 } from '../services/titleGenerationRules';
+import {
+    AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
+    isTransientTitleGenerationError,
+    logTitleGenerationDiagnostic,
+    runResilientTitleGeneration,
+    titleGenerationDiagnostic,
+} from '../services/titleGenerationResilience';
 import { storeAiGeneratedMedia } from './fileExplorerController';
 
 const titleExtractionPrompt = (config: TitleGeneratorConfig) => {
@@ -451,19 +459,40 @@ export const generateTitles = async (req: Request, res: Response) => {
         brandPalette = null,
         companyId = null,
         opsViewContextId = null,
+        mode = 'ai',
     } = req.body;
     const token = bearerFrom(req);
+    const requestId = String(req.headers['x-request-id'] || uuidv4()).slice(0, 80);
+    let phase = 'validation';
 
     if (!script || !captions || !captions.segments) {
-        return res.status(400).json({ ok: false, message: 'Missing script or captions data' });
+        return res.status(400).json({
+            ok: false,
+            code: 'title_input_invalid',
+            message: 'A narração e as legendas temporizadas são obrigatórias.',
+            phase,
+            retryable: false,
+            requestId,
+        });
     }
     if (!token) {
-        return res.status(401).json({ ok: false, message: 'Sessão expirada. Entre novamente para gerar títulos.' });
+        return res.status(401).json({
+            ok: false,
+            code: 'title_auth_expired',
+            message: 'Sessão expirada. Entre novamente para gerar títulos.',
+            phase,
+            retryable: false,
+            requestId,
+        });
     }
 
     // Extract all words with their start times for the AI to reference
     const wordTimings = captions.segments
-        .flatMap((seg: any) => (seg.words || []).map((w: any) => `[${w.start.toFixed(2)}s] ${w.text}`))
+        .flatMap((seg: any) => (seg.words || []).flatMap((w: any) => {
+            const start = Number(w.start);
+            const text = String(w.text || '').trim();
+            return Number.isFinite(start) && text ? [`[${start.toFixed(2)}s] ${text}`] : [];
+        }))
         .join(' ');
 
     const fallbackSystemPrompt = `Você é diretor criativo especializado em títulos de retenção para vídeos curtos (Reels, TikTok e anúncios).
@@ -492,55 +521,95 @@ Responda exclusivamente em JSON válido, nesta estrutura:
 }`;
 
     try {
+        phase = 'company_palette';
         let effectiveBrandPalette: BrandPaletteInput = brandPalette;
         if (companyId) {
             const contextHeaders: Record<string, string> = opsViewContextId
                 ? { 'X-Ops-View-Context': String(opsViewContextId) }
                 : {};
             try {
-                const companyResponse = await gatewayJson<{ data?: { palette?: BrandPaletteInput } }>(
-                    token,
-                    `/v1/integrations/mileto-ops/companies/${encodeURIComponent(String(companyId))}`,
-                    { headers: contextHeaders }
-                );
-                effectiveBrandPalette = companyResponse.data?.palette || null;
+                try {
+                    const companyResponse = await gatewayJson<{ data?: { palette?: BrandPaletteInput } }>(
+                        token,
+                        `/v1/integrations/mileto-ops/companies/${encodeURIComponent(String(companyId))}`,
+                        { headers: contextHeaders }
+                    );
+                    effectiveBrandPalette = companyResponse.data?.palette || null;
+                } catch (error) {
+                    if (!(error instanceof GatewayHttpError) || error.status !== 404) throw error;
+                    // Compatibilidade com o gateway de produção anterior à rota de
+                    // detalhe: refazemos a validação no servidor pela listagem delegada
+                    // e pelo mesmo X-Ops-View-Context; não confiamos na paleta do body.
+                    let cursor: string | null = null;
+                    let delegatedCompany: { id?: string; kind?: string; palette?: BrandPaletteInput } | null = null;
+                    for (let page = 0; page < 100 && !delegatedCompany; page += 1) {
+                        const query = new URLSearchParams({ limit: '100' });
+                        if (cursor) query.set('cursor', cursor);
+                        const listing = await gatewayJson<{
+                            data?: { id?: string; kind?: string; palette?: BrandPaletteInput }[];
+                            meta?: { nextCursor?: string | null };
+                        }>(token, `/v1/integrations/mileto-ops/companies?${query}`, { headers: contextHeaders });
+                        delegatedCompany = (listing.data || []).find((company) =>
+                            String(company.id || '') === String(companyId) && company.kind !== 'archive'
+                        ) || null;
+                        cursor = listing.meta?.nextCursor || null;
+                        if (!cursor) break;
+                    }
+                    if (!delegatedCompany) {
+                        throw new GatewayHttpError(404, 'A empresa não pertence ao contexto delegado do Mileto Ops.');
+                    }
+                    effectiveBrandPalette = delegatedCompany.palette || null;
+                }
             } catch (error) {
-                if (!(error instanceof GatewayHttpError) || error.status !== 404) throw error;
-                // Compatibilidade com o gateway de produção anterior à rota de
-                // detalhe: refazemos a validação no servidor pela listagem delegada
-                // e pelo mesmo X-Ops-View-Context; não confiamos na paleta do body.
-                let cursor: string | null = null;
-                let delegatedCompany: { id?: string; kind?: string; palette?: BrandPaletteInput } | null = null;
-                for (let page = 0; page < 100 && !delegatedCompany; page += 1) {
-                    const query = new URLSearchParams({ limit: '100' });
-                    if (cursor) query.set('cursor', cursor);
-                    const listing = await gatewayJson<{
-                        data?: { id?: string; kind?: string; palette?: BrandPaletteInput }[];
-                        meta?: { nextCursor?: string | null };
-                    }>(token, `/v1/integrations/mileto-ops/companies?${query}`, { headers: contextHeaders });
-                    delegatedCompany = (listing.data || []).find((company) =>
-                        String(company.id || '') === String(companyId) && company.kind !== 'archive'
-                    ) || null;
-                    cursor = listing.meta?.nextCursor || null;
-                    if (!cursor) break;
-                }
-                if (!delegatedCompany) {
-                    throw new GatewayHttpError(404, 'A empresa não pertence ao contexto delegado do Mileto Ops.');
-                }
-                effectiveBrandPalette = delegatedCompany.palette || null;
+                if (!isTransientTitleGenerationError(error)) throw error;
+                const diagnostic = titleGenerationDiagnostic(error, phase, requestId);
+                logTitleGenerationDiagnostic('company_palette_fallback', diagnostic);
+                // A paleta do body não é confiável quando existe uma empresa do Ops.
+                // Na indisponibilidade transitória usamos apenas o fallback visual seguro.
+                effectiveBrandPalette = null;
             }
         }
-        const titleSettings = await loadEffectiveTitleGeneratorConfig(token);
+        phase = 'configuration';
+        let titleSettings: Awaited<ReturnType<typeof loadEffectiveTitleGeneratorConfig>>;
+        try {
+            titleSettings = await loadEffectiveTitleGeneratorConfig(token);
+        } catch (error) {
+            const diagnostic = titleGenerationDiagnostic(error, phase, requestId);
+            logTitleGenerationDiagnostic('configuration_fallback', diagnostic);
+            titleSettings = {
+                config: structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG),
+                source: 'compatibility-default',
+            };
+        }
         const titleConfig = titleSettings.config;
+        const spokenWords = captions.segments.flatMap((segment: any) =>
+            (segment.words || []).map((word: any) => ({
+                text: String(word.text || '').trim(),
+                start: Number(word.start),
+            }))
+        ).filter((word: { text: string; start: number }) => word.text && Number.isFinite(word.start));
+        const enabledTriggers = titleConfig.triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length);
+        const configuredLiteralCandidates = enabledTriggers.flatMap((trigger) =>
+            [...trigger.examples, trigger.sample]
+                .filter(Boolean)
+                .map((candidate) => ({ text: candidate, kind: trigger.id }))
+        );
+        const deterministicCandidates = [
+            ...deterministicCaptionTitleCandidates(spokenWords),
+            ...deterministicTitleCandidates(script),
+            ...configuredLiteralCandidates,
+        ];
         const systemPrompt = titleConfig?.triggers?.some((trigger) => trigger.enabled)
             ? titleExtractionPrompt(titleConfig)
             : fallbackSystemPrompt;
-        // Uma única passagem configurável faz a auditoria semântica e a seleção
-        // literal. As regras determinísticas abaixo continuam cobrindo os fatos
-        // comerciais mesmo se o modelo omitir algum candidato.
-        let titlesArr: any[] = [];
-        try {
-            const result = await gatewayChat(token, {
+        phase = mode === 'local' ? 'local_fallback' : 'ai';
+        const resilientGeneration = await runResilientTitleGeneration<any>({
+            skipPrimary: mode === 'local',
+            maxAttempts: 3,
+            phase: 'ai',
+            requestId,
+            primary: async () => {
+                const result = await gatewayChat(token, {
                 messages: [{
                     role: 'user',
                     content: `Narração final: ${script}\n\nLegendas temporizadas autorizadas para a saída literal: ${wordTimings}`,
@@ -551,31 +620,18 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 reasoning: titleConfig.ai.reasoning,
                 maxOutputTokens: titleConfig.ai.maxOutputTokens,
                 locale: 'pt-BR',
-            });
-
-            // A saída pode vir como objeto {titles:[...]}, array puro, ou com cercas de código.
-            try {
+                });
                 const parsed: any = parseGatewayJson(result.text);
-                titlesArr = Array.isArray(parsed) ? parsed : parsed.titles || [];
-            } catch (parseError: any) {
-                console.warn('[AI] Resposta sem JSON válido; aplicando os detectores locais de títulos.', parseError?.message);
-            }
-        } catch (generationError: any) {
-            const transientStatuses = new Set([408, 429, 500, 502, 503, 504]);
-            if (!(generationError instanceof GatewayHttpError) || !transientStatuses.has(generationError.status)) {
-                throw generationError;
-            }
-            console.warn(
-                '[AI] Provedor indisponível durante a extração de títulos; aplicando os detectores locais.',
-                { status: generationError.status }
+                return Array.isArray(parsed) ? parsed : Array.isArray(parsed.titles) ? parsed.titles : [];
+            },
+            fallback: async () => deterministicCandidates,
+        });
+        if (resilientGeneration.diagnostic) {
+            logTitleGenerationDiagnostic(
+                resilientGeneration.source === 'local' ? 'ai_fallback_used' : 'generation_unavailable',
+                resilientGeneration.diagnostic,
             );
         }
-        const spokenWords = captions.segments.flatMap((segment: any) =>
-            (segment.words || []).map((word: any) => ({
-                text: String(word.text || '').trim(),
-                start: Number(word.start),
-            }))
-        ).filter((word: { text: string; start: number }) => word.text && Number.isFinite(word.start));
         const normalizeTitleWord = (value: unknown) => String(value || '')
             .normalize('NFD')
             .replace(/[\u0300-\u036f]/g, '')
@@ -585,24 +641,17 @@ Responda exclusivamente em JSON válido, nesta estrutura:
         const occurrenceByTrigger = new Map<string, number>();
         const generationSequence = nextTitleGenerationSequence();
         let modelAssignmentIndex = 0;
-        const enabledTriggers = titleConfig.triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length);
         const triggerById = triggerMapWithAliases(enabledTriggers);
         const videoFormat = (['9:16', '16:9', '4:5', '1:1'].includes(String(format)) ? format : '9:16') as VideoFormat;
-        const configuredLiteralCandidates = enabledTriggers.flatMap((trigger) =>
-            [...trigger.examples, trigger.sample]
-                .filter(Boolean)
-                .map((candidate) => ({ text: candidate, kind: trigger.id }))
-        );
-        const titleCandidates = [
-            // Sinais determinísticos de preço/local/CTA têm prioridade; os exemplos
-            // da agência e a IA completam os demais casos sem inventar texto.
-            ...deterministicCaptionTitleCandidates(spokenWords),
-            ...deterministicTitleCandidates(script),
-            ...(Array.isArray(titlesArr) ? titlesArr : []),
-            // Exemplos configurados são apenas uma última rede de segurança.
-            // Eles não podem ocupar o limite antes dos títulos escolhidos pela IA.
-            ...configuredLiteralCandidates,
-        ];
+        const titleCandidates = resilientGeneration.source === 'ai'
+            ? [
+                ...deterministicCaptionTitleCandidates(spokenWords),
+                ...deterministicTitleCandidates(script),
+                ...resilientGeneration.items,
+                ...configuredLiteralCandidates,
+            ]
+            : resilientGeneration.items;
+        phase = 'formatting';
 
         // Format titles, snap them to a real spoken word, and reject duplicates.
         // The effective organization settings own style, size, position and color.
@@ -691,19 +740,23 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             .slice(0, titleConfig.maxTitles);
 
         const finalTitles = preventTitleOverlaps(generatedTitles);
+        const warning = finalTitles.length ? undefined : AUTOMATIC_TITLES_UNAVAILABLE_WARNING;
 
-        res.json({ ok: true, titles: finalTitles, configSource: titleSettings.source });
-    } catch (error: any) {
-        if (error instanceof GatewayHttpError) {
-            const msg =
-                error.status === 402
-                    ? 'Seus créditos Mileto acabaram. Recarregue para gerar títulos.'
-                    : error.status === 401
-                      ? 'Sessão expirada. Entre novamente para gerar títulos.'
-                      : `Falha ao gerar títulos: ${error.message}`;
-            return res.status(error.status).json({ ok: false, message: msg });
-        }
-        console.error('[AI] Erro ao gerar títulos:', error.response?.data || error.message);
-        res.status(500).json({ ok: false, message: 'Falha ao processar IA para Títulos.' });
+        res.json({
+            ok: true,
+            titles: finalTitles,
+            configSource: titleSettings.source,
+            source: finalTitles.length ? resilientGeneration.source : 'none',
+            attempts: resilientGeneration.attempts,
+            ...(warning ? { warning } : {}),
+            ...(resilientGeneration.diagnostic ? { diagnostic: resilientGeneration.diagnostic } : {}),
+        });
+    } catch (error: unknown) {
+        const diagnostic = titleGenerationDiagnostic(error, phase, requestId);
+        logTitleGenerationDiagnostic('request_failed', diagnostic);
+        const responseStatus = diagnostic.status >= 400 && diagnostic.status <= 599
+            ? diagnostic.status
+            : 500;
+        res.status(responseStatus).json({ ok: false, ...diagnostic });
     }
 };

@@ -43,8 +43,9 @@ import { applyQuickEdit } from '../lib/quickEdit';
 import { canonicalSystemVoiceId, DEFAULT_SYSTEM_VOICE, SYSTEM_VOICES } from '../lib/systemVoices';
 import { systemMusicTrackFor } from '../lib/systemMusic';
 import {
+    AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
     generateAutomaticCaptions,
-    generateAutomaticTitles,
+    generateAutomaticTitlesResilient,
     generateNarrationAndMix,
     loadAutomatedProject,
     materializeOpsTake,
@@ -531,6 +532,7 @@ export const OpsVideoJobCoordinator = () => {
             }
 
             let adData = readiness.initialAdData;
+            let titleWarning: string | null = null;
             let finalTakes: MediaTake[] = [];
             let captionStyle = { ...DEFAULT_CAPTION_STYLE };
             let selectedMusicId = readiness.musicId;
@@ -621,8 +623,26 @@ export const OpsVideoJobCoordinator = () => {
                 await patch('titles', OPS_VIDEO_PROGRESS.titles.start, job.automaticTitles
                     ? 'Aplicando gatilhos, modelos e paleta da empresa.'
                     : 'Titulos automaticos nao solicitados.');
-                if (job.automaticTitles) adData = await generateAutomaticTitles(adData);
-                await patch('titles', OPS_VIDEO_PROGRESS.titles.end, job.automaticTitles ? 'Titulos automaticos prontos.' : 'Etapa de titulos ignorada.');
+                if (job.automaticTitles) {
+                    try {
+                        const titleResult = await generateAutomaticTitlesResilient(adData);
+                        adData = titleResult.adData;
+                        titleWarning = titleResult.warning || null;
+                    } catch {
+                        // Títulos são um enriquecimento opcional. Uma falha inesperada não pode
+                        // invalidar narração, takes, legendas ou o projeto já montado.
+                        adData = { ...adData, dynamicTitles: [] };
+                        titleWarning = AUTOMATIC_TITLES_UNAVAILABLE_WARNING;
+                        console.warn('[title-generation]', {
+                            event: 'coordinator_degraded',
+                            code: 'automatic_titles_unavailable',
+                            stage: 'titles',
+                        });
+                    }
+                }
+                await patch('titles', OPS_VIDEO_PROGRESS.titles.end, job.automaticTitles
+                    ? titleWarning || 'Titulos automaticos prontos.'
+                    : 'Etapa de titulos ignorada.');
 
                 await persistAutomatedProject({
                     projectId: job.projectId,
@@ -674,7 +694,9 @@ export const OpsVideoJobCoordinator = () => {
                 selectedMusicId,
                 exported: true,
             });
-            await patch('completed', 100, 'Video criado e entregue na pasta da empresa.', {
+            await patch('completed', 100, titleWarning
+                ? `${titleWarning}; vídeo criado e entregue na pasta da empresa.`
+                : 'Video criado e entregue na pasta da empresa.', {
                 status: 'completed',
                 outputAssetId: assetId,
             });

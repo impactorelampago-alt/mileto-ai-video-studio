@@ -11,14 +11,38 @@ type ApiEnvelope<T> = {
     ok?: boolean;
     message?: string;
     code?: string;
+    retryable?: boolean;
+    requestId?: string;
+    phase?: string;
     data?: T;
     [key: string]: unknown;
 };
 
+export class LocalApiError extends Error {
+    constructor(
+        message: string,
+        readonly status: number,
+        readonly code: string,
+        readonly retryable: boolean,
+        readonly requestId?: string,
+        readonly phase?: string,
+    ) {
+        super(message);
+        this.name = 'LocalApiError';
+    }
+}
+
 const readApi = async <T>(response: Response): Promise<T & ApiEnvelope<T>> => {
     const data = await response.json().catch(() => ({})) as T & ApiEnvelope<T>;
     if (!response.ok || data.ok === false) {
-        throw new Error(`${data.code ? `${data.code}: ` : ''}${data.message || `Erro HTTP ${response.status}`}`);
+        throw new LocalApiError(
+            data.message || `Erro HTTP ${response.status}`,
+            response.status,
+            data.code || 'local_api_failed',
+            data.retryable === true,
+            data.requestId,
+            data.phase,
+        );
     }
     return data;
 };
@@ -176,34 +200,155 @@ export const generateAutomaticCaptions = async (input: AdData): Promise<AdData> 
     };
 };
 
-export const generateAutomaticTitles = async (input: AdData): Promise<AdData> => {
+export const AUTOMATIC_TITLES_UNAVAILABLE_WARNING =
+    'Títulos automáticos indisponíveis; vídeo concluído sem títulos';
+
+export type AutomaticTitleGenerationOutcome = {
+    adData: AdData;
+    source: 'ai' | 'local' | 'none';
+    warning?: string;
+    diagnostic?: {
+        code?: string;
+        status?: number;
+        phase?: string;
+        requestId?: string;
+    };
+};
+
+const CLIENT_TITLE_GENERATION_ATTEMPTS = 2;
+const CLIENT_TRANSIENT_TITLE_STATUSES = new Set([0, 408, 425, 429, 500, 502, 503, 504]);
+
+const isTransientClientTitleError = (error: unknown) =>
+    error instanceof TypeError
+    || (error instanceof LocalApiError
+        && (error.retryable || CLIENT_TRANSIENT_TITLE_STATUSES.has(error.status)));
+
+const safeTitleDiagnostic = (error: unknown) => error instanceof LocalApiError
+    ? {
+        code: error.code,
+        status: error.status,
+        phase: error.phase,
+        requestId: error.requestId,
+    }
+    : {
+        code: error instanceof TypeError ? 'title_network_failed' : 'title_generation_failed',
+        status: 0,
+    };
+
+const titleRetryDelay = (attempt: number) =>
+    new Promise<void>((resolve) => window.setTimeout(resolve, 300 * attempt));
+
+export const generateAutomaticTitlesResilient = async (
+    input: AdData,
+): Promise<AutomaticTitleGenerationOutcome> => {
     const sourceKey = narrationSourceKey(input);
     const captions = input.captions?.sourceKey === sourceKey ? input.captions : undefined;
-    if (!captions?.segments?.length) throw new Error('title_captions_missing: Gere as legendas antes dos títulos.');
-    const brand = await resolveOpsProjectBrand(input.opsCompany);
-    const brandPalette = brand.required ? brand.palette : input.brandPalette;
-    const response = await fetch(`${API_BASE_URL}/api/video/generate-titles`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
-        body: JSON.stringify({
-            script: input.narrationText,
-            captions,
-            format: input.format,
-            brandPalette,
-            companyId: brand.company?.id || null,
-            opsViewContextId: brand.context?.contextId || null,
-        }),
-    });
-    const data = await readApi<{ titles?: TitleHook[] }>(response);
-    if (!data.titles?.length) throw new Error('title_generation_empty: Nenhum gatilho configurado foi encontrado na narração.');
+    if (!captions?.segments?.length) {
+        return {
+            adData: { ...input, dynamicTitles: [], dynamicTitlesSourceKey: sourceKey },
+            source: 'none',
+            warning: AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
+            diagnostic: { code: 'title_captions_missing', status: 0, phase: 'captions' },
+        };
+    }
+
+    let brandPalette = input.brandPalette;
+    let brandPaletteUpdatedAt = input.brandPaletteUpdatedAt;
+    let companyId: string | null = null;
+    let opsViewContextId: string | null = null;
+    try {
+        const brand = await resolveOpsProjectBrand(input.opsCompany);
+        brandPalette = brand.required ? brand.palette : input.brandPalette;
+        brandPaletteUpdatedAt = brand.required ? brand.paletteUpdatedAt : input.brandPaletteUpdatedAt;
+        companyId = brand.company?.id || null;
+        opsViewContextId = brand.context?.contextId || null;
+    } catch (error) {
+        // A indisponibilidade do diretório de marcas não transforma títulos em
+        // etapa fatal. O servidor ainda pode executar os detectores locais com a
+        // paleta já persistida no projeto, sem alterar empresa ou destino do job.
+        console.warn('[title-generation]', {
+            event: 'brand_resolution_fallback',
+            ...safeTitleDiagnostic(error),
+        });
+    }
+
+    const request = async (mode: 'ai' | 'local') => {
+        const response = await fetch(`${API_BASE_URL}/api/video/generate-titles`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
+            body: JSON.stringify({
+                script: input.narrationText,
+                captions,
+                format: input.format,
+                brandPalette,
+                companyId,
+                opsViewContextId,
+                mode,
+            }),
+        });
+        return readApi<{
+            titles?: TitleHook[];
+            source?: 'ai' | 'local' | 'none';
+            warning?: string;
+            diagnostic?: AutomaticTitleGenerationOutcome['diagnostic'];
+        }>(response);
+    };
+
+    let data: Awaited<ReturnType<typeof request>> | null = null;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= CLIENT_TITLE_GENERATION_ATTEMPTS; attempt += 1) {
+        try {
+            data = await request('ai');
+            break;
+        } catch (error) {
+            lastError = error;
+            if (!isTransientClientTitleError(error) || attempt === CLIENT_TITLE_GENERATION_ATTEMPTS) break;
+            await titleRetryDelay(attempt);
+        }
+    }
+
+    if (!data?.titles?.length) {
+        try {
+            data = await request('local');
+        } catch (error) {
+            lastError = error;
+        }
+    }
+
+    if (!data?.titles?.length) {
+        const diagnostic = data?.diagnostic || safeTitleDiagnostic(lastError);
+        console.warn('[title-generation]', { event: 'completed_without_titles', ...diagnostic });
+        return {
+            adData: {
+                ...input,
+                brandPalette,
+                brandPaletteUpdatedAt,
+                dynamicTitles: [],
+                dynamicTitlesSourceKey: sourceKey,
+            },
+            source: 'none',
+            warning: data?.warning || AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
+            diagnostic,
+        };
+    }
+
     const next: AdData = {
         ...input,
         brandPalette,
-        brandPaletteUpdatedAt: brand.required ? brand.paletteUpdatedAt : input.brandPaletteUpdatedAt,
+        brandPaletteUpdatedAt,
         dynamicTitles: data.titles.map((title) => ({ ...title, isActive: true, hasSound: true })),
         dynamicTitlesSourceKey: sourceKey,
     };
-    return { ...next, dynamicTitles: bindTitlesToBrandPalette(next) };
+    return {
+        adData: { ...next, dynamicTitles: bindTitlesToBrandPalette(next) },
+        source: data.source === 'local' ? 'local' : 'ai',
+        diagnostic: data.diagnostic,
+    };
+};
+
+export const generateAutomaticTitles = async (input: AdData): Promise<AdData> => {
+    const result = await generateAutomaticTitlesResilient(input);
+    return result.adData;
 };
 
 export const prepareOpsExportMetadata = async (
