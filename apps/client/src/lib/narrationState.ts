@@ -24,6 +24,7 @@ export const invalidatedNarrationDerivatives = (): Partial<AdData> => ({
     captions: undefined,
     dynamicTitles: [],
     dynamicTitlesSourceKey: undefined,
+    titleGenerationSummary: undefined,
     masterAudioUrl: undefined,
     sharedMasterAssetId: undefined,
 });

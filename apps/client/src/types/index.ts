@@ -273,6 +273,49 @@ export interface CaptionTrack {
     };
 }
 
+export type TitleSemanticRole = 'hook' | 'offer_or_benefit' | 'cta';
+
+export interface TitleSemanticCoverage {
+    required: TitleSemanticRole[];
+    covered: TitleSemanticRole[];
+    missing: TitleSemanticRole[];
+}
+
+export interface TitleGenerationMetrics {
+    rawCandidateCount?: number;
+    formattedCandidateCount?: number;
+    inTimelineCandidateCount?: number;
+    acceptedCount?: number;
+    droppedOutOfBoundsOrInvisible?: number;
+    droppedByCoverageLimitOrOverlap?: number;
+}
+
+export interface TitleGenerationDiagnostic {
+    code?: string;
+    status?: number;
+    phase?: string;
+    requestId?: string;
+}
+
+export interface TitleGenerationSummary {
+    requested: boolean;
+    outcome: 'ai' | 'fallback' | 'none' | 'manual' | 'skipped';
+    titleCount: number;
+    serverAttempts?: number;
+    clientRequests?: number;
+    configSource?: string;
+    semanticCoverage?: TitleSemanticCoverage;
+    metrics?: TitleGenerationMetrics;
+    /** Mantém separadas as tentativas da IA e do fallback para não apagar a causa da degradação. */
+    attemptsBySource?: { ai?: number; fallback?: number };
+    metricsBySource?: { ai?: TitleGenerationMetrics; fallback?: TitleGenerationMetrics };
+    warning?: string;
+    warnings?: Array<{ code: string; message?: string; missingRoles?: TitleSemanticRole[] }>;
+    diagnostic?: TitleGenerationDiagnostic;
+    diagnostics?: TitleGenerationDiagnostic[];
+    generatedAt: string;
+}
+
 export interface TitleHook {
     id: string;
     text: string;
@@ -280,6 +323,10 @@ export interface TitleHook {
     sourceText?: string;
     /** Condição comercial preservada fora do texto principal, como A PARTIR DE. */
     qualifierText?: string;
+    /** Gatilho editorial que comprovou a seleção deste título. */
+    triggerId?: string;
+    /** Papéis usados para auditar gancho, oferta/benefício e CTA. */
+    semanticRoles?: TitleSemanticRole[];
     startSec: number;
     durationSec: number;
     isActive: boolean;
@@ -355,6 +402,8 @@ export interface AdData {
     dynamicTitles?: TitleHook[];
     /** Assinatura das legendas/narração usadas pela geração automática. */
     dynamicTitlesSourceKey?: string;
+    /** Resumo local e sanitizado da geração; nunca contém prompt, token ou resposta bruta. */
+    titleGenerationSummary?: TitleGenerationSummary;
     /** Paleta recebida do Mileto Ops; o contraste de texto e derivado no cliente. */
     brandPalette?: BrandPalette | null;
     brandPaletteUpdatedAt?: string | null;

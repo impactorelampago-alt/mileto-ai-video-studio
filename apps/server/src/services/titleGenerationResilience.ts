@@ -1,5 +1,7 @@
 export const AUTOMATIC_TITLES_UNAVAILABLE_WARNING =
     'Títulos automáticos indisponíveis; vídeo concluído sem títulos';
+export const AUTOMATIC_TITLES_FALLBACK_WARNING =
+    'Títulos gerados pelo fallback local após indisponibilidade da IA.';
 
 export type TitleGenerationSource = 'ai' | 'local' | 'none';
 

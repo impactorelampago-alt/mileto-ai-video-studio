@@ -555,8 +555,8 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                         <label className="text-[10px] font-bold uppercase tracking-widest text-brand-accent">
                             Taxa de quadros
                         </label>
-                        <div className="grid grid-cols-3 gap-3">
-                            {[24, 30, 60].map((value) => (
+                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                            {[24, 25, 30, 60].map((value) => (
                                 <button
                                     key={value}
                                     onClick={() => setFps(value)}

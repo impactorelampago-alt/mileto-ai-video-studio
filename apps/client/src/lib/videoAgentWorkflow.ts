@@ -4,7 +4,13 @@ import { gatewayApi, type OpsAsset, type OpsViewContext } from './gateway';
 import { invalidatedNarrationDerivatives, narrationSourceKey } from './narrationState';
 import { bindTitlesToBrandPalette, resolveOpsProjectBrand } from './opsProjectBrand';
 import { localAuthHeaders } from './serverAuth';
-import type { AdData, CaptionStyle, MediaTake, TitleHook } from '../types';
+import type {
+    AdData,
+    CaptionStyle,
+    MediaTake,
+    TitleGenerationDiagnostic,
+    TitleHook,
+} from '../types';
 import type { OpsExportMetadata } from '../context/ExportJobsContext';
 
 type ApiEnvelope<T> = {
@@ -197,22 +203,20 @@ export const generateAutomaticCaptions = async (input: AdData): Promise<AdData> 
         },
         dynamicTitles: [],
         dynamicTitlesSourceKey: undefined,
+        titleGenerationSummary: undefined,
     };
 };
 
 export const AUTOMATIC_TITLES_UNAVAILABLE_WARNING =
     'Títulos automáticos indisponíveis; vídeo concluído sem títulos';
+export const AUTOMATIC_TITLES_FALLBACK_WARNING =
+    'Títulos gerados pelo fallback local após indisponibilidade da IA.';
 
 export type AutomaticTitleGenerationOutcome = {
     adData: AdData;
     source: 'ai' | 'local' | 'none';
     warning?: string;
-    diagnostic?: {
-        code?: string;
-        status?: number;
-        phase?: string;
-        requestId?: string;
-    };
+    diagnostic?: TitleGenerationDiagnostic;
 };
 
 const CLIENT_TITLE_GENERATION_ATTEMPTS = 2;
@@ -235,6 +239,19 @@ const safeTitleDiagnostic = (error: unknown) => error instanceof LocalApiError
         status: 0,
     };
 
+const uniqueTitleDiagnostics = (
+    diagnostics: Array<TitleGenerationDiagnostic | undefined>,
+): TitleGenerationDiagnostic[] => {
+    const seen = new Set<string>();
+    return diagnostics.filter((diagnostic): diagnostic is TitleGenerationDiagnostic => {
+        if (!diagnostic?.code && !diagnostic?.status && !diagnostic?.phase && !diagnostic?.requestId) return false;
+        const key = JSON.stringify(diagnostic);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+};
+
 const titleRetryDelay = (attempt: number) =>
     new Promise<void>((resolve) => window.setTimeout(resolve, 300 * attempt));
 
@@ -244,10 +261,24 @@ export const generateAutomaticTitlesResilient = async (
     const sourceKey = narrationSourceKey(input);
     const captions = input.captions?.sourceKey === sourceKey ? input.captions : undefined;
     if (!captions?.segments?.length) {
+        const warning = AUTOMATIC_TITLES_UNAVAILABLE_WARNING;
         return {
-            adData: { ...input, dynamicTitles: [], dynamicTitlesSourceKey: sourceKey },
+            adData: {
+                ...input,
+                dynamicTitles: [],
+                dynamicTitlesSourceKey: sourceKey,
+                titleGenerationSummary: {
+                    requested: true,
+                    outcome: 'none',
+                    titleCount: 0,
+                    clientRequests: 0,
+                    warning,
+                    diagnostic: { code: 'title_captions_missing', status: 0, phase: 'captions' },
+                    generatedAt: new Date().toISOString(),
+                },
+            },
             source: 'none',
-            warning: AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
+            warning,
             diagnostic: { code: 'title_captions_missing', status: 0, phase: 'captions' },
         };
     }
@@ -272,7 +303,20 @@ export const generateAutomaticTitlesResilient = async (
         });
     }
 
+    let clientRequests = 0;
+    type TitleResponse = {
+        titles?: TitleHook[];
+        source?: 'ai' | 'local' | 'none';
+        warning?: string;
+        diagnostic?: AutomaticTitleGenerationOutcome['diagnostic'];
+        attempts?: number;
+        configSource?: string;
+        semanticCoverage?: NonNullable<AdData['titleGenerationSummary']>['semanticCoverage'];
+        metrics?: NonNullable<AdData['titleGenerationSummary']>['metrics'];
+        warnings?: NonNullable<AdData['titleGenerationSummary']>['warnings'];
+    };
     const request = async (mode: 'ai' | 'local') => {
+        clientRequests += 1;
         const response = await fetch(`${API_BASE_URL}/api/video/generate-titles`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
@@ -286,37 +330,62 @@ export const generateAutomaticTitlesResilient = async (
                 mode,
             }),
         });
-        return readApi<{
-            titles?: TitleHook[];
-            source?: 'ai' | 'local' | 'none';
-            warning?: string;
-            diagnostic?: AutomaticTitleGenerationOutcome['diagnostic'];
-        }>(response);
+        return readApi<TitleResponse>(response);
     };
 
-    let data: Awaited<ReturnType<typeof request>> | null = null;
+    let primaryData: Awaited<ReturnType<typeof request>> | null = null;
+    let fallbackData: Awaited<ReturnType<typeof request>> | null = null;
     let lastError: unknown;
+    const requestDiagnostics: TitleGenerationDiagnostic[] = [];
     for (let attempt = 1; attempt <= CLIENT_TITLE_GENERATION_ATTEMPTS; attempt += 1) {
         try {
-            data = await request('ai');
+            primaryData = await request('ai');
             break;
         } catch (error) {
             lastError = error;
+            requestDiagnostics.push(safeTitleDiagnostic(error));
             if (!isTransientClientTitleError(error) || attempt === CLIENT_TITLE_GENERATION_ATTEMPTS) break;
             await titleRetryDelay(attempt);
         }
     }
 
-    if (!data?.titles?.length) {
+    if (!primaryData?.titles?.length) {
         try {
-            data = await request('local');
+            fallbackData = await request('local');
         } catch (error) {
             lastError = error;
+            requestDiagnostics.push(safeTitleDiagnostic(error));
         }
     }
 
+    const data = fallbackData?.titles?.length ? fallbackData : (primaryData?.titles?.length ? primaryData : fallbackData || primaryData);
+    const serverAttempts = Number(primaryData?.attempts || 0) + Number(fallbackData?.attempts || 0);
+    const attemptsBySource = {
+        ...(primaryData ? { ai: Number(primaryData.attempts || 0) } : {}),
+        ...(fallbackData ? { fallback: Number(fallbackData.attempts || 0) } : {}),
+    };
+    const metricsBySource = {
+        ...(primaryData?.source === 'local'
+            ? { fallback: primaryData.metrics }
+            : (primaryData?.metrics ? { ai: primaryData.metrics } : {})),
+        ...(fallbackData?.metrics ? { fallback: fallbackData.metrics } : {}),
+    };
+    const diagnostics = uniqueTitleDiagnostics([
+        primaryData?.diagnostic,
+        ...requestDiagnostics,
+        fallbackData?.diagnostic,
+    ]);
+
     if (!data?.titles?.length) {
-        const diagnostic = data?.diagnostic || safeTitleDiagnostic(lastError);
+        const diagnostic = data?.diagnostic || diagnostics[0] || safeTitleDiagnostic(lastError);
+        const warning = data?.warning || AUTOMATIC_TITLES_UNAVAILABLE_WARNING;
+        const warnings = [
+            ...(primaryData?.warnings || []),
+            ...(fallbackData?.warnings || []),
+        ];
+        if (!warnings.some((item) => item.code === 'automatic_titles_unavailable')) {
+            warnings.push({ code: 'automatic_titles_unavailable', message: warning });
+        }
         console.warn('[title-generation]', { event: 'completed_without_titles', ...diagnostic });
         return {
             adData: {
@@ -325,12 +394,44 @@ export const generateAutomaticTitlesResilient = async (
                 brandPaletteUpdatedAt,
                 dynamicTitles: [],
                 dynamicTitlesSourceKey: sourceKey,
+                titleGenerationSummary: {
+                    requested: true,
+                    outcome: 'none',
+                    titleCount: 0,
+                    serverAttempts,
+                    clientRequests,
+                    configSource: data?.configSource,
+                    semanticCoverage: data?.semanticCoverage,
+                    metrics: data?.metrics,
+                    attemptsBySource,
+                    metricsBySource,
+                    warning,
+                    warnings,
+                    diagnostic,
+                    diagnostics,
+                    generatedAt: new Date().toISOString(),
+                },
             },
             source: 'none',
-            warning: data?.warning || AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
+            warning,
             diagnostic,
         };
     }
+
+    const fallbackUsed = data.source === 'local' || data === fallbackData;
+    const responseWarning = data.warning?.trim();
+    const warningMessages = [
+        ...(fallbackUsed && !responseWarning?.includes(AUTOMATIC_TITLES_FALLBACK_WARNING)
+            ? [AUTOMATIC_TITLES_FALLBACK_WARNING]
+            : []),
+        ...(responseWarning ? [responseWarning] : []),
+    ].filter((message, index, all) => all.indexOf(message) === index);
+    const warning = warningMessages.join(' ') || undefined;
+    const warnings = [...(data.warnings || [])];
+    if (fallbackUsed && !warnings.some((item) => item.code === 'title_fallback_used')) {
+        warnings.unshift({ code: 'title_fallback_used', message: AUTOMATIC_TITLES_FALLBACK_WARNING });
+    }
+    const diagnostic = fallbackUsed ? (primaryData?.diagnostic || diagnostics[0] || data.diagnostic) : data.diagnostic;
 
     const next: AdData = {
         ...input,
@@ -338,11 +439,29 @@ export const generateAutomaticTitlesResilient = async (
         brandPaletteUpdatedAt,
         dynamicTitles: data.titles.map((title) => ({ ...title, isActive: true, hasSound: true })),
         dynamicTitlesSourceKey: sourceKey,
+        titleGenerationSummary: {
+            requested: true,
+            outcome: fallbackUsed ? 'fallback' : 'ai',
+            titleCount: data.titles.length,
+            serverAttempts,
+            clientRequests,
+            configSource: data.configSource,
+            semanticCoverage: data.semanticCoverage,
+            metrics: data.metrics,
+            attemptsBySource,
+            metricsBySource,
+            warning,
+            warnings,
+            diagnostic,
+            diagnostics,
+            generatedAt: new Date().toISOString(),
+        },
     };
     return {
         adData: { ...next, dynamicTitles: bindTitlesToBrandPalette(next) },
-        source: data.source === 'local' ? 'local' : 'ai',
-        diagnostic: data.diagnostic,
+        source: fallbackUsed ? 'local' : 'ai',
+        warning,
+        diagnostic,
     };
 };
 

@@ -15,7 +15,20 @@ export type TimedTitle = {
 };
 
 export const TITLE_TIMELINE_GAP_SEC = 0.12;
-export const MIN_GENERATED_TITLE_DURATION_SEC = 0.25;
+export const MIN_GENERATED_TITLE_DURATION_SEC = 0.75;
+
+export type TitleSemanticRole = 'hook' | 'offer_or_benefit' | 'cta';
+
+export type SemanticTimedTitle = TimedTitle & {
+    triggerId?: string;
+    semanticRoles?: TitleSemanticRole[];
+};
+
+export type TitleSemanticCoverage = {
+    required: TitleSemanticRole[];
+    covered: TitleSemanticRole[];
+    missing: TitleSemanticRole[];
+};
 
 const roundTimelineSecond = (value: number) => Math.round(value * 1000) / 1000;
 
@@ -109,6 +122,119 @@ export const preventTitleOverlaps = <T extends TimedTitle>(
             };
         })
         .filter((title) => title.durationSec >= MIN_GENERATED_TITLE_DURATION_SEC);
+};
+
+const OFFER_OR_BENEFIT_TRIGGERS = new Set([
+    'price', 'benefit', 'product', 'differentiator', 'scarcity',
+]);
+
+const HOOK_ELIGIBLE_TRIGGERS = new Set([
+    'audience', 'product', 'benefit', 'differentiator', 'price', 'scarcity',
+]);
+
+export const semanticRolesForTitle = (
+    triggerId: unknown,
+    startSec: unknown,
+    timelineDurationSec: unknown,
+): TitleSemanticRole[] => {
+    const trigger = normalizeTriggerKey(triggerId);
+    const start = Math.max(0, Number(startSec) || 0);
+    const timelineDuration = Math.max(0, Number(timelineDurationSec) || 0);
+    const hookWindow = Math.min(5, Math.max(2.5, timelineDuration * 0.25));
+    const roles: TitleSemanticRole[] = [];
+
+    if (HOOK_ELIGIBLE_TRIGGERS.has(trigger) && start <= hookWindow) roles.push('hook');
+    if (OFFER_OR_BENEFIT_TRIGGERS.has(trigger)) roles.push('offer_or_benefit');
+    if (trigger === 'cta') roles.push('cta');
+    return roles;
+};
+
+/**
+ * Recorta o último título no limite real e descarta qualquer candidato que
+ * começaria fora da timeline ou sobreviveria como um lampejo invisível.
+ */
+export const fitTitlesToTimeline = <T extends TimedTitle>(
+    titles: T[],
+    timelineDurationSec: unknown,
+): T[] => {
+    const timelineDuration = Math.max(0, Number(timelineDurationSec) || 0);
+    if (!(timelineDuration > 0)) return [];
+
+    return titles.flatMap((title) => {
+        const startSec = Math.max(0, Number(title.startSec) || 0);
+        if (startSec >= timelineDuration) return [];
+        const durationSec = Math.min(
+            Math.max(0, Number(title.durationSec) || 0),
+            timelineDuration - startSec,
+        );
+        if (durationSec < MIN_GENERATED_TITLE_DURATION_SEC) return [];
+        return [{
+            ...title,
+            startSec: roundTimelineSecond(startSec),
+            durationSec: roundTimelineSecond(durationSec),
+        }];
+    });
+};
+
+const SEMANTIC_ROLE_ORDER: TitleSemanticRole[] = ['hook', 'offer_or_benefit', 'cta'];
+
+export const semanticCoverageForTitles = <T extends SemanticTimedTitle>(
+    requiredFrom: T[],
+    selected: T[],
+): TitleSemanticCoverage => {
+    const required = SEMANTIC_ROLE_ORDER.filter((role) =>
+        requiredFrom.some((title) => title.semanticRoles?.includes(role))
+    );
+    const covered = required.filter((role) =>
+        selected.some((title) => title.semanticRoles?.includes(role))
+    );
+    return {
+        required,
+        covered,
+        missing: required.filter((role) => !covered.includes(role)),
+    };
+};
+
+/**
+ * A quantidade deixa de ser o único critério. Reservamos vagas para gancho,
+ * oferta/benefício e CTA sempre que candidatos válidos comprovam esses
+ * elementos; depois completamos com os demais títulos em ordem temporal.
+ */
+export const selectTitlesForSemanticCoverage = <T extends SemanticTimedTitle>(
+    candidates: T[],
+    configuredMaxTitles: unknown,
+): { titles: T[]; coverage: TitleSemanticCoverage } => {
+    const ordered = candidates
+        .map((title, index) => ({ title, index }))
+        .sort((left, right) => left.title.startSec - right.title.startSec || left.index - right.index)
+        .map(({ title }) => title);
+    const initialCoverage = semanticCoverageForTitles(ordered, []);
+    const requestedLimit = Math.max(1, Math.min(20, Math.floor(Number(configuredMaxTitles) || 1)));
+    const selected: T[] = [];
+
+    for (const role of initialCoverage.required) {
+        if (selected.some((title) => title.semanticRoles?.includes(role))) continue;
+        const matching = ordered.filter((title) =>
+            title.semanticRoles?.includes(role) && !selected.includes(title)
+        );
+        const preferred = role === 'cta' ? matching.at(-1) : matching[0];
+        if (preferred) selected.push(preferred);
+    }
+
+    // Um mesmo título pode cobrir mais de uma função semântica. A capacidade
+    // mínima precisa acompanhar os títulos efetivamente reservados, não a
+    // quantidade bruta de papéis, para não inserir conteúdo editorial extra.
+    const effectiveLimit = Math.max(requestedLimit, selected.length);
+    for (const title of ordered) {
+        if (selected.length >= effectiveLimit) break;
+        if (!selected.includes(title)) selected.push(title);
+    }
+
+    selected.sort((left, right) => left.startSec - right.startSec);
+    return {
+        titles: selected,
+        coverage: semanticCoverageForTitles(ordered, selected),
+    };
 };
 
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;

@@ -528,7 +528,7 @@ app.whenReady().then(() => {
 
     ipcMain.handle('export-finalize-sequence', async (_event, { filePath, frameCount, fps, extension = 'png' }) => {
         const safeFrameCount = Math.max(1, Math.floor(Number(frameCount) || 0));
-        const safeFps = [24, 30, 60].includes(Number(fps)) ? Number(fps) : 30;
+        const safeFps = [24, 25, 30, 60].includes(Number(fps)) ? Number(fps) : 30;
         const safeExtension = extension === 'webp' ? 'webp' : 'png';
         fs.writeFileSync(
             filePath,

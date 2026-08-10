@@ -1,10 +1,30 @@
 import { Request, Response } from 'express';
-import { getVideoMetadata, extractFrames, muxVideoAudio, getVideoEncoderArgs } from '../services/ffmpeg';
+import {
+    getVideoMetadata,
+    extractFrames,
+    muxVideoAudio,
+    getVideoEncoderArgs,
+    probeMediaDurations,
+} from '../services/ffmpeg';
 import path from 'path';
 import os from 'os';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import { isWithinRoots } from '../utils/safePath';
+import {
+    assertRenderIntegrity,
+    logRenderIntegrity,
+    normalizeRenderFps,
+    planTimelineFrames,
+    plannedTimelineDuration,
+    RenderIntegrityError,
+    renderDurationTolerance,
+    renderVideoDurationTolerance,
+    takeTimelineDuration,
+    validateRenderedOutput,
+    validateRenderPreflight,
+    type RenderIntegrityDiagnostics,
+} from '../services/renderIntegrity';
 
 // O export escreve no temp do SO (via IPC do Electron) e no dir de dados. Limitar a
 // GRAVAÇÃO a essas raízes impede que um caller aponte a saída do ffmpeg para um
@@ -172,6 +192,27 @@ export const muxFinalExport = async (req: Request, res: Response) => {
 // ─── HYBRID PIPELINE ────────────────────────────────────────────────────────┐
 import { buildHybridVideo } from '../services/ffmpeg';
 
+const renderProbeFailureDiagnostics = (
+    stage: 'preflight' | 'output',
+    expectedDurationSec: number,
+    outputFps: number,
+): RenderIntegrityDiagnostics => ({
+    status: 'failed',
+    stage,
+    expectedDurationSec: Number.isFinite(expectedDurationSec) ? expectedDurationSec : 0,
+    expectedFps: normalizeRenderFps(outputFps),
+    durationToleranceSec: renderDurationTolerance(outputFps),
+    videoDurationToleranceSec: renderVideoDurationTolerance(outputFps),
+    frameTolerance: 0,
+    issues: [{
+        code: 'render_probe_failed',
+        message: stage === 'preflight'
+            ? 'Não foi possível medir o áudio mestre antes do render.'
+            : 'Não foi possível medir o MP4 após o render.',
+        stream: stage === 'preflight' ? 'audio' : 'container',
+    }],
+});
+
 export const exportHybrid = async (req: Request, res: Response) => {
     try {
         const { takes, transitionPath, transitionRotation, audioPath, finalPath, duration, targetW, targetH, outputFps } = req.body;
@@ -233,6 +274,38 @@ export const exportHybrid = async (req: Request, res: Response) => {
                 .json({ ok: false, message: 'Camada temporária de títulos e legendas não encontrada.' });
         }
 
+        const expectedDurationSec = Number(duration);
+        const safeOutputFps = normalizeRenderFps(outputFps);
+        const plannedVideoDurationSec = plannedTimelineDuration(takes);
+        const takeDurations = takes.map((take: unknown) => takeTimelineDuration(take as {
+            start?: unknown;
+            end?: unknown;
+            speed?: unknown;
+        }));
+        const invalidTakeCount = takeDurations.filter((takeDuration: number) => takeDuration <= 0).length;
+        const framePlan = planTimelineFrames(takes, safeOutputFps);
+        const unrepresentableTakeCount = framePlan.unrepresentableTakeIndices
+            .filter((index) => takeDurations[index] > 0)
+            .length;
+        let audioProbe;
+        try {
+            audioProbe = await probeMediaDurations(audioPath);
+        } catch {
+            const diagnostics = renderProbeFailureDiagnostics('preflight', expectedDurationSec, safeOutputFps);
+            logRenderIntegrity('preflight_probe_failed', diagnostics);
+            throw new RenderIntegrityError(diagnostics);
+        }
+        const preflightDiagnostics = validateRenderPreflight({
+            expectedDurationSec,
+            plannedVideoDurationSec,
+            audioProbe,
+            outputFps: safeOutputFps,
+            invalidTakeCount,
+            unrepresentableTakeCount,
+        });
+        logRenderIntegrity('preflight_checked', preflightDiagnostics);
+        assertRenderIntegrity(preflightDiagnostics);
+
         // Call our shiny new C++ bridge implementation
         const exportedPath = await buildHybridVideo({
             takes,
@@ -244,21 +317,53 @@ export const exportHybrid = async (req: Request, res: Response) => {
             duration,
             targetW,
             targetH,
-            outputFps,
+            outputFps: safeOutputFps,
         });
 
         const exportedStats = fs.existsSync(exportedPath) ? fs.statSync(exportedPath) : null;
         if (!exportedStats?.isFile() || exportedStats.size < 1024) {
-            return res.status(500).json({ ok: false, message: 'O FFmpeg terminou sem gerar um MP4 válido.' });
+            const diagnostics = renderProbeFailureDiagnostics('output', expectedDurationSec, safeOutputFps);
+            diagnostics.issues[0] = {
+                code: 'render_output_missing',
+                message: 'O FFmpeg terminou sem gerar um MP4 válido.',
+                stream: 'container',
+            };
+            logRenderIntegrity('output_missing', diagnostics);
+            throw new RenderIntegrityError(diagnostics);
         }
+        let outputProbe;
+        try {
+            outputProbe = await probeMediaDurations(exportedPath);
+        } catch {
+            const diagnostics = renderProbeFailureDiagnostics('output', expectedDurationSec, safeOutputFps);
+            logRenderIntegrity('output_probe_failed', diagnostics);
+            throw new RenderIntegrityError(diagnostics);
+        }
+        const renderDiagnostics = validateRenderedOutput({
+            expectedDurationSec,
+            media: outputProbe,
+            outputFps: safeOutputFps,
+        });
+        logRenderIntegrity('output_checked', renderDiagnostics);
+        assertRenderIntegrity(renderDiagnostics);
         res.json({
             ok: true,
             finalPath: exportedPath,
             sizeBytes: exportedStats.size,
+            renderDiagnostics,
             message: 'Exportação Híbrida concluída puramente por Hardware.',
         });
     } catch (e: any) {
         console.error('[HYBRID EXPORT ERR]:', e);
+        if (e instanceof RenderIntegrityError) {
+            return res.status(e.status).json({
+                ok: false,
+                code: e.code,
+                message: e.message,
+                retryable: e.retryable,
+                diagnostics: e.diagnostics,
+            });
+        }
         res.status(500).json({ ok: false, message: e.message || 'Erro fatídico ao construir video hibrido' });
     }
 };

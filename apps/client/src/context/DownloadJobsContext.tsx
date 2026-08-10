@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { API_BASE_URL as API } from '../lib/apiBase';
+import type { ExportResultDiagnostics, ServerRenderDiagnostics } from '../lib/exportIntegrity';
 
 export interface DownloadJobTrack {
     id: string;
@@ -31,6 +32,10 @@ export interface DownloadJobSnapshot {
     cancellable?: boolean;
     outputPath?: string;
     assetId?: string;
+    /** Diagnóstico persistível da última barreira de integridade do render. */
+    result?: ExportResultDiagnostics;
+    /** Também fica disponível em jobs bloqueados antes da entrega. */
+    renderDiagnostics?: ServerRenderDiagnostics;
 }
 
 export interface InternetDownloadRequest {

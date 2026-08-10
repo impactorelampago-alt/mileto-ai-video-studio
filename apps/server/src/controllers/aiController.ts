@@ -15,17 +15,22 @@ import {
     compactTitleDisplayText,
     deterministicCaptionTitleCandidates,
     deterministicTitleCandidates,
+    fitTitlesToTimeline,
     isSemanticallyCompleteTitle,
     normalizeTriggerKey,
     preventTitleOverlaps,
     resolveLiteralCaptionText,
     resolveTitleColors,
     rotatingTitleTypeIndex,
+    selectTitlesForSemanticCoverage,
+    semanticCoverageForTitles,
+    semanticRolesForTitle,
     titleTypeWordCapacity,
     triggerMapWithAliases,
     type BrandPaletteInput,
 } from '../services/titleGenerationRules';
 import {
+    AUTOMATIC_TITLES_FALLBACK_WARNING,
     AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
     isTransientTitleGenerationError,
     logTitleGenerationDiagnostic,
@@ -69,7 +74,7 @@ Regras obrigatórias:
 11. O startSec deve ser exatamente o tempo da primeira palavra de sourceText.
 12. Use kind somente entre: ${kinds}.
 13. Exemplos são referências, não uma lista fechada. Identifique outros fatos realmente pronunciados.
-14. Respeite o máximo de ocorrências de cada gatilho e gere no máximo ${config.maxTitles} títulos no total. Qualidade e cobertura dos fatos são mais importantes que preencher a quantidade.
+14. Respeite o máximo de ocorrências de cada gatilho e use ${config.maxTitles} como quantidade-base de títulos. Quando existirem na narração, a cobertura obrigatória de gancho, oferta/benefício e CTA pode acrescentar títulos além dessa base. Qualidade e cobertura dos fatos são mais importantes que preencher a quantidade.
 
 Responda exclusivamente em JSON válido: {"titles":[{"sourceText":"trecho literal completo","displayText":"etiqueta curta","startSec":0.5,"kind":${kinds.split(', ')[0] || '"hook"'}}]}`;
 };
@@ -589,6 +594,11 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 start: Number(word.start),
             }))
         ).filter((word: { text: string; start: number }) => word.text && Number.isFinite(word.start));
+        const timelineDurationSec = Math.max(
+            0,
+            ...captions.segments.map((segment: any) => Number(segment.end) || 0),
+            ...spokenWords.map((word: { start: number }) => word.start + 0.25),
+        );
         const enabledTriggers = titleConfig.triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length);
         const configuredLiteralCandidates = enabledTriggers.flatMap((trigger) =>
             [...trigger.examples, trigger.sample]
@@ -656,8 +666,7 @@ Responda exclusivamente em JSON válido, nesta estrutura:
 
         // Format titles, snap them to a real spoken word, and reject duplicates.
         // The effective organization settings own style, size, position and color.
-        const generatedTitles = titleCandidates
-            .map((title: any) => {
+        const mappedTitleCandidates = titleCandidates.map((title: any) => {
                 const trigger = triggerById.get(normalizeTriggerKey(title?.kind));
                 const sourceCandidate = title?.sourceText || title?.text;
                 const literal = trigger
@@ -671,7 +680,21 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                     literal,
                     compact,
                 };
-            })
+            });
+        // Evidência semântica é medida antes dos limites visuais, duplicatas e
+        // sobreposições. Assim, um CTA comprovado na narração continua sendo
+        // obrigatório mesmo se um candidato posterior for descartado.
+        const semanticEvidence = mappedTitleCandidates.flatMap(({ trigger, literal }: any) => {
+            if (!trigger || !literal) return [];
+            const semanticRoles = semanticRolesForTitle(trigger.id, literal.startSec, timelineDurationSec);
+            return semanticRoles.length ? [{
+                startSec: literal.startSec,
+                durationSec: 1,
+                triggerId: trigger.id,
+                semanticRoles,
+            }] : [];
+        });
+        const generatedTitles = mappedTitleCandidates
             .filter(({ trigger, literal, compact }: any) => {
                 const key = normalizeTitleWord(compact?.text);
                 if (!trigger || !literal || !compact || !key) return false;
@@ -717,12 +740,16 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 occurrenceByTrigger.set(triggerId, occurrence + 1);
                 const layout = titleType.layouts[videoFormat] || titleType.layouts['9:16'];
                 const colors = resolveTitleColors(titleType.color || trigger.color, effectiveBrandPalette, occurrence);
+                const resolvedStartSec = visualLiteral?.startSec ?? displayLiteral?.startSec ?? literal.startSec;
+                const semanticRoles = semanticRolesForTitle(trigger.id, resolvedStartSec, timelineDurationSec);
                 return [{
                     id: uuidv4(),
                     text: visualText,
                     sourceText: visualCompact.sourceText,
                     qualifierText: visualCompact.qualifierText,
-                    startSec: visualLiteral?.startSec ?? displayLiteral?.startSec ?? literal.startSec,
+                    triggerId: trigger.id,
+                    semanticRoles,
+                    startSec: resolvedStartSec,
                     durationSec: titleType.durationSec,
                     isActive: true,
                     posX: layout.posX,
@@ -737,11 +764,52 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                     animationId: titleType.animationId,
                     ...colors,
                 }];
-            })
-            .slice(0, titleConfig.maxTitles);
+            });
 
-        const finalTitles = preventTitleOverlaps(generatedTitles);
-        const warning = finalTitles.length ? undefined : AUTOMATIC_TITLES_UNAVAILABLE_WARNING;
+        const timelineCandidates = fitTitlesToTimeline(generatedTitles, timelineDurationSec);
+        const semanticSelection = selectTitlesForSemanticCoverage(timelineCandidates, titleConfig.maxTitles);
+        const finalTitles = fitTitlesToTimeline(
+            preventTitleOverlaps(semanticSelection.titles),
+            timelineDurationSec,
+        );
+        const semanticCoverage = semanticCoverageForTitles(semanticEvidence, finalTitles);
+        const semanticRoleLabels = {
+            hook: 'gancho',
+            offer_or_benefit: 'oferta ou benefício',
+            cta: 'CTA',
+        } as const;
+        const semanticWarning = semanticCoverage.missing.length
+            ? `Cobertura de títulos incompleta: ${semanticCoverage.missing.map((role) => semanticRoleLabels[role]).join(', ')}.`
+            : undefined;
+        const fallbackWarning = finalTitles.length && resilientGeneration.source === 'local'
+            ? AUTOMATIC_TITLES_FALLBACK_WARNING
+            : undefined;
+        const warning = finalTitles.length
+            ? [fallbackWarning, semanticWarning].filter(Boolean).join(' ') || undefined
+            : AUTOMATIC_TITLES_UNAVAILABLE_WARNING;
+        const warnings = [
+            ...(fallbackWarning ? [{
+                code: 'title_fallback_used',
+                message: fallbackWarning,
+            }] : []),
+            ...(semanticCoverage.missing.length ? [{
+                code: 'title_semantic_coverage_missing',
+                message: semanticWarning,
+                missingRoles: semanticCoverage.missing,
+            }] : []),
+            ...(!finalTitles.length ? [{
+                code: 'automatic_titles_unavailable',
+                message: AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
+            }] : []),
+        ];
+        const metrics = {
+            rawCandidateCount: titleCandidates.length,
+            formattedCandidateCount: generatedTitles.length,
+            inTimelineCandidateCount: timelineCandidates.length,
+            acceptedCount: finalTitles.length,
+            droppedOutOfBoundsOrInvisible: generatedTitles.length - timelineCandidates.length,
+            droppedByCoverageLimitOrOverlap: Math.max(0, timelineCandidates.length - finalTitles.length),
+        };
 
         res.json({
             ok: true,
@@ -749,6 +817,10 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             configSource: titleSettings.source,
             source: finalTitles.length ? resilientGeneration.source : 'none',
             attempts: resilientGeneration.attempts,
+            timelineDurationSec,
+            semanticCoverage,
+            metrics,
+            ...(warnings.length ? { warnings } : {}),
             ...(warning ? { warning } : {}),
             ...(resilientGeneration.diagnostic ? { diagnostic: resilientGeneration.diagnostic } : {}),
         });

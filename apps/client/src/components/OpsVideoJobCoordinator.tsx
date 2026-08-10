@@ -48,13 +48,23 @@ import {
     type OpsExecutorActivity,
 } from '../lib/opsExecutorActivity';
 import type { AdData, MediaTake } from '../types';
+import {
+    exportWarningSummary,
+    type ExportResultDiagnostics,
+} from '../lib/exportIntegrity';
 
 const POLL_INTERVAL_MS = 12_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const EXPORT_TIMEOUT_MS = 60 * 60 * 1_000;
 
 type QueuedJob = { job: OpsVideoJob; context: OpsViewContext; resume?: PersistedOpsVideoWorkerJob | null };
-type OpsExportEvent = { projectId?: string; assetId?: string; message?: string };
+type OpsExportEvent = {
+    projectId?: string;
+    assetId?: string;
+    message?: string;
+    renderResult?: ExportResultDiagnostics;
+};
+type CompletedOpsExport = { assetId: string; renderResult?: ExportResultDiagnostics };
 type JobDisplayState = OpsExecutorActivity;
 
 type ElectronIpc = {
@@ -122,14 +132,19 @@ const isRecoverableInterruption = (error: unknown, code: string) => {
     ].includes(code) || (error instanceof Error && error.name === 'AbortError');
 };
 
-const completedExportFor = (job: OpsVideoJob): string | null => {
+const completedExportFor = (job: OpsVideoJob): CompletedOpsExport | null => {
     try {
         const raw = localStorage.getItem(`mileto:ops-export:${job.projectId}`);
         if (!raw) return null;
-        const value = JSON.parse(raw) as { assetId?: string; companyId?: string; folderId?: string | null };
+        const value = JSON.parse(raw) as {
+            assetId?: string;
+            companyId?: string;
+            folderId?: string | null;
+            renderResult?: ExportResultDiagnostics;
+        };
         if (!value.assetId || value.companyId !== job.companyId) return null;
         if ((value.folderId || null) !== (job.destinationFolderId || null)) return null;
-        return value.assetId;
+        return { assetId: value.assetId, renderResult: value.renderResult };
     } catch {
         return null;
     }
@@ -169,7 +184,7 @@ const hydratePreparedTakes = async (
     return result;
 };
 
-const waitForOpsExport = (projectId: string): Promise<string> => new Promise((resolve, reject) => {
+const waitForOpsExport = (projectId: string): Promise<CompletedOpsExport> => new Promise((resolve, reject) => {
     let timeout = 0;
     const cleanup = () => {
         window.removeEventListener('mileto:ops-export-complete', onComplete as EventListener);
@@ -180,7 +195,7 @@ const waitForOpsExport = (projectId: string): Promise<string> => new Promise((re
         const detail = (event as CustomEvent<OpsExportEvent>).detail || {};
         if (detail.projectId !== projectId || !detail.assetId) return;
         cleanup();
-        resolve(detail.assetId);
+        resolve({ assetId: detail.assetId, renderResult: detail.renderResult });
     };
     const onFailed = (event: Event) => {
         const detail = (event as CustomEvent<OpsExportEvent>).detail || {};
@@ -488,9 +503,15 @@ export const OpsVideoJobCoordinator = () => {
                 await patch('narration', OPS_VIDEO_PROGRESS.narration.start, 'Preparando a narração.');
             }
 
-            const previousAssetId = job.outputAssetId || completedExportFor(job) || persisted.resume.outputAssetId;
+            const previousExport = completedExportFor(job);
+            const previousAssetId = job.outputAssetId || previousExport?.assetId || persisted.resume.outputAssetId;
             if (previousAssetId) {
-                await patch('completed', 100, 'Video ja concluido e confirmado no Mileto Ops.', {
+                const previousWarning = previousExport?.renderResult
+                    ? exportWarningSummary(previousExport.renderResult.warnings)
+                    : undefined;
+                await patch('completed', 100, previousWarning
+                    ? `${previousWarning}; vídeo já concluído e confirmado no Mileto Ops.`
+                    : 'Video ja concluido e confirmado no Mileto Ops.', {
                     status: 'completed',
                     outputAssetId: previousAssetId,
                 });
@@ -519,6 +540,7 @@ export const OpsVideoJobCoordinator = () => {
             if (canResumeProject && savedProject) {
                 showLocalProgress('titles', OPS_VIDEO_PROGRESS.titles.end, 'Restaurando o projeto salvo e renovando as URLs dos takes.');
                 adData = savedProject.adData;
+                titleWarning = savedProject.adData.titleGenerationSummary?.warning || null;
                 captionStyle = savedProject.captionStyle;
                 selectedMusicId = savedProject.selectedMusicId;
                 finalTakes = await hydratePreparedTakes(
@@ -599,7 +621,22 @@ export const OpsVideoJobCoordinator = () => {
                     } catch {
                         // Títulos são um enriquecimento opcional. Uma falha inesperada não pode
                         // invalidar narração, takes, legendas ou o projeto já montado.
-                        adData = { ...adData, dynamicTitles: [] };
+                        adData = {
+                            ...adData,
+                            dynamicTitles: [],
+                            titleGenerationSummary: {
+                                requested: true,
+                                outcome: 'none',
+                                titleCount: 0,
+                                warning: AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
+                                warnings: [{
+                                    code: 'automatic_titles_unavailable',
+                                    message: AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
+                                }],
+                                diagnostic: { code: 'automatic_titles_unavailable', phase: 'titles' },
+                                generatedAt: new Date().toISOString(),
+                            },
+                        };
                         titleWarning = AUTOMATIC_TITLES_UNAVAILABLE_WARNING;
                         console.warn('[title-generation]', {
                             event: 'coordinator_degraded',
@@ -607,6 +644,17 @@ export const OpsVideoJobCoordinator = () => {
                             stage: 'titles',
                         });
                     }
+                } else {
+                    adData = {
+                        ...adData,
+                        dynamicTitles: [],
+                        titleGenerationSummary: {
+                            requested: false,
+                            outcome: 'skipped',
+                            titleCount: 0,
+                            generatedAt: new Date().toISOString(),
+                        },
+                    };
                 }
                 await patch('titles', OPS_VIDEO_PROGRESS.titles.end, job.automaticTitles
                     ? titleWarning || 'Titulos automaticos prontos.'
@@ -639,6 +687,7 @@ export const OpsVideoJobCoordinator = () => {
                 adData,
                 captionStyle,
                 projectId: job.projectId,
+                sourceJobId: job.id,
                 opsMetadata: metadata,
                 destination: {
                     kind: 'ops',
@@ -650,7 +699,11 @@ export const OpsVideoJobCoordinator = () => {
             if (!exportJobId) throw new Error('export_busy: Ja existe outra exportacao em andamento neste Mileto AI Video.');
             persisted = updatePersistedOpsVideoJob({ resume: { renderStarted: true, exportJobId } }) || persisted;
             await patch('export', 90, 'Render em andamento. O executor continuara ativo em segundo plano.');
-            const assetId = await waitForOpsExport(job.projectId);
+            const completedExport = await waitForOpsExport(job.projectId);
+            const assetId = completedExport.assetId;
+            const exportWarning = completedExport.renderResult
+                ? exportWarningSummary(completedExport.renderResult.warnings)
+                : undefined;
             persisted = updatePersistedOpsVideoJob({ resume: { outputAssetId: assetId } }) || persisted;
             await patch('export', OPS_VIDEO_PROGRESS.export.end, 'Upload concluido; confirmando o asset no Mileto Ops.', { outputAssetId: assetId });
             await persistAutomatedProject({
@@ -662,15 +715,25 @@ export const OpsVideoJobCoordinator = () => {
                 selectedMusicId,
                 exported: true,
             });
-            await patch('completed', 100, titleWarning
-                ? `${titleWarning}; vídeo criado e entregue na pasta da empresa.`
+            // O relatório final já incorpora os avisos estruturados da geração de
+            // títulos. Preferi-lo evita repetir fallback/cobertura no mesmo texto.
+            const completionWarning = (exportWarning || titleWarning || '').slice(0, 1_500);
+            await patch('completed', 100, completionWarning
+                ? `${completionWarning}; vídeo criado e entregue na pasta da empresa.`
                 : 'Video criado e entregue na pasta da empresa.', {
                 status: 'completed',
                 outputAssetId: assetId,
             });
             clearPersistedOpsVideoJob();
             currentJobRef.current = null;
-            toast.success(`O agente concluiu "${job.projectTitle}" e enviou ao Mileto Ops.`, { duration: 10_000 });
+            if (completionWarning) {
+                toast.warning(`O agente concluiu "${job.projectTitle}" com advertências.`, {
+                    description: completionWarning,
+                    duration: 12_000,
+                });
+            } else {
+                toast.success(`O agente concluiu "${job.projectTitle}" e enviou ao Mileto Ops.`, { duration: 10_000 });
+            }
         } catch (error) {
             const parsed = errorParts(error);
             const current = loadPersistedOpsVideoJob() || persisted;

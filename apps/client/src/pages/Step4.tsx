@@ -225,6 +225,37 @@ export const Step4 = () => {
 
     const cloneTitles = useCallback((items: TitleHook[]) => items.map((title) => ({ ...title })), []);
 
+    const persistManualTitles = useCallback((items: TitleHook[]) => {
+        const activeItems = items.filter((title) => title.isActive);
+        const required = adData.titleGenerationSummary?.semanticCoverage?.required
+            || (['hook', 'offer_or_benefit', 'cta'] as const).filter((role) =>
+                activeItems.some((title) => title.semanticRoles?.includes(role))
+            );
+        const covered = required.filter((role) =>
+            activeItems.some((title) => title.semanticRoles?.includes(role))
+        );
+        updateAdData({
+            dynamicTitles: items,
+            dynamicTitlesSourceKey: currentSourceKey,
+            titleGenerationSummary: {
+                ...adData.titleGenerationSummary,
+                requested: adData.titleGenerationSummary?.requested ?? false,
+                outcome: 'manual',
+                titleCount: activeItems.length,
+                semanticCoverage: {
+                    required: [...required],
+                    covered,
+                    missing: required.filter((role) => !covered.includes(role)),
+                },
+                warning: undefined,
+                warnings: undefined,
+                diagnostic: undefined,
+                diagnostics: undefined,
+                generatedAt: new Date().toISOString(),
+            },
+        });
+    }, [adData.titleGenerationSummary, currentSourceKey, updateAdData]);
+
     const flushPendingTitleHistory = useCallback(() => {
         const history = titleHistoryRef.current;
         if (history.timer) clearTimeout(history.timer);
@@ -265,12 +296,12 @@ export const Step4 = () => {
             const restored = cloneTitles(snapshot);
             titleHistoryRef.current.restoring = true;
             titleStateRef.current = restored;
-            updateAdData({ dynamicTitles: restored });
+            persistManualTitles(restored);
             setSelectedTitleId((current) =>
                 current && restored.some((title) => title.id === current) ? current : (restored[0]?.id ?? null)
             );
         },
-        [cloneTitles, updateAdData]
+        [cloneTitles, persistManualTitles]
     );
 
     const undoTitleChange = useCallback(() => {
@@ -321,6 +352,7 @@ export const Step4 = () => {
     }, []);
 
     const handleGenerateTitles = async () => {
+        if (isGenerating) return;
         if (!currentCaptions?.segments?.length) {
             toast.error(adData.captions?.segments?.length
                 ? 'A narração mudou. Gere novamente as legendas na Etapa 3 antes dos títulos.'
@@ -356,23 +388,61 @@ export const Step4 = () => {
                 { headers: await localAuthHeaders() }
             );
 
-            if (res.data.ok && res.data.titles) {
+            if (res.data.ok && Array.isArray(res.data.titles)) {
                 const finalTitles = (res.data.titles || []).map((t: TitleHook) => ({
                     ...t,
                     isActive: true,
                     hasSound: true,
                 }));
-                updateAdData({ dynamicTitles: finalTitles, dynamicTitlesSourceKey: currentSourceKey });
+                const warning = String(res.data.warning || '').trim() || undefined;
+                updateAdData({
+                    dynamicTitles: finalTitles,
+                    dynamicTitlesSourceKey: currentSourceKey,
+                    titleGenerationSummary: {
+                        requested: true,
+                        outcome: finalTitles.length
+                            ? (res.data.source === 'local' ? 'fallback' : 'ai')
+                            : 'none',
+                        titleCount: finalTitles.length,
+                        serverAttempts: Number(res.data.attempts) || 0,
+                        clientRequests: 1,
+                        configSource: res.data.configSource,
+                        semanticCoverage: res.data.semanticCoverage,
+                        metrics: res.data.metrics,
+                        warning,
+                        warnings: res.data.warnings,
+                        diagnostic: res.data.diagnostic,
+                        generatedAt: new Date().toISOString(),
+                    },
+                });
                 setSelectedTitleId(null);
-                toast.success('Títulos gerados com sucesso!', { id: toastId });
+                if (finalTitles.length) {
+                    const sourceLabel = res.data.source === 'local' ? 'fallback local' : 'IA';
+                    toast.success(`${finalTitles.length} título(s) gerado(s) por ${sourceLabel}.`, {
+                        id: toastId,
+                        description: warning,
+                    });
+                } else {
+                    toast.warning(warning || 'O vídeo pode continuar sem títulos automáticos.', { id: toastId });
+                }
             } else {
                 throw new Error(res.data.message || 'Falha ao gerar');
             }
         } catch (error: unknown) {
-            console.error(error);
-            const errMsg = axios.isAxiosError(error)
-                ? error.response?.data?.message || 'Erro ao comunicar com a inteligência artificial'
-                : 'Erro ao comunicar com a inteligência artificial';
+            const responseData = axios.isAxiosError<{
+                message?: string;
+                code?: string;
+                requestId?: string;
+                phase?: string;
+            }>(error) ? error.response?.data : undefined;
+            const diagnostic = {
+                code: responseData?.code || (axios.isAxiosError(error) ? error.code : undefined) || 'title_generation_failed',
+                status: axios.isAxiosError(error) ? Number(error.response?.status || 0) : 0,
+                phase: responseData?.phase || 'manual_titles',
+                requestId: responseData?.requestId,
+            };
+            console.error('[title-generation]', diagnostic);
+            const errMsg = responseData?.message || 'Erro ao comunicar com a inteligência artificial';
             toast.error(errMsg, { id: toastId });
         } finally {
             setIsGenerating(false);
@@ -393,6 +463,8 @@ export const Step4 = () => {
     };
 
     const updateTitle = (id: string, updates: Partial<TitleHook>) => {
+        const affectsCoverage = ['text', 'sourceText', 'startSec', 'durationSec', 'isActive']
+            .some((field) => Object.prototype.hasOwnProperty.call(updates, field));
         const newTitles = titles.map((t) => {
             if (t.id === id) {
                 const safeUpdates = Object.prototype.hasOwnProperty.call(updates, 'text')
@@ -400,9 +472,19 @@ export const Step4 = () => {
                     : updates;
                 const colorEdited = Object.prototype.hasOwnProperty.call(safeUpdates, 'primaryColor')
                     || Object.prototype.hasOwnProperty.call(safeUpdates, 'secondaryColor');
+                const textChanged = Object.prototype.hasOwnProperty.call(safeUpdates, 'text')
+                    || Object.prototype.hasOwnProperty.call(safeUpdates, 'sourceText');
+                const startChanged = Object.prototype.hasOwnProperty.call(safeUpdates, 'startSec');
                 const updated = {
                     ...t,
                     ...safeUpdates,
+                    ...(textChanged ? {
+                        sourceText: undefined,
+                        triggerId: undefined,
+                        semanticRoles: undefined,
+                    } : (startChanged && t.semanticRoles?.includes('hook') ? {
+                        semanticRoles: t.semanticRoles.filter((role) => role !== 'hook'),
+                    } : {})),
                     ...(colorEdited && !Object.prototype.hasOwnProperty.call(safeUpdates, 'colorBinding')
                         ? { colorBinding: undefined }
                         : {}),
@@ -424,19 +506,21 @@ export const Step4 = () => {
             }
             return t;
         });
-        updateAdData({ dynamicTitles: newTitles });
+        if (affectsCoverage) persistManualTitles(newTitles);
+        else updateAdData({ dynamicTitles: newTitles });
     };
 
     const updateTitleTransform = (id: string, updates: Partial<TitleHook>) => {
-        updateAdData({
-            dynamicTitles: titles.map((title) => (title.id === id ? { ...title, ...updates } : title)),
-        });
+        // O editor sobre o próprio vídeo também pode alterar o texto. Reutilizar
+        // o mesmo caminho do painel garante que evidências semânticas antigas não
+        // sobrevivam a uma edição manual.
+        updateTitle(id, updates);
     };
 
     const deleteTitle = (id: string) => {
         const index = titles.findIndex((title) => title.id === id);
         const remaining = titles.filter((title) => title.id !== id);
-        updateAdData({ dynamicTitles: remaining });
+        persistManualTitles(remaining);
         setSelectedTitleId(remaining[Math.min(Math.max(index, 0), Math.max(remaining.length - 1, 0))]?.id ?? null);
         toast.success('Título removido.');
     };
@@ -493,7 +577,7 @@ export const Step4 = () => {
                 <div className="custom-scrollbar relative flex min-h-0 flex-col gap-3 overflow-y-auto rounded-2xl border border-black/5 bg-brand-card p-3 shadow-xl dark:border-white/5">
                     <button
                         onClick={handleGenerateTitles}
-                        disabled={false}
+                        disabled={isGenerating}
                         className="z-10 flex w-full items-center justify-center gap-2 rounded-xl bg-linear-to-r from-brand-lime to-brand-accent py-3 text-[11px] font-bold uppercase tracking-wider text-[#0a0f12] transition-all hover:scale-[1.01] hover:shadow-[0_0_15px_rgba(0,230,118,0.4)] active:scale-[0.98] disabled:opacity-50"
                     >
                         {isGenerating ? (
@@ -524,7 +608,7 @@ export const Step4 = () => {
                                 animationId: 'pop',
                                 fontFamily: 'Poppins',
                             };
-                            updateAdData({ dynamicTitles: [...titles, newTitle], dynamicTitlesSourceKey: currentSourceKey });
+                            persistManualTitles([...titles, newTitle]);
                             setSelectedTitleId(newTitle.id);
                             handleTargetTime(startSec);
                             toast.success(
@@ -573,7 +657,7 @@ export const Step4 = () => {
                                     fontFamily: 'Inter',
                                     imageUrl: imageUrl, // Store the blob URL
                                 };
-                                updateAdData({ dynamicTitles: [...titles, newTitle], dynamicTitlesSourceKey: currentSourceKey });
+                                persistManualTitles([...titles, newTitle]);
                                 setSelectedTitleId(newTitle.id);
                                 handleTargetTime(startSec);
                                 toast.success('Imagem de título carregada!');

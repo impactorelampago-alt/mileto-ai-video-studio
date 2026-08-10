@@ -945,7 +945,7 @@ export const AiTitleGeneratorTest = () => {
                 <summary className="cursor-pointer text-[10px] font-black uppercase tracking-[0.16em] text-brand-lime">Regras gerais de extração</summary>
                 <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_150px]">
                     <label className="text-[9px] font-bold text-brand-muted">Orientação para a IA<textarea value={config.extractionPrompt} onChange={(event) => setConfig((current) => current ? { ...current, extractionPrompt: event.target.value } : current)} className="mt-1 min-h-20 w-full rounded-xl border border-white/10 bg-black/20 p-3 text-xs font-normal text-foreground outline-none focus:border-brand-lime/40" /></label>
-                    <label className="text-[9px] font-bold text-brand-muted">Máximo por vídeo<input type="number" min={1} max={12} value={config.maxTitles} onChange={(event) => setConfig((current) => current ? { ...current, maxTitles: Number(event.target.value) } : current)} className="mt-1 h-11 w-full rounded-xl border border-white/10 bg-black/20 px-3 text-sm text-foreground outline-none focus:border-brand-lime/40" /></label>
+                    <label className="text-[9px] font-bold text-brand-muted" title="A cobertura de gancho, oferta/benefício e CTA pode acrescentar títulos além desta base.">Quantidade base por vídeo<input type="number" min={1} max={12} value={config.maxTitles} onChange={(event) => setConfig((current) => current ? { ...current, maxTitles: Number(event.target.value) } : current)} className="mt-1 h-11 w-full rounded-xl border border-white/10 bg-black/20 px-3 text-sm text-foreground outline-none focus:border-brand-lime/40" /></label>
                 </div>
             </details>
 

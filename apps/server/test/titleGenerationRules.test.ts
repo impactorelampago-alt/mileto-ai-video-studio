@@ -4,12 +4,16 @@ import {
     compactTitleDisplayText,
     deterministicCaptionTitleCandidates,
     deterministicTitleCandidates,
+    fitTitlesToTimeline,
     isSemanticallyCompleteTitle,
     limitTitleWords,
     preventTitleOverlaps,
     resolveLiteralCaptionText,
     resolveTitleColors,
     rotatingTitleTypeIndex,
+    selectTitlesForSemanticCoverage,
+    semanticCoverageForTitles,
+    semanticRolesForTitle,
     titleTypeWordCapacity,
     triggerMapWithAliases,
 } from '../src/services/titleGenerationRules';
@@ -229,4 +233,51 @@ test('faz rodízio entre todas as opções marcadas em gerações sucessivas', (
         [0, 1, 2].map((assignment) => rotatingTitleTypeIndex(3, 1, assignment)),
         [1, 2, 0]
     );
+});
+
+test('trata maxTitles como quantidade-base e só expande pelas funções semânticas comprovadas', () => {
+    const candidates = [
+        { id: 'hook-offer', startSec: 0.4, durationSec: 2, semanticRoles: semanticRolesForTitle('benefit', 0.4, 20) },
+        { id: 'support', startSec: 4, durationSec: 2, semanticRoles: [] },
+        { id: 'cta-final', startSec: 17, durationSec: 2, semanticRoles: semanticRolesForTitle('cta', 17, 20) },
+    ];
+    const expanded = selectTitlesForSemanticCoverage(candidates, 1);
+    assert.deepEqual(expanded.titles.map((title) => title.id), ['hook-offer', 'cta-final']);
+    assert.deepEqual(expanded.coverage, {
+        required: ['hook', 'offer_or_benefit', 'cta'],
+        covered: ['hook', 'offer_or_benefit', 'cta'],
+        missing: [],
+    });
+
+    const baseFilled = selectTitlesForSemanticCoverage(candidates, 3);
+    assert.deepEqual(baseFilled.titles.map((title) => title.id), ['hook-offer', 'support', 'cta-final']);
+    assert.equal(baseFilled.titles.length, 3);
+});
+
+test('CTA final é preservado e limitado à timeline sem virar fração invisível', () => {
+    const fitted = fitTitlesToTimeline([
+        { id: 'valid-cta', startSec: 21.82, durationSec: 2, semanticRoles: ['cta'] as ('cta')[] },
+        { id: 'outside', startSec: 24.3, durationSec: 2, semanticRoles: ['cta'] as ('cta')[] },
+        { id: 'flash', startSec: 23.8, durationSec: 2, semanticRoles: [] },
+    ], 24.163188);
+    assert.deepEqual(fitted.map((title) => title.id), ['valid-cta']);
+    assert.equal(fitted[0].durationSec, 2);
+    assert.deepEqual(semanticCoverageForTitles(fitted, fitted), {
+        required: ['cta'],
+        covered: ['cta'],
+        missing: [],
+    });
+});
+
+test('CTA comprovado continua faltante se for descartado antes da seleção final', () => {
+    const evidence = [
+        { startSec: 0.4, durationSec: 1, semanticRoles: ['hook', 'offer_or_benefit'] as ('hook' | 'offer_or_benefit')[] },
+        { startSec: 17, durationSec: 1, semanticRoles: ['cta'] as ('cta')[] },
+    ];
+    const selected = [evidence[0]];
+    assert.deepEqual(semanticCoverageForTitles(evidence, selected), {
+        required: ['hook', 'offer_or_benefit', 'cta'],
+        covered: ['hook', 'offer_or_benefit'],
+        missing: ['cta'],
+    });
 });

@@ -2172,7 +2172,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                     return {};
                                 };
 
-                                return dynamicTitles.map((title) => {
+                                return dynamicTitles.filter((title) => title.isActive).map((title) => {
                                     if (
                                         audioTime >= title.startSec &&
                                         audioTime <= title.startSec + title.durationSec

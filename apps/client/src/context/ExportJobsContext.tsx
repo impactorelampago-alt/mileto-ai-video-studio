@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { DOMCaptureEngine } from '../lib/export/DOMCaptureEngine';
 import { API_BASE_URL } from '../lib/apiBase';
 import type { AdData, CaptionStyle, CaptionTrack, MediaTake, TitleHook } from '../types';
@@ -7,6 +8,14 @@ import { useDownloadJobs } from './DownloadJobsContext';
 import { useWizard } from './WizardContext';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { resolveTakeEnhancement, resolveTakeSharpness } from '../lib/videoEnhancement';
+import { narrationSourceKey } from '../lib/narrationState';
+import {
+    exportWarningSummary,
+    titleOriginForExport,
+    validateTitlesForExport,
+    type ExportResultDiagnostics,
+    type ServerRenderDiagnostics,
+} from '../lib/exportIntegrity';
 
 export interface OpsExportMetadata {
     title: string;
@@ -29,6 +38,8 @@ export interface BackgroundExportRequest {
     adData: AdData;
     captionStyle: CaptionStyle | null;
     projectId: string;
+    /** Job de origem, quando a exportação pertence a um executor externo. */
+    sourceJobId?: string;
     opsMetadata?: OpsExportMetadata;
     destination: { kind: 'local' | 'shared' | 'ops'; folderPath?: string; companyId?: string; opsFolderId?: string | null; viewContextId?: string | null };
 }
@@ -40,6 +51,7 @@ interface ExportJobsContextValue {
 
 interface ActiveExport extends BackgroundExportRequest {
     jobId: string;
+    titleIntegrity: ReturnType<typeof validateTitlesForExport>;
 }
 
 const ExportJobsContext = createContext<ExportJobsContextValue | null>(null);
@@ -94,7 +106,44 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                 source: 'export',
                 statusText: 'Preparando exportação',
             });
-            const active = { ...request, fileName: safeName, jobId };
+            const currentTitleSourceKey = narrationSourceKey(request.adData);
+            const titleSourceIsStale = Boolean(
+                request.adData.dynamicTitlesSourceKey
+                && request.adData.dynamicTitlesSourceKey !== currentTitleSourceKey
+            );
+            const titleIntegrity = validateTitlesForExport(
+                titleSourceIsStale ? [] : request.adData.dynamicTitles,
+                request.totalDuration,
+                titleSourceIsStale ? undefined : request.adData.titleGenerationSummary,
+            );
+            if (titleSourceIsStale) {
+                titleIntegrity.warnings.unshift({
+                    code: 'title_source_stale',
+                    message: 'Os títulos pertenciam a uma narração anterior e foram removidos desta exportação.',
+                    stage: 'titles',
+                });
+            }
+            const titleWarning = exportWarningSummary(titleIntegrity.warnings);
+            if (titleWarning) {
+                toast.warning('A exportação continuará com advertências de títulos.', {
+                    description: titleWarning,
+                    duration: 8_000,
+                });
+            }
+            const active = {
+                ...request,
+                fileName: safeName,
+                jobId,
+                titleIntegrity,
+                adData: {
+                    ...request.adData,
+                    dynamicTitles: titleIntegrity.titles,
+                    ...(titleSourceIsStale ? {
+                        dynamicTitlesSourceKey: undefined,
+                        titleGenerationSummary: undefined,
+                    } : {}),
+                },
+            };
             activeRef.current = active;
             setActiveExport(active);
             return jobId;
@@ -229,8 +278,67 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                         outputFps: activeExport.fps,
                     }),
                 });
-                const result = await response.json();
-                if (!response.ok || !result.ok) throw new Error(result.message || 'Falha ao montar o vídeo final.');
+                const result = await response.json() as {
+                    ok?: boolean;
+                    code?: string;
+                    message?: string;
+                    finalPath?: string;
+                    outputPath?: string;
+                    renderDiagnostics?: ServerRenderDiagnostics;
+                    diagnostics?: ServerRenderDiagnostics;
+                };
+                if (!response.ok || !result.ok) {
+                    if (result.diagnostics) {
+                        updateClientJob(activeExport.jobId, { renderDiagnostics: result.diagnostics });
+                    }
+                    throw new Error(`${result.code || 'render_failed'}: ${result.message || 'Falha ao montar o vídeo final.'}`);
+                }
+                const renderDiagnostics = result.renderDiagnostics;
+                if (renderDiagnostics?.status !== 'passed') {
+                    throw new Error('render_integrity_report_missing: O servidor não comprovou a integridade do MP4.');
+                }
+                const actualVideoDurationSec = Number(renderDiagnostics.actualVideoDurationSec);
+                const actualAudioDurationSec = Number(renderDiagnostics.actualAudioDurationSec);
+                if (!(actualVideoDurationSec > 0) || !(actualAudioDurationSec > 0)) {
+                    throw new Error('render_integrity_duration_missing: O relatório não contém as durações reais das streams.');
+                }
+                const exportResult: ExportResultDiagnostics = {
+                    status: 'validated',
+                    exportJobId: activeExport.jobId,
+                    sourceJobId: activeExport.sourceJobId,
+                    projectId: activeExport.projectId,
+                    expectedDurationSec: Number(renderDiagnostics.expectedDurationSec),
+                    actualVideoDurationSec,
+                    actualAudioDurationSec,
+                    containerDurationSec: renderDiagnostics.containerDurationSec,
+                    outputFps: renderDiagnostics.expectedFps,
+                    actualVideoFps: renderDiagnostics.actualVideoFps,
+                    videoFrameCount: renderDiagnostics.actualVideoFrameCount,
+                    durationToleranceSec: renderDiagnostics.durationToleranceSec,
+                    videoDurationToleranceSec: renderDiagnostics.videoDurationToleranceSec,
+                    titleCount: activeExport.titleIntegrity.titles.length,
+                    titleOrigin: titleOriginForExport(
+                        activeExport.adData.titleGenerationSummary,
+                        activeExport.titleIntegrity.titles.length,
+                    ),
+                    titleCoverage: activeExport.titleIntegrity.coverage,
+                    warnings: activeExport.titleIntegrity.warnings,
+                    validatedAt: new Date().toISOString(),
+                };
+                try {
+                    const resultIdentity = activeExport.sourceJobId || activeExport.jobId;
+                    localStorage.setItem(`mileto:render-result:${resultIdentity}`, JSON.stringify(exportResult));
+                } catch {
+                    // O resultado continua no job em memória; falha de armazenamento
+                    // local não libera um MP4 sem validação nem muda o destino.
+                }
+                updateClientJob(activeExport.jobId, {
+                    renderDiagnostics,
+                    result: exportResult,
+                    statusText: exportWarningSummary(exportResult.warnings)
+                        ? `Integridade validada com advertências: ${exportWarningSummary(exportResult.warnings)}`
+                        : 'Integridade de vídeo e áudio validada',
+                });
 
                 updateProgress(96, 'Enviando o MP4 ao destino escolhido');
                 const sourcePath = result.finalPath || result.outputPath || tempFinalPath;
@@ -295,9 +403,13 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                     percent: 100,
                     stepPercent: 100,
                     completedAt: Date.now(),
-                    statusText: 'Vídeo exportado e salvo',
+                    statusText: exportWarningSummary(exportResult.warnings)
+                        ? `Vídeo exportado com advertências: ${exportWarningSummary(exportResult.warnings)}`
+                        : 'Vídeo exportado e salvo',
                     outputPath,
                     assetId,
+                    renderDiagnostics,
+                    result: exportResult,
                 });
 
                 if (assetId) {
@@ -307,6 +419,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                             companyId: activeExport.destination.kind === 'ops' ? activeExport.destination.companyId : undefined,
                             folderId: activeExport.destination.kind === 'ops' ? (activeExport.destination.opsFolderId || null) : null,
                             exportedAt: new Date().toISOString(),
+                            renderResult: exportResult,
                         }));
                     } catch {
                         // O assetId continua disponível no job e no evento mesmo se o
@@ -317,6 +430,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                             assetId,
                             projectId: activeExport.projectId,
                             exportJobId: activeExport.jobId,
+                            renderResult: exportResult,
                         },
                     }));
                 }

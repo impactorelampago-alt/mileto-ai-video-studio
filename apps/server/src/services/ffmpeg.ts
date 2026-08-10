@@ -2,6 +2,12 @@ import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import fs from 'fs';
 import { execFile, execFileSync } from 'child_process';
+import {
+    expectedTimelineFrameCount,
+    normalizeRenderFps,
+    planTimelineFrames,
+    type MediaDurationProbe,
+} from './renderIntegrity';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '../../');
 const FRAMES_DIR = path.join(BASE_DATA_PATH, 'frame_cache'); // Reusing the naming convention from index.ts
@@ -31,6 +37,7 @@ type HwEncoder = 'h264_nvenc' | 'h264_qsv' | 'h264_amf' | 'libx264';
 let CACHED_ENCODER: HwEncoder | null = null;
 
 const resolveFfmpegExe = (): string => (ffPath && fs.existsSync(ffPath) ? ffPath : 'ffmpeg');
+const resolveFfprobeExe = (): string => (probePath && fs.existsSync(probePath) ? probePath : 'ffprobe');
 
 const testEncoder = (enc: string): boolean => {
     try {
@@ -164,14 +171,86 @@ export const getVideoMetadata = (filePath: string): Promise<VideoMetadata> => {
         ffmpeg.ffprobe(filePath, (err, data) => {
             if (err) return reject(err);
             const stream = data.streams.find((s) => s.codec_type === 'video');
+            const streamRecord = stream as unknown as Record<string, unknown> | undefined;
             resolve({
-                duration: data.format.duration || 0,
+                duration: streamRecord
+                    ? (ffprobeStreamDuration(streamRecord) || data.format.duration || 0)
+                    : (data.format.duration || 0),
                 width: stream?.width,
                 height: stream?.height,
             });
         });
     });
 };
+
+const parseFfprobeRate = (value: unknown): number | null => {
+    const raw = String(value || '').trim();
+    if (!raw || raw === '0/0') return null;
+    if (!raw.includes('/')) {
+        const numeric = Number(raw);
+        return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    }
+    const [numerator, denominator] = raw.split('/').map(Number);
+    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null;
+    const rate = numerator / denominator;
+    return Number.isFinite(rate) && rate > 0 ? rate : null;
+};
+
+const ffprobeStreamDuration = (stream: Record<string, unknown>): number | null => {
+    const direct = Number(stream.duration);
+    if (Number.isFinite(direct) && direct > 0) return direct;
+
+    const durationTicks = Number(stream.duration_ts);
+    const timeBase = parseFfprobeRate(stream.time_base);
+    if (Number.isFinite(durationTicks) && durationTicks > 0 && timeBase) {
+        const calculated = durationTicks * timeBase;
+        return Number.isFinite(calculated) && calculated > 0 ? calculated : null;
+    }
+    return null;
+};
+
+/** Medição estruturada usada como barreira obrigatória antes da entrega do MP4. */
+export const probeMediaDurations = (filePath: string): Promise<MediaDurationProbe> =>
+    new Promise((resolve, reject) => {
+        execFile(resolveFfprobeExe(), [
+            '-v', 'error',
+            '-count_frames',
+            '-show_entries',
+            'stream=codec_type,duration,duration_ts,time_base,avg_frame_rate,r_frame_rate,nb_frames,nb_read_frames:format=duration',
+            '-of', 'json',
+            filePath,
+        ], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+            if (error) return reject(error);
+            try {
+                const data = JSON.parse(String(stdout || '{}')) as {
+                    streams?: Record<string, unknown>[];
+                    format?: Record<string, unknown>;
+                };
+                const streams = data.streams || [];
+                const video = streams.find((stream) => stream.codec_type === 'video');
+                const audio = streams.find((stream) => stream.codec_type === 'audio');
+                const formatDuration = Number(data.format?.duration);
+                const countedFrames = Number(video?.nb_read_frames);
+                const declaredFrames = Number(video?.nb_frames);
+                const frameCount = Number.isInteger(countedFrames) && countedFrames > 0
+                    ? countedFrames
+                    : declaredFrames;
+                resolve({
+                    formatDurationSec: Number.isFinite(formatDuration) && formatDuration > 0 ? formatDuration : null,
+                    videoDurationSec: video ? ffprobeStreamDuration(video) : null,
+                    audioDurationSec: audio ? ffprobeStreamDuration(audio) : null,
+                    videoFps: video
+                        ? (parseFfprobeRate(video.avg_frame_rate) ?? parseFfprobeRate(video.r_frame_rate))
+                        : null,
+                    videoFrameCount: Number.isInteger(frameCount) && frameCount > 0 ? frameCount : null,
+                    hasVideo: Boolean(video),
+                    hasAudio: Boolean(audio),
+                });
+            } catch (parseError) {
+                reject(parseError);
+            }
+        });
+    });
 
 export const extractFrames = (sourceId: string, filePath: string, count = 10): Promise<string[]> => {
     const outputDir = path.join(FRAMES_DIR, sourceId);
@@ -372,9 +451,31 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         }
     }
 
+    const outputFps = normalizeRenderFps(params.outputFps);
+    const framePlan = planTimelineFrames(params.takes, outputFps);
+    if (framePlan.unrepresentableTakeIndices.length) {
+        throw new Error(
+            `render_take_too_short_for_fps: take(s) ${framePlan.unrepresentableTakeIndices.join(', ')} não ocupam um quadro.`
+        );
+    }
+
+    let transitionDurationSec = 1.2;
+    if (params.transitionPath) {
+        try {
+            const transitionProbe = await probeMediaDurations(params.transitionPath);
+            const measuredDuration = transitionProbe.videoDurationSec;
+            if (Number.isFinite(measuredDuration) && Number(measuredDuration) > 0) {
+                const transitionFrames = Math.max(1, Math.round(Number(measuredDuration) * outputFps));
+                transitionDurationSec = transitionFrames / outputFps;
+            }
+        } catch (error) {
+            console.warn('[FFmpeg Hybrid] Não foi possível medir a transição; usando 1,2 s.', error);
+        }
+    }
+
     return new Promise((resolve, reject) => {
         const { takes, transitionPath, transitionRotation = 0, audioPath, overlayPath, outputPath, duration } = params;
-        const outputFps = [24, 30, 60].includes(Number(params.outputFps)) ? Number(params.outputFps) : 30;
+        const expectedDuration = Number(duration) > 0 ? Number(duration) : null;
 
         let actualOverlayInput = overlayPath;
         let tempOverlayDir = '';
@@ -506,10 +607,12 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         const concatInputs: string[] = [];
         const originalTakeDurations: number[] = []; // Store true physical durations for cut calculations
 
+        // Limites cumulativos CFR compartilhados com a validação pré-render.
+        const takeFrameCounts = framePlan.frameCounts;
+
         takes.forEach((take, index) => {
             const rawDuration = take.end - take.start;
             let setptsExpr = `PTS-STARTPTS`;
-            let physicalDuration = rawDuration;
 
             // Advanced non-linear time remapping (Calculus integrals converted to FFmpeg Expr)
             if (typeof take.speed === 'string') {
@@ -529,13 +632,18 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             } else if (typeof take.speed === 'number' && take.speed !== 1) {
                 // Flat uniform speed modifier
                 setptsExpr = `${(1 / take.speed).toFixed(6)}*(PTS-STARTPTS)`;
-                physicalDuration = rawDuration / take.speed;
             }
 
-            originalTakeDurations.push(physicalDuration);
+            const takeFrameCount = takeFrameCounts[index];
+            const frameLockedDuration = takeFrameCount / outputFps;
+            originalTakeDurations.push(frameLockedDuration);
 
-            const trimStr =
-                take.type === 'video' ? `trim=start=${take.start}:duration=${rawDuration},setpts=${setptsExpr},` : '';
+            // Normalize a fonte ANTES do zoompan. Com d=1, cada frame de entrada
+            // já representa exatamente um frame da cadência final, seja a câmera
+            // 24, 25, 30 ou 60 fps. Imagens são sustentadas pelo contrato de frames.
+            const sourceTimelineStr = take.type === 'video'
+                ? `trim=start=${take.start}:duration=${rawDuration},setpts=${setptsExpr},fps=${outputFps}:start_time=0,`
+                : `loop=loop=-1:size=1:start=0,trim=duration=${frameLockedDuration.toFixed(9)},setpts=PTS-STARTPTS,fps=${outputFps}:start_time=0,`;
             const isContain = take.objectFit === 'contain';
             // O movimento usa uma tela intermediária em 2x. O zoompan mantém a saída
             // com dimensões fixas em todos os quadros; isso evita o arredondamento
@@ -552,8 +660,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             if (take.motionEffect) {
                 const effect = take.motionEffect;
                 const amount = Math.min(0.35, Math.max(0.02, Number(effect.intensity) || 0.12));
-                const motionDuration = Math.max(0.001, physicalDuration);
-                const motionFrameDenominator = Math.max(1, Math.round(motionDuration * outputFps) - 1);
+                const motionFrameDenominator = Math.max(1, takeFrameCount - 1);
                 const p = `min(max(on/${motionFrameDenominator},0),1)`;
                 const motionProgress =
                     effect.type === 'zoom-in-out' ? `(if(lt(${p},0.5),2*(${p}),2*(1-(${p}))))` : `(${p})`;
@@ -565,8 +672,10 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                     effect.type === 'zoom-out'
                         ? `(1+${amount.toFixed(6)}*(1-${eased}))`
                         : `(1+${amount.toFixed(6)}*${eased})`;
-                const focalX = Math.min(1, Math.max(0, (Number(effect.focalX) || 50) / 100));
-                const focalY = Math.min(1, Math.max(0, (Number(effect.focalY) || 50) / 100));
+                const rawFocalX = Number(effect.focalX);
+                const rawFocalY = Number(effect.focalY);
+                const focalX = Math.min(1, Math.max(0, (Number.isFinite(rawFocalX) ? rawFocalX : 50) / 100));
+                const focalY = Math.min(1, Math.max(0, (Number.isFinite(rawFocalY) ? rawFocalY : 50) / 100));
                 const zoomPanX = `(iw-iw/zoom)*${focalX.toFixed(4)}`;
                 const zoomPanY = `(ih-ih/zoom)*${focalY.toFixed(4)}`;
                 motionStr = `,format=yuv444p,zoompan=z='${zoom}':x='${zoomPanX}':y='${zoomPanY}':d=1:s=${workingW}x${workingH}:fps=${outputFps},scale=${TARGET_W}:${TARGET_H}:flags=lanczos,format=yuv420p`;
@@ -592,7 +701,8 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             }
             const enhancementStr = enhancementFilters.length ? `,${enhancementFilters.join(',')}` : '';
 
-            filterGraph += `[${index}:v]${trimStr}${scaleStr}${motionStr}${enhancementStr}[v${index}];`;
+            const frameContract = `,trim=end_frame=${takeFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`;
+            filterGraph += `[${index}:v]${sourceTimelineStr}${scaleStr}${motionStr}${enhancementStr}${frameContract}[v${index}];`;
             concatInputs.push(`[v${index}]`);
         });
 
@@ -612,7 +722,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
                         : transitionRotation === 270
                             ? 'transpose=2,'
                             : '';
-                filterGraph += `[${transIdx}:v]${transitionRotate}scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,crop=${TARGET_W}:${TARGET_H},setsar=1,format=rgba,colorkey=black:0.3:0.2`;
+                filterGraph += `[${transIdx}:v]${transitionRotate}fps=${outputFps}:start_time=0,trim=duration=${transitionDurationSec.toFixed(6)},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB),scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,crop=${TARGET_W}:${TARGET_H},setsar=1,format=rgba,colorkey=black:0.3:0.2`;
                 if (numCuts > 1) {
                     filterGraph += `,split=${numCuts}`;
                     for (let s = 0; s < numCuts; s++) {
@@ -632,12 +742,12 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
 
                     if (i < takes.length - 1) {
                         const CUT_POINT = accTime;
-                        const TRANS_HALF = 0.6; // Duração hardcoded default do alpha trans fallback antigo
+                        const TRANS_HALF = transitionDurationSec / 2;
                         const overlayStart = Math.max(0, CUT_POINT - TRANS_HALF);
                         const outName = `[videoCut${i}]`;
 
                         // Atrasa o início físico da stream da transição para coincidir com o tempo do corte
-                        filterGraph += `[transSplit${i}]setpts=PTS+${overlayStart.toFixed(3)}/TB[transDelayed${i}];`;
+                        filterGraph += `[transSplit${i}]setpts=PTS-STARTPTS+${overlayStart.toFixed(6)}/TB[transDelayed${i}];`;
                         filterGraph += `${lastBase}[transDelayed${i}]overlay=0:0:enable='gte(t,${overlayStart.toFixed(3)})':eof_action=pass${outName};`;
                         lastBase = outName;
                     }
@@ -650,8 +760,21 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         // Overlay do Título Transparente — preserva o aspect ratio do PNG capturado.
         // Se o overlay foi gravado no mesmo TARGET, o scale é no-op. Caso contrário,
         // encaixa (decrease) e preenche com transparente, evitando deformação das legendas.
-        filterGraph += `[${overlayIdx}:v]scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=decrease,pad=${TARGET_W}:${TARGET_H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,colorchannelmixer=aa=1.0[alphaT];`;
-        filterGraph += `${currentBase}[alphaT]overlay=eof_action=pass,fps=${outputFps}[finalVideo]`;
+        const overlayTimelineContract = expectedDuration
+            ? `,fps=${outputFps}:start_time=0,trim=duration=${expectedDuration.toFixed(9)},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`
+            : `,fps=${outputFps}:start_time=0,setpts=PTS-STARTPTS`;
+        filterGraph += `[${overlayIdx}:v]scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=decrease,pad=${TARGET_W}:${TARGET_H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,colorchannelmixer=aa=1.0${overlayTimelineContract}[alphaT];`;
+        const finalTimelineContract = expectedDuration
+            ? `,tpad=stop_mode=clone:stop_duration=${(1 / outputFps).toFixed(9)},trim=end_frame=${expectedTimelineFrameCount(expectedDuration, outputFps)},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`
+            : ',setpts=PTS-STARTPTS';
+        // O framesync de overlay pode encerrar no PTS do último quadro, antes
+        // do intervalo de exibição dele. Uma única reserva de quadro fecha esse
+        // intervalo; o trim por contagem impede que ela alongue a timeline e a
+        // validação ffprobe continua recusando qualquer déficit maior.
+        filterGraph += `${currentBase}[alphaT]overlay=eof_action=pass:shortest=0,fps=${outputFps}${finalTimelineContract}[finalVideo]`;
+        if (expectedDuration) {
+            filterGraph += `;[${audioIdx}:a]aresample=async=1:first_pts=0,apad,atrim=duration=${expectedDuration.toFixed(9)},asetpts=PTS-STARTPTS[finalAudio]`;
+        }
 
         console.log('══════════════════════════════════════════════');
         console.log('[FFmpeg Hybrid Direct] FILTERGRAPH COMPLETO:');
@@ -661,11 +784,13 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         // Build final command args
         args.push('-filter_complex', filterGraph);
         args.push('-map', '[finalVideo]');
-        args.push('-map', `${audioIdx}:a`);
+        args.push('-map', expectedDuration ? '[finalAudio]' : `${audioIdx}:a`);
         args.push(...getVideoEncoderArgs({ quality: 18, speed: 'fast' }));
         args.push('-c:a', 'aac');
         args.push('-b:a', '192k');
-        args.push('-shortest');
+        // Ambas as streams já foram fechadas explicitamente na duração
+        // contratada. Não usar -shortest aqui: diferenças de timebase do AAC
+        // poderiam retirar o último quadro mesmo com a timeline visual correta.
         // Move the MP4 index (`moov`) ahead of the media payload. This is a
         // container-only optimization performed while FFmpeg writes the final
         // export; it does not lower the selected video/audio quality and lets
@@ -673,9 +798,9 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         // for almost the entire file.
         args.push('-movflags', '+faststart');
 
-        if (duration) {
-            args.push('-t', String(duration));
-            console.log(`[FFmpeg Hybrid Direct] Duração travada em ${duration}s.`);
+        if (expectedDuration) {
+            args.push('-t', expectedDuration.toFixed(9));
+            console.log(`[FFmpeg Hybrid Direct] Duração contratada em ${expectedDuration}s.`);
         }
 
         args.push(outputPath);

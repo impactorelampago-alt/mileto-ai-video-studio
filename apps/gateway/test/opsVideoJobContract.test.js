@@ -48,9 +48,9 @@ test('fila, leitura, presença, claim e PATCH preservam delegação, assets.writ
     }
 });
 
-test('heartbeat usa versão 1.4.26, campo oficial mode e job atual', () => {
+test('heartbeat usa versão 1.4.27, campo oficial mode e job atual', () => {
     const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
-    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.26'/);
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.27'/);
     assert.match(coordinator, /mode: modeRef\.current/);
     assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
     assert.match(coordinator, /resolvePersistedJob\(persisted\)/);
@@ -184,10 +184,12 @@ test('projeto do agente continua listado e editavel depois da exportacao', () =>
 });
 
 test('job só conclui com assetId real confirmado pelo fluxo de exportação', () => {
-    const exportAt = coordinator.indexOf('const assetId = await waitForOpsExport(job.projectId)');
+    const exportAt = coordinator.indexOf('const completedExport = await waitForOpsExport(job.projectId)');
+    const assetAt = coordinator.indexOf('const assetId = completedExport.assetId', exportAt);
     const completionAt = coordinator.indexOf("await patch('completed'", exportAt);
     assert.ok(exportAt >= 0);
-    assert.ok(completionAt > exportAt);
+    assert.ok(assetAt > exportAt);
+    assert.ok(completionAt > assetAt);
     assert.match(coordinator.slice(completionAt, completionAt + 280), /outputAssetId: assetId/);
 });
 

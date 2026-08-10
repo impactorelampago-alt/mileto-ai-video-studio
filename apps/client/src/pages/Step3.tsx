@@ -125,6 +125,7 @@ export const Step3 = () => {
                 },
                 dynamicTitles: [],
                 dynamicTitlesSourceKey: undefined,
+                titleGenerationSummary: undefined,
             });
 
             const reviewBits = [
