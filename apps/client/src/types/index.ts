@@ -336,7 +336,7 @@ export interface TitleHook {
     scaleX?: number; // Independent horizontal size multiplier, default 1.0
     scaleY?: number; // Independent vertical size multiplier, default 1.0
     textBoxWidthPct?: number; // Text composition width as a percentage of the video frame
-    maxWords?: number; // Maximum number of words accepted by the source trigger
+    maxWords?: number; // Limite da geração automática; a edição manual permanece livre
     styleId?: string; // e.g., 'neo-pop', 'solid-ribbon', 'gradient-glow'
     primaryColor?: string; // Primary text or accent color
     secondaryColor?: string; // Secondary background or text color

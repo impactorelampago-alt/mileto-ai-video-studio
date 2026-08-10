@@ -18,12 +18,13 @@ import {
     Upload,
     RotateCcw,
     Type,
+    CopyPlus,
 } from 'lucide-react';
 import { useWizard, SHOW_DEBUG_FEATURES } from '../context/WizardContext';
 import { VideoSequencePreview, VideoSequencePreviewRef } from '../components/VideoSequencePreview';
 import { TitleHook } from '../types';
 import { toast } from 'sonner';
-import { cn } from '../lib/utils';
+import { cn, generateId } from '../lib/utils';
 import axios from 'axios';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { DynamicTitleRenderer } from '../components/DynamicTitleRenderer';
@@ -43,7 +44,7 @@ import { missingForCompletion, pendingWarningText } from '../lib/workflowWarning
 import { narrationSourceKey } from '../lib/narrationState';
 import { bindTitlesToBrandPalette, resolveOpsProjectBrand } from '../lib/opsProjectBrand';
 import { TITLE_EDITOR_PORTRAIT_PREVIEW_WIDTH } from '../lib/titlePreviewGeometry';
-import { limitTitleWords } from '../lib/titleText';
+import { applyManualTitleUpdate, duplicateTitleAfter } from '../lib/titleEditing';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -476,38 +477,17 @@ export const Step4 = () => {
             .some((field) => Object.prototype.hasOwnProperty.call(updates, field));
         const newTitles = titles.map((t) => {
             if (t.id === id) {
-                const safeUpdates = Object.prototype.hasOwnProperty.call(updates, 'text')
-                    ? { ...updates, text: limitTitleWords(String(updates.text || ''), t.maxWords) }
-                    : updates;
-                const colorEdited = Object.prototype.hasOwnProperty.call(safeUpdates, 'primaryColor')
-                    || Object.prototype.hasOwnProperty.call(safeUpdates, 'secondaryColor');
-                const textChanged = Object.prototype.hasOwnProperty.call(safeUpdates, 'text')
-                    || Object.prototype.hasOwnProperty.call(safeUpdates, 'sourceText');
-                const startChanged = Object.prototype.hasOwnProperty.call(safeUpdates, 'startSec');
-                const updated = {
-                    ...t,
-                    ...safeUpdates,
-                    ...(textChanged ? {
-                        sourceText: undefined,
-                        triggerId: undefined,
-                        semanticRoles: undefined,
-                    } : (startChanged && t.semanticRoles?.includes('hook') ? {
-                        semanticRoles: t.semanticRoles.filter((role) => role !== 'hook'),
-                    } : {})),
-                    ...(colorEdited && !Object.prototype.hasOwnProperty.call(safeUpdates, 'colorBinding')
-                        ? { colorBinding: undefined }
-                        : {}),
-                };
+                const updated = applyManualTitleUpdate(t, updates);
                 // Also jump the video preview so they can instantly see the new font/color/position
                 if (
-                    safeUpdates.fontFamily ||
-                    safeUpdates.primaryColor ||
-                    safeUpdates.secondaryColor ||
-                    safeUpdates.posX !== undefined ||
-                    safeUpdates.posY !== undefined ||
-                    safeUpdates.scale !== undefined ||
-                    safeUpdates.text ||
-                    safeUpdates.styleId
+                    updates.fontFamily ||
+                    updates.primaryColor ||
+                    updates.secondaryColor ||
+                    updates.posX !== undefined ||
+                    updates.posY !== undefined ||
+                    updates.scale !== undefined ||
+                    updates.text ||
+                    updates.styleId
                 ) {
                     handleTargetTime(updated.startSec + (updated.durationSec || 3) / 2);
                 }
@@ -532,6 +512,19 @@ export const Step4 = () => {
         persistManualTitles(remaining);
         setSelectedTitleId(remaining[Math.min(Math.max(index, 0), Math.max(remaining.length - 1, 0))]?.id ?? null);
         toast.success('Título removido.');
+    };
+
+    const duplicateTitle = (id: string) => {
+        const result = duplicateTitleAfter(titles, id, `manual-copy-${generateId()}`);
+        if (!result) return;
+
+        flushPendingTitleHistory();
+        persistManualTitles(result.titles);
+        setSelectedTitleId(result.duplicate.id);
+        handleTargetTime(result.duplicate.startSec + Math.max(0.1, result.duplicate.durationSec || 3) / 2);
+        toast.success('Título duplicado.', {
+            description: 'A cópia mantém o mesmo trecho da timeline; ajuste Início e Fim se quiser movê-la.',
+        });
     };
 
     const handleSelectTitle = (title: TitleHook) => {
@@ -724,6 +717,18 @@ export const Step4 = () => {
                                             >
                                                 {formatTimeValue(title.startSec)}s–{formatTimeValue(titleEnd)}s
                                             </span>
+                                            <button
+                                                type="button"
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    duplicateTitle(title.id);
+                                                }}
+                                                className="rounded-md border border-white/8 bg-white/[.035] p-1.5 text-brand-muted transition-colors hover:border-brand-accent/30 hover:bg-brand-accent/10 hover:text-brand-accent"
+                                                title="Duplicar título"
+                                                aria-label={`Duplicar título ${title.text || 'sem texto'}`}
+                                            >
+                                                <CopyPlus className="h-4 w-4" />
+                                            </button>
                                             <button
                                                 onClick={(e) => {
                                                     e.stopPropagation();

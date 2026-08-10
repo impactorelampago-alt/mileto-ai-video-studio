@@ -8,7 +8,6 @@ import type {
 import { Move, PencilLine } from 'lucide-react';
 import type { TitleHook } from '../types';
 import { cn } from '../lib/utils';
-import { limitTitleWords } from '../lib/titleText';
 
 interface EditableTitleOverlayProps {
     title: TitleHook;
@@ -609,10 +608,7 @@ export const EditableTitleOverlay = ({
                                     ref={textInputRef}
                                     data-title-text-editor="true"
                                     value={draftText}
-                                    onChange={(event) => {
-                                        const value = limitTitleWords(event.target.value, title.maxWords);
-                                        setDraftText(value);
-                                    }}
+                                    onChange={(event) => setDraftText(event.target.value)}
                                     onInput={(event) => {
                                         event.currentTarget.style.height = '0px';
                                         event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;

@@ -197,14 +197,12 @@ test('as quatro galerias do Step 4 usam o fluxo único de aplicação de estilo'
 
 test('o editor de cores continua removendo o binding ao assumir uma escolha manual', () => {
     const step4 = readClient('pages/Step4.tsx');
-    const updateStart = step4.indexOf('const updateTitle =');
-    const updateEnd = step4.indexOf('const updateTitleTransform', updateStart);
-    const updateBlock = step4.slice(updateStart, updateEnd);
+    const titleEditing = readClient('lib/titleEditing.ts');
 
-    assert.ok(updateStart >= 0 && updateEnd > updateStart);
-    assert.match(updateBlock, /primaryColor/);
-    assert.match(updateBlock, /secondaryColor/);
-    assert.match(updateBlock, /colorEdited[\s\S]*colorBinding:\s*undefined/);
+    assert.match(step4, /applyManualTitleUpdate\(t, updates\)/);
+    assert.match(titleEditing, /primaryColor/);
+    assert.match(titleEditing, /secondaryColor/);
+    assert.match(titleEditing, /colorEdited[\s\S]*colorBinding:\s*undefined/);
     assert.ok(
         (step4.match(/type="color"/g) || []).length >= 2,
         'o usuário deve continuar com controles para editar as duas cores',
