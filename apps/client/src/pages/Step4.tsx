@@ -30,6 +30,15 @@ import { DynamicTitleRenderer } from '../components/DynamicTitleRenderer';
 import { TextAnimationPicker } from '../components/TextAnimationPicker';
 import { ExportModal } from '../components/ExportModal';
 import { PREMIUM_TITLE_GROUPS, PREMIUM_TITLE_MODELS } from '../lib/premiumTitleModels';
+import {
+    CTA_TITLE_MODELS,
+    IMAGE_TITLE_MODEL,
+    LOCATION_TITLE_MODELS,
+    SIMPLE_TITLE_MODELS,
+    titleStylePresetById,
+    titleStyleSelectionPatch,
+    type TitleStylePreset,
+} from '../lib/titleModelCatalog';
 import { missingForCompletion, pendingWarningText } from '../lib/workflowWarnings';
 import { narrationSourceKey } from '../lib/narrationState';
 import { bindTitlesToBrandPalette, resolveOpsProjectBrand } from '../lib/opsProjectBrand';
@@ -530,33 +539,17 @@ export const Step4 = () => {
         handleTargetTime(title.startSec + (title.durationSec || 3) / 2);
     };
 
-    const TITLE_MODELS = [
-        { id: 'neo-pop', name: 'Neo Pop' },
-        { id: 'solid-ribbon', name: 'Faixa Sólida' },
-        { id: 'gradient-glow', name: 'Brilho Gradiente' },
-        { id: 'framed-box', name: 'Caixa Emoldurada' },
-        { id: 'minimal-underline', name: 'Minimalista' },
-        { id: 'neon-cyber', name: 'Cyberpunk Neon' },
-        { id: 'glassmorphism', name: 'Vidro Fosco (Glass)' },
-        { id: 'cinema-wide', name: 'Cinema Wide' },
-        { id: 'default', name: 'Padrão' },
-    ];
-
-    const CTA_MODELS = [
-        { id: 'cta-search', name: 'Barra de Busca' },
-        { id: 'cta-tap', name: 'Botão de Clique' },
-        { id: 'cta-whatsapp', name: 'Balão WhatsApp' },
-        { id: 'cta-shop', name: 'Sacola (Comprar)' },
-        { id: 'cta-minimal', name: 'Seta Minimalista' },
-    ];
-
-    const LOCATION_MODELS = [
-        { id: 'loc-pin-viagem', name: 'Pin de Viagem' },
-        { id: 'loc-minimal-urbano', name: 'Minimalista' },
-        { id: 'loc-tag-geo', name: 'Tag Geográfica' },
-    ];
-
     const selectedTitle = titles.find((t) => t.id === selectedTitleId);
+
+    const applySelectedTitleStyle = (
+        model: TitleStylePreset,
+        overrides: Pick<TitleStylePreset, 'animationId'> = {}
+    ) => {
+        if (!selectedTitle) return;
+        const patch = titleStyleSelectionPatch(selectedTitle, { ...model, ...overrides });
+        if (!Object.keys(patch).length) return;
+        updateTitle(selectedTitle.id, patch);
+    };
 
     return (
         <div className="mx-auto flex min-h-0 w-full max-w-[1500px] flex-1 flex-col pb-20">
@@ -592,6 +585,7 @@ export const Step4 = () => {
                     <button
                         onClick={() => {
                             const startSec = currentPreviewTime();
+                            const stylePreset = titleStylePresetById('solid-ribbon') || SIMPLE_TITLE_MODELS[0];
                             const newTitle: TitleHook = {
                                 id: `manual-${Date.now()}`,
                                 text: 'Novo título',
@@ -603,10 +597,10 @@ export const Step4 = () => {
                                 posY: 30,
                                 posX: 50,
                                 scale: 1,
-                                primaryColor: '#00E676',
-                                secondaryColor: '#ffffff',
+                                primaryColor: stylePreset.primaryColor,
+                                secondaryColor: stylePreset.secondaryColor,
                                 animationId: 'pop',
-                                fontFamily: 'Poppins',
+                                fontFamily: stylePreset.fontFamily,
                             };
                             persistManualTitles([...titles, newTitle]);
                             setSelectedTitleId(newTitle.id);
@@ -651,10 +645,10 @@ export const Step4 = () => {
                                     posY: 50,
                                     posX: 50,
                                     scale: 1,
-                                    primaryColor: '#ffffff',
-                                    secondaryColor: '#000000',
+                                    primaryColor: IMAGE_TITLE_MODEL.primaryColor,
+                                    secondaryColor: IMAGE_TITLE_MODEL.secondaryColor,
                                     animationId: 'fade',
-                                    fontFamily: 'Inter',
+                                    fontFamily: IMAGE_TITLE_MODEL.fontFamily,
                                     imageUrl: imageUrl, // Store the blob URL
                                 };
                                 persistManualTitles([...titles, newTitle]);
@@ -905,7 +899,7 @@ export const Step4 = () => {
 
                         {isSimplesOpen && (
                             <div className="grid gap-4 bg-brand-dark/40 p-5 border border-t-0 border-black/5 dark:border-white/5 rounded-b-2xl">
-                                {TITLE_MODELS.map((model) => {
+                                {SIMPLE_TITLE_MODELS.map((model) => {
                                     const isSelected =
                                         selectedTitle?.styleId === model.id ||
                                         (!selectedTitle?.styleId && model.id === 'default');
@@ -915,8 +909,15 @@ export const Step4 = () => {
                                               ...selectedTitle,
                                               text: 'EXEMPLO DE TÍTULO',
                                               styleId: model.id,
-                                              primaryColor: isSelected ? selectedTitle.primaryColor : '#00E676',
-                                              secondaryColor: isSelected ? selectedTitle.secondaryColor : '#ffffff',
+                                              primaryColor: isSelected
+                                                  ? selectedTitle.primaryColor || model.primaryColor
+                                                  : model.primaryColor,
+                                              secondaryColor: isSelected
+                                                  ? selectedTitle.secondaryColor || model.secondaryColor
+                                                  : model.secondaryColor,
+                                              fontFamily: isSelected
+                                                  ? selectedTitle.fontFamily || model.fontFamily
+                                                  : model.fontFamily,
                                           }
                                         : {
                                               id: 'mock',
@@ -927,16 +928,15 @@ export const Step4 = () => {
                                               isActive: true,
                                               posY: 30,
                                               scale: 1,
-                                              primaryColor: '#00E676',
-                                              secondaryColor: '#ffffff',
+                                              primaryColor: model.primaryColor,
+                                              secondaryColor: model.secondaryColor,
+                                              fontFamily: model.fontFamily,
                                           };
 
                                     return (
                                         <button
                                             key={model.id}
-                                            onClick={() =>
-                                                selectedTitle && updateTitle(selectedTitle.id, { styleId: model.id })
-                                            }
+                                            onClick={() => applySelectedTitleStyle(model)}
                                             className={cn(
                                                 'relative h-24 bg-background rounded-2xl border-2 flex flex-col items-center justify-center transition-all group overflow-hidden shadow-lg hover:shadow-xl',
                                                 isSelected && selectedTitle
@@ -970,7 +970,7 @@ export const Step4 = () => {
                                                     >
                                                         <input
                                                             type="color"
-                                                            value={selectedTitle.primaryColor || '#00E676'}
+                                                            value={selectedTitle.primaryColor || model.primaryColor}
                                                             onChange={(e) =>
                                                                 updateTitle(selectedTitle.id, {
                                                                     primaryColor: e.target.value,
@@ -981,7 +981,7 @@ export const Step4 = () => {
                                                         />
                                                         <input
                                                             type="color"
-                                                            value={selectedTitle.secondaryColor || '#ffffff'}
+                                                            value={selectedTitle.secondaryColor || model.secondaryColor}
                                                             onChange={(e) =>
                                                                 updateTitle(selectedTitle.id, {
                                                                     secondaryColor: e.target.value,
@@ -1026,7 +1026,7 @@ export const Step4 = () => {
 
                         {isCtaOpen && (
                             <div className={cn(titleLibraryBodyClass, 'grid gap-4')}>
-                                {CTA_MODELS.map((model) => {
+                                {CTA_TITLE_MODELS.map((model) => {
                                     const isSelected = selectedTitle?.styleId === model.id;
 
                                     const mockTitle: TitleHook = selectedTitle
@@ -1034,8 +1034,16 @@ export const Step4 = () => {
                                               ...selectedTitle,
                                               text: 'CHAMADA PARA AÇÃO',
                                               styleId: model.id,
-                                              primaryColor: isSelected ? selectedTitle.primaryColor : '#A3E635',
-                                              secondaryColor: isSelected ? selectedTitle.secondaryColor : '#ffffff',
+                                              animationId: model.animationId,
+                                              primaryColor: isSelected
+                                                  ? selectedTitle.primaryColor || model.primaryColor
+                                                  : model.primaryColor,
+                                              secondaryColor: isSelected
+                                                  ? selectedTitle.secondaryColor || model.secondaryColor
+                                                  : model.secondaryColor,
+                                              fontFamily: isSelected
+                                                  ? selectedTitle.fontFamily || model.fontFamily
+                                                  : model.fontFamily,
                                           }
                                         : {
                                               id: 'mock',
@@ -1046,21 +1054,16 @@ export const Step4 = () => {
                                               isActive: true,
                                               posY: 30,
                                               scale: 1,
-                                              primaryColor: '#A3E635', // Lime default for CTA
-                                              secondaryColor: '#ffffff',
+                                              animationId: model.animationId,
+                                              primaryColor: model.primaryColor,
+                                              secondaryColor: model.secondaryColor,
+                                              fontFamily: model.fontFamily,
                                           };
 
                                     return (
                                         <button
                                             key={model.id}
-                                            onClick={
-                                                () =>
-                                                    selectedTitle &&
-                                                    updateTitle(selectedTitle.id, {
-                                                        styleId: model.id,
-                                                        animationId: 'none',
-                                                    }) // Ensure no generic animation overwrites cursors
-                                            }
+                                            onClick={() => applySelectedTitleStyle(model)}
                                             className={cn(
                                                 'relative h-24 bg-background rounded-2xl border-2 flex flex-col items-center justify-center transition-all group overflow-hidden shadow-lg hover:shadow-xl',
                                                 isSelected && selectedTitle
@@ -1087,7 +1090,7 @@ export const Step4 = () => {
                                                     >
                                                         <input
                                                             type="color"
-                                                            value={selectedTitle.primaryColor || '#A3E635'}
+                                                            value={selectedTitle.primaryColor || model.primaryColor}
                                                             onChange={(e) =>
                                                                 updateTitle(selectedTitle.id, {
                                                                     primaryColor: e.target.value,
@@ -1098,7 +1101,7 @@ export const Step4 = () => {
                                                         />
                                                         <input
                                                             type="color"
-                                                            value={selectedTitle.secondaryColor || '#ffffff'}
+                                                            value={selectedTitle.secondaryColor || model.secondaryColor}
                                                             onChange={(e) =>
                                                                 updateTitle(selectedTitle.id, {
                                                                     secondaryColor: e.target.value,
@@ -1192,16 +1195,9 @@ export const Step4 = () => {
                                                     return (
                                                         <button
                                                             key={model.id}
-                                                            onClick={() =>
-                                                                selectedTitle &&
-                                                                updateTitle(selectedTitle.id, {
-                                                                    styleId: model.id,
-                                                                    animationId: 'none',
-                                                                    primaryColor: model.primaryColor,
-                                                                    secondaryColor: model.secondaryColor,
-                                                                    fontFamily: model.fontFamily,
-                                                                })
-                                                            }
+                                                            onClick={() => applySelectedTitleStyle(model, {
+                                                                animationId: 'none',
+                                                            })}
                                                             className={cn(
                                                                 'group/model relative min-h-40 overflow-hidden rounded-2xl border bg-background text-left shadow-lg transition-all hover:-translate-y-0.5 hover:shadow-2xl',
                                                                 isSelected && selectedTitle
@@ -1315,7 +1311,7 @@ export const Step4 = () => {
 
                         {isLocationOpen && (
                             <div className={cn(titleLibraryBodyClass, 'grid gap-4')}>
-                                {LOCATION_MODELS.map((model) => {
+                                {LOCATION_TITLE_MODELS.map((model) => {
                                     const isSelected = selectedTitle?.styleId === model.id;
 
                                     const mockTitle: TitleHook = selectedTitle
@@ -1323,8 +1319,15 @@ export const Step4 = () => {
                                               ...selectedTitle,
                                               text: 'São Paulo, SP',
                                               styleId: model.id,
-                                              primaryColor: isSelected ? selectedTitle.primaryColor : '#00E676',
-                                              secondaryColor: isSelected ? selectedTitle.secondaryColor : '#ffffff',
+                                              primaryColor: isSelected
+                                                  ? selectedTitle.primaryColor || model.primaryColor
+                                                  : model.primaryColor,
+                                              secondaryColor: isSelected
+                                                  ? selectedTitle.secondaryColor || model.secondaryColor
+                                                  : model.secondaryColor,
+                                              fontFamily: isSelected
+                                                  ? selectedTitle.fontFamily || model.fontFamily
+                                                  : model.fontFamily,
                                           }
                                         : {
                                               id: 'mock',
@@ -1335,16 +1338,15 @@ export const Step4 = () => {
                                               isActive: true,
                                               posY: 30,
                                               scale: 1,
-                                              primaryColor: '#00E676',
-                                              secondaryColor: '#ffffff',
+                                              primaryColor: model.primaryColor,
+                                              secondaryColor: model.secondaryColor,
+                                              fontFamily: model.fontFamily,
                                           };
 
                                     return (
                                         <button
                                             key={model.id}
-                                            onClick={() =>
-                                                selectedTitle && updateTitle(selectedTitle.id, { styleId: model.id })
-                                            }
+                                            onClick={() => applySelectedTitleStyle(model)}
                                             className={cn(
                                                 'relative h-24 bg-background rounded-2xl border-2 flex flex-col items-center justify-center transition-all group overflow-hidden shadow-lg hover:shadow-xl',
                                                 isSelected && selectedTitle
@@ -1378,7 +1380,7 @@ export const Step4 = () => {
                                                     >
                                                         <input
                                                             type="color"
-                                                            value={selectedTitle.primaryColor || '#00E676'}
+                                                            value={selectedTitle.primaryColor || model.primaryColor}
                                                             onChange={(e) =>
                                                                 updateTitle(selectedTitle.id, {
                                                                     primaryColor: e.target.value,
@@ -1389,7 +1391,7 @@ export const Step4 = () => {
                                                         />
                                                         <input
                                                             type="color"
-                                                            value={selectedTitle.secondaryColor || '#ffffff'}
+                                                            value={selectedTitle.secondaryColor || model.secondaryColor}
                                                             onChange={(e) =>
                                                                 updateTitle(selectedTitle.id, {
                                                                     secondaryColor: e.target.value,

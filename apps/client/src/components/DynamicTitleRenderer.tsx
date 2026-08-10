@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { cn } from '../lib/utils';
 import { API_BASE_URL } from '../lib/apiBase';
+import { titleStylePresetById } from '../lib/titleModelCatalog';
 import { TitleHook } from '../types';
 
 interface Props {
@@ -110,8 +111,9 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
 }) => {
     const text = title.text || '';
     const styleId = title.styleId || 'default';
-    const primary = title.primaryColor || '#FF0000'; // Default red
-    const secondary = title.secondaryColor || '#ffffff'; // Default white
+    const stylePreset = titleStylePresetById(styleId);
+    const primary = title.primaryColor || stylePreset?.primaryColor || '#00E676';
+    const secondary = title.secondaryColor || stylePreset?.secondaryColor || '#FFFFFF';
 
     // Helper logic to split first word for specific styles
     const firstSpaceIdx = text.search(/\s/);
