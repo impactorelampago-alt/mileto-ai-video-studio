@@ -43,7 +43,6 @@ import { applyQuickEdit } from '../lib/quickEdit';
 import { canonicalSystemVoiceId, DEFAULT_SYSTEM_VOICE, SYSTEM_VOICES } from '../lib/systemVoices';
 import { systemMusicTrackFor } from '../lib/systemMusic';
 import {
-    deterministicShuffle,
     generateAutomaticCaptions,
     generateAutomaticTitles,
     generateNarrationAndMix,
@@ -52,6 +51,7 @@ import {
     persistAutomatedProject,
     prepareOpsExportMetadata,
 } from '../lib/videoAgentWorkflow';
+import { selectOpsTakesForNarration } from '../lib/opsTakeSelection';
 import { API_BASE_URL } from '../lib/apiBase';
 import type { AdData, MediaTake } from '../types';
 
@@ -85,7 +85,7 @@ type ElectronIpc = {
 type PreparedJob = {
     company: OpsCompany;
     assetById: Map<string, OpsAsset>;
-    selectedAssets: OpsAsset[];
+    eligibleAssets: OpsAsset[];
     initialAdData: AdData;
     musicId: string | null;
 };
@@ -293,8 +293,8 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
     const assetById = new Map(assets.map((asset) => [asset.id, asset]));
     const missing = job.takeAssetIds.filter((id) => !assetById.has(id));
     if (missing.length) throw new Error(`ops_take_missing: ${missing.length} take(s) selecionado(s) nao estao mais disponiveis na empresa.`);
-    const selectedAssets = job.takeAssetIds.map((id) => assetById.get(id)!);
-    if (selectedAssets.some((asset) => asset.companyId !== job.companyId)) {
+    const eligibleAssets = job.takeAssetIds.map((id) => assetById.get(id)!);
+    if (eligibleAssets.some((asset) => asset.companyId !== job.companyId)) {
         throw new Error('ops_take_company_mismatch: O Ops devolveu um take que nao pertence a empresa do job.');
     }
     const initialAdData = createDefaultAdData({
@@ -318,7 +318,7 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
         brandPalette: company.palette || null,
         brandPaletteUpdatedAt: company.paletteUpdatedAt || null,
     });
-    return { company, assetById, selectedAssets, initialAdData, musicId: music?.id || null };
+    return { company, assetById, eligibleAssets, initialAdData, musicId: music?.id || null };
 };
 
 export const OpsVideoJobCoordinator = () => {
@@ -561,23 +561,41 @@ export const OpsVideoJobCoordinator = () => {
                 showLocalProgress('narration', 8, 'Gerando a narracao e preparando a trilha de fundo.');
                 adData = await generateNarrationAndMix(adData);
                 await patch('narration', OPS_VIDEO_PROGRESS.narration.end, 'Narracao final pronta e validada.');
-                await patch('takes', OPS_VIDEO_PROGRESS.takes.start, 'Importando os takes autorizados da empresa.');
-                const orderedAssets = job.shuffleTakes
-                    ? deterministicShuffle(readiness.selectedAssets, `${job.id}:${job.projectId}`)
-                    : readiness.selectedAssets;
+                const selection = selectOpsTakesForNarration(
+                    readiness.eligibleAssets,
+                    Number(adData.narrationDuration || 0),
+                    job,
+                );
+                const orderedAssets = selection.takes;
+                await patch(
+                    'takes',
+                    OPS_VIDEO_PROGRESS.takes.start,
+                    `Selecionando ${selection.targetCount} ${selection.targetCount === 1 ? 'corte recente' : 'cortes recentes'} da pasta TAKES, com alvo de ${selection.targetSeconds.toFixed(1)} segundos.`,
+                );
+                const materializedByAssetId = new Map<string, MediaTake>();
                 for (let index = 0; index < orderedAssets.length; index += 1) {
-                    finalTakes.push(await materializeOpsTake(
-                        orderedAssets[index],
-                        queued.context,
-                        `${job.projectId}-take-${index + 1}-${orderedAssets[index].id}`,
-                    ));
+                    const asset = orderedAssets[index];
+                    const takeId = `${job.projectId}-take-${index + 1}-${asset.id}`;
+                    let materialized = materializedByAssetId.get(asset.id);
+                    if (!materialized) {
+                        materialized = await materializeOpsTake(asset, queued.context, takeId);
+                        materializedByAssetId.set(asset.id, materialized);
+                    }
+                    finalTakes.push(materialized.id === takeId ? materialized : { ...materialized, id: takeId });
                     showLocalProgress(
                         'takes',
                         progressWithinStage('takes', (index + 1) / Math.max(1, orderedAssets.length + 1)),
                         `Importando takes: ${index + 1} de ${orderedAssets.length}.`,
                     );
                 }
-                await patch('takes', OPS_VIDEO_PROGRESS.takes.end, `${finalTakes.length} take(s) importado(s) e validados.`);
+                const reuseMessage = selection.reusedCount > 0
+                    ? ` ${selection.reusedCount} ${selection.reusedCount === 1 ? 'repetição foi necessária' : 'repetições foram necessárias'} porque o acervo recente era menor que a duração do áudio.`
+                    : '';
+                await patch(
+                    'takes',
+                    OPS_VIDEO_PROGRESS.takes.end,
+                    `${finalTakes.length} ${finalTakes.length === 1 ? 'corte montado' : 'cortes montados'} com ${selection.uniqueAssetCount} ${selection.uniqueAssetCount === 1 ? 'take importado e validado' : 'takes importados e validados'}.${reuseMessage}`,
+                );
 
                 await patch('quick_edit', OPS_VIDEO_PROGRESS.quick_edit.start, job.quickEdit
                     ? 'Aplicando a Edicao Rapida aos takes.'

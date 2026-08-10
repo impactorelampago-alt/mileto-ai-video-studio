@@ -8,6 +8,8 @@ const server = read('../src/server.js');
 const coordinator = read('../../client/src/components/OpsVideoJobCoordinator.tsx');
 const workerState = read('../../client/src/lib/opsVideoWorkerState.ts');
 const gatewayClient = read('../../client/src/lib/gateway.ts');
+const takeSelection = read('../../client/src/lib/opsTakeSelection.ts');
+const projectController = read('../../server/src/controllers/projectController.ts');
 const electron = read('../../client/electron-main/main.cjs');
 
 test('CORS permite o token efemero usado nas atualizacoes de progresso do job', () => {
@@ -44,9 +46,9 @@ test('fila, leitura, presença, claim e PATCH preservam delegação, assets.writ
     }
 });
 
-test('heartbeat usa versão 1.4.22, campo oficial mode e job atual', () => {
+test('heartbeat usa versão 1.4.23, campo oficial mode e job atual', () => {
     const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
-    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.22'/);
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.23'/);
     assert.match(coordinator, /mode: modeRef\.current/);
     assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
     assert.match(coordinator, /resolvePersistedJob\(persisted\)/);
@@ -92,6 +94,13 @@ test('job só é assumido depois da validação e da persistência local segura'
     const saveAt = coordinator.indexOf('savePersistedOpsVideoJob', validationAt);
     const claimAt = coordinator.indexOf('claimOpsVideoJob', validationAt);
     assert.ok(validationAt >= 0 && saveAt > validationAt && claimAt > saveAt);
+});
+
+test('varios jobs continuam em fila e somente um executor roda por vez', () => {
+    assert.match(coordinator, /if \(runningRef\.current \|\| exportingRef\.current\) return/);
+    assert.match(coordinator, /runningRef\.current = true/);
+    assert.match(coordinator, /await execute\(queued\)/);
+    assert.match(coordinator, /runningRef\.current = false/);
 });
 
 test('primeiro progresso remoto após claim é narration 5 com mensagem de preparação', () => {
@@ -151,6 +160,25 @@ test('checkpoint preparado evita recriar o projeto e exportação já concluída
     assert.match(coordinator, /completedExportFor\(job\)/);
     assert.match(coordinator, /previousAssetId/);
     assert.match(coordinator, /Video ja concluido e confirmado no Mileto Ops/);
+});
+
+test('quantidade de takes vem da narracao real, usa TAKES recentes e varia por lote de forma estavel', () => {
+    assert.match(coordinator, /selectOpsTakesForNarration/);
+    assert.match(coordinator, /Number\(adData\.narrationDuration \|\| 0\)/);
+    assert.match(takeSelection, /DEFAULT_TARGET_SECONDS = 2\.5/);
+    assert.match(takeSelection, /minimumForMaximumCut/);
+    assert.match(takeSelection, /index % batchSize === batchIndex/);
+    assert.match(takeSelection, /deterministicShuffle/);
+});
+
+test('projeto do agente continua listado e editavel depois da exportacao', () => {
+    const saves = coordinator.match(/await persistAutomatedProject\(/g) || [];
+    assert.equal(saves.length, 2);
+    assert.match(coordinator, /exported: false/);
+    assert.match(coordinator, /exported: true/);
+    assert.match(projectController, /export const listProjects/);
+    assert.match(projectController, /drafts\.push\(/);
+    assert.doesNotMatch(projectController, /if \(parsed\.exported\) continue/);
 });
 
 test('job só conclui com assetId real confirmado pelo fluxo de exportação', () => {
