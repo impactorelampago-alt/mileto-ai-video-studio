@@ -48,9 +48,9 @@ test('fila, leitura, presença, claim e PATCH preservam delegação, assets.writ
     }
 });
 
-test('heartbeat usa versão 1.4.25, campo oficial mode e job atual', () => {
+test('heartbeat usa versão 1.4.26, campo oficial mode e job atual', () => {
     const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
-    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.25'/);
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.26'/);
     assert.match(coordinator, /mode: modeRef\.current/);
     assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
     assert.match(coordinator, /resolvePersistedJob\(persisted\)/);
@@ -211,6 +211,15 @@ test('interface publica presença, modo, job, empresa, etapa, percentual, erro e
     for (const marker of ['Wifi', 'WifiOff', 'executorActivity.companyName', 'OPS_EXECUTOR_STAGE_LABELS[executorActivity.stage]', 'executorActivity.percent', 'executorActivity.errorCode']) {
         assert.match(mainLayout, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
+});
+
+test('indicador diferencia heartbeat local da conexão persistente da empresa com o Ops', () => {
+    assert.match(mainLayout, /Executor local offline\. Isso não indica que a empresa foi desconectada do Mileto Ops\./);
+    assert.match(mainLayout, /Mesmo vermelho, ele não desconecta a empresa do Mileto Ops\./);
+    assert.match(mainLayout, /executorHeartbeatState === 'offline'/);
+    assert.match(mainLayout, /executorHeartbeatState === 'unsupported'/);
+    assert.match(mainLayout, /motion-reduce:animate-none/);
+    assert.match(coordinator, /if \(!contextId\) \{[\s\S]*heartbeat: 'unsupported'/);
 });
 
 test('cliente do gateway expõe leitura e presença com X-Ops-View-Context', () => {

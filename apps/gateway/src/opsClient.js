@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import { parseOpsOAuthError } from './opsOAuthError.js';
 
 export class OpsHttpError extends Error {
     constructor(status, code, message, requestId = null) {
@@ -97,11 +98,11 @@ const tokenRequest = async (body) => {
     }
     const payload = await parse(response);
     if (!response.ok) {
-        const error = payload?.error || payload || {};
+        const error = parseOpsOAuthError(payload);
         throw new OpsHttpError(
             response.status,
-            error.code || error.error || 'ops_token_failed',
-            error.message || error.error_description || 'O Mileto Ops recusou a autenticação.',
+            error.code,
+            error.message,
             error.requestId || null
         );
     }

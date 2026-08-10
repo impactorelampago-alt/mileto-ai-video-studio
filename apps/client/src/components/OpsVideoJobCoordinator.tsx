@@ -356,7 +356,10 @@ export const OpsVideoJobCoordinator = () => {
                 return;
             }
         }
-        if (!contextId) return;
+        if (!contextId) {
+            setDisplay((current) => ({ ...current, heartbeat: 'unsupported' }));
+            return;
+        }
         try {
             const result = await gatewayApi.heartbeatOpsVideoWorker({
                 appVersion: OPS_VIDEO_WORKER_APP_VERSION,

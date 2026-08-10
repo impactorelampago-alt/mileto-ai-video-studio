@@ -253,7 +253,7 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
         }
     };
 
-    const connect = async (reconnect = false) => {
+    const connect = async (reconnect = false, updatingPermissions = false) => {
         if (!canManage) return;
         setBusy('connect');
         try {
@@ -264,7 +264,7 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
             setAwaitingAuthorization(true);
             void gatewayApi.opsConnection().then(setStatus).catch(() => undefined);
             toast.info(
-                reconnect
+                reconnect || updatingPermissions
                     ? 'Autorize novamente no navegador para renovar as permissões do Mileto Ops, incluindo o envio de vídeos.'
                     : 'Confira a conta no navegador. Se estiver errada, troque-a e abra a autorização novamente.'
             );
@@ -338,7 +338,14 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
         : '';
     const accountMismatch = ['ops_owner_mismatch', 'ops_account_mismatch'].includes(connectionError);
     const needsAssetsWrite = connected && !status?.connection?.scopes?.includes('assets.write');
+    const permissionUpdateRequired = [
+        'ops_scope_missing',
+        'invalid_scope',
+        'insufficient_scope',
+        'access_denied',
+    ].includes(connectionError);
     const temporarilyUnavailable = connected && status?.connection?.temporarilyUnavailable === true;
+    const configurationIssue = connected && status?.connection?.configurationIssue === true;
 
     return (
         <section className="rounded-2xl border border-white/10 bg-card/50 p-5 space-y-4">
@@ -378,10 +385,23 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                 </div>
             </div>
 
-            {needsAssetsWrite && (
+            <div className="rounded-xl border border-sky-300/15 bg-sky-400/[0.05] p-3 flex gap-2.5">
+                <RefreshCw className="w-4 h-4 shrink-0 text-sky-300 mt-0.5" />
+                <div>
+                    <div className="text-xs font-bold text-foreground">Conexão persistente</div>
+                    <p className="text-[11px] leading-relaxed text-foreground/65 mt-0.5">
+                        Autorize uma vez: o AI Video renova o acesso quando necessário e mantém a empresa vinculada durante indisponibilidades temporárias. Uma nova autorização só é solicitada se o acesso for revogado, ficar inválido ou precisar de novas permissões.
+                    </p>
+                    <p className="text-[11px] leading-relaxed text-foreground/65 mt-1.5">
+                        O Wi-Fi vermelho no topo indica apenas que o executor deste computador está offline. Isso não significa que {organizationName} foi desconectada do Mileto Ops.
+                    </p>
+                </div>
+            </div>
+
+            {(needsAssetsWrite || permissionUpdateRequired) && (
                 <div className="rounded-xl border border-amber-300/20 bg-amber-400/[0.07] p-3 text-xs text-amber-100/80 flex gap-2">
                     <AlertTriangle className="w-4 h-4 shrink-0 text-amber-300" />
-                    A autorização atual não permite enviar vídeos ao Ops. Reconecte para conceder a permissão de exportação.
+                    A autorização atual precisa de novas permissões. Atualize o acesso ao Mileto Ops; seus vínculos de empresa e equipe serão preservados.
                 </div>
             )}
 
@@ -389,6 +409,13 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                 <div className="rounded-xl border border-sky-300/20 bg-sky-400/[0.06] p-3 text-xs text-sky-100/80 flex gap-2">
                     <RefreshCw className="w-4 h-4 shrink-0 text-sky-300 animate-spin" />
                     A conexão continua salva. O Ops está temporariamente indisponível e o AI Video tentará novamente sozinho, sem pedir outro login.
+                </div>
+            )}
+
+            {configurationIssue && (
+                <div className="rounded-xl border border-amber-300/20 bg-amber-400/[0.07] p-3 text-xs text-amber-100/80 flex gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-300" />
+                    A conexão continua salva, mas o gateway precisa de uma correção de configuração. Nenhum novo login é necessário; o acesso será retomado automaticamente depois do ajuste.
                 </div>
             )}
 
@@ -467,7 +494,7 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                                 )}
                                 {needsAssetsWrite && (
                                     <button
-                                        onClick={() => void connect(true)}
+                                        onClick={() => void connect(true, true)}
                                         disabled={busy !== null}
                                         title="Atualiza as permissões do Mileto Ops sem remover seus vínculos"
                                         className="inline-flex items-center gap-1.5 rounded-lg bg-amber-400/10 border border-amber-300/25 px-3 py-2 text-xs font-bold text-amber-200 disabled:opacity-50"
@@ -548,7 +575,7 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                         </div>
                     )}
                     <button
-                        onClick={() => void connect()}
+                        onClick={() => void connect(false, permissionUpdateRequired)}
                         disabled={!status?.enabled || busy === 'connect'}
                         className="inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold text-[#07100e] disabled:opacity-40"
                         style={{ background: 'linear-gradient(135deg, #5bc63c, #0fa08d)' }}
@@ -556,7 +583,9 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                         {busy === 'connect' ? <Loader2 className="w-4 h-4 animate-spin" /> : <ExternalLink className="w-4 h-4" />}
                         {awaitingAuthorization
                             ? 'Abrir autorização novamente'
-                            : `Conectar ${organizationName} ao Mileto Ops`}
+                            : permissionUpdateRequired
+                              ? 'Atualizar permissões do Mileto Ops'
+                              : `Conectar ${organizationName} ao Mileto Ops`}
                     </button>
                 </div>
             ) : (

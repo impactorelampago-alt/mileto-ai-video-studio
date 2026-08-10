@@ -143,6 +143,7 @@ export interface OpsIntegrationStatus {
         revokedAt?: string | null;
         lastError?: string | null;
         temporarilyUnavailable?: boolean;
+        configurationIssue?: boolean;
     } | null;
     userLink: {
         opsProfileId: string;

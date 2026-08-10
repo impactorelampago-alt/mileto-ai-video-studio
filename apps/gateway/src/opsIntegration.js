@@ -29,8 +29,10 @@ import {
 import {
     isRecoverableStoredOpsError,
     isTransientOpsRefreshError,
+    opsRefreshConnectionState,
     publicOpsRefreshError,
-    refreshOpsTokenWithRetry,
+    refreshOpsTokenSafely,
+    storedOpsRefreshIssue,
     storedOpsRefreshError,
 } from './opsConnectionRecovery.js';
 
@@ -237,7 +239,7 @@ const connectionRow = async (orgId, includeRevoked = false) => {
 
 const publicConnection = (row) => {
     if (!row) return null;
-    const temporarilyUnavailable = row.status === 'active' && isRecoverableStoredOpsError(row.last_error);
+    const refreshIssue = row.status === 'active' ? storedOpsRefreshIssue(row.last_error) : null;
     return {
         id: row.id,
         status: row.status,
@@ -247,7 +249,8 @@ const publicConnection = (row) => {
         connectedAt: row.connected_at,
         revokedAt: row.revoked_at,
         lastError: publicOpsRefreshError(row.last_error),
-        temporarilyUnavailable,
+        temporarilyUnavailable: refreshIssue === 'temporary',
+        configurationIssue: refreshIssue === 'configuration',
     };
 };
 
@@ -319,7 +322,7 @@ const refreshConnection = async (connection) => {
         }
         let tokens;
         try {
-            tokens = await refreshOpsTokenWithRetry(() => refreshAccessToken(refreshToken));
+            tokens = await refreshOpsTokenSafely(() => refreshAccessToken(refreshToken));
         } catch (error) {
             const temporary = isTransientOpsRefreshError(error);
             await query(
@@ -330,24 +333,35 @@ const refreshConnection = async (connection) => {
             );
             throw error;
         }
-        const refreshedScopes = tokens.scopes.length
-            ? assertRequiredScopes(tokens.scopes)
-            : assertRequiredScopes(connection.scopes);
+        const refreshState = opsRefreshConnectionState({
+            tokenScopes: tokens.scopes,
+            storedScopes: connection.scopes,
+            requiredScopes: config.ops.scopes,
+        });
         const expiresAt = new Date(Date.now() + tokens.expiresIn * 1000);
         const nextRefresh = tokens.refreshToken || refreshToken;
         await query(
             `UPDATE ops_connections
              SET access_token_enc = $2, access_token_expires_at = $3, refresh_token_enc = $4,
-                 scopes = $5, status = 'active', last_error = NULL, updated_at = now()
+                 scopes = $5, status = $6, last_error = $7, updated_at = now()
              WHERE id = $1`,
             [
                 connection.id,
                 encryptOpsToken(tokens.accessToken),
                 expiresAt,
                 encryptOpsToken(nextRefresh),
-                refreshedScopes,
+                refreshState.scopes,
+                refreshState.status,
+                refreshState.lastError,
             ]
         );
+        if (refreshState.missingScopes.length) {
+            throw httpError(
+                403,
+                refreshState.lastError,
+                `Atualize a autorização do Mileto Ops para conceder: ${refreshState.missingScopes.join(', ')}.`
+            );
+        }
         return tokens.accessToken;
     })();
     tokenRefreshes.set(connection.id, task);

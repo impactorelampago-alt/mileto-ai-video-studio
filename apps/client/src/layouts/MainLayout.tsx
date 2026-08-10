@@ -194,19 +194,37 @@ export const MainLayout = () => {
     const executorOnline = opsExecutorIsOnline(executorActivity);
     const executorWorking = opsExecutorIsWorking(executorActivity);
     const totalActiveCount = activeCount + Number(executorWorking);
-    const executorStatusLabel = executorActivity.status === 'idle'
-        ? 'Disponível'
-        : executorActivity.status === 'paused'
-          ? 'Pausado'
-          : executorActivity.status === 'offline'
-            ? 'Offline'
-            : executorActivity.status === 'completed'
-              ? 'Concluído'
-              : executorActivity.status === 'failed'
-                ? 'Falhou'
-                : executorActivity.stage === 'export'
-                  ? 'Exportando'
-                  : 'Em produção';
+    const executorHeartbeatState = executorOnline
+        ? 'online'
+        : executorActivity.heartbeat === 'offline' || executorActivity.status === 'offline'
+          ? 'offline'
+          : executorActivity.heartbeat === 'unsupported'
+            ? 'unsupported'
+            : 'checking';
+    const executorHeartbeatLabel = executorHeartbeatState === 'online'
+        ? 'Sinal do executor local ativo'
+        : executorHeartbeatState === 'offline'
+          ? 'Executor local offline. Isso não indica que a empresa foi desconectada do Mileto Ops.'
+          : executorHeartbeatState === 'unsupported'
+            ? 'Monitoramento do executor local indisponível. Isso não indica desconexão da empresa.'
+            : 'Verificando o executor local. Isso não indica desconexão da empresa.';
+    const executorStatusLabel = executorHeartbeatState === 'offline'
+        ? 'Offline'
+        : executorHeartbeatState === 'unsupported'
+          ? 'Sem monitoramento'
+          : executorHeartbeatState === 'checking'
+            ? 'Verificando'
+          : executorActivity.status === 'idle'
+            ? 'Disponível'
+            : executorActivity.status === 'paused'
+              ? 'Pausado'
+              : executorActivity.status === 'completed'
+                ? 'Concluído'
+                : executorActivity.status === 'failed'
+                  ? 'Falhou'
+                  : executorActivity.stage === 'export'
+                    ? 'Exportando'
+                    : 'Em produção';
 
     const clearNotificationHistory = async () => {
         try {
@@ -446,19 +464,32 @@ export const MainLayout = () => {
                     </button>
 
                     <div ref={downloadPanelRef} className="relative flex items-center gap-2">
-                        <span
-                            role="status"
-                            aria-label={executorOnline ? 'Executor local conectado' : 'Executor local offline'}
-                            title={executorOnline ? 'Executor local conectado' : 'Executor local offline'}
+                        <button
+                            type="button"
+                            onClick={() => setIsDownloadPanelOpen((open) => !open)}
+                            aria-label={executorHeartbeatLabel}
+                            aria-expanded={isDownloadPanelOpen}
+                            aria-live="polite"
+                            title={executorHeartbeatLabel}
                             className={cn(
                                 'grid h-8 w-8 place-items-center rounded-xl border transition-colors',
-                                executorOnline
+                                executorHeartbeatState === 'online'
                                     ? 'border-brand-lime/20 bg-brand-lime/8 text-brand-lime'
-                                    : 'border-red-400/20 bg-red-400/8 text-red-400'
+                                    : executorHeartbeatState === 'offline'
+                                      ? 'border-red-400/20 bg-red-400/8 text-red-400'
+                                      : 'border-amber-300/20 bg-amber-300/8 text-amber-300'
                             )}
                         >
-                            {executorOnline ? <Wifi className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
-                        </span>
+                            {executorHeartbeatState === 'online' ? (
+                                <Wifi className="h-4 w-4" />
+                            ) : executorHeartbeatState === 'offline' ? (
+                                <WifiOff className="h-4 w-4" />
+                            ) : executorHeartbeatState === 'unsupported' ? (
+                                <WifiOff className="h-4 w-4" />
+                            ) : (
+                                <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+                            )}
+                        </button>
                         <button
                             type="button"
                             onClick={() => setIsDownloadPanelOpen((open) => !open)}
@@ -514,15 +545,21 @@ export const MainLayout = () => {
                                             <div
                                                 className={cn(
                                                     'mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border',
-                                                    executorOnline
+                                                    executorHeartbeatState === 'online'
                                                         ? 'border-brand-lime/20 bg-brand-lime/10 text-brand-lime'
-                                                        : 'border-red-400/20 bg-red-400/10 text-red-400'
+                                                        : executorHeartbeatState === 'offline'
+                                                          ? 'border-red-400/20 bg-red-400/10 text-red-400'
+                                                          : 'border-amber-300/20 bg-amber-300/10 text-amber-300'
                                                 )}
                                             >
-                                                {executorOnline ? (
+                                                {executorHeartbeatState === 'online' ? (
                                                     <Wifi className="h-4 w-4" />
-                                                ) : (
+                                                ) : executorHeartbeatState === 'offline' ? (
                                                     <WifiOff className="h-4 w-4" />
+                                                ) : executorHeartbeatState === 'unsupported' ? (
+                                                    <WifiOff className="h-4 w-4" />
+                                                ) : (
+                                                    <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
                                                 )}
                                             </div>
                                             <div className="min-w-0 flex-1">
@@ -533,9 +570,11 @@ export const MainLayout = () => {
                                                     <span
                                                         className={cn(
                                                             'shrink-0 rounded-full border px-2 py-0.5 text-[8px] font-black uppercase tracking-wider',
-                                                            executorOnline
+                                                            executorHeartbeatState === 'online'
                                                                 ? 'border-brand-lime/20 bg-brand-lime/10 text-brand-lime'
-                                                                : 'border-red-400/20 bg-red-400/10 text-red-400'
+                                                                : executorHeartbeatState === 'offline'
+                                                                  ? 'border-red-400/20 bg-red-400/10 text-red-400'
+                                                                  : 'border-amber-300/20 bg-amber-300/10 text-amber-300'
                                                         )}
                                                     >
                                                         {executorStatusLabel}
@@ -548,11 +587,18 @@ export const MainLayout = () => {
                                                     <Building2 className="h-3 w-3 shrink-0" />
                                                     <span className="truncate">
                                                         {executorActivity.companyName ||
-                                                            (executorOnline
+                                                            (executorHeartbeatState === 'online'
                                                                 ? 'Aguardando trabalho do Mileto Ops'
-                                                                : 'Executor sem conexão')}
+                                                                : executorHeartbeatState === 'offline'
+                                                                  ? 'Executor local sem resposta'
+                                                                  : executorHeartbeatState === 'unsupported'
+                                                                    ? 'Monitoramento local indisponível'
+                                                                    : 'Verificando o executor local')}
                                                     </span>
                                                 </div>
+                                                <p className="mt-1.5 text-[9px] leading-relaxed text-brand-muted">
+                                                    Este indicador acompanha somente o executor deste computador. Mesmo vermelho, ele não desconecta a empresa do Mileto Ops.
+                                                </p>
                                                 <div className="mt-2 flex items-center justify-between gap-3 text-[9px] text-brand-muted">
                                                     <span className="truncate">
                                                         {executorActivity.jobId
