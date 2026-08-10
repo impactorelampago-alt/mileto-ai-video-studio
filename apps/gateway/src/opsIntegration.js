@@ -26,6 +26,13 @@ import {
     buildOpsUploadIntentPayload,
     createOpsExportIdempotencyKey,
 } from './opsExportContract.js';
+import {
+    isRecoverableStoredOpsError,
+    isTransientOpsRefreshError,
+    publicOpsRefreshError,
+    refreshOpsTokenWithRetry,
+    storedOpsRefreshError,
+} from './opsConnectionRecovery.js';
 
 const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
 const b64u = (buffer) => Buffer.from(buffer).toString('base64url');
@@ -228,19 +235,40 @@ const connectionRow = async (orgId, includeRevoked = false) => {
     ).rows[0];
 };
 
-const publicConnection = (row) =>
-    row
-        ? {
-              id: row.id,
-              status: row.status,
-              accountId: row.ops_account_id,
-              accountName: row.ops_account_name,
-              scopes: row.scopes || [],
-              connectedAt: row.connected_at,
-              revokedAt: row.revoked_at,
-              lastError: row.last_error || null,
-          }
-        : null;
+const publicConnection = (row) => {
+    if (!row) return null;
+    const temporarilyUnavailable = row.status === 'active' && isRecoverableStoredOpsError(row.last_error);
+    return {
+        id: row.id,
+        status: row.status,
+        accountId: row.ops_account_id,
+        accountName: row.ops_account_name,
+        scopes: row.scopes || [],
+        connectedAt: row.connected_at,
+        revokedAt: row.revoked_at,
+        lastError: publicOpsRefreshError(row.last_error),
+        temporarilyUnavailable,
+    };
+};
+
+const recoverTransientConnection = async (connection) => {
+    if (
+        !connection
+        || connection.status !== 'error'
+        || !connection.refresh_token_enc
+        || !isRecoverableStoredOpsError(connection.last_error)
+    ) {
+        return connection;
+    }
+    const lastError = storedOpsRefreshError({ code: publicOpsRefreshError(connection.last_error), status: 503 });
+    await query(
+        `UPDATE ops_connections
+         SET status = 'active', last_error = $2, revoked_at = NULL, updated_at = now()
+         WHERE id = $1 AND status = 'error'`,
+        [connection.id, lastError]
+    );
+    return { ...connection, status: 'active', last_error: lastError, revoked_at: null };
+};
 
 const markConnectionAttempt = async (orgId, status, lastError = null) => {
     await query(
@@ -282,14 +310,23 @@ const refreshConnection = async (connection) => {
     if (existing) return existing;
     const task = (async () => {
         const refreshToken = decryptOpsToken(connection.refresh_token_enc);
-        if (!refreshToken) throw httpError(401, 'ops_reconnect_required', 'Reconecte sua conta Mileto Ops.');
+        if (!refreshToken) {
+            await query(
+                `UPDATE ops_connections SET status = 'error', last_error = 'ops_reconnect_required', updated_at = now() WHERE id = $1`,
+                [connection.id]
+            );
+            throw httpError(401, 'ops_reconnect_required', 'Reconecte sua conta Mileto Ops.');
+        }
         let tokens;
         try {
-            tokens = await refreshAccessToken(refreshToken);
+            tokens = await refreshOpsTokenWithRetry(() => refreshAccessToken(refreshToken));
         } catch (error) {
+            const temporary = isTransientOpsRefreshError(error);
             await query(
-                `UPDATE ops_connections SET status = 'error', last_error = $2, updated_at = now() WHERE id = $1`,
-                [connection.id, error.code || 'refresh_failed']
+                `UPDATE ops_connections
+                 SET status = $2, last_error = $3, updated_at = now()
+                 WHERE id = $1`,
+                [connection.id, temporary ? 'active' : 'error', storedOpsRefreshError(error)]
             );
             throw error;
         }
@@ -335,7 +372,7 @@ const connectionAccessToken = async (connection) => {
 
 const activeConnectionWithToken = async (orgId) => {
     requireOpsConfig();
-    const connection = await connectionRow(orgId);
+    const connection = await recoverTransientConnection(await connectionRow(orgId, true));
     if (!connection) throw httpError(409, 'ops_not_connected', 'Conecte sua conta ao Mileto Ops primeiro.');
     return { connection, accessToken: await connectionAccessToken(connection) };
 };
@@ -468,7 +505,9 @@ const requestReadyMediaIntent = async (req, res, accessToken, path, body = {}) =
 };
 
 export const integrationStatus = async (req, res) => {
-    const connection = req.user.orgId ? await connectionRow(req.user.orgId, true) : null;
+    const connection = req.user.orgId
+        ? await recoverTransientConnection(await connectionRow(req.user.orgId, true))
+        : null;
     const link = connection
         ? (
               await query(

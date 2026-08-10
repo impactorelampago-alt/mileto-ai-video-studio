@@ -338,6 +338,7 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
         : '';
     const accountMismatch = ['ops_owner_mismatch', 'ops_account_mismatch'].includes(connectionError);
     const needsAssetsWrite = connected && !status?.connection?.scopes?.includes('assets.write');
+    const temporarilyUnavailable = connected && status?.connection?.temporarilyUnavailable === true;
 
     return (
         <section className="rounded-2xl border border-white/10 bg-card/50 p-5 space-y-4">
@@ -381,6 +382,13 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                 <div className="rounded-xl border border-amber-300/20 bg-amber-400/[0.07] p-3 text-xs text-amber-100/80 flex gap-2">
                     <AlertTriangle className="w-4 h-4 shrink-0 text-amber-300" />
                     A autorização atual não permite enviar vídeos ao Ops. Reconecte para conceder a permissão de exportação.
+                </div>
+            )}
+
+            {temporarilyUnavailable && (
+                <div className="rounded-xl border border-sky-300/20 bg-sky-400/[0.06] p-3 text-xs text-sky-100/80 flex gap-2">
+                    <RefreshCw className="w-4 h-4 shrink-0 text-sky-300 animate-spin" />
+                    A conexão continua salva. O Ops está temporariamente indisponível e o AI Video tentará novamente sozinho, sem pedir outro login.
                 </div>
             )}
 
@@ -457,15 +465,17 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                                         <UserCheck className="h-3.5 w-3.5" /> Confirmar meu vínculo
                                     </button>
                                 )}
-                                <button
-                                    onClick={() => void connect(true)}
-                                    disabled={busy !== null}
-                                    title="Renova a autorização do Mileto Ops sem remover seus vínculos"
-                                    className="inline-flex items-center gap-1.5 rounded-lg bg-amber-400/10 border border-amber-300/25 px-3 py-2 text-xs font-bold text-amber-200 disabled:opacity-50"
-                                >
-                                    {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                                    Reconectar Ops
-                                </button>
+                                {needsAssetsWrite && (
+                                    <button
+                                        onClick={() => void connect(true)}
+                                        disabled={busy !== null}
+                                        title="Atualiza as permissões do Mileto Ops sem remover seus vínculos"
+                                        className="inline-flex items-center gap-1.5 rounded-lg bg-amber-400/10 border border-amber-300/25 px-3 py-2 text-xs font-bold text-amber-200 disabled:opacity-50"
+                                    >
+                                        {busy === 'connect' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                                        Atualizar permissões
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => void sync()}
                                     disabled={busy !== null}
