@@ -91,9 +91,9 @@ test('permite gatilho e tipo customizados sem misturar configuracao global', () 
     const result = normalizeTitleGeneratorConfig(input);
     assert.equal(result.triggers.at(-1).id, 'prova-social');
     assert.equal(result.triggers.at(-1).titleTypes[0].id, 'depoimento');
-    assert.equal(DEFAULT_TITLE_GENERATOR_CONFIG.triggers.length, 5);
+    assert.equal(DEFAULT_TITLE_GENERATOR_CONFIG.triggers.length, 8);
     assert.deepEqual(DEFAULT_TITLE_GENERATOR_CONFIG.triggers.map((trigger) => trigger.id), [
-        'scarcity', 'region', 'cta', 'price', 'benefit',
+        'scarcity', 'region', 'cta', 'price', 'benefit', 'product', 'differentiator', 'audience',
     ]);
     assert.ok(!DEFAULT_TITLE_GENERATOR_CONFIG.triggers.some((trigger) => trigger.id === 'hook'));
     const defaultTypes = DEFAULT_TITLE_GENERATOR_CONFIG.triggers.flatMap((trigger) => trigger.titleTypes);
@@ -122,12 +122,15 @@ test('migra gatilhos v1, remove gancho e valida modelo e animacao reais', () => 
     v1.triggers[1].titleTypes[0].styleId = 'modelo-inexistente';
     v1.triggers[1].titleTypes[0].animationId = 'rodopia';
     const result = normalizeTitleGeneratorConfig(v1);
-    assert.equal(result.version, 2);
+    assert.equal(result.version, 3);
     assert.ok(!result.triggers.some((trigger) => trigger.id === 'hook'));
     assert.ok(result.triggers.some((trigger) => trigger.id === 'region'));
     assert.ok(result.triggers.some((trigger) => trigger.id === 'price'));
     assert.ok(result.triggers.some((trigger) => trigger.id === 'benefit'));
     assert.ok(result.triggers.some((trigger) => trigger.id === 'scarcity'));
+    assert.ok(result.triggers.some((trigger) => trigger.id === 'product'));
+    assert.ok(result.triggers.some((trigger) => trigger.id === 'differentiator'));
+    assert.ok(result.triggers.some((trigger) => trigger.id === 'audience'));
     const regionType = result.triggers.find((trigger) => trigger.id === 'region').titleTypes[0];
     assert.equal(regionType.styleId, 'loc-pin-viagem');
     assert.equal(regionType.animationId, 'fade');
@@ -137,6 +140,30 @@ test('recusa configuracao sem gatilho ativo', () => {
     const input = structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
     input.triggers.forEach((trigger) => { trigger.enabled = false; });
     assert.throws(() => normalizeTitleGeneratorConfig(input), /pelo menos um gatilho/i);
+});
+
+test('normaliza a IA exclusiva do gerador de titulos sem depender dos agentes do chat', () => {
+    const input = structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
+    input.ai = {
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        reasoning: 'rapido',
+        maxOutputTokens: 2048,
+    };
+    assert.deepEqual(normalizeTitleGeneratorConfig(input).ai, input.ai);
+
+    input.ai = {
+        provider: 'inexistente',
+        model: '',
+        reasoning: 'demorado',
+        maxOutputTokens: 999999,
+    };
+    assert.deepEqual(normalizeTitleGeneratorConfig(input).ai, {
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        reasoning: 'equilibrado',
+        maxOutputTokens: 32768,
+    });
 });
 
 test('rotas de edicao exigem owner e consumo efetivo permanece org-scoped', () => {

@@ -2,7 +2,7 @@ import { query, pool } from './db.js';
 import { hashPassword } from './crypto.js';
 import {
     keyStatus, setKey, getMultiplier, setMultiplier, PROVIDERS,
-    getTiers, setTier, TIERS, MODEL_CATALOG, getPrompt, setPrompt,
+    getTiers, setTier, TIERS, MODEL_CATALOG, AGENT_REASONING_LEVELS, getPrompt, setPrompt,
     CREDIT_FEATURES, getAllMultipliers, setKindMultiplier,
     getAgents as listAgentConfigs, normalizeAgentConfig, publishAgentConfig,
     getAgentHistory as listAgentHistory, rollbackAgentConfig,
@@ -260,7 +260,12 @@ export const setChatPrompt = async (req, res) => {
 };
 
 export const getTitleGenerator = async (_req, res) => {
-    res.json({ ok: true, ...(await getGlobalTitleGeneratorConfig()) });
+    res.json({
+        ok: true,
+        ...(await getGlobalTitleGeneratorConfig()),
+        catalog: MODEL_CATALOG,
+        reasoningLevels: AGENT_REASONING_LEVELS,
+    });
 };
 
 export const setTitleGenerator = async (req, res) => {

@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    compactTitleDisplayText,
+    deterministicCaptionTitleCandidates,
     deterministicTitleCandidates,
+    isSemanticallyCompleteTitle,
     limitTitleWords,
     preventTitleOverlaps,
     resolveLiteralCaptionText,
     resolveTitleColors,
     rotatingTitleTypeIndex,
+    titleTypeWordCapacity,
     triggerMapWithAliases,
 } from '../src/services/titleGenerationRules';
 import type { TitleTriggerRule } from '../src/services/titleGeneratorConfig';
@@ -74,7 +78,14 @@ test('aceita aliases da IA para os gatilhos configurados', () => {
         trigger('price', 'Preço'),
     ]);
     assert.equal(aliases.get('localizacao')?.id, 'region');
-    assert.equal(aliases.get('oferta')?.id, 'price');
+    assert.equal(aliases.get('oferta')?.id, undefined);
+
+    const expandedAliases = triggerMapWithAliases([
+        trigger('price', 'Preço'),
+        trigger('product', 'Produto'),
+    ]);
+    assert.equal(expandedAliases.get('valor')?.id, 'price');
+    assert.equal(expandedAliases.get('oferta')?.id, 'product');
 });
 
 test('usa primária e secundária reais da empresa no modo marca', () => {
@@ -122,9 +133,80 @@ test('descarta candidato simultâneo que não teria tempo útil de exibição', 
 });
 
 test('limita títulos por palavras sem quebrar preço brasileiro', () => {
-    assert.equal(limitTitleWords('EXAME POR NOSSA CONTA', 3), 'EXAME POR NOSSA');
+    assert.equal(limitTitleWords('EXAME POR NOSSA CONTA', 3), 'EXAME POR NOSSA CONTA');
+    assert.equal(limitTitleWords('A PARTIR DE R$ 39,90', 3), 'A PARTIR DE R$ 39,90');
     assert.equal(limitTitleWords('R$ 199,00', 3), 'R$ 199,00');
     assert.equal(limitTitleWords('CLIQUE AQUI', 3), 'CLIQUE AQUI');
+    assert.equal(isSemanticallyCompleteTitle('A PARTIR DE'), false);
+    assert.equal(isSemanticallyCompleteTitle('A PARTIR DE R$ 39,90'), true);
+});
+
+test('extrai preço das legendas reconciliadas quando a narração usa número por extenso', () => {
+    assert.deepEqual(deterministicCaptionTitleCandidates([
+        { text: 'A', start: 2 },
+        { text: 'PARTIR', start: 2.2 },
+        { text: 'DE', start: 2.5 },
+        { text: 'R$ 39,90', start: 2.8 },
+    ]), [{ text: 'A PARTIR DE R$ 39,90', kind: 'price', startSec: 2 }]);
+});
+
+test('separa evidencia literal de etiqueta visual curta por gatilho', () => {
+    assert.deepEqual(compactTitleDisplayText('A PARTIR DE R$ 39,90', 'price', 3), {
+        sourceText: 'A PARTIR DE R$ 39,90',
+        text: 'R$ 39,90',
+        qualifierText: 'A PARTIR DE',
+    });
+    assert.deepEqual(compactTitleDisplayText('ATENÇÃO, PIRACICABA', 'region', 3), {
+        sourceText: 'ATENÇÃO, PIRACICABA',
+        text: 'PIRACICABA',
+    });
+    assert.deepEqual(compactTitleDisplayText('O EXAME DE VISTA', 'benefit', 3), {
+        sourceText: 'O EXAME DE VISTA',
+        text: 'EXAME DE VISTA',
+    });
+    assert.deepEqual(compactTitleDisplayText('SUA ARMAÇÃO', 'product', 3), {
+        sourceText: 'SUA ARMAÇÃO',
+        text: 'ARMAÇÃO',
+    });
+    assert.deepEqual(compactTitleDisplayText('SOMENTE ATÉ SÁBADO', 'scarcity', 3), {
+        sourceText: 'SOMENTE ATÉ SÁBADO',
+        text: 'ATÉ SÁBADO',
+    });
+    assert.deepEqual(compactTitleDisplayText('CLIQUE NO BOTÃO', 'cta', 3), {
+        sourceText: 'CLIQUE NO BOTÃO',
+        text: 'CLIQUE NO BOTÃO',
+    });
+});
+
+test('rejeita conectores sem fato e preço sem valor', () => {
+    assert.equal(compactTitleDisplayText('A PARTIR DE', 'price', 3), null);
+    assert.equal(compactTitleDisplayText('POR CONTA DE', 'benefit', 3), null);
+});
+
+test('transforma frases comerciais em rótulos nominais literais', () => {
+    assert.deepEqual(compactTitleDisplayText('A SUA ARMAÇÃO SAI A PARTIR DE', 'product', 5), {
+        sourceText: 'A SUA ARMAÇÃO SAI A PARTIR DE',
+        text: 'ARMAÇÃO',
+    });
+    assert.deepEqual(compactTitleDisplayText('O EXAME DE VISTA SAI POR CONTA', 'benefit', 4), {
+        sourceText: 'O EXAME DE VISTA SAI POR CONTA',
+        text: 'EXAME DE VISTA',
+    });
+    assert.deepEqual(compactTitleDisplayText('MONTE SEUS ÓCULOS DO SEU JEITO', 'product', 5), {
+        sourceText: 'MONTE SEUS ÓCULOS DO SEU JEITO',
+        text: 'ÓCULOS',
+    });
+    assert.deepEqual(compactTitleDisplayText('MONTE SEUS ÓCULOS DO SEU JEITO', 'differentiator', 5), {
+        sourceText: 'MONTE SEUS ÓCULOS DO SEU JEITO',
+        text: 'SEU JEITO',
+    });
+});
+
+test('respeita a capacidade editorial do modelo visual', () => {
+    assert.equal(titleTypeWordCapacity('premium-benefit-badge'), 3);
+    assert.equal(titleTypeWordCapacity('premium-product-launch'), 4);
+    assert.equal(titleTypeWordCapacity('modelo-desconhecido'), 4);
+    assert.equal(titleTypeWordCapacity('premium-benefit-badge', 2), 2);
 });
 
 test('faz rodízio entre todas as opções marcadas em gerações sucessivas', () => {

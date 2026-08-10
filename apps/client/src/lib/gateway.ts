@@ -101,6 +101,12 @@ export interface AiTitleTriggerRule {
 }
 export interface AiTitleGeneratorConfig {
     version: number;
+    ai: {
+        provider: 'openai' | 'gemini';
+        model: string;
+        reasoning: 'rapido' | 'equilibrado' | 'profundo';
+        maxOutputTokens: number;
+    };
     extractionPrompt: string;
     maxTitles: number;
     triggers: AiTitleTriggerRule[];
@@ -284,6 +290,21 @@ export interface OpsVideoJobUpdate {
     outputAssetId?: string | null;
     errorCode?: string | null;
     errorMessage?: string | null;
+}
+
+export type OpsVideoWorkerExecutionMode = 'foreground' | 'background';
+export type OpsVideoWorkerState = 'idle' | 'busy' | 'offline';
+
+export interface OpsVideoWorkerHeartbeatInput {
+    appVersion: string;
+    mode: OpsVideoWorkerExecutionMode;
+    state: OpsVideoWorkerState;
+    currentJobId: string | null;
+}
+
+export interface OpsVideoWorkerHeartbeatResult {
+    supported: boolean;
+    receivedAt?: string | null;
 }
 
 export interface OpsViewContext {
@@ -583,6 +604,29 @@ export const gatewayApi = {
             { headers: opsContextHeaders(viewContextId) }
         );
         return response.data || null;
+    },
+
+    async getOpsVideoJob(jobId: string, viewContextId?: string | null): Promise<OpsVideoJob> {
+        const response = await gatewayFetch<{ data: OpsVideoJob }>(
+            `/v1/integrations/mileto-ops/video-jobs/${encodeURIComponent(jobId)}`,
+            { headers: opsContextHeaders(viewContextId) }
+        );
+        return response.data;
+    },
+
+    async heartbeatOpsVideoWorker(
+        input: OpsVideoWorkerHeartbeatInput,
+        viewContextId?: string | null
+    ): Promise<OpsVideoWorkerHeartbeatResult> {
+        const response = await gatewayFetch<{ data: OpsVideoWorkerHeartbeatResult }>(
+            '/v1/integrations/mileto-ops/video-workers/heartbeat',
+            {
+                method: 'POST',
+                headers: opsContextHeaders(viewContextId),
+                body: JSON.stringify(input),
+            }
+        );
+        return response.data;
     },
 
     async claimOpsVideoJob(jobId: string, viewContextId?: string | null): Promise<OpsVideoJobClaim> {

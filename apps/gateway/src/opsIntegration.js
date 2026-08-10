@@ -1174,6 +1174,73 @@ export const nextVideoJob = async (req, res) => {
     res.json({ ok: true, data: data || null, meta: payload.meta || {} });
 };
 
+export const getVideoJob = async (req, res) => {
+    const jobId = String(req.params.jobId || '').trim();
+    if (!jobId) throw httpError(400, 'invalid_video_job', 'Informe o trabalho de vídeo.');
+    const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken, viewContextId }) => {
+        assertAssetsWriteScope(connection);
+        return {
+            connection,
+            payload: await opsApi(accessToken, `/v1/video-jobs/${encodeURIComponent(jobId)}`, {
+                headers: viewContextId ? { [OPS_VIEW_CONTEXT_HEADER]: viewContextId } : {},
+            }),
+        };
+    });
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: 'ops.video_job.read',
+        resourceType: 'video_job',
+        resourceId: jobId,
+        result: 'success',
+    });
+    res.json({ ok: true, data: unwrapOpsData(payload), meta: payload.meta || {} });
+};
+
+export const heartbeatVideoWorker = async (req, res) => {
+    const body = req.body || {};
+    const normalized = {
+        appVersion: String(body.appVersion || '').trim().slice(0, 80),
+        mode: body.mode === 'background' ? 'background' : 'foreground',
+        state: ['idle', 'busy', 'offline'].includes(body.state) ? body.state : 'idle',
+        currentJobId: body.currentJobId ? String(body.currentJobId).trim() : null,
+    };
+    if (!normalized.appVersion) {
+        throw httpError(400, 'invalid_worker_heartbeat', 'Informe a versão do Mileto AI Video.');
+    }
+    const result = await withDelegatedAccess(req, async ({ connection, accessToken, viewContextId }) => {
+        assertAssetsWriteScope(connection);
+        try {
+            const payload = await opsApi(accessToken, '/v1/video-workers/heartbeat', {
+                method: 'POST',
+                headers: viewContextId ? { [OPS_VIEW_CONTEXT_HEADER]: viewContextId } : {},
+                body: JSON.stringify(normalized),
+            });
+            return { connection, payload, supported: true };
+        } catch (error) {
+            if (error instanceof OpsHttpError && error.status === 404) {
+                return { connection, payload: null, supported: false };
+            }
+            throw error;
+        }
+    });
+    await audit({
+        req,
+        connectionId: result.connection.id,
+        action: 'ops.video_worker.heartbeat',
+        resourceType: normalized.currentJobId ? 'video_job' : null,
+        resourceId: normalized.currentJobId,
+        result: result.supported ? 'success' : 'unsupported',
+        detail: { mode: normalized.mode, state: normalized.state },
+    });
+    res.json({
+        ok: true,
+        data: result.supported
+            ? { supported: true, ...unwrapOpsData(result.payload) }
+            : { supported: false, receivedAt: new Date().toISOString() },
+    });
+};
+
 export const claimVideoJob = async (req, res) => {
     const jobId = String(req.params.jobId || '').trim();
     if (!jobId) throw httpError(400, 'invalid_video_job', 'Informe o trabalho de vídeo.');

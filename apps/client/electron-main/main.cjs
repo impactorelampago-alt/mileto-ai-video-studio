@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, clipboard, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, clipboard, shell, Tray, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -9,6 +9,9 @@ const os = require('os');
 
 let serverProcess = null;
 let mainWindowRef = null;
+let trayRef = null;
+let isQuitting = false;
+let shutdownResolve = null;
 let autoUpdater = null;
 const localFileImportToken = randomBytes(32).toString('hex');
 const authorizedExportDirs = new Set();
@@ -151,11 +154,75 @@ function startServer() {
 
 const isDev = process.env.NODE_ENV === 'development';
 
+// O executor do Ops deve ter uma unica instancia por computador. Abrir o app
+// novamente apenas traz a janela existente para frente, sem criar outro poller.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+    app.exit(0);
+}
+
 // Disable Chromium throttling when the app is in the background or hidden
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+
+function executorMode() {
+    return mainWindowRef && !mainWindowRef.isDestroyed() && mainWindowRef.isVisible() && !mainWindowRef.isMinimized()
+        ? 'foreground'
+        : 'background';
+}
+
+function publishExecutorMode() {
+    if (mainWindowRef && !mainWindowRef.isDestroyed()) {
+        mainWindowRef.webContents.send('executor:mode-changed', { executionMode: executorMode() });
+    }
+}
+
+function showMainWindow() {
+    if (!mainWindowRef || mainWindowRef.isDestroyed()) {
+        createWindow();
+    }
+    if (mainWindowRef.isMinimized()) mainWindowRef.restore();
+    mainWindowRef.show();
+    mainWindowRef.focus();
+    publishExecutorMode();
+}
+
+function createTray(iconPath) {
+    if (trayRef || !fs.existsSync(iconPath)) return;
+    trayRef = new Tray(iconPath);
+    trayRef.setToolTip('Mileto AI Video - executor do Mileto Ops');
+    trayRef.setContextMenu(Menu.buildFromTemplate([
+        { label: 'Abrir Mileto AI Video', click: showMainWindow },
+        { label: 'Executor do Ops ativo em segundo plano', enabled: false },
+        { type: 'separator' },
+        { label: 'Sair completamente', click: () => void requestGracefulQuit() },
+    ]));
+    trayRef.on('double-click', showMainWindow);
+}
+
+async function requestGracefulQuit() {
+    if (isQuitting) return;
+    isQuitting = true;
+    if (mainWindowRef && !mainWindowRef.isDestroyed()) {
+        await Promise.race([
+            new Promise((resolve) => {
+                shutdownResolve = resolve;
+                mainWindowRef.webContents.send('executor:shutdown');
+            }),
+            new Promise((resolve) => setTimeout(resolve, 1800)),
+        ]).catch(() => undefined);
+    }
+    shutdownResolve = null;
+    if (mainWindowRef && !mainWindowRef.isDestroyed()) mainWindowRef.destroy();
+    if (serverProcess) serverProcess.kill();
+    app.exit(0);
+}
+
+if (hasSingleInstanceLock) {
+    app.on('second-instance', showMainWindow);
+}
 
 // Cria/atualiza um atalho "Mileto AI Video" na área de trabalho apontando pra
 // biblioteca local (files/) — para o usuário achar seus vídeos/imagens/músicas.
@@ -207,6 +274,22 @@ function createWindow() {
     });
 
     mainWindowRef = mainWindow;
+
+    mainWindow.on('show', publishExecutorMode);
+    mainWindow.on('focus', publishExecutorMode);
+    mainWindow.on('restore', publishExecutorMode);
+    mainWindow.on('minimize', publishExecutorMode);
+    mainWindow.on('hide', publishExecutorMode);
+    mainWindow.on('close', (event) => {
+        if (isQuitting) return;
+        event.preventDefault();
+        mainWindow.hide();
+        publishExecutorMode();
+    });
+    mainWindow.on('closed', () => {
+        if (mainWindowRef === mainWindow) mainWindowRef = null;
+    });
+    mainWindow.webContents.on('did-finish-load', publishExecutorMode);
 
     if (isDev) {
         mainWindow.loadURL('http://localhost:5173');
@@ -307,6 +390,16 @@ app.whenReady().then(() => {
         } catch {
             return false;
         }
+    });
+
+    ipcMain.handle('executor:get-runtime', () => ({
+        executionMode: executorMode(),
+        singleInstance: true,
+        trayAvailable: Boolean(trayRef),
+    }));
+    ipcMain.handle('executor:shutdown-complete', () => {
+        if (shutdownResolve) shutdownResolve(true);
+        return true;
     });
 
     // Cola arquivos copiados no Windows Explorer. A cópia física é feita pelo
@@ -572,6 +665,10 @@ app.whenReady().then(() => {
     });
 
     createWindow();
+    const trayIconPath = isDev
+        ? path.join(__dirname, '../build/icon.ico')
+        : path.join(process.resourcesPath, 'app.asar.unpacked', 'build', 'icon.ico');
+    createTray(fs.existsSync(trayIconPath) ? trayIconPath : path.join(__dirname, '../build/icon.ico'));
     startServer();
     ensureDesktopShortcut();
 
@@ -581,8 +678,13 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', function () {
-    if (serverProcess) serverProcess.kill();
-    if (process.platform !== 'darwin') app.quit();
+    // A janela pode ser fechada/ocultada sem interromper o executor local.
+});
+
+app.on('before-quit', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    void requestGracefulQuit();
 });
 
 app.on('quit', () => {

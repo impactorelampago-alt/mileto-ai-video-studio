@@ -104,7 +104,7 @@ export const titleGeneratorEditorToConfig = (
     triggers: TitleTriggerEditor[]
 ): AiTitleGeneratorConfig => ({
     ...base,
-    version: 2,
+    version: 3,
     triggers: triggers.map((trigger) => ({
         id: trigger.id,
         name: trigger.name,

@@ -19,9 +19,15 @@ export default tseslint.config(
                 tsconfigRootDir: import.meta.dirname,
             },
         },
+        plugins: {
+            react,
+            'react-hooks': reactHooks,
+            'react-refresh': reactRefresh,
+        },
         rules: {
             '@typescript-eslint/no-explicit-any': 'warn',
             '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+            'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
             'no-undef': 'off',
         },
     }

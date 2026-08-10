@@ -47,7 +47,7 @@ export const TITLE_MODEL_LIBRARIES: TitleModelLibrary[] = [
 
 export const TITLE_MODEL_LIBRARY_NOTES: Record<TitleModelLibrary, string> = {
     'Call to Action (CTA)': '5 chamadas visuais para conversão',
-    'Biblioteca Premium': '18 modelos curados para uso real',
+    'Biblioteca Premium': `${PREMIUM_TITLE_MODELS.length} modelos curados para uso real`,
     Localização: '3 modelos para cidade, estado ou país',
 };
 

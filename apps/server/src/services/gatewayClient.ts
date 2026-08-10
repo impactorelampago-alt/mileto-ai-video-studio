@@ -141,6 +141,7 @@ export interface GatewayChatPayload {
     locale?: string;
     system?: string;
     json?: boolean;
+    maxOutputTokens?: number;
     agentId?: 'director' | 'prompt_sales' | 'image_director' | 'video_director';
 }
 

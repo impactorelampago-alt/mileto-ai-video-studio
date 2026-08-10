@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useWizard } from '../context/WizardContext';
-import { ArrowLeft, Play, Plus, Loader2, KeyRound, Pencil, Check, X, Copy, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Play, Plus, Loader2, KeyRound, Pencil, X, Copy, ExternalLink, Save } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { toast } from 'sonner';
-import { DEFAULT_VOICE_SETTINGS, TTS_PROVIDERS, type TtsProvider, type VoicePreset } from '../types';
-import { SYSTEM_VOICES, SYSTEM_VOICE_IDS } from '../lib/systemVoices';
+import { DEFAULT_VOICE_SETTINGS, TTS_PROVIDERS, type CustomVoice, type TtsProvider, type VoicePreset } from '../types';
+import { effectiveSystemVoicePreset, saveSystemVoicePreset, SYSTEM_VOICES, SYSTEM_VOICE_IDS } from '../lib/systemVoices';
 import { DEFAULT_PRESET_AUDIO_CONFIG, SYSTEM_MUSIC_TRACKS } from '../lib/systemMusic';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { invalidatedNarrationDerivatives } from '../lib/narrationState';
@@ -17,7 +17,6 @@ const PROVIDER_LABEL: Record<TtsProvider, string> = {
     fishAudio: 'Fish Audio',
     elevenLabs: 'ElevenLabs',
 };
-
 /** Selo discreto que identifica de qual serviço a voz vem. */
 const ProviderBadge = ({ provider }: { provider: TtsProvider }) => (
     <span
@@ -38,8 +37,8 @@ export const VoiceSelector = () => {
         updateAdData,
         customVoices,
         addCustomVoice,
+        updateCustomVoice,
         removeCustomVoice,
-        renameCustomVoice,
         musicLibrary,
         setSelectedMusicId,
     } = useWizard();
@@ -55,8 +54,15 @@ export const VoiceSelector = () => {
     const [newVoiceMusicId, setNewVoiceMusicId] = useState<string | null>(null);
     const [newVoiceMusicVolume, setNewVoiceMusicVolume] = useState(0.3);
 
-    const [editingVoiceId, setEditingVoiceId] = useState<string | null>(null);
-    const [editingName, setEditingName] = useState('');
+    const [presetRevision, setPresetRevision] = useState(0);
+    const [presetEditor, setPresetEditor] = useState<{
+        originalId: string;
+        id: string;
+        name: string;
+        provider: TtsProvider;
+        isSystem: boolean;
+        preset: VoicePreset;
+    } | null>(null);
 
     const openFishDiscovery = () => {
         const url = 'https://fish.audio/app/discovery/';
@@ -78,7 +84,7 @@ export const VoiceSelector = () => {
     const selectVoice = (id: string, provider: TtsProvider) => {
         const systemVoice = SYSTEM_VOICES.find((voice) => voice.id === id);
         const customVoice = customVoices.find((voice) => voice.id === id);
-        const preset: VoicePreset = systemVoice?.preset || customVoice?.preset || {
+        const preset: VoicePreset = (systemVoice ? effectiveSystemVoicePreset(id) : customVoice?.preset) || {
             voiceSettings: { ...DEFAULT_VOICE_SETTINGS },
             musicTrackId: null,
             audioConfig: {
@@ -137,23 +143,79 @@ export const VoiceSelector = () => {
         setAddMode('none');
     };
 
-    const handleStartEdit = (e: React.SyntheticEvent, id: string, name: string) => {
+    const openPresetEditor = (e: React.SyntheticEvent, voice: { id: string; name: string; provider?: TtsProvider; preset?: VoicePreset }, isSystem: boolean) => {
         e.stopPropagation();
-        setEditingVoiceId(id);
-        setEditingName(name);
+        const source = (isSystem ? effectiveSystemVoicePreset(voice.id) : voice.preset) || {
+            voiceSettings: { ...DEFAULT_VOICE_SETTINGS },
+            musicTrackId: null,
+            audioConfig: {
+                narration: { ...DEFAULT_PRESET_AUDIO_CONFIG.narration },
+                background: { ...DEFAULT_PRESET_AUDIO_CONFIG.background },
+            },
+        };
+        setPresetEditor({
+            originalId: voice.id,
+            id: voice.id,
+            name: voice.name,
+            provider: voice.provider ?? 'fishAudio',
+            isSystem,
+            preset: {
+                voiceSettings: { ...source.voiceSettings },
+                musicTrackId: source.musicTrackId,
+                audioConfig: {
+                    narration: { ...source.audioConfig.narration },
+                    background: { ...source.audioConfig.background },
+                },
+            },
+        });
     };
 
-    const handleSaveEdit = (e: React.SyntheticEvent, id: string) => {
-        e.stopPropagation();
-        if (editingName.trim()) {
-            renameCustomVoice(id, editingName.trim());
+    const savePresetEditor = () => {
+        if (!presetEditor) return;
+        const id = presetEditor.id.trim();
+        const name = presetEditor.name.trim();
+        if (!id || !name) {
+            toast.error('Informe o nome e o ID da voz.');
+            return;
         }
-        setEditingVoiceId(null);
-    };
-
-    const handleCancelEdit = (e: React.SyntheticEvent) => {
-        e.stopPropagation();
-        setEditingVoiceId(null);
+        if (!presetEditor.isSystem && id !== presetEditor.originalId && (
+            SYSTEM_VOICE_IDS.has(id) || customVoices.some((voice) => voice.id === id)
+        )) {
+            toast.error('Já existe uma voz com este ID.');
+            return;
+        }
+        if (presetEditor.isSystem) {
+            saveSystemVoicePreset(presetEditor.originalId, presetEditor.preset);
+            setPresetRevision((value) => value + 1);
+        } else {
+            const nextVoice: CustomVoice = {
+                id,
+                name,
+                description: 'Voz Personalizada',
+                provider: presetEditor.provider,
+                preset: presetEditor.preset,
+            };
+            updateCustomVoice(presetEditor.originalId, nextVoice);
+        }
+        if (adData.selectedVoiceId === presetEditor.originalId) {
+            updateAdData({
+                ...invalidatedNarrationDerivatives(),
+                selectedVoiceId: presetEditor.isSystem ? presetEditor.originalId : id,
+                selectedVoiceProvider: presetEditor.provider,
+                isNarrationGenerated: false,
+                narrationAudioUrl: null,
+                narrationAudioPath: null,
+                narrationDuration: 0,
+                voiceSettings: { ...presetEditor.preset.voiceSettings },
+                audioConfig: {
+                    narration: { ...presetEditor.preset.audioConfig.narration },
+                    background: { ...presetEditor.preset.audioConfig.background },
+                },
+            });
+            setSelectedMusicId(presetEditor.preset.musicTrackId);
+        }
+        toast.success('Padrão da voz salvo.');
+        setPresetEditor(null);
     };
 
     const handleSaveCustomVoice = () => {
@@ -190,7 +252,7 @@ export const VoiceSelector = () => {
 
         try {
             const previewVoiceSettings =
-                SYSTEM_VOICES.find((voice) => voice.id === voiceId)?.preset.voiceSettings ||
+                effectiveSystemVoicePreset(voiceId)?.voiceSettings ||
                 customVoices.find((voice) => voice.id === voiceId)?.preset?.voiceSettings ||
                 adData.voiceSettings;
             // Frase de anúncio de verdade — julgar uma voz de vendas por ela é
@@ -255,7 +317,10 @@ export const VoiceSelector = () => {
         <div className="space-y-5">
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {/* Vozes do sistema — acompanham o produto */}
-                {SYSTEM_VOICES.map((voice) => (
+                {SYSTEM_VOICES.map((voice) => {
+                    const effectivePreset = effectiveSystemVoicePreset(voice.id) || voice.preset;
+                    void presetRevision;
+                    return (
                     <div
                         key={voice.id}
                         onClick={() => selectVoice(voice.id, voice.provider)}
@@ -275,14 +340,24 @@ export const VoiceSelector = () => {
                                     {voice.desc}
                                 </div>
                             </div>
-                            <PlayButton voiceId={voice.id} provider={voice.provider} />
+                            <div className="flex shrink-0 items-center gap-1.5">
+                                <button
+                                    type="button"
+                                    onClick={(event) => openPresetEditor(event, voice, true)}
+                                    className="rounded-xl border border-white/5 bg-background p-2.5 text-brand-muted transition hover:border-brand-accent/40 hover:text-brand-accent"
+                                    title="Editar velocidade, volume e música"
+                                >
+                                    <Pencil className="h-4 w-4" />
+                                </button>
+                                <PlayButton voiceId={voice.id} provider={voice.provider} />
+                            </div>
                         </div>
 
                         <div className="flex items-center gap-1.5">
                             <ProviderBadge provider={voice.provider} />
-                            {presetMusicName(voice.preset.musicTrackId) && (
+                            {presetMusicName(effectivePreset.musicTrackId) && (
                                 <span className="truncate text-[9px] font-semibold text-brand-accent/80">
-                                    + {presetMusicName(voice.preset.musicTrackId)}
+                                    + {presetMusicName(effectivePreset.musicTrackId)}
                                 </span>
                             )}
                         </div>
@@ -296,7 +371,8 @@ export const VoiceSelector = () => {
                             </div>
                         )}
                     </div>
-                ))}
+                    );
+                })}
 
                 {/* Vozes personalizadas do usuário.
                     Filtra as que já viraram voz do sistema (ex.: Rodeio, Locutor Rádio
@@ -318,36 +394,6 @@ export const VoiceSelector = () => {
                             >
                                 <div className="flex items-start justify-between gap-2">
                                     <div className="flex-1 min-w-0">
-                                        {editingVoiceId === voice.id ? (
-                                            <div
-                                                className="flex items-center gap-1 w-full"
-                                                onClick={(e) => e.stopPropagation()}
-                                            >
-                                                <input
-                                                    type="text"
-                                                    value={editingName}
-                                                    onChange={(e) => setEditingName(e.target.value)}
-                                                    onKeyDown={(e) => {
-                                                        if (e.key === 'Enter') handleSaveEdit(e, voice.id);
-                                                        if (e.key === 'Escape') handleCancelEdit(e);
-                                                    }}
-                                                    className="bg-transparent border-b border-brand-accent/50 focus:border-brand-accent text-sm text-foreground outline-none px-1 py-0.5 w-full mr-1"
-                                                    autoFocus
-                                                />
-                                                <button
-                                                    onClick={(e) => handleSaveEdit(e, voice.id)}
-                                                    className="p-1 hover:text-brand-accent transition-colors"
-                                                >
-                                                    <Check className="w-3.5 h-3.5" />
-                                                </button>
-                                                <button
-                                                    onClick={handleCancelEdit}
-                                                    className="p-1 hover:text-destructive transition-colors"
-                                                >
-                                                    <X className="w-3.5 h-3.5" />
-                                                </button>
-                                            </div>
-                                        ) : (
                                             <div className="flex items-center gap-2 max-w-full">
                                                 <div
                                                     className="font-semibold text-foreground truncate tracking-wide"
@@ -356,14 +402,13 @@ export const VoiceSelector = () => {
                                                     {voice.name}
                                                 </div>
                                                 <button
-                                                    onClick={(e) => handleStartEdit(e, voice.id, voice.name)}
-                                                    className="opacity-0 group-hover:opacity-100 p-1 text-brand-muted hover:text-brand-accent transition-all shrink-0"
-                                                    title="Renomear voz"
+                                                    onClick={(e) => openPresetEditor(e, voice, false)}
+                                                    className="p-1 text-brand-muted hover:text-brand-accent transition-all shrink-0"
+                                                    title="Editar voz e padrão automático"
                                                 >
                                                     <Pencil className="w-3 h-3" />
                                                 </button>
                                             </div>
-                                        )}
                                         <div className="mt-2 flex items-center gap-1.5 flex-wrap">
                                             <ProviderBadge provider={provider} />
                                             <span className="inline-block px-2 py-0.5 rounded-full text-[9px] uppercase tracking-widest font-bold bg-brand-accent/10 text-brand-accent border border-brand-accent/20">
@@ -422,6 +467,93 @@ export const VoiceSelector = () => {
                             </div>
                         );
                     })}
+
+                {presetEditor && (
+                    <div
+                        className="col-span-1 space-y-4 rounded-2xl border border-brand-accent/35 bg-brand-accent/[0.055] p-4 shadow-[0_18px_50px_rgba(0,0,0,.22)] sm:col-span-2"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-brand-accent">
+                                    Editar padrão da voz
+                                </p>
+                                <p className="mt-1 text-[10px] text-brand-muted">
+                                    {presetEditor.isSystem
+                                        ? 'A voz acompanha o Mileto. O ID fica protegido, mas os ajustes continuam personalizáveis.'
+                                        : 'Nome, ID, velocidade, volume e trilha ficarão salvos para os próximos projetos.'}
+                                </p>
+                            </div>
+                            <button type="button" onClick={() => setPresetEditor(null)} className="rounded-lg p-2 text-brand-muted hover:bg-white/5 hover:text-foreground">
+                                <X className="h-4 w-4" />
+                            </button>
+                        </div>
+
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            <label className="space-y-1.5 text-[9px] font-bold uppercase tracking-wider text-brand-muted">
+                                <span>Nome</span>
+                                <input
+                                    value={presetEditor.name}
+                                    disabled={presetEditor.isSystem}
+                                    onChange={(event) => setPresetEditor((current) => current ? { ...current, name: event.target.value } : current)}
+                                    className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-xs normal-case text-foreground outline-none focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+                                />
+                            </label>
+                            <label className="space-y-1.5 text-[9px] font-bold uppercase tracking-wider text-brand-muted">
+                                <span>ID da voz {presetEditor.isSystem && '· protegido'}</span>
+                                <input
+                                    value={presetEditor.id}
+                                    disabled={presetEditor.isSystem}
+                                    onChange={(event) => setPresetEditor((current) => current ? { ...current, id: event.target.value } : current)}
+                                    className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-[10px] normal-case text-foreground outline-none focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-45"
+                                />
+                            </label>
+                            <label className="space-y-1.5 text-[9px] font-bold uppercase tracking-wider text-brand-muted">
+                                <span className="flex justify-between"><span>Velocidade</span><b className="text-foreground">{presetEditor.preset.voiceSettings.speed.toFixed(2)}x</b></span>
+                                <input
+                                    type="range" min={0.5} max={2} step={0.05}
+                                    value={presetEditor.preset.voiceSettings.speed}
+                                    onChange={(event) => setPresetEditor((current) => current ? { ...current, preset: { ...current.preset, voiceSettings: { ...current.preset.voiceSettings, speed: Number(event.target.value) } } } : current)}
+                                    className="w-full accent-brand-accent"
+                                />
+                            </label>
+                            <label className="space-y-1.5 text-[9px] font-bold uppercase tracking-wider text-brand-muted">
+                                <span className="flex justify-between"><span>Volume da voz</span><b className="text-foreground">{presetEditor.preset.voiceSettings.volume > 0 ? '+' : ''}{presetEditor.preset.voiceSettings.volume} dB</b></span>
+                                <input
+                                    type="range" min={-5} max={5} step={1}
+                                    value={presetEditor.preset.voiceSettings.volume}
+                                    onChange={(event) => setPresetEditor((current) => current ? { ...current, preset: { ...current.preset, voiceSettings: { ...current.preset.voiceSettings, volume: Number(event.target.value) } } } : current)}
+                                    className="w-full accent-brand-accent"
+                                />
+                            </label>
+                        </div>
+
+                        <div className="rounded-xl border border-white/8 bg-black/20 p-3">
+                            <p className="mb-2 text-[9px] font-bold uppercase tracking-wider text-brand-muted">Música vinculada</p>
+                            <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">
+                                <button type="button" onClick={() => setPresetEditor((current) => current ? { ...current, preset: { ...current.preset, musicTrackId: null } } : current)} className={cn('rounded-lg border px-2.5 py-1.5 text-[9px] font-bold', presetEditor.preset.musicTrackId === null ? 'border-brand-accent bg-brand-accent/15 text-brand-accent' : 'border-white/10 text-brand-muted')}>Sem música</button>
+                                {musicLibrary.map((track) => (
+                                    <button key={track.id} type="button" onClick={() => setPresetEditor((current) => current ? { ...current, preset: { ...current.preset, musicTrackId: track.id } } : current)} className={cn('rounded-lg border px-2.5 py-1.5 text-[9px] font-bold', presetEditor.preset.musicTrackId === track.id ? 'border-brand-accent bg-brand-accent/15 text-brand-accent' : 'border-white/10 text-brand-muted hover:border-brand-accent/35')}>
+                                        {track.displayName}{track.source === 'system' ? ' · Sistema' : ''}
+                                    </button>
+                                ))}
+                            </div>
+                            {presetEditor.preset.musicTrackId && (
+                                <label className="mt-3 block space-y-1 text-[9px] font-bold uppercase tracking-wider text-brand-muted">
+                                    <span className="flex justify-between"><span>Volume da música</span><b className="text-foreground">{Math.round(presetEditor.preset.audioConfig.background.volume * 100)}%</b></span>
+                                    <input type="range" min={0.05} max={0.6} step={0.05} value={presetEditor.preset.audioConfig.background.volume} onChange={(event) => setPresetEditor((current) => current ? { ...current, preset: { ...current.preset, audioConfig: { ...current.preset.audioConfig, background: { ...current.preset.audioConfig.background, volume: Number(event.target.value) } } } } : current)} className="w-full accent-brand-accent" />
+                                </label>
+                            )}
+                        </div>
+
+                        <div className="flex justify-end gap-2">
+                            <button type="button" onClick={() => setPresetEditor(null)} className="rounded-xl border border-white/10 px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-brand-muted hover:text-foreground">Cancelar</button>
+                            <button type="button" onClick={savePresetEditor} className="flex items-center gap-2 rounded-xl bg-brand-accent px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-[#07110d]">
+                                <Save className="h-3.5 w-3.5" /> Salvar padrão
+                            </button>
+                        </div>
+                    </div>
+                )}
 
                 {/* The "Nova Voz" Logic Block */}
                 {addMode === 'none' && (

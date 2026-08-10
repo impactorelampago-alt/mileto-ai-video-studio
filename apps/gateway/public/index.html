@@ -129,6 +129,12 @@
   .agent-card::before { content: ''; position: absolute; inset: 0 0 auto; height: 2px; background: var(--grad); opacity: .8; }
   .agent-card.is-off::before { background: var(--ink-3); opacity: .35; }
   .agent-card-head { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+  .agent-head-actions { display: flex; align-items: center; gap: 12px; }
+  .agent-collapse { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--rule); background: rgba(255,255,255,.025); color: var(--ink-2); cursor: pointer; font-size: 18px; line-height: 1; transition: .18s; }
+  .agent-collapse:hover { border-color: var(--accent); color: var(--accent); }
+  .agent-collapse span { display: inline-block; transition: transform .18s; }
+  .agent-card.is-collapsed .agent-collapse span { transform: rotate(180deg); }
+  .agent-card.is-collapsed .agent-card-body { display: none; }
   .agent-identity { display: flex; gap: 13px; min-width: 0; }
   .agent-icon { width: 42px; height: 42px; border-radius: 13px; flex: 0 0 auto; display: grid; place-items: center; background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent); font-size: 19px; }
   .agent-title { font-weight: 800; font-size: 16px; letter-spacing: -.01em; }
@@ -162,6 +168,11 @@
   .history-row:last-child { border-bottom: none; }
   .history-main { font-size: 13px; }
   .history-meta { color: var(--ink-3); font: 10px/1.5 var(--mono); margin-top: 3px; }
+  .title-ai-card { background: linear-gradient(145deg,rgba(22,33,31,.96),rgba(12,20,19,.98)); border: 1px solid var(--rule); border-radius: 16px; padding: 18px; margin-bottom: 16px; }
+  .title-ai-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+  .title-ai-title { font-size: 15px; font-weight: 800; color: var(--ink); }
+  .title-ai-subtitle { color: var(--ink-3); font-size: 11px; margin-top: 3px; }
+  .title-ai-grid { display: grid; grid-template-columns: .8fr 1.5fr 1fr .8fr; gap: 10px; }
 
   .modal { position: fixed; inset: 0; display: grid; place-items: center; z-index: 60; padding: 20px; background: rgba(0,0,0,.5); }
   .modal-card { background: var(--panel); border: 1px solid var(--rule); border-radius: 16px; padding: 28px; width: 100%; max-width: 440px; max-height: 92vh; overflow-y: auto; }
@@ -169,8 +180,8 @@
   .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--accent); color: var(--ink); padding: 12px 20px; border-radius: 10px; font-size: 13px; z-index: 80; }
   .toast.err { border-color: var(--red); }
 
-  @media (max-width: 900px) { .agent-tier-fields,.agent-production-fields { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 720px) { #app { grid-template-columns: 1fr; } .side { flex-direction: column; } .agent-grid { grid-template-columns: 1fr; } .agent-fields,.agent-fields.two,.agent-tier-fields,.agent-production-fields { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) { .agent-tier-fields,.agent-production-fields,.title-ai-grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 720px) { #app { grid-template-columns: 1fr; } .side { flex-direction: column; } .agent-grid { grid-template-columns: 1fr; } .agent-fields,.agent-fields.two,.agent-tier-fields,.agent-production-fields,.title-ai-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -243,6 +254,16 @@
     <section id="viewIaTitleGenerator" class="hidden">
       <div class="topbar"><div><h1>IA &middot; Gerador de T&iacute;tulos</h1><div class="muted">Padr&atilde;o global de gatilhos, tipos visuais, cores e layouts por propor&ccedil;&atilde;o.</div></div></div>
       <div class="banner">Este JSON &eacute; o padr&atilde;o Mileto. O dono de cada ag&ecirc;ncia pode personaliz&aacute;-lo pela interface do app; a equipe recebe automaticamente a configura&ccedil;&atilde;o efetiva.</div>
+      <div class="title-ai-card">
+        <div class="title-ai-head"><div><div class="title-ai-title">IA usada para analisar a narra&ccedil;&atilde;o</div><div class="title-ai-subtitle">Configura&ccedil;&atilde;o exclusiva do gerador de t&iacute;tulos. N&atilde;o altera os agentes do Chat.</div></div><span class="pill ok">recomendado: GPT-5 Mini</span></div>
+        <div class="title-ai-grid">
+          <div><label>Provedor</label><select id="titleAiProvider"><option value="openai">OpenAI</option><option value="gemini">Google Gemini</option></select></div>
+          <div><label>Modelo</label><input id="titleAiModel" list="titleAiModelsOpenai" placeholder="Selecione ou informe o ID" /></div>
+          <div><label>Racioc&iacute;nio</label><select id="titleAiReasoning"></select></div>
+          <div><label>Sa&iacute;da m&aacute;xima</label><input id="titleAiTokens" type="number" min="512" max="32768" step="256" value="4096" /></div>
+        </div>
+        <datalist id="titleAiModelsOpenai"></datalist><datalist id="titleAiModelsGemini"></datalist>
+      </div>
       <textarea id="titleConfigBox" spellcheck="false" style="width:100%;min-height:520px;background:var(--panel);border:1px solid var(--rule);border-radius:12px;padding:18px;color:var(--ink);font-family:var(--mono);font-size:12px;line-height:1.55;resize:vertical;outline:none"></textarea>
       <div style="display:flex;gap:10px;margin-top:14px;align-items:center"><button class="btn" id="titleConfigSave">Salvar padr&atilde;o</button><span class="muted" id="titleConfigInfo"></span></div>
     </section>
@@ -473,22 +494,33 @@ async function loadAgents() {
       const productionFields = production ? `<div class="agent-production-fields"><div><label>Motor de produ&ccedil;&atilde;o</label><input class="agent-gen-provider" value="${esc(tier.generationProvider)}" placeholder="Ex.: seedance, gemini" /></div><div><label>Modelo de produ&ccedil;&atilde;o</label><input class="agent-gen-model" value="${esc(tier.generationModel)}" placeholder="ID exato do modelo deste n&iacute;vel" /></div><div><label>Custo m&aacute;ximo (US$ / gera&ccedil;&atilde;o)</label><input class="agent-gen-cost" type="number" min="0" max="10000" step="0.000001" value="${Number(tier.generationCostUsd || 0)}" /><div class="muted" style="font-size:10px;margin-top:4px">Obrigat&oacute;rio para ativar sem risco de subcobran&ccedil;a.</div></div></div>` : '';
       return `<div class="agent-tier-panel" data-tier="${tierMeta.id}"><div class="agent-tier-head"><span class="agent-tier-name">${esc(tierMeta.label)}</span><span class="agent-tier-desc">${esc(tierMeta.description)}</span></div><div class="agent-tier-fields"><div><label>C&eacute;rebro</label><select class="agent-provider"><option value="openai" ${tier.provider==='openai'?'selected':''}>OpenAI</option><option value="gemini" ${tier.provider==='gemini'?'selected':''}>Google Gemini</option></select></div><div><label>Modelo</label><input class="agent-model" value="${esc(tier.model)}" /></div><div><label>Racioc&iacute;nio</label><select class="agent-reasoning">${reasonOpts(tier.reasoning)}</select></div><div><label>Sa&iacute;da m&aacute;xima</label><input class="agent-tokens" type="number" min="512" max="32768" step="256" value="${tier.maxOutputTokens}" /></div></div>${productionFields}</div>`;
     }).join('');
-    return `<article class="agent-card ${c.enabled?'':'is-off'}" data-agent="${a.id}">
+    return `<article class="agent-card ${c.enabled?'':'is-off'} is-collapsed" data-agent="${a.id}">
       <div class="agent-card-head">
         <div class="agent-identity"><div class="agent-icon">${AGENT_ICONS[a.id] || '&#10022;'}</div><div><div class="agent-title">${esc(a.label)}</div><div class="agent-role">${esc(a.description)}</div><span class="agent-version">vers&atilde;o ${c.version}${c.rollbackOf ? ' &middot; rollback de v'+c.rollbackOf : ''}</span></div></div>
-        <label class="agent-switch"><span>Ativo</span><input class="agent-enabled" type="checkbox" ${c.enabled?'checked':''}/><span class="switch-track"></span></label>
+        <div class="agent-head-actions">
+          <label class="agent-switch"><span>Ativo</span><input class="agent-enabled" type="checkbox" ${c.enabled?'checked':''}/><span class="switch-track"></span></label>
+          <button type="button" class="agent-collapse" aria-expanded="false" title="Expandir cargo"><span>&#8963;</span></button>
+        </div>
       </div>
-      <div class="agent-divider"></div>
-      <div class="agent-tier-stack">${tierPanels}</div>
-      <label style="margin-top:14px">Prompt de sistema</label>
-      <textarea class="agent-prompt">${esc(c.systemPrompt)}</textarea>
-      <div class="agent-actions"><button class="btn btn-ghost btn-sm agent-history">Hist&oacute;rico</button><button class="btn btn-ghost btn-sm agent-toggle-test">Testar rascunho</button><button class="btn btn-sm publish agent-publish">Publicar nova vers&atilde;o</button></div>
-      <div class="agent-test hidden"><div class="muted" style="margin-bottom:8px">O teste usa este rascunho sem public&aacute;-lo.</div><div style="max-width:220px;margin-bottom:9px"><label>N&iacute;vel do teste</label><select class="agent-test-tier">${data.tiers.map(t => `<option value="${t.id}" ${t.id==='mileto'?'selected':''}>${esc(t.label)}</option>`).join('')}</select></div><textarea class="agent-test-message" placeholder="Ex.: Crie uma campanha de 15 segundos para uma &oacute;tica..."></textarea><div class="agent-actions"><button class="btn btn-sm agent-run-test">Executar teste</button></div><pre class="agent-result hidden"></pre></div>
+      <div class="agent-card-body">
+        <div class="agent-divider"></div>
+        <div class="agent-tier-stack">${tierPanels}</div>
+        <label style="margin-top:14px">Prompt de sistema</label>
+        <textarea class="agent-prompt">${esc(c.systemPrompt)}</textarea>
+        <div class="agent-actions"><button class="btn btn-ghost btn-sm agent-history">Hist&oacute;rico</button><button class="btn btn-ghost btn-sm agent-toggle-test">Testar rascunho</button><button class="btn btn-sm publish agent-publish">Publicar nova vers&atilde;o</button></div>
+        <div class="agent-test hidden"><div class="muted" style="margin-bottom:8px">O teste usa este rascunho sem public&aacute;-lo.</div><div style="max-width:220px;margin-bottom:9px"><label>N&iacute;vel do teste</label><select class="agent-test-tier">${data.tiers.map(t => `<option value="${t.id}" ${t.id==='mileto'?'selected':''}>${esc(t.label)}</option>`).join('')}</select></div><textarea class="agent-test-message" placeholder="Ex.: Crie uma campanha de 15 segundos para uma &oacute;tica..."></textarea><div class="agent-actions"><button class="btn btn-sm agent-run-test">Executar teste</button></div><pre class="agent-result hidden"></pre></div>
+      </div>
     </article>`;
   }).join('');
 
   $('agentGrid').querySelectorAll('.agent-card').forEach((card) => {
     syncAgentCard(card);
+    const collapse = card.querySelector('.agent-collapse');
+    collapse.addEventListener('click', () => {
+      const collapsed = card.classList.toggle('is-collapsed');
+      collapse.setAttribute('aria-expanded', String(!collapsed));
+      collapse.title = collapsed ? 'Expandir cargo' : 'Recolher cargo';
+    });
     card.querySelector('.agent-enabled').addEventListener('change', () => syncAgentCard(card));
     card.querySelectorAll('.agent-provider').forEach((provider) => provider.addEventListener('change', () => syncAgentCard(card)));
     card.querySelector('.agent-toggle-test').addEventListener('click', () => card.querySelector('.agent-test').classList.toggle('hidden'));
@@ -508,15 +540,58 @@ async function loadAgents() {
   });
 }
 
+let TITLE_AI_CATALOG = {};
+
+function syncTitleAiModelList({ chooseDefault = false } = {}) {
+  const provider = $('titleAiProvider').value === 'gemini' ? 'gemini' : 'openai';
+  const models = TITLE_AI_CATALOG[provider] || [];
+  const modelInput = $('titleAiModel');
+  modelInput.setAttribute('list', provider === 'gemini' ? 'titleAiModelsGemini' : 'titleAiModelsOpenai');
+  if (chooseDefault && models.length && !models.some((entry) => entry.id === modelInput.value)) {
+    modelInput.value = provider === 'openai'
+      ? (models.find((entry) => entry.id === 'gpt-5-mini') || models[0]).id
+      : (models.find((entry) => entry.id === 'gemini-2.5-flash') || models[0]).id;
+  }
+}
+
+function applyTitleAiFields(config) {
+  const ai = config.ai || {};
+  $('titleAiProvider').value = ai.provider === 'gemini' ? 'gemini' : 'openai';
+  $('titleAiModel').value = ai.model || 'gpt-5-mini';
+  $('titleAiReasoning').value = ai.reasoning || 'equilibrado';
+  $('titleAiTokens').value = Number(ai.maxOutputTokens || 4096);
+  syncTitleAiModelList();
+}
+
+function titleConfigWithAiFields() {
+  const config = JSON.parse($('titleConfigBox').value);
+  const model = $('titleAiModel').value.trim();
+  if (!model) throw new Error('Selecione um modelo para o Gerador de Títulos.');
+  config.ai = {
+    provider: $('titleAiProvider').value === 'gemini' ? 'gemini' : 'openai',
+    model,
+    reasoning: $('titleAiReasoning').value || 'equilibrado',
+    maxOutputTokens: Math.max(512, Math.min(32768, Number($('titleAiTokens').value) || 4096)),
+  };
+  return config;
+}
+
 async function loadTitleGenerator() {
-  const { config, updatedAt } = await api('/admin/title-generator');
+  const { config, updatedAt, catalog = {}, reasoningLevels = [] } = await api('/admin/title-generator');
+  TITLE_AI_CATALOG = catalog;
+  $('titleAiModelsOpenai').innerHTML = (catalog.openai || []).map((model) => `<option value="${esc(model.id)}">${esc(model.name)}</option>`).join('');
+  $('titleAiModelsGemini').innerHTML = (catalog.gemini || []).map((model) => `<option value="${esc(model.id)}">${esc(model.name)}</option>`).join('');
+  $('titleAiReasoning').innerHTML = reasoningLevels.map((level) => `<option value="${esc(level.id)}">${esc(level.label)}</option>`).join('');
+  applyTitleAiFields(config);
   $('titleConfigBox').value = JSON.stringify(config, null, 2);
   $('titleConfigInfo').textContent = updatedAt ? 'Atualizado em ' + new Date(updatedAt).toLocaleString('pt-BR') : 'Usando padrão embutido';
 }
+$('titleAiProvider').addEventListener('change', () => syncTitleAiModelList({ chooseDefault: true }));
 $('titleConfigSave').addEventListener('click', async () => {
   try {
-    const config = JSON.parse($('titleConfigBox').value);
+    const config = titleConfigWithAiFields();
     const saved = await api('/admin/title-generator', { method: 'POST', body: JSON.stringify({ config }) });
+    applyTitleAiFields(saved.config);
     $('titleConfigBox').value = JSON.stringify(saved.config, null, 2);
     $('titleConfigInfo').textContent = 'Salvo em ' + new Date(saved.updatedAt).toLocaleString('pt-BR');
     toast('Padrão do Gerador de Títulos salvo.');

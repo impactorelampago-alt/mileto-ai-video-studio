@@ -1058,7 +1058,7 @@ export const Step4 = () => {
                                         Biblioteca Premium
                                     </h4>
                                     <p className="mt-0.5 text-[9px] font-semibold text-brand-muted">
-                                        18 modelos curados para uso real
+                                        {PREMIUM_TITLE_MODELS.length} modelos curados para uso real
                                     </p>
                                 </div>
                             </div>

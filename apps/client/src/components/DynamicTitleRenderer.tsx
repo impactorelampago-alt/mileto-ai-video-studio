@@ -257,7 +257,7 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                 <div className={cn('relative flex items-center justify-center', className)}>
                     {/* Search Bar Base */}
                     <div
-                        className="flex items-center gap-3 px-6 py-4 rounded-full shadow-2xl overflow-hidden min-w-[320px] max-w-[90vw]"
+                        className="flex min-w-[320px] max-w-[90vw] items-center gap-3 rounded-full px-5 py-3 shadow-2xl"
                         style={{ backgroundColor: secondary }}
                     >
                         <Search className="w-6 h-6 shrink-0" style={{ color: primary }} />
@@ -267,24 +267,31 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                         >
                             {text}
                         </span>
-                    </div>
-                    {/* SVG Mouse Pointer Cursor */}
-                    <div
-                        className={cn(
-                            'absolute right-4 top-8 z-50 drop-shadow-md origin-top-left pointer-events-none',
-                            !isHybridMode && 'anim-cta-mouse'
-                        )}
-                        style={isHybridMode ? getMouseStyles(timeElapsed) : undefined}
-                    >
-                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path
-                                d="M5.5 2.5L19.5 10L12 11.5L15 19.5L12 21L8.5 13.5L3.5 16.5L5.5 2.5Z"
-                                fill="#1A1A1A"
-                                stroke="white"
-                                strokeWidth="1.5"
-                                strokeLinejoin="round"
-                            />
-                        </svg>
+                        {/* O cursor agora pertence ao alvo. Ao mover ou redimensionar
+                            o titulo, a ponta continua clicando no centro do botao. */}
+                        <div
+                            className="relative grid h-10 w-10 shrink-0 place-items-center rounded-full shadow-inner"
+                            style={{ backgroundColor: primary }}
+                        >
+                            <ArrowRight className="h-5 w-5" style={{ color: secondary }} strokeWidth={3} />
+                            <div
+                                className={cn(
+                                    'pointer-events-none absolute left-[44%] top-[42%] z-50 origin-[6px_3px] drop-shadow-md',
+                                    !isHybridMode && 'anim-cta-mouse'
+                                )}
+                                style={isHybridMode ? getMouseStyles(timeElapsed) : undefined}
+                            >
+                                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path
+                                        d="M5.5 2.5L19.5 10L12 11.5L15 19.5L12 21L8.5 13.5L3.5 16.5L5.5 2.5Z"
+                                        fill="#1A1A1A"
+                                        stroke="white"
+                                        strokeWidth="1.5"
+                                        strokeLinejoin="round"
+                                    />
+                                </svg>
+                            </div>
+                        </div>
                     </div>
                 </div>
             );
@@ -330,7 +337,7 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                 <div className={cn('relative flex items-center justify-center', className)}>
                     {/* WhatsApp Pill Button */}
                     <div
-                        className="flex items-center gap-4 px-6 py-4 shadow-xl rounded-full relative overflow-hidden"
+                        className="relative flex items-center gap-4 rounded-full px-6 py-4 shadow-xl"
                         style={{ backgroundColor: primary }}
                     >
                         {/* WhatsApp Outlined/Transparent Icon SVG */}
@@ -353,24 +360,28 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                         >
                             {text}
                         </span>
-                    </div>
-                    {/* SVG Mouse Pointer Cursor Base */}
-                    <div
-                        className={cn(
-                            'absolute right-0 bottom-[-10px] z-50 drop-shadow-md origin-top-left pointer-events-none',
-                            !isHybridMode && 'anim-cta-mouse'
-                        )}
-                        style={isHybridMode ? getMouseStyles(timeElapsed) : undefined}
-                    >
-                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path
-                                d="M5.5 2.5L19.5 10L12 11.5L15 19.5L12 21L8.5 13.5L3.5 16.5L5.5 2.5Z"
-                                fill="#1A1A1A"
-                                stroke="white"
-                                strokeWidth="1.5"
-                                strokeLinejoin="round"
-                            />
-                        </svg>
+                        <div
+                            className="relative ml-1 grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/20"
+                        >
+                            <ArrowRight className="h-5 w-5" style={{ color: secondary }} strokeWidth={3} />
+                            <div
+                                className={cn(
+                                    'pointer-events-none absolute left-[44%] top-[42%] z-50 origin-[6px_3px] drop-shadow-md',
+                                    !isHybridMode && 'anim-cta-mouse'
+                                )}
+                                style={isHybridMode ? getMouseStyles(timeElapsed) : undefined}
+                            >
+                                <svg width="34" height="34" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path
+                                        d="M5.5 2.5L19.5 10L12 11.5L15 19.5L12 21L8.5 13.5L3.5 16.5L5.5 2.5Z"
+                                        fill="#1A1A1A"
+                                        stroke="white"
+                                        strokeWidth="1.5"
+                                        strokeLinejoin="round"
+                                    />
+                                </svg>
+                            </div>
+                        </div>
                     </div>
                 </div>
             );
@@ -923,16 +934,18 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                     >
                         <CheckCircle2 className="h-7 w-7" style={{ color: secondary }} />
                     </div>
-                    <div>
+                    <div className="min-w-0 flex-1">
                         <p className="text-[8px] font-black uppercase tracking-[.25em] text-white/45">
                             Benefício confirmado
                         </p>
-                        <h2
-                            className="mt-0.5 text-2xl font-black leading-none md:text-4xl"
+                        <AutoFitText
+                            text={text}
+                            minFontSize={16}
+                            maxFontSize={54}
+                            targetFill={0.9}
+                            className="mt-0.5 min-w-0 font-black uppercase leading-none"
                             style={{ color: secondary, fontFamily: fontStack('DM Sans') }}
-                        >
-                            {text}
-                        </h2>
+                        />
                     </div>
                 </div>
             );
@@ -956,15 +969,130 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                     >
                         <Sparkles className="h-4 w-4" /> Nova geração
                     </div>
-                    <h2
-                        className="relative mt-3 text-3xl font-bold uppercase leading-[.95] tracking-[-0.04em] md:text-5xl"
+                    <AutoFitText
+                        text={text}
+                        minFontSize={17}
+                        maxFontSize={58}
+                        targetFill={0.88}
+                        className="relative mt-3 min-w-0 font-bold uppercase leading-[.95] tracking-[-0.04em]"
                         style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}
-                    >
-                        {text}
-                    </h2>
+                    />
                     <div className="relative mt-4 flex items-center gap-2 text-[9px] font-bold uppercase tracking-[.18em] text-white/50">
                         Descubra agora <ArrowRight className="h-3.5 w-3.5" style={{ color: primary }} />
                     </div>
+                </div>
+            );
+
+        case 'premium-aurora-signal':
+            return (
+                <div
+                    className={cn('relative min-w-[390px] max-w-[540px] rounded-[30px] p-[2px] shadow-2xl', className)}
+                    style={{
+                        ...motionStyle('pop', 0, 0.48),
+                        background: `linear-gradient(120deg, ${primary}, #8B5CFF, ${primary})`,
+                    }}
+                >
+                    <div className="relative overflow-hidden rounded-[28px] bg-[#070B11]/95 px-7 py-6">
+                        <div
+                            className="absolute -right-8 -top-12 h-36 w-36 rounded-full opacity-30 blur-3xl"
+                            style={{ backgroundColor: primary }}
+                        />
+                        <div className="relative flex items-center gap-2 text-[8px] font-black uppercase tracking-[.34em] text-white/55">
+                            <span className="h-2 w-2 rounded-full shadow-[0_0_14px_currentColor]" style={{ color: primary, backgroundColor: primary }} />
+                            Sinal em destaque
+                        </div>
+                        <AutoFitText
+                            text={text}
+                            minFontSize={18}
+                            maxFontSize={60}
+                            targetFill={0.9}
+                            className="relative mt-3 min-w-0 font-black uppercase leading-[.92] tracking-[-0.045em]"
+                            style={{ color: secondary, fontFamily: fontStack('Space Grotesk') }}
+                        />
+                        <div className="relative mt-5 grid grid-cols-[1fr_.55fr_.25fr] gap-2">
+                            {[1, 0.65, 0.35].map((opacity, index) => (
+                                <span
+                                    key={opacity}
+                                    className="h-1 rounded-full"
+                                    style={{ backgroundColor: primary, opacity, transform: `scaleX(${lineProgress(index * 0.08)})`, transformOrigin: 'left' }}
+                                />
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+
+        case 'premium-conversion-rail':
+            return (
+                <div
+                    className={cn('relative flex min-w-[410px] max-w-[560px] items-stretch overflow-hidden rounded-2xl border border-white/15 bg-[#090B0E]/95 shadow-2xl', className)}
+                    style={motionStyle('right', 0, 0.42)}
+                >
+                    <div className="w-2 shrink-0" style={{ backgroundColor: primary, boxShadow: `0 0 22px ${primary}` }} />
+                    <div className="min-w-0 flex-1 px-6 py-5">
+                        <p className="text-[8px] font-black uppercase tracking-[.3em] text-white/45">Próximo passo</p>
+                        <AutoFitText
+                            text={text}
+                            minFontSize={18}
+                            maxFontSize={54}
+                            targetFill={0.9}
+                            className="mt-1 min-w-0 font-black uppercase leading-none"
+                            style={{ color: secondary, fontFamily: fontStack('DM Sans') }}
+                        />
+                    </div>
+                    <div className="grid w-20 shrink-0 place-items-center border-l border-white/10" style={{ color: primary }}>
+                        <ArrowUpRight className="h-9 w-9" strokeWidth={2.5} />
+                    </div>
+                </div>
+            );
+
+        case 'premium-bento-proof':
+            return (
+                <div
+                    className={cn('grid min-w-[410px] max-w-[550px] grid-cols-[82px_1fr] overflow-hidden rounded-[26px] border border-white/15 bg-[#080C0F]/95 shadow-2xl', className)}
+                    style={motionStyle('pop', 0, 0.5)}
+                >
+                    <div className="grid place-items-center border-r border-white/10" style={{ backgroundColor: `${primary}18` }}>
+                        <div className="grid h-12 w-12 place-items-center rounded-2xl" style={{ color: primary, backgroundColor: `${primary}20` }}>
+                            <CheckCircle2 className="h-7 w-7" strokeWidth={2.5} />
+                        </div>
+                    </div>
+                    <div className="min-w-0 px-6 py-5">
+                        <div className="mb-1 flex items-center justify-between gap-4 text-[8px] font-black uppercase tracking-[.28em] text-white/45">
+                            <span>Prova real</span>
+                            <span style={{ color: primary }}>Verificado</span>
+                        </div>
+                        <AutoFitText
+                            text={text}
+                            minFontSize={17}
+                            maxFontSize={52}
+                            targetFill={0.9}
+                            className="min-w-0 font-black uppercase leading-[.96]"
+                            style={{ color: secondary, fontFamily: fontStack('Archivo Black') }}
+                        />
+                    </div>
+                </div>
+            );
+
+        case 'premium-velvet-frame':
+            return (
+                <div
+                    className={cn('relative min-w-[410px] max-w-[550px] rounded-[32px] bg-[#100D16]/95 px-9 py-7 text-center shadow-2xl', className)}
+                    style={motionStyle('rise', 0, 0.55)}
+                >
+                    <div className="pointer-events-none absolute inset-2 rounded-[25px] border" style={{ borderColor: `${primary}AA` }} />
+                    <div className="relative mb-3 flex items-center justify-center gap-2 text-[8px] font-semibold uppercase tracking-[.4em]" style={{ color: primary }}>
+                        <Star className="h-3 w-3 fill-current" /> Seleção especial <Star className="h-3 w-3 fill-current" />
+                    </div>
+                    <AutoFitText
+                        text={text}
+                        minFontSize={18}
+                        maxFontSize={56}
+                        targetFill={0.86}
+                        className="relative min-w-0 font-semibold italic uppercase leading-[1.02]"
+                        style={{ color: secondary, fontFamily: fontStack('Playfair Display') }}
+                    />
+                    <div className="relative mx-auto mt-4 h-px w-24" style={{ backgroundColor: primary }} />
                 </div>
             );
 

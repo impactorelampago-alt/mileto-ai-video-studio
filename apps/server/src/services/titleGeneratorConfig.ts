@@ -45,6 +45,12 @@ export type TitleTriggerRule = {
 
 export type TitleGeneratorConfig = {
     version: number;
+    ai: {
+        provider: 'openai' | 'gemini';
+        model: string;
+        reasoning: 'rapido' | 'equilibrado' | 'profundo';
+        maxOutputTokens: number;
+    };
     extractionPrompt: string;
     maxTitles: number;
     triggers: TitleTriggerRule[];
@@ -115,8 +121,14 @@ const titleType = (
  * efetiva da organização. A configuração salva no gateway sempre tem prioridade.
  */
 export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
-    version: 2,
-    extractionPrompt: 'Selecione apenas trechos literais da narração que aumentem clareza ou conversão. Nunca invente texto, preço, benefício, bônus, urgência ou localização.',
+    version: 3,
+    ai: {
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        reasoning: 'equilibrado',
+        maxOutputTokens: 4096,
+    },
+    extractionPrompt: 'Detecte fatos explícitos da narração e transforme cada um em uma etiqueta visual curta. Preserve separadamente o trecho literal completo usado como evidência. Priorize substantivos, nomes próprios, valores e ações concretas; remova artigos, possessivos e conectores sem valor visual. Nunca invente texto, preço, benefício, bônus, urgência ou localização.',
     maxTitles: 8,
     triggers: [
         {
@@ -194,6 +206,51 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                 titleType('premium-product-launch', 'Product Launch', 'Space Grotesk', layouts(34, 30, 0.92, 76), 'slide', fixedColor('#8b5cff', '#ffffff')),
             ],
         },
+        {
+            id: 'product',
+            name: 'Produto / oferta central',
+            enabled: true,
+            maxWords: 5,
+            maxOccurrences: 1,
+            instructions: 'Produto, serviço ou oferta central explicitamente apresentados, sem confundir com preço ou urgência.',
+            examples: ['Óculos completo', 'Armação mais lentes', 'Consultoria personalizada'],
+            sample: 'ÓCULOS COMPLETO',
+            color: brandColor('primary'),
+            titleTypes: [
+                titleType('premium-product-launch', 'Product Launch', 'Space Grotesk', layouts(34, 30, 0.92, 76), 'slide', fixedColor('#8b5cff', '#ffffff')),
+                titleType('premium-creator-caption', 'Creator Caption', 'DM Sans', layouts(36, 32, 0.9, 74), 'fade', fixedColor('#00c2ff', '#ffffff')),
+            ],
+        },
+        {
+            id: 'differentiator',
+            name: 'Diferencial / prova',
+            enabled: true,
+            maxWords: 5,
+            maxOccurrences: 1,
+            instructions: 'Qualidade, mecanismo, personalização, garantia ou prova concreta realmente pronunciada.',
+            examples: ['Do seu jeito', 'Atendimento personalizado', 'Qualidade comprovada'],
+            sample: 'DO SEU JEITO',
+            color: brandColor('rotate'),
+            titleTypes: [
+                titleType('premium-benefit-badge', 'Benefit Badge', 'DM Sans', layouts(32, 28, 0.92, 76), 'fade', fixedColor('#00d084', '#ffffff')),
+                titleType('premium-outline-echo', 'Outline Echo', 'Archivo Black', layouts(36, 32, 0.9, 76), 'fade', fixedColor('#8b5cff', '#ffffff')),
+            ],
+        },
+        {
+            id: 'audience',
+            name: 'Público / necessidade',
+            enabled: true,
+            maxWords: 5,
+            maxOccurrences: 1,
+            instructions: 'Público, necessidade ou problema explícito ao qual a oferta responde. Não deduza perfis não mencionados.',
+            examples: ['Para quem precisa', 'Seu segundo óculos', 'Quem busca economia'],
+            sample: 'PARA QUEM PRECISA',
+            color: brandColor('secondary'),
+            titleTypes: [
+                titleType('premium-split-block', 'Split Block', 'Anton', layouts(36, 32, 0.9, 76), 'slide', fixedColor('#00d9b5', '#ffffff')),
+                titleType('premium-kinetic-punch', 'Kinetic Punch', 'Archivo Black', layouts(34, 30, 0.92, 78), 'pop', fixedColor('#c8ff26', '#ffffff')),
+            ],
+        },
     ],
 };
 
@@ -229,6 +286,13 @@ const normalizeConfig = (input: unknown): TitleGeneratorConfig => {
     const source = input && typeof input === 'object' ? input as Partial<TitleGeneratorConfig> : {};
     const sourceTriggers = Array.isArray(source.triggers) ? source.triggers.slice(0, 30) : [];
     if (!sourceTriggers.length) return structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
+
+    if (Number(source.version || 2) < 3) {
+        const presentIds = new Set(sourceTriggers.map((trigger) => String(trigger?.id || '')));
+        for (const fallback of DEFAULT_TITLE_GENERATOR_CONFIG.triggers) {
+            if (!presentIds.has(fallback.id)) sourceTriggers.push(structuredClone(fallback));
+        }
+    }
 
     const triggers = sourceTriggers.map((rawTrigger, triggerIndex) => {
         const fallback = DEFAULT_TITLE_GENERATOR_CONFIG.triggers.find((item) => item.id === rawTrigger?.id)
@@ -273,7 +337,22 @@ const normalizeConfig = (input: unknown): TitleGeneratorConfig => {
     const usable = triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length);
     if (!usable.length) return structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
     return {
-        version: Math.max(2, Math.round(numberInRange(source.version, 2, 2, 100))),
+        version: Math.max(3, Math.round(numberInRange(source.version, 3, 2, 100))),
+        ai: {
+            provider: ['openai', 'gemini'].includes(String(source.ai?.provider))
+                ? source.ai?.provider as 'openai' | 'gemini'
+                : DEFAULT_TITLE_GENERATOR_CONFIG.ai.provider,
+            model: text(source.ai?.model, DEFAULT_TITLE_GENERATOR_CONFIG.ai.model, 160),
+            reasoning: ['rapido', 'equilibrado', 'profundo'].includes(String(source.ai?.reasoning))
+                ? source.ai?.reasoning as 'rapido' | 'equilibrado' | 'profundo'
+                : DEFAULT_TITLE_GENERATOR_CONFIG.ai.reasoning,
+            maxOutputTokens: Math.round(numberInRange(
+                source.ai?.maxOutputTokens,
+                DEFAULT_TITLE_GENERATOR_CONFIG.ai.maxOutputTokens,
+                512,
+                32768
+            )),
+        },
         extractionPrompt: text(source.extractionPrompt, DEFAULT_TITLE_GENERATOR_CONFIG.extractionPrompt, 12000),
         maxTitles: Math.round(numberInRange(source.maxTitles, DEFAULT_TITLE_GENERATOR_CONFIG.maxTitles, 1, 12)),
         triggers,

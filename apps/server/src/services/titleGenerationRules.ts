@@ -19,10 +19,43 @@ export const MIN_GENERATED_TITLE_DURATION_SEC = 0.25;
 
 const roundTimelineSecond = (value: number) => Math.round(value * 1000) / 1000;
 
+const DANGLING_TITLE_ENDINGS = new Set([
+    'a', 'o', 'as', 'os', 'um', 'uma', 'uns', 'umas',
+    'de', 'da', 'do', 'das', 'dos', 'e', 'ou', 'com', 'sem', 'por', 'para',
+    'em', 'na', 'no', 'nas', 'nos', 'ao', 'aos',
+    'meu', 'minha', 'meus', 'minhas', 'seu', 'sua', 'seus', 'suas',
+    'nosso', 'nossa', 'nossos', 'nossas', 'este', 'esta', 'esse', 'essa',
+]);
+
+const normalizedLastWord = (value: unknown) => {
+    const words = String(value || '').trim().split(/\s+/).filter(Boolean);
+    return (words[words.length - 1] || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLocaleLowerCase('pt-BR')
+        .replace(/[^a-z0-9]+/g, '');
+};
+
+export const isSemanticallyCompleteTitle = (value: unknown) => {
+    const title = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!title || DANGLING_TITLE_ENDINGS.has(normalizedLastWord(title))) return false;
+    if (/\bR\s*\$\s*$/iu.test(title)) return false;
+    const normalized = title.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR');
+    return !/(?:\ba partir|\bpor apenas|\bsomente por|\bso por)\s*$/.test(normalized);
+};
+
+/** O limite é uma preferência visual; pode avançar para preservar uma unidade de sentido. */
 export const limitTitleWords = (value: unknown, maxWords = 3) => {
     const words = String(value || '').trim().split(/\s+/).filter(Boolean);
     const limit = Math.max(1, Math.min(12, Math.round(Number(maxWords) || 3)));
-    return words.slice(0, limit).join(' ');
+    if (words.length <= limit) return words.join(' ');
+
+    const softOverflowLimit = Math.min(12, limit + 3);
+    for (let length = limit; length <= Math.min(words.length, softOverflowLimit); length += 1) {
+        const candidate = words.slice(0, length).join(' ');
+        if (isSemanticallyCompleteTitle(candidate)) return candidate;
+    }
+    return words.slice(0, 12).join(' ');
 };
 
 /**
@@ -166,8 +199,11 @@ const STANDARD_TRIGGER_ALIASES: Record<string, string[]> = {
     scarcity: ['scarcity', 'urgencia', 'urgency', 'escassez', 'escassez-e-urgencia'],
     region: ['region', 'regiao', 'local', 'location', 'localizacao', 'geografia', 'geografico'],
     cta: ['cta', 'call-to-action', 'chamada-para-acao', 'acao'],
-    price: ['price', 'preco', 'valor', 'oferta', 'offer', 'desconto', 'condicao'],
-    benefit: ['benefit', 'beneficio', 'bonus', 'beneficio-bonus', 'diferencial'],
+    price: ['price', 'preco', 'valor', 'desconto', 'condicao', 'pagamento'],
+    benefit: ['benefit', 'beneficio', 'bonus', 'beneficio-bonus'],
+    product: ['product', 'produto', 'servico', 'oferta', 'offer'],
+    differentiator: ['differentiator', 'diferencial', 'prova', 'qualidade', 'mecanismo'],
+    audience: ['audience', 'publico', 'publico-alvo', 'necessidade', 'problema'],
 };
 
 export const triggerMapWithAliases = (triggers: TitleTriggerRule[]) => {
@@ -202,6 +238,142 @@ const formatPriceText = (value: string) => value.replace(
             : _match;
     }
 );
+
+export type CompactTitleText = {
+    /** Trecho literal usado para auditoria e sincronizacao. */
+    sourceText: string;
+    /** Etiqueta curta que sera desenhada no video. */
+    text: string;
+    /** Condicao comercial preservada fora da etiqueta principal. */
+    qualifierText?: string;
+};
+
+const normalizeDisplayPhrase = (value: unknown) => String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s,.;:!?-]+|[\s,.;:!?-]+$/g, '')
+    .trim();
+
+const stripLeadingDisplayWords = (value: string, words: string[]) => {
+    const alternatives = words
+        .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('|');
+    return value.replace(new RegExp(`^(?:(?:${alternatives})\\s+)+`, 'iu'), '').trim();
+};
+
+const DISPLAY_LEADING_WORDS = [
+    'o', 'a', 'os', 'as', 'um', 'uma', 'uns', 'umas',
+    'seu', 'sua', 'seus', 'suas',
+];
+
+const LEADING_COMMERCIAL_ACTION = /^(?:monte|monta|escolha|escolhe|conhe[c\u00e7]a|descubra|encontre|tenha|garanta|aproveite|personalize|experimente)\s+/iu;
+const COMMERCIAL_PREDICATE_BOUNDARY = /\s+(?:sai|saem|fica|ficam|custa|custam|tem|t[e\u00ea]m|oferece|oferecem|garante|garantem|inclui|incluem|leva|levam|vira|viram|\u00e9|s[a\u00e3]o|est[a\u00e1]|est[a\u00e3]o)\b.*$/iu;
+const PERSONALIZATION_SUFFIX = /\s+(?:do|da|dos|das)\s+(seu|sua|seus|suas)\s+jeito\b.*$/iu;
+
+/** Converte uma frase comercial em rotulo nominal sem inventar palavras. */
+const compactNominalDisplayPhrase = (value: string, trigger: string) => {
+    let compact = stripLeadingDisplayWords(value, DISPLAY_LEADING_WORDS);
+    const personalization = compact.match(PERSONALIZATION_SUFFIX);
+    if (personalization && ['benefit', 'differentiator'].includes(trigger)) {
+        return personalization[1] + ' JEITO';
+    }
+
+    compact = compact.replace(LEADING_COMMERCIAL_ACTION, '');
+    compact = stripLeadingDisplayWords(compact, DISPLAY_LEADING_WORDS);
+    if (trigger === 'product') compact = compact.replace(PERSONALIZATION_SUFFIX, '');
+    compact = compact.replace(COMMERCIAL_PREDICATE_BOUNDARY, '');
+    return normalizeDisplayPhrase(compact);
+};
+
+const TITLE_TYPE_WORD_CAPACITY: Record<string, number> = {
+    'premium-benefit-badge': 3,
+    'premium-product-launch': 4,
+    'premium-creator-caption': 4,
+    'premium-kinetic-punch': 3,
+    'premium-sticker-pop': 3,
+    'premium-marker-swipe': 3,
+    'premium-split-block': 4,
+    'premium-outline-echo': 3,
+    'premium-sale-spotlight': 3,
+    'premium-price-tag': 3,
+    'premium-urgency-pulse': 3,
+    'premium-coupon-ticket': 3,
+    'loc-pin-viagem': 3,
+    'loc-minimal-urbano': 3,
+    'loc-tag-geo': 3,
+    'cta-whatsapp': 3,
+    'cta-tap': 3,
+};
+
+/** Limite editorial do desenho, independente do limite de cada gatilho. */
+export const titleTypeWordCapacity = (styleId: unknown, configuredMaxWords?: unknown) => {
+    const configured = Number(configuredMaxWords);
+    if (Number.isFinite(configured) && configured > 0) {
+        return Math.max(1, Math.min(12, Math.round(configured)));
+    }
+    return TITLE_TYPE_WORD_CAPACITY[String(styleId || '').trim()] || 4;
+};
+
+const isConnectorOnlyTitle = (value: string) => {
+    const normalized = value
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLocaleLowerCase('pt-BR')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+    return new Set([
+        'a partir', 'a partir de', 'por apenas', 'somente por', 'so por',
+        'por conta', 'por conta de', 'o exame', 'a oferta', 'sua', 'seu',
+    ]).has(normalized);
+};
+
+/**
+ * Separa o trecho falado da etiqueta visual. A evidencia continua literal,
+ * enquanto o texto desenhado vira o nucleo semantico curto de cada gatilho.
+ */
+export const compactTitleDisplayText = (
+    value: unknown,
+    triggerId: unknown,
+    maxWords = 3
+): CompactTitleText | null => {
+    const sourceText = normalizeDisplayPhrase(value);
+    if (!sourceText) return null;
+
+    const trigger = normalizeTriggerKey(triggerId);
+    let text = sourceText;
+    let qualifierText: string | undefined;
+
+    if (trigger === 'price') {
+        const currency = sourceText.match(/R\s*\$\s*\d+(?:\.\d{3})*(?:,\d{1,2})?/iu)?.[0];
+        const normalizedSource = normalizeTriggerKey(sourceText);
+        if (normalizedSource.includes('a-partir-de')) qualifierText = 'A PARTIR DE';
+        else if (normalizedSource.includes('por-apenas')) qualifierText = 'POR APENAS';
+        else if (normalizedSource.includes('somente-por') || normalizedSource.includes('so-por')) {
+            qualifierText = 'SOMENTE POR';
+        }
+        if (currency) text = formatPriceText(currency);
+    } else if (trigger === 'region') {
+        text = text.replace(/^(?:aten[cç][aã]o|al[oô])\s*[,!:\-]?\s*/iu, '').trim();
+    } else if (trigger === 'scarcity') {
+        text = text.replace(/^(?:somente|s[oó])\s+(?=at[eé](?:\s|$))/iu, '').trim();
+    } else if (['benefit', 'product', 'differentiator', 'audience'].includes(trigger)) {
+        text = compactNominalDisplayPhrase(text, trigger);
+    } else if (trigger === 'cta') {
+        text = stripLeadingDisplayWords(text, ['e', 'então']);
+    }
+
+    text = normalizeDisplayPhrase(text);
+    if (!text || isConnectorOnlyTitle(text)) return null;
+
+    const fittedText = limitTitleWords(text, maxWords);
+    if (!isSemanticallyCompleteTitle(fittedText) || isConnectorOnlyTitle(fittedText)) return null;
+    if (trigger === 'price' && !/(?:R\s*\$|\d+\s*%|\d+\s*x\b)/iu.test(fittedText)) return null;
+
+    return {
+        sourceText,
+        text: fittedText,
+        ...(qualifierText ? { qualifierText } : {}),
+    };
+};
 
 export const resolveLiteralCaptionText = (
     spokenWords: SpokenTitleWord[],
@@ -279,5 +451,29 @@ export const deterministicTitleCandidates = (script: string) => {
     ctaCandidates
         .sort((left, right) => right.priority - left.priority || left.index - right.index)
         .forEach(({ text, kind }) => candidates.push({ text, kind }));
+    return candidates;
+};
+
+/** Recupera preços já normalizados pelas legendas, mesmo com números por extenso no roteiro. */
+export const deterministicCaptionTitleCandidates = (spokenWords: SpokenTitleWord[]) => {
+    const candidates: { text: string; kind: string; startSec: number }[] = [];
+    for (let index = 0; index < spokenWords.length; index += 1) {
+        const word = spokenWords[index];
+        if (!/^R\s*\$/iu.test(word.text.trim())) continue;
+        const previous = spokenWords.slice(Math.max(0, index - 3), index);
+        const previousKey = previous.map((item) => normalizeTriggerKey(item.text)).join(' ');
+        const shortKey = previous.slice(-2).map((item) => normalizeTriggerKey(item.text)).join(' ');
+        const prefixLength = previousKey.endsWith('a partir de')
+            ? 3
+            : ['por apenas', 'somente por', 'so por'].includes(shortKey)
+              ? 2
+              : 0;
+        const phrase = [...spokenWords.slice(index - prefixLength, index), word];
+        candidates.push({
+            text: phrase.map((item) => item.text).join(' '),
+            kind: 'price',
+            startSec: phrase[0].start,
+        });
+    }
     return candidates;
 };

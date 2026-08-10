@@ -212,6 +212,42 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
         sample: 'EXAME POR NOSSA CONTA',
         models: seededModels('premium-benefit-badge', 'premium-product-launch'),
     },
+    {
+        id: 'product',
+        enabled: true,
+        maxWords: 5,
+        maxOccurrences: 1,
+        color: { mode: 'brand', paletteSlot: 'primary', primary: '#00e676', secondary: '#07110d' },
+        name: 'Produto / oferta central',
+        hint: 'Produto, serviço ou oferta central explicitamente apresentados, sem confundir com preço ou urgência.',
+        examples: ['Óculos completo', 'Armação mais lentes', 'Consultoria personalizada'],
+        sample: 'ÓCULOS COMPLETO',
+        models: seededModels('premium-product-launch', 'premium-creator-caption'),
+    },
+    {
+        id: 'differentiator',
+        enabled: true,
+        maxWords: 5,
+        maxOccurrences: 1,
+        color: { mode: 'brand', paletteSlot: 'rotate', primary: '#00e676', secondary: '#07110d' },
+        name: 'Diferencial / prova',
+        hint: 'Qualidade, mecanismo, personalização, garantia ou prova concreta realmente pronunciada.',
+        examples: ['Do seu jeito', 'Atendimento personalizado', 'Qualidade comprovada'],
+        sample: 'DO SEU JEITO',
+        models: seededModels('premium-benefit-badge', 'premium-outline-echo'),
+    },
+    {
+        id: 'audience',
+        enabled: true,
+        maxWords: 5,
+        maxOccurrences: 1,
+        color: { mode: 'brand', paletteSlot: 'secondary', primary: '#00e676', secondary: '#07110d' },
+        name: 'Público / necessidade',
+        hint: 'Público, necessidade ou problema explícito ao qual a oferta responde. Não deduza perfis não mencionados.',
+        examples: ['Para quem precisa', 'Seu segundo óculos', 'Quem busca economia'],
+        sample: 'PARA QUEM PRECISA',
+        models: seededModels('premium-split-block', 'premium-kinetic-punch'),
+    },
 ];
 
 const DEFAULT_TRIGGER_COPY_MIGRATIONS: Record<string, { sample: string; legacySamples: string[]; examples: string[]; legacyExamples: string[] }> = {
@@ -449,8 +485,9 @@ const configToPrototype = (config: AiTitleGeneratorConfig, format: TitleVideoFor
         })),
     })).map((trigger) => migrateDefaultTriggerCopy(trigger as TriggerPrototype)) as TriggerPrototype[];
 
-    const isLegacy = Number(config.version) < 2 || editor.some((trigger) => ['hook', 'offer', 'local'].includes(trigger.id));
-    if (!isLegacy) return editor;
+    const needsIdMigration = Number(config.version) < 2 || editor.some((trigger) => ['hook', 'offer', 'local'].includes(trigger.id));
+    const needsTriggerMigration = Number(config.version) < 3;
+    if (!needsIdMigration && !needsTriggerMigration) return editor;
 
     const migrated = editor
         .filter((trigger) => trigger.id !== 'hook')

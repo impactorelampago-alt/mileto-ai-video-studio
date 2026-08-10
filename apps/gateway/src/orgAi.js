@@ -82,8 +82,14 @@ const titleType = (styleId, name, fontFamily, layout, animationId = 'pop', custo
 });
 
 export const DEFAULT_TITLE_GENERATOR_CONFIG = {
-    version: 2,
-    extractionPrompt: 'Selecione apenas trechos literais da narração que aumentem clareza ou conversão. Nunca invente texto, preço, benefício, bônus, urgência ou localização.',
+    version: 3,
+    ai: {
+        provider: 'openai',
+        model: 'gpt-5-mini',
+        reasoning: 'equilibrado',
+        maxOutputTokens: 4096,
+    },
+    extractionPrompt: 'Detecte fatos explícitos da narração e transforme cada um em uma etiqueta visual curta. Preserve separadamente o trecho literal completo usado como evidência. Priorize substantivos, nomes próprios, valores e ações concretas; remova artigos, possessivos e conectores sem valor visual. Nunca invente texto, preço, benefício, bônus, urgência ou localização.',
     maxTitles: 8,
     triggers: [
         {
@@ -134,6 +140,36 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
             titleTypes: [
                 titleType('premium-benefit-badge', 'Benefit Badge', 'DM Sans', layouts(32, 28, 0.92, 76), 'fade', fixedColor('#00D084', '#FFFFFF')),
                 titleType('premium-product-launch', 'Product Launch', 'Space Grotesk', layouts(34, 30, 0.92, 76), 'slide', fixedColor('#8B5CFF', '#FFFFFF')),
+            ],
+        },
+        {
+            id: 'product', name: 'Produto / oferta central', enabled: true, maxOccurrences: 1,
+            maxWords: 5,
+            instructions: 'Produto, serviço ou oferta central explicitamente apresentados, sem confundir com preço ou urgência.',
+            examples: ['Óculos completo', 'Armação mais lentes', 'Consultoria personalizada'], sample: 'ÓCULOS COMPLETO', color: brandColor('primary'),
+            titleTypes: [
+                titleType('premium-product-launch', 'Product Launch', 'Space Grotesk', layouts(34, 30, 0.92, 76), 'slide', fixedColor('#8B5CFF', '#FFFFFF')),
+                titleType('premium-creator-caption', 'Creator Caption', 'DM Sans', layouts(36, 32, 0.9, 74), 'fade', fixedColor('#00C2FF', '#FFFFFF')),
+            ],
+        },
+        {
+            id: 'differentiator', name: 'Diferencial / prova', enabled: true, maxOccurrences: 1,
+            maxWords: 5,
+            instructions: 'Qualidade, mecanismo, personalização, garantia ou prova concreta realmente pronunciada.',
+            examples: ['Do seu jeito', 'Atendimento personalizado', 'Qualidade comprovada'], sample: 'DO SEU JEITO', color: brandColor('rotate'),
+            titleTypes: [
+                titleType('premium-benefit-badge', 'Benefit Badge', 'DM Sans', layouts(32, 28, 0.92, 76), 'fade', fixedColor('#00D084', '#FFFFFF')),
+                titleType('premium-outline-echo', 'Outline Echo', 'Archivo Black', layouts(36, 32, 0.9, 76), 'fade', fixedColor('#8B5CFF', '#FFFFFF')),
+            ],
+        },
+        {
+            id: 'audience', name: 'Público / necessidade', enabled: true, maxOccurrences: 1,
+            maxWords: 5,
+            instructions: 'Público, necessidade ou problema explícito ao qual a oferta responde. Não deduza perfis não mencionados.',
+            examples: ['Para quem precisa', 'Seu segundo óculos', 'Quem busca economia'], sample: 'PARA QUEM PRECISA', color: brandColor('secondary'),
+            titleTypes: [
+                titleType('premium-split-block', 'Split Block', 'Anton', layouts(36, 32, 0.9, 76), 'slide', fixedColor('#00D9B5', '#FFFFFF')),
+                titleType('premium-kinetic-punch', 'Kinetic Punch', 'Archivo Black', layouts(34, 30, 0.92, 78), 'pop', fixedColor('#C8FF26', '#FFFFFF')),
             ],
         },
     ],
@@ -277,9 +313,20 @@ const migrateV1Config = (input) => {
     return { ...source, version: 2, triggers: migrated };
 };
 
+const migrateV2Config = (input) => {
+    const source = migrateV1Config(input);
+    if (Number(source.version) >= 3) return source;
+    const migrated = Array.isArray(source.triggers) ? source.triggers.map((trigger) => clone(trigger)) : [];
+    const present = new Set(migrated.map((trigger) => trigger.id));
+    for (const fallback of DEFAULT_TITLE_GENERATOR_CONFIG.triggers) {
+        if (!present.has(fallback.id)) migrated.push(clone(fallback));
+    }
+    return { ...source, version: 3, triggers: migrated };
+};
+
 export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERATOR_CONFIG) => {
     const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-    const source = migrateV1Config(raw);
+    const source = migrateV2Config(raw);
     const sourceTriggers = Array.isArray(source.triggers) && source.triggers.length ? source.triggers.slice(0, 30) : base.triggers;
     const triggers = sourceTriggers.map((item, index) => normalizeTrigger(
         item,
@@ -296,7 +343,22 @@ export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERA
         throw new Error('Todo gatilho ativo precisa ter pelo menos um modelo de título.');
     }
     return {
-        version: 2,
+        version: 3,
+        ai: {
+            provider: ['openai', 'gemini'].includes(String(source.ai?.provider))
+                ? String(source.ai.provider)
+                : base.ai?.provider || DEFAULT_TITLE_GENERATOR_CONFIG.ai.provider,
+            model: text(source.ai?.model, base.ai?.model || DEFAULT_TITLE_GENERATOR_CONFIG.ai.model, 160),
+            reasoning: ['rapido', 'equilibrado', 'profundo'].includes(String(source.ai?.reasoning))
+                ? String(source.ai.reasoning)
+                : base.ai?.reasoning || DEFAULT_TITLE_GENERATOR_CONFIG.ai.reasoning,
+            maxOutputTokens: Math.round(number(
+                source.ai?.maxOutputTokens,
+                base.ai?.maxOutputTokens || DEFAULT_TITLE_GENERATOR_CONFIG.ai.maxOutputTokens,
+                512,
+                32768
+            )),
+        },
         extractionPrompt: text(source.extractionPrompt, base.extractionPrompt, 12000),
         maxTitles: Math.round(number(source.maxTitles, base.maxTitles, 1, 12)),
         triggers,

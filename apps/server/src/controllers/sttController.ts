@@ -4,6 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { bearerFrom, gatewayStt, GatewayHttpError } from '../services/gatewayClient';
 import { reconcileCaptionWords } from '../services/captionReconciliation';
+import { segmentCaptionWords } from '../services/captionSegmentation';
 import { safeResolve } from '../utils/safePath';
 
 // Static-route prefix → diretório físico no USER_DATA_PATH (espelha index.ts).
@@ -273,42 +274,10 @@ export const generateCaptions = async (req: Request, res: Response) => {
         const reconciliation = reconcileCaptionWords(words, narrationText);
         const captionWords = reconciliation.words;
 
-        // We will package words into segments for readability in the preview,
-        // but each word gets an exact timestamp.
-        // Let's put about 3-5 words per segment to fit well on screen for the "Karaoke" style.
-        const segments = [];
-        let curSegmentWords = [];
-        let segStart = 0;
-
-        for (let i = 0; i < captionWords.length; i++) {
-            const w = captionWords[i];
-
-            if (curSegmentWords.length === 0) {
-                segStart = w.start;
-            }
-
-            curSegmentWords.push({
-                text: w.text,
-                start: w.start,
-                end: w.end,
-            });
-
-            // Quebra se chegou no limite de palavras ou tem uma pausa longa entre palavras
-            const isLast = i === captionWords.length - 1;
-            const nextW = !isLast ? captionWords[i + 1] : null;
-            const isPause = nextW ? nextW.start - w.end > 0.5 : false; // Pausa de 0.5s ou mais
-
-            if (curSegmentWords.length >= 4 || isPause || isLast) {
-                segments.push({
-                    id: crypto.randomUUID(),
-                    start: parseFloat(segStart.toFixed(2)),
-                    end: parseFloat(w.end.toFixed(2)),
-                    text: curSegmentWords.map((cw) => cw.text).join(' '),
-                    words: [...curSegmentWords],
-                });
-                curSegmentWords = [];
-            }
-        }
+        const segments = segmentCaptionWords(captionWords).map((segment) => ({
+            id: crypto.randomUUID(),
+            ...segment,
+        }));
 
         console.log(`[STT] Transcrição concluída: ${segments.length} blocos gerados.`);
         return res.json({ ok: true, segments, review: reconciliation.review });

@@ -2,70 +2,185 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const integration = readFileSync(new URL('../src/opsIntegration.js', import.meta.url), 'utf8');
-const server = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
-const coordinator = readFileSync(
-    new URL('../../client/src/components/OpsVideoJobCoordinator.tsx', import.meta.url),
-    'utf8'
-);
+const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf8');
+const integration = read('../src/opsIntegration.js');
+const server = read('../src/server.js');
+const coordinator = read('../../client/src/components/OpsVideoJobCoordinator.tsx');
+const workerState = read('../../client/src/lib/opsVideoWorkerState.ts');
+const gatewayClient = read('../../client/src/lib/gateway.ts');
+const electron = read('../../client/electron-main/main.cjs');
 
-const handler = (start, end) => integration.slice(integration.indexOf(start), integration.indexOf(end));
+test('CORS permite o token efemero usado nas atualizacoes de progresso do job', () => {
+    assert.match(server, /Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Ops-View-Context, X-Mileto-Job-Token'/);
+});
 
-test('expõe polling, claim e atualização da fila somente pelo gateway autenticado', () => {
+const handler = (start, end) => {
+    const from = integration.indexOf(start);
+    const to = integration.indexOf(end, from + start.length);
+    assert.notEqual(from, -1, `handler ausente: ${start}`);
+    return integration.slice(from, to === -1 ? integration.length : to);
+};
+
+test('expõe polling, leitura, heartbeat, claim e atualização somente pelo gateway autenticado', () => {
     assert.match(server, /app\.get\('\/v1\/integrations\/mileto-ops\/video-jobs\/next', authed/);
+    assert.match(server, /app\.get\('\/v1\/integrations\/mileto-ops\/video-jobs\/:jobId', authed/);
+    assert.match(server, /app\.post\('\/v1\/integrations\/mileto-ops\/video-workers\/heartbeat', authed/);
     assert.match(server, /app\.post\('\/v1\/integrations\/mileto-ops\/video-jobs\/:jobId\/claim', authed/);
     assert.match(server, /app\.patch\('\/v1\/integrations\/mileto-ops\/video-jobs\/:jobId', authed/);
 });
 
-test('as três operações exigem assets.write, delegação e X-Ops-View-Context', () => {
-    const next = handler('export const nextVideoJob', 'export const claimVideoJob');
-    const claim = handler('export const claimVideoJob', 'export const updateVideoJob');
-    const update = handler('export const updateVideoJob', 'export const uploadExport');
-    for (const source of [next, claim, update]) {
+test('fila, leitura, presença, claim e PATCH preservam delegação, assets.write e X-Ops-View-Context', () => {
+    const handlers = [
+        handler('export const nextVideoJob', 'export const getVideoJob'),
+        handler('export const getVideoJob', 'export const heartbeatVideoWorker'),
+        handler('export const heartbeatVideoWorker', 'export const claimVideoJob'),
+        handler('export const claimVideoJob', 'export const updateVideoJob'),
+        handler('export const updateVideoJob', 'export const uploadExport'),
+    ];
+    for (const source of handlers) {
         assert.match(source, /withDelegatedAccess\(req/);
         assert.match(source, /assertAssetsWriteScope\(connection\)/);
         assert.match(source, /OPS_VIEW_CONTEXT_HEADER/);
     }
 });
 
-test('claim token só é encaminhado no PATCH e nunca é persistido pelo consumidor', () => {
-    const update = handler('export const updateVideoJob', 'export const uploadExport');
-    assert.match(update, /'X-Mileto-Job-Token': claimToken/);
-    assert.match(coordinator, /claim\.claimToken/);
-    assert.doesNotMatch(coordinator, /localStorage\.setItem\([^\n]*claim/i);
-    assert.doesNotMatch(coordinator, /sessionStorage\.setItem\([^\n]*claim/i);
+test('heartbeat usa versão 1.4.21, campo oficial mode e job atual', () => {
+    const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.21'/);
+    assert.match(coordinator, /mode: modeRef\.current/);
+    assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
+    assert.match(coordinator, /resolvePersistedJob\(persisted\)/);
+    assert.match(coordinator, /else if \(!activeJobId\)/);
+    assert.match(heartbeat, /mode: body\.mode === 'background'/);
+    assert.doesNotMatch(heartbeat, /executionMode/);
+    assert.match(coordinator, /currentJobId: currentJobRef\.current/);
+    assert.match(coordinator, /HEARTBEAT_INTERVAL_MS\s*=\s*20_000/);
 });
 
-test('consumidor impede execução simultânea e só conclui após assetId real do Ops', () => {
-    assert.match(coordinator, /runningRef\.current \|\| exportingRef\.current/);
-    assert.match(coordinator, /waitForOpsExport\(job\.projectId\)/);
-    assert.match(coordinator, /outputAssetId: assetId/);
-    assert.match(coordinator, /completedExportFor\(job\)/);
+test('executor continua em background, minimizado ou escondido na bandeja', () => {
+    assert.match(electron, /backgroundThrottling:\s*false/);
+    assert.match(electron, /mainWindow\.on\('minimize', publishExecutorMode\)/);
+    assert.match(electron, /mainWindow\.on\('hide', publishExecutorMode\)/);
+    assert.match(electron, /mainWindow\.hide\(\)/);
+    assert.match(electron, /new Tray\(iconPath\)/);
 });
 
-test('empresa, ordem e automações vêm do job do Ops', () => {
-    assert.match(coordinator, /opsCompany\(job\.companyId/);
-    assert.match(coordinator, /job\.takeAssetIds\.map/);
-    assert.match(coordinator, /job\.shuffleTakes\s*\?\s*deterministicShuffle/);
-    assert.match(coordinator, /if \(job\.quickEdit\)/);
-    assert.match(coordinator, /if \(job\.captions\)/);
-    assert.match(coordinator, /if \(job\.automaticTitles\)/);
-    assert.match(coordinator, /asset\.companyId !== job\.companyId/);
-    assert.match(coordinator, /voice_preset_not_found/);
+test('fechamento completo pausa localmente, tenta offline e não marca o job como failed', () => {
+    const shutdown = coordinator.slice(coordinator.indexOf("const shutdown = () =>"), coordinator.indexOf("ipc?.on('executor:shutdown'"));
+    assert.match(shutdown, /status: 'paused'/);
+    assert.match(shutdown, /heartbeat\('offline'\)/);
+    assert.doesNotMatch(shutdown, /status: 'failed'/);
+    assert.match(electron, /requestGracefulQuit/);
 });
 
-test('retoma apenas o projeto estavel que corresponde exatamente ao job', () => {
-    assert.match(coordinator, /hasPreparedCheckpoint\(job\)/);
+test('Electron garante instância única e reabre a janela existente', () => {
+    assert.match(electron, /app\.requestSingleInstanceLock\(\)/);
+    assert.match(electron, /app\.on\('second-instance', showMainWindow\)/);
+    assert.match(electron, /mainWindowRef\.show\(\)/);
+    assert.match(electron, /mainWindowRef\.focus\(\)/);
+});
+
+test('404 do heartbeat é tratado como presença não suportada sem interromper o worker', () => {
+    const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
+    assert.match(heartbeat, /error instanceof OpsHttpError && error\.status === 404/);
+    assert.match(heartbeat, /supported: false/);
+    assert.match(coordinator, /result\.supported \? 'online' : 'unsupported'/);
+});
+
+test('job só é assumido depois da validação e da persistência local segura', () => {
+    const validationAt = coordinator.indexOf('await validateBeforeClaim');
+    const saveAt = coordinator.indexOf('savePersistedOpsVideoJob', validationAt);
+    const claimAt = coordinator.indexOf('claimOpsVideoJob', validationAt);
+    assert.ok(validationAt >= 0 && saveAt > validationAt && claimAt > saveAt);
+});
+
+test('primeiro progresso remoto após claim é narration 5 com mensagem de preparação', () => {
+    const claimAt = coordinator.indexOf('claimOpsVideoJob');
+    const firstPatchAt = coordinator.indexOf("await patch('narration'", claimAt);
+    const snippet = coordinator.slice(firstPatchAt, firstPatchAt + 180);
+    assert.match(snippet, /OPS_VIDEO_PROGRESS\.narration\.start/);
+    assert.match(snippet, /Preparando a narração\./);
+});
+
+test('faixas oficiais de progresso permanecem exatas', () => {
+    for (const [stage, start, end] of [
+        ['narration', 5, 20], ['takes', 20, 35], ['quick_edit', 35, 60],
+        ['captions', 60, 72], ['titles', 72, 82], ['export', 82, 99],
+        ['completed', 100, 100],
+    ]) {
+        assert.match(workerState, new RegExp(`${stage}: \\{ start: ${start}, end: ${end} \\}`));
+    }
+});
+
+test('estado durável contém identidade, destino, takes e retomada, mas nunca claimToken', () => {
+    for (const field of ['jobId', 'projectId', 'companyId', 'destinationFolderId', 'takeAssetIds', 'stage', 'progress', 'resume']) {
+        assert.match(workerState, new RegExp(`\\b${field}\\b`));
+    }
+    assert.match(workerState, /'claimToken' in/);
+    assert.doesNotMatch(coordinator, /claimToken[^\n]*localStorage|localStorage[^\n]*claimToken/);
+});
+
+test('reinício consulta o job real e reutiliza o mesmo projectId', () => {
+    assert.match(coordinator, /gatewayApi\.getOpsVideoJob\(state\.jobId, context\.contextId\)/);
     assert.match(coordinator, /loadAutomatedProject\(job\.projectId\)/);
-    assert.match(coordinator, /savedProject\.adData\.opsCompany\?\.id === job\.companyId/);
-    assert.match(coordinator, /savedProject\.adData\.narrationText\.trim\(\)/);
-    assert.match(coordinator, /hydratePreparedTakes/);
-    assert.match(coordinator, /savePreparedCheckpoint\(job\)/);
+    assert.match(workerState, /projectId: job\.projectId/);
 });
 
-test('falhas são estruturadas e o progresso remoto usa apenas marcos relevantes', () => {
-    assert.match(coordinator, /patch\('failed', 0, parsed\.message/);
+test('contexto delegado expirado só é renovado após o novo contexto confirmar o mesmo job', () => {
+    const resolve = coordinator.slice(
+        coordinator.indexOf('const resolvePersistedJob'),
+        coordinator.indexOf('const validateBeforeClaim'),
+    );
+    const getAt = resolve.indexOf('gatewayApi.getOpsVideoJob');
+    const compatibleAt = resolve.indexOf('isPersistedJobCompatible');
+    const rebindAt = resolve.indexOf('rebindPersistedOpsVideoJobContext');
+    assert.ok(getAt >= 0 && compatibleAt > getAt && rebindAt > compatibleAt);
+    assert.match(workerState, /export const rebindPersistedOpsVideoJobContext/);
+    assert.match(workerState, /viewContextId: normalizedContextId/);
+});
+
+test('retomada rejeita mudança de empresa, pasta, takes ou payload do job', () => {
+    assert.match(workerState, /state\.companyId === job\.companyId/);
+    assert.match(workerState, /state\.destinationFolderId === \(job\.destinationFolderId \|\| null\)/);
+    assert.match(workerState, /jobSignature === opsVideoJobSignature\(job\)/);
+    assert.match(workerState, /takeAssetIds: job\.takeAssetIds/);
+});
+
+test('checkpoint preparado evita recriar o projeto e exportação já concluída é reutilizada', () => {
+    assert.match(coordinator, /persisted\.resume\.projectPrepared/);
+    assert.match(coordinator, /completedExportFor\(job\)/);
+    assert.match(coordinator, /previousAssetId/);
+    assert.match(coordinator, /Video ja concluido e confirmado no Mileto Ops/);
+});
+
+test('job só conclui com assetId real confirmado pelo fluxo de exportação', () => {
+    const exportAt = coordinator.indexOf('const assetId = await waitForOpsExport(job.projectId)');
+    const completionAt = coordinator.indexOf("await patch('completed'", exportAt);
+    assert.ok(exportAt >= 0);
+    assert.ok(completionAt > exportAt);
+    assert.match(coordinator.slice(completionAt, completionAt + 280), /outputAssetId: assetId/);
+});
+
+test('falhas permanentes são estruturadas e falhas recuperáveis ficam pausadas', () => {
+    assert.match(coordinator, /status: 'paused'/);
+    assert.match(coordinator, /status: 'failed'/);
     assert.match(coordinator, /errorCode: parsed\.code/);
-    assert.match(coordinator, /showLocalProgress\('takes'/);
-    assert.doesNotMatch(coordinator, /await patch\('takes',[\s\S]{0,140}index \+ 1/);
+    assert.match(coordinator, /errorMessage: parsed\.message/);
+});
+
+test('cliente Electron de desenvolvimento e instalado compartilham o mesmo worker', () => {
+    assert.match(electron, /if \(isDev\) \{[\s\S]*mainWindow\.loadURL\('http:\/\/localhost:5173'\)[\s\S]*\} else \{[\s\S]*mainWindow\.loadFile/);
+    assert.equal((coordinator.match(/export const OpsVideoJobCoordinator/g) || []).length, 1);
+});
+
+test('interface expõe presença, modo, job, empresa, etapa, percentual, erro e asset', () => {
+    for (const marker of ['presenceLabel', 'display.mode', 'display.jobId', 'display.companyName', 'STAGE_LABELS[display.stage]', 'display.percent', 'display.errorCode', 'display.assetId']) {
+        assert.match(coordinator, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+});
+
+test('cliente do gateway expõe leitura e presença com X-Ops-View-Context', () => {
+    assert.match(gatewayClient, /async getOpsVideoJob/);
+    assert.match(gatewayClient, /async heartbeatOpsVideoWorker/);
+    assert.match(gatewayClient, /opsContextHeaders\(viewContextId\)/);
 });

@@ -81,7 +81,7 @@ const billingError = (res, e) => {
 // CORS liberado para o app local. Em produção, restrinja à origem do app.
 app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Ops-View-Context');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Ops-View-Context, X-Mileto-Job-Token');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
@@ -207,7 +207,16 @@ app.post(
     asyncHandler(requireAuth),
     asyncHandler(async (req, res) => {
         if (!req.user.orgId) return res.status(403).json({ ok: false, message: 'Conta sem organização.' });
-        const { messages, model = 'mileto-plus', reasoning, locale = 'pt-BR', system, json, agentId } = req.body || {};
+        const {
+            messages,
+            model = 'mileto-plus',
+            reasoning,
+            locale = 'pt-BR',
+            system,
+            json,
+            agentId,
+            maxOutputTokens: requestedMaxOutputTokens,
+        } = req.body || {};
         if (!Array.isArray(messages) || !messages.length) {
             return res.status(400).json({ ok: false, message: 'Faltam messages.' });
         }
@@ -230,7 +239,12 @@ app.post(
         const provider = selectedAgent?.provider || tier.provider;
         const realModel = selectedAgent?.model || tier.model;
         const realReasoning = selectedAgent?.reasoning || reasoning;
-        const maxOutputTokens = selectedAgent?.maxOutputTokens || 4096;
+        const parsedMaxOutputTokens = Math.round(Number(requestedMaxOutputTokens));
+        const maxOutputTokens = selectedAgent?.maxOutputTokens || (
+            Number.isFinite(parsedMaxOutputTokens)
+                ? Math.min(32768, Math.max(512, parsedMaxOutputTokens))
+                : 4096
+        );
         const baseSystem = hasCustomSystem ? system : selectedAgent?.systemPrompt || (await getSystemPrompt(locale));
         // Somente o Diretor recebe o contrato do compositor do app. Especialistas
         // possuem contratos JSON prÃ³prios em seus prompts versionados.
@@ -467,6 +481,8 @@ app.patch('/v1/integrations/mileto-ops/folders/:folderId', authed, asyncHandler(
 app.delete('/v1/integrations/mileto-ops/folders/:folderId', authed, asyncHandler(opsIntegration.deleteFolder));
 app.get('/v1/integrations/mileto-ops/companies/:companyId/assets', authed, asyncHandler(opsIntegration.listAssets));
 app.get('/v1/integrations/mileto-ops/video-jobs/next', authed, asyncHandler(opsIntegration.nextVideoJob));
+app.get('/v1/integrations/mileto-ops/video-jobs/:jobId', authed, asyncHandler(opsIntegration.getVideoJob));
+app.post('/v1/integrations/mileto-ops/video-workers/heartbeat', authed, asyncHandler(opsIntegration.heartbeatVideoWorker));
 app.post('/v1/integrations/mileto-ops/video-jobs/:jobId/claim', authed, asyncHandler(opsIntegration.claimVideoJob));
 app.patch('/v1/integrations/mileto-ops/video-jobs/:jobId', authed, asyncHandler(opsIntegration.updateVideoJob));
 app.post('/v1/integrations/mileto-ops/companies/:companyId/assets/export', authed, opsExportUpload.single('file'), asyncHandler(opsIntegration.uploadExport));

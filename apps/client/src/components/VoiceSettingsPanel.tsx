@@ -4,7 +4,7 @@ import { useWizard } from '../context/WizardContext';
 import { DEFAULT_VOICE_SETTINGS, FISH_MODELS, type TtsProvider, type VoiceSettings } from '../types';
 import { cn } from '../lib/utils';
 import { invalidatedNarrationDerivatives } from '../lib/narrationState';
-import { SYSTEM_VOICES } from '../lib/systemVoices';
+import { effectiveSystemVoicePreset } from '../lib/systemVoices';
 import { DEFAULT_PRESET_AUDIO_CONFIG, SYSTEM_MUSIC_TRACKS } from '../lib/systemMusic';
 
 interface SliderRowProps {
@@ -81,7 +81,7 @@ export const VoiceSettingsPanel = () => {
     const provider: TtsProvider = adData.selectedVoiceProvider ?? 'fishAudio';
     const settings: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS, ...adData.voiceSettings };
     const selectedPreset =
-        SYSTEM_VOICES.find((voice) => voice.id === adData.selectedVoiceId)?.preset ||
+        effectiveSystemVoicePreset(adData.selectedVoiceId) ||
         customVoices.find((voice) => voice.id === adData.selectedVoiceId)?.preset || {
             voiceSettings: { ...DEFAULT_VOICE_SETTINGS },
             musicTrackId: null,

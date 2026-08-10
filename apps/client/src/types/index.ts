@@ -276,6 +276,10 @@ export interface CaptionTrack {
 export interface TitleHook {
     id: string;
     text: string;
+    /** Trecho literal da narração que originou a etiqueta visual. */
+    sourceText?: string;
+    /** Condição comercial preservada fora do texto principal, como A PARTIR DE. */
+    qualifierText?: string;
     startSec: number;
     durationSec: number;
     isActive: boolean;

@@ -91,6 +91,7 @@ interface WizardContextType {
     addCustomVoice: (voice: CustomVoice) => void;
     removeCustomVoice: (id: string) => void;
     renameCustomVoice: (id: string, newName: string) => void;
+    updateCustomVoice: (id: string, voice: CustomVoice) => void;
 
     isDebugMode: boolean;
     setIsDebugMode: React.Dispatch<React.SetStateAction<boolean>>;
@@ -347,6 +348,14 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     const renameCustomVoice = (id: string, newName: string) => {
         setCustomVoices((prev) => {
             const updated = prev.map((v) => (v.id === id ? { ...v, name: newName } : v));
+            localStorage.setItem('mileto_custom_voices', JSON.stringify(updated));
+            return updated;
+        });
+    };
+
+    const updateCustomVoice = (id: string, voice: CustomVoice) => {
+        setCustomVoices((prev) => {
+            const updated = prev.map((current) => current.id === id ? voice : current);
             localStorage.setItem('mileto_custom_voices', JSON.stringify(updated));
             return updated;
         });
@@ -1217,6 +1226,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             addCustomVoice,
             removeCustomVoice,
             renameCustomVoice,
+            updateCustomVoice,
             isDebugMode,
             setIsDebugMode,
         }),
@@ -1250,6 +1260,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             addCustomVoice,
             removeCustomVoice,
             renameCustomVoice,
+            updateCustomVoice,
             isDebugMode,
             setIsDebugMode,
         ]

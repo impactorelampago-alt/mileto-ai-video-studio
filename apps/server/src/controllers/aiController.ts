@@ -11,13 +11,16 @@ import {
     type VideoFormat,
 } from '../services/titleGeneratorConfig';
 import {
+    compactTitleDisplayText,
+    deterministicCaptionTitleCandidates,
     deterministicTitleCandidates,
-    limitTitleWords,
+    isSemanticallyCompleteTitle,
     normalizeTriggerKey,
     preventTitleOverlaps,
     resolveLiteralCaptionText,
     resolveTitleColors,
     rotatingTitleTypeIndex,
+    titleTypeWordCapacity,
     triggerMapWithAliases,
     type BrandPaletteInput,
 } from '../services/titleGenerationRules';
@@ -27,11 +30,10 @@ const titleExtractionPrompt = (config: TitleGeneratorConfig) => {
     const enabled = config.triggers.filter((trigger) => trigger.enabled);
     const triggerRules = enabled.map((trigger) => {
         const examples = trigger.examples.length ? ` Exemplos de referência: ${trigger.examples.join(' | ')}.` : '';
-        return `- kind "${trigger.id}" (${trigger.name}), no maximo ${trigger.maxOccurrences}, com ate ${trigger.maxWords} palavras por titulo: ${trigger.instructions}${examples}`;
+        return `- kind "${trigger.id}" (${trigger.name}), no máximo ${trigger.maxOccurrences}. Prefira até ${trigger.maxWords} palavras por título: ${trigger.instructions}${examples}`;
     }).join('\n');
     const kinds = enabled.map((trigger) => `"${trigger.id}"`).join(', ');
-    const maxConfiguredWords = Math.max(1, ...enabled.map((trigger) => trigger.maxWords));
-    return `Voce e diretor criativo especializado em titulos de retencao para videos curtos.
+    return `Você é um diretor criativo sênior especializado em títulos de retenção para vídeos curtos.
 
 Objetivo da agencia:
 ${config.extractionPrompt}
@@ -39,16 +41,38 @@ ${config.extractionPrompt}
 Gatilhos permitidos:
 ${triggerRules}
 
-Regras obrigatorias:
-1. Cada titulo deve ter entre 1 e ${maxConfiguredWords} palavras e ser uma sequencia literal e continua das legendas.
-2. Nao resuma, nao parafraseie, nao invente texto nem informacao comercial.
-3. O startSec deve ser exatamente o tempo de uma palavra fornecida.
-4. Use kind somente entre: ${kinds}.
-5. Exemplos sao referencias, nao uma lista fechada: identifique outras cidades, regioes, precos e beneficios realmente pronunciados.
-6. Uma cidade ou estado pode aparecer depois de "atencao" ou "alo". Preco inclui expressoes como "a partir de R$ 199".
-7. Respeite o limite de cada gatilho e gere no maximo ${config.maxTitles} titulos no total.
+Processo de análise obrigatório:
+1. Leia a narração inteira e identifique todos os fatos comerciais explícitos antes de escolher títulos.
+2. Classifique apenas os fatos que correspondem aos gatilhos permitidos.
+3. Confira cada frase nas legendas temporizadas e devolva somente sequências literais e contínuas.
+4. Revise a lista final: preço, região, benefício, produto, diferencial, público e CTA explícitos não podem ser omitidos se o respectivo gatilho estiver ativo.
 
-Responda exclusivamente em JSON valido: {"titles":[{"text":"trecho literal","startSec":0.5,"kind":${kinds.split(', ')[0] || '"hook"'}}]}`;
+Regras obrigatórias:
+1. Para cada fato, separe SOURCE TEXT de DISPLAY TEXT.
+2. sourceText é uma sequência literal e contínua das legendas. Ela serve para comprovar o fato e localizar seu tempo. Nunca invente, resuma ou parafraseie sourceText.
+3. displayText é a etiqueta visual curta: mantenha apenas o núcleo que uma pessoa reconhece em menos de um segundo.
+4. Escreva um RÓTULO NOMINAL, não um pedaço de frase. Remova artigos, possessivos e verbos de locução sem valor visual: "O EXAME DE VISTA SAI POR CONTA" vira "EXAME DE VISTA"; "A SUA ARMAÇÃO SAI" vira "ARMAÇÃO".
+5. Quando houver ação comercial seguida do objeto, preserve o conceito e não a instrução: "MONTE SEUS ÓCULOS DO SEU JEITO" pode gerar "ÓCULOS" como produto e "SEU JEITO" como diferencial. Nunca gere "ARMAÇÃO SAI", "O EXAME DE VISTA" ou outro fragmento de oração.
+6. Em preço, displayText contém o valor completo: "A PARTIR DE R$ 39,90" vira "R$ 39,90". Nunca gere "A PARTIR DE" sozinho.
+7. Em região, use somente a localidade: "ATENÇÃO, PIRACICABA" vira "PIRACICABA".
+8. Em urgência, preserve a informação concreta: "SOMENTE ATÉ SÁBADO" pode virar "ATÉ SÁBADO"; "ÚLTIMAS 8 UNIDADES" permanece completa.
+9. Em CTA, preserve verbo e destino: "CLIQUE NO BOTÃO" e "CHAME NO WHATSAPP". Não gere uma ação genérica.
+10. O limite de palavras é uma preferência visual. Pode excedê-lo quando cortar destruir o sentido.
+11. O startSec deve ser exatamente o tempo da primeira palavra de sourceText.
+12. Use kind somente entre: ${kinds}.
+13. Exemplos são referências, não uma lista fechada. Identifique outros fatos realmente pronunciados.
+14. Respeite o máximo de ocorrências de cada gatilho e gere no máximo ${config.maxTitles} títulos no total. Qualidade e cobertura dos fatos são mais importantes que preencher a quantidade.
+
+Responda exclusivamente em JSON válido: {"titles":[{"sourceText":"trecho literal completo","displayText":"etiqueta curta","startSec":0.5,"kind":${kinds.split(', ')[0] || '"hook"'}}]}`;
+};
+
+const parseGatewayJson = (value: unknown) => {
+    const raw = String(value || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+    try {
+        return JSON.parse(raw || '{}');
+    } catch {
+        return {};
+    }
 };
 
 let titleGenerationSequence = 0;
@@ -511,25 +535,41 @@ Responda exclusivamente em JSON válido, nesta estrutura:
         const systemPrompt = titleConfig?.triggers?.some((trigger) => trigger.enabled)
             ? titleExtractionPrompt(titleConfig)
             : fallbackSystemPrompt;
-        // Títulos usam o tier mais barato (Lite) com system próprio e saída JSON.
-        // O gateway resolve o modelo real e mede o consumo como chat.
-        const result = await gatewayChat(token, {
-            messages: [{ role: 'user', content: `Roteiro: ${script}\n\nLegendas: ${wordTimings}` }],
-            system: systemPrompt,
-            json: true,
-            model: 'mileto-lite',
-            locale: 'pt-BR',
-        });
-
-        // A saída pode vir como objeto {titles:[...]}, array puro, ou com cercas de código.
-        const raw = (result.text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
-        let parsed: any = {};
+        // Uma única passagem configurável faz a auditoria semântica e a seleção
+        // literal. As regras determinísticas abaixo continuam cobrindo os fatos
+        // comerciais mesmo se o modelo omitir algum candidato.
+        let titlesArr: any[] = [];
         try {
-            parsed = JSON.parse(raw || '{}');
-        } catch {
-            parsed = {};
+            const result = await gatewayChat(token, {
+                messages: [{
+                    role: 'user',
+                    content: `Narração final: ${script}\n\nLegendas temporizadas autorizadas para a saída literal: ${wordTimings}`,
+                }],
+                system: systemPrompt,
+                json: true,
+                model: titleConfig.ai.model,
+                reasoning: titleConfig.ai.reasoning,
+                maxOutputTokens: titleConfig.ai.maxOutputTokens,
+                locale: 'pt-BR',
+            });
+
+            // A saída pode vir como objeto {titles:[...]}, array puro, ou com cercas de código.
+            try {
+                const parsed: any = parseGatewayJson(result.text);
+                titlesArr = Array.isArray(parsed) ? parsed : parsed.titles || [];
+            } catch (parseError: any) {
+                console.warn('[AI] Resposta sem JSON válido; aplicando os detectores locais de títulos.', parseError?.message);
+            }
+        } catch (generationError: any) {
+            const transientStatuses = new Set([408, 429, 500, 502, 503, 504]);
+            if (!(generationError instanceof GatewayHttpError) || !transientStatuses.has(generationError.status)) {
+                throw generationError;
+            }
+            console.warn(
+                '[AI] Provedor indisponível durante a extração de títulos; aplicando os detectores locais.',
+                { status: generationError.status }
+            );
         }
-        const titlesArr = Array.isArray(parsed) ? parsed : parsed.titles || [];
         const spokenWords = captions.segments.flatMap((segment: any) =>
             (segment.words || []).map((word: any) => ({
                 text: String(word.text || '').trim(),
@@ -556,9 +596,12 @@ Responda exclusivamente em JSON válido, nesta estrutura:
         const titleCandidates = [
             // Sinais determinísticos de preço/local/CTA têm prioridade; os exemplos
             // da agência e a IA completam os demais casos sem inventar texto.
+            ...deterministicCaptionTitleCandidates(spokenWords),
             ...deterministicTitleCandidates(script),
-            ...configuredLiteralCandidates,
             ...(Array.isArray(titlesArr) ? titlesArr : []),
+            // Exemplos configurados são apenas uma última rede de segurança.
+            // Eles não podem ocupar o limite antes dos títulos escolhidos pela IA.
+            ...configuredLiteralCandidates,
         ];
 
         // Format titles, snap them to a real spoken word, and reject duplicates.
@@ -566,40 +609,70 @@ Responda exclusivamente em JSON válido, nesta estrutura:
         const generatedTitles = titleCandidates
             .map((title: any) => {
                 const trigger = triggerById.get(normalizeTriggerKey(title?.kind));
+                const sourceCandidate = title?.sourceText || title?.text;
+                const literal = trigger
+                    ? resolveLiteralCaptionText(spokenWords, sourceCandidate, title?.startSec, trigger.id)
+                    : null;
+                const compact = trigger && literal
+                    ? compactTitleDisplayText(literal.text, trigger.id, trigger.maxWords)
+                    : null;
                 return {
                     trigger,
-                    literal: trigger
-                        ? resolveLiteralCaptionText(spokenWords, title?.text, title?.startSec, trigger.id)
-                        : null,
+                    literal,
+                    compact,
                 };
             })
-            .filter(({ trigger, literal }: { trigger?: { id: string }; literal: { text: string; startSec: number } | null }) => {
-                const key = normalizeTitleWord(literal?.text);
-                if (!trigger || !literal || !key) return false;
+            .filter(({ trigger, literal, compact }: any) => {
+                const key = normalizeTitleWord(compact?.text);
+                if (!trigger || !literal || !compact || !key) return false;
                 const triggerId = normalizeTriggerKey(trigger.id);
                 const seen = seenTitlesByTrigger.get(triggerId) || [];
                 if (seen.some((existing) => existing.includes(key) || key.includes(existing))) return false;
                 seenTitlesByTrigger.set(triggerId, [...seen, key]);
                 return true;
             })
-            .flatMap(({ trigger, literal }: any) => {
-                if (!trigger) return [];
+            .flatMap(({ trigger, literal, compact }: any) => {
+                if (!trigger || !literal || !compact) return [];
                 const triggerId = normalizeTriggerKey(trigger.id);
                 const occurrence = occurrenceByTrigger.get(triggerId) || 0;
                 if (occurrence >= trigger.maxOccurrences) return [];
-                occurrenceByTrigger.set(triggerId, occurrence + 1);
+                const fittedText = compact.text.slice(0, 90);
+                if (!isSemanticallyCompleteTitle(fittedText)) return [];
+                const displayLiteral = resolveLiteralCaptionText(
+                    spokenWords,
+                    fittedText,
+                    literal.startSec,
+                    trigger.id
+                );
                 const titleType = trigger.titleTypes[rotatingTitleTypeIndex(
                     trigger.titleTypes.length,
                     generationSequence,
                     modelAssignmentIndex
                 )];
                 modelAssignmentIndex += 1;
+                const visualMaxWords = Math.min(
+                    trigger.maxWords,
+                    titleTypeWordCapacity(titleType.styleId, titleType.maxWords)
+                );
+                const visualCompact = compactTitleDisplayText(literal.text, trigger.id, visualMaxWords);
+                if (!visualCompact) return [];
+                const visualText = visualCompact.text.slice(0, 90);
+                if (!isSemanticallyCompleteTitle(visualText)) return [];
+                const visualLiteral = resolveLiteralCaptionText(
+                    spokenWords,
+                    visualText,
+                    literal.startSec,
+                    trigger.id
+                );
+                occurrenceByTrigger.set(triggerId, occurrence + 1);
                 const layout = titleType.layouts[videoFormat] || titleType.layouts['9:16'];
                 const colors = resolveTitleColors(titleType.color || trigger.color, effectiveBrandPalette, occurrence);
                 return [{
                     id: uuidv4(),
-                    text: limitTitleWords(literal.text, trigger.maxWords).slice(0, 90),
-                    startSec: literal.startSec,
+                    text: visualText,
+                    sourceText: visualCompact.sourceText,
+                    qualifierText: visualCompact.qualifierText,
+                    startSec: visualLiteral?.startSec ?? displayLiteral?.startSec ?? literal.startSec,
                     durationSec: titleType.durationSec,
                     isActive: true,
                     posX: layout.posX,
@@ -608,7 +681,7 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                     scaleX: layout.scaleX,
                     scaleY: layout.scaleY,
                     textBoxWidthPct: layout.textBoxWidthPct,
-                    maxWords: trigger.maxWords,
+                    maxWords: visualMaxWords,
                     styleId: titleType.styleId,
                     fontFamily: titleType.fontFamily,
                     animationId: titleType.animationId,

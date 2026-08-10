@@ -68,5 +68,39 @@ export const SYSTEM_VOICE_IDS = new Set(SYSTEM_VOICES.map((voice) => voice.id));
 
 export const DEFAULT_SYSTEM_VOICE = SYSTEM_VOICES[0];
 
+const SYSTEM_VOICE_PRESETS_KEY = 'mileto_system_voice_presets_v1';
+
+const readPresetOverrides = (): Record<string, VoicePreset> => {
+    if (typeof window === 'undefined') return {};
+    try {
+        const parsed = JSON.parse(window.localStorage.getItem(SYSTEM_VOICE_PRESETS_KEY) || '{}');
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+};
+
+export const effectiveSystemVoicePreset = (id?: string | null): VoicePreset | undefined => {
+    const fallback = SYSTEM_VOICES.find((voice) => voice.id === id)?.preset;
+    if (!fallback || !id) return fallback;
+    const override = readPresetOverrides()[id];
+    return override ? {
+        voiceSettings: { ...fallback.voiceSettings, ...override.voiceSettings },
+        musicTrackId: override.musicTrackId ?? null,
+        audioConfig: {
+            narration: { ...fallback.audioConfig.narration, ...override.audioConfig?.narration },
+            background: { ...fallback.audioConfig.background, ...override.audioConfig?.background },
+        },
+    } : fallback;
+};
+
+export const saveSystemVoicePreset = (id: string, preset: VoicePreset) => {
+    if (typeof window === 'undefined' || !SYSTEM_VOICE_IDS.has(id)) return;
+    window.localStorage.setItem(SYSTEM_VOICE_PRESETS_KEY, JSON.stringify({
+        ...readPresetOverrides(),
+        [id]: preset,
+    }));
+};
+
 export const findVoicePreset = (id?: string | null): VoicePreset | undefined =>
-    SYSTEM_VOICES.find((voice) => voice.id === id)?.preset;
+    effectiveSystemVoicePreset(id);
