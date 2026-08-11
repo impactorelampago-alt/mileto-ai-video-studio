@@ -102,7 +102,7 @@ const defaultWait = (milliseconds: number) =>
 export const runResilientTitleGeneration = async <T>({
     primary,
     fallback,
-    maxAttempts = 3,
+    maxAttempts = 1,
     skipPrimary = false,
     phase = 'ai',
     requestId,
@@ -112,7 +112,10 @@ export const runResilientTitleGeneration = async <T>({
     let diagnostic: TitleGenerationDiagnostic | undefined;
 
     if (!skipPrimary && primary) {
-        const cappedAttempts = Math.max(1, Math.min(5, Math.floor(maxAttempts)));
+        // A retry real pertence ao gateway. O padrão de uma chamada evita
+        // amplificação e duplicação de cobrança; o teto de duas existe apenas
+        // para chamadores legados que o solicitarem explicitamente.
+        const cappedAttempts = Math.max(1, Math.min(2, Math.floor(maxAttempts)));
         while (attempts < cappedAttempts) {
             attempts += 1;
             try {

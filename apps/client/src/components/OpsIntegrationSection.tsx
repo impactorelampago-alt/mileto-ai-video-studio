@@ -22,6 +22,7 @@ import {
     type OpsIntegrationStatus,
     type OpsSyncSuggestion,
 } from '../lib/gateway';
+import { invalidateOpsBrandDirectoryCache } from '../lib/opsProjectBrand';
 
 interface OpsIntegrationSectionProps {
     canManage: boolean;
@@ -226,6 +227,7 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
                 if (authorizationAttempt.current !== attempt) return;
                 setStatus(next);
                 if (next.connection?.status === 'active') {
+                    invalidateOpsBrandDirectoryCache();
                     setAwaitingAuthorization(false);
                     toast.success('Mileto Ops conectado a esta empresa. Agora sincronize a equipe.');
                     return;
@@ -258,6 +260,7 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
         setBusy('connect');
         try {
             const started = await gatewayApi.startOpsConnection(reconnect);
+            invalidateOpsBrandDirectoryCache();
             const attempt = authorizationAttempt.current + 1;
             authorizationAttempt.current = attempt;
             openExternal(started.authorizationUrl);
@@ -306,6 +309,7 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
         setBusy('link');
         try {
             await gatewayApi.confirmOpsUserLink(suggestion.aiUserId, suggestion.opsProfileId);
+            invalidateOpsBrandDirectoryCache();
             setSuggestions((current) => current.filter((item) => item.id !== suggestion.id));
             await refreshStatus();
             if (suggestion.aiUserId === currentUserId) setLinkModalOpen(false);
@@ -322,6 +326,7 @@ export function OpsIntegrationSection({ canManage, currentUserId, organizationNa
         setBusy('disconnect');
         try {
             await gatewayApi.disconnectOps();
+            invalidateOpsBrandDirectoryCache();
             setSuggestions([]);
             await refreshStatus();
             toast.success('Conexão com o Mileto Ops revogada. Projetos e usuários foram preservados.');

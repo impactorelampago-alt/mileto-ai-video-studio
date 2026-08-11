@@ -27,6 +27,10 @@ import {
     createOpsExportIdempotencyKey,
 } from './opsExportContract.js';
 import {
+    normalizeOpsIdempotencyKey,
+    normalizeVideoJobRetryInput,
+} from './opsVideoJobRevision.js';
+import {
     isRecoverableStoredOpsError,
     isTransientOpsRefreshError,
     opsRefreshConnectionState,
@@ -1318,6 +1322,43 @@ export const claimVideoJob = async (req, res) => {
     res.json({ ok: true, data: unwrapOpsData(payload), meta: payload.meta || {} });
 };
 
+export const retryVideoJob = async (req, res) => {
+    const jobId = String(req.params.jobId || '').trim();
+    if (!jobId) throw httpError(400, 'invalid_video_job', 'Informe o trabalho de video.');
+    const idempotencyKey = normalizeOpsIdempotencyKey(req.headers['idempotency-key']);
+    const input = normalizeVideoJobRetryInput(req.body);
+    const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken, viewContextId }) => {
+        assertAssetsWriteScope(connection);
+        return {
+            connection,
+            payload: await opsApi(accessToken, `/v1/video-jobs/${encodeURIComponent(jobId)}/retry`, {
+                method: 'POST',
+                headers: {
+                    ...(viewContextId ? { [OPS_VIEW_CONTEXT_HEADER]: viewContextId } : {}),
+                    'Idempotency-Key': idempotencyKey,
+                },
+                body: JSON.stringify(input),
+            }),
+        };
+    });
+    const data = unwrapOpsData(payload) || {};
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: 'ops.video_job.retry_requested',
+        resourceType: 'video_job',
+        resourceId: jobId,
+        result: 'success',
+        detail: {
+            projectId: input.projectId,
+            expectedRevision: input.expectedRevision,
+            reason: input.reason || null,
+            minimumAppVersion: input.minimumAppVersion,
+        },
+    });
+    res.json({ ok: true, data, meta: payload.meta || {} });
+};
+
 export const updateVideoJob = async (req, res) => {
     const jobId = String(req.params.jobId || '').trim();
     const claimToken = String(req.headers['x-mileto-job-token'] || '').trim();
@@ -1368,7 +1409,13 @@ export const uploadExport = async (req, res) => {
             checksum,
             metadata: req.body,
         });
-        const idempotencyKey = createOpsExportIdempotencyKey(intentPayload, companyId);
+        // Revisoes fornecem uma chave nova e persistida pelo executor. Clientes
+        // anteriores continuam idempotentes pela chave deterministica do arquivo.
+        const hasSuppliedIdempotencyKey = Object.prototype.hasOwnProperty.call(req.body || {}, 'idempotencyKey');
+        const suppliedIdempotencyKey = normalizeOpsIdempotencyKey(req.body?.idempotencyKey, {
+            required: hasSuppliedIdempotencyKey,
+        });
+        const idempotencyKey = suppliedIdempotencyKey || createOpsExportIdempotencyKey(intentPayload, companyId);
         const { connection, payload } = await withDelegatedAccess(req, async ({ connection, accessToken }) => {
             assertAssetsWriteScope(connection);
         const intentResponse = await opsApi(

@@ -57,6 +57,12 @@ const loadWorkflow = (fetchImpl) => {
     };
     const sandbox = {
         console: { log() {}, info() {}, warn() {}, error() {} },
+        Date,
+        Promise,
+        AbortController,
+        AbortSignal,
+        setTimeout,
+        clearTimeout,
         fetch: fetchImpl,
         window: { setTimeout: (callback) => { callback(); return 0; } },
     };
@@ -85,7 +91,7 @@ const baseAdData = () => ({
     brandPaletteUpdatedAt: null,
 });
 
-test('fallback local preserva tentativas e diagnóstico seguro da etapa de IA', async () => {
+test('fallback local resolvido pelo servidor preserva tentativas e diagnóstico seguro da IA', async () => {
     const requests = [];
     const workflow = loadWorkflow(async (_url, init) => {
         const mode = JSON.parse(String(init.body)).mode;
@@ -93,48 +99,41 @@ test('fallback local preserva tentativas e diagnóstico seguro da etapa de IA', 
         if (mode === 'ai') {
             return response({
                 ok: true,
-                titles: [],
-                source: 'none',
-                attempts: 3,
+                titles: [{
+                    id: 'local-title',
+                    text: 'VISITE A LOJA',
+                    startSec: 1,
+                    durationSec: 2,
+                    isActive: true,
+                    semanticRoles: ['cta'],
+                }],
+                source: 'local',
+                attempts: 1,
                 diagnostic: {
                     code: 'title_provider_timeout',
                     status: 504,
                     phase: 'ai',
                     requestId: 'safe-request-id',
                 },
-                metrics: { rawCandidateCount: 0, acceptedCount: 0 },
+                metrics: { rawCandidateCount: 1, acceptedCount: 1 },
             });
         }
-        return response({
-            ok: true,
-            titles: [{
-                id: 'local-title',
-                text: 'VISITE A LOJA',
-                startSec: 1,
-                durationSec: 2,
-                isActive: true,
-                semanticRoles: ['cta'],
-            }],
-            source: 'local',
-            attempts: 0,
-            metrics: { rawCandidateCount: 1, acceptedCount: 1 },
-        });
+        throw new Error('o cliente nao deve duplicar o fallback resolvido pelo servidor');
     });
 
     const result = await workflow.generateAutomaticTitlesResilient(baseAdData());
     const summary = result.adData.titleGenerationSummary;
 
-    assert.deepEqual(requests, ['ai', 'local']);
+    assert.deepEqual(requests, ['ai']);
     assert.equal(result.source, 'local');
     assert.equal(summary.outcome, 'fallback');
-    assert.equal(summary.clientRequests, 2);
-    assert.equal(summary.serverAttempts, 3);
-    assert.equal(summary.attemptsBySource.ai, 3);
-    assert.equal(summary.attemptsBySource.fallback, 0);
+    assert.equal(summary.clientRequests, 1);
+    assert.equal(summary.serverAttempts, 1);
+    assert.equal(summary.attemptsBySource.ai, 1);
+    assert.equal(summary.attemptsBySource.fallback, undefined);
     assert.equal(summary.diagnostic?.code, 'title_provider_timeout');
     assert.equal(summary.diagnostic?.requestId, 'safe-request-id');
     assert.equal(summary.metrics?.acceptedCount, 1);
-    assert.equal(summary.metricsBySource.ai.acceptedCount, 0);
     assert.equal(summary.metricsBySource.fallback.acceptedCount, 1);
     assert.equal(
         summary.warning.split('Títulos gerados pelo fallback local').length - 1,
@@ -186,32 +185,31 @@ test('Step 3 invalida explicitamente o resumo ao substituir as legendas', () => 
     assert.match(saveBlock, /titleGenerationSummary:\s*undefined/);
 });
 
-test('advertências finais de títulos chegam ao job por message sem ampliar o PATCH do Ops', () => {
+test('advertências finais chegam por message e pelo renderResult revisionado do Ops', () => {
     const coordinator = readClient('components/OpsVideoJobCoordinator.tsx');
     const waitStart = coordinator.indexOf('const waitForOpsExport');
     const waitEnd = coordinator.indexOf('const orderedContexts', waitStart);
     const waitBlock = coordinator.slice(waitStart, waitEnd);
-    const patchStart = coordinator.indexOf('return gatewayApi.updateOpsVideoJob');
-    const patchEnd = coordinator.indexOf('}, queued.context.contextId)', patchStart);
+    const patchStart = coordinator.indexOf('const update: OpsVideoJobUpdate');
+    const patchEnd = coordinator.indexOf('const sendUpdate', patchStart);
     const patchBlock = coordinator.slice(patchStart, patchEnd);
 
     assert.ok(waitStart > 0 && waitEnd > waitStart);
     assert.match(waitBlock, /renderResult/);
     assert.match(coordinator, /renderResult[^\n]*warnings|warnings[^\n]*renderResult/s);
     assert.match(coordinator, /titleWarning[\s\S]*patch\('completed'/);
-    assert.doesNotMatch(
-        patchBlock,
-        /renderResult|renderDiagnostics|titleGenerationSummary|semanticCoverage|metrics|warnings/,
-    );
     assert.match(patchBlock, /message/);
+    assert.match(patchBlock, /revision/);
+    assert.match(patchBlock, /renderResult/);
+    assert.doesNotMatch(patchBlock, /renderDiagnostics|titleGenerationSummary|semanticCoverage|metrics/);
 });
 
-test('Step 4 bloqueia clique concorrente e não registra AxiosError completo', () => {
+test('Step 4 impede geração concorrente, oferece cancelamento e não registra AxiosError completo', () => {
     const step4 = readClient('pages/Step4.tsx');
     const generationStart = step4.indexOf('const handleGenerateTitles');
     const generationEnd = step4.indexOf('const handleTargetTime', generationStart);
     const generationBlock = step4.slice(generationStart, generationEnd);
-    const buttonStart = step4.indexOf('onClick={handleGenerateTitles}');
+    const buttonStart = step4.indexOf('onClick={isGenerating ? cancelTitleGeneration : handleGenerateTitles}');
     const buttonEnd = step4.indexOf('</button>', buttonStart);
     const buttonBlock = step4.slice(buttonStart, buttonEnd);
     const transformStart = step4.indexOf('const updateTitleTransform');
@@ -219,7 +217,8 @@ test('Step 4 bloqueia clique concorrente e não registra AxiosError completo', (
     const transformBlock = step4.slice(transformStart, transformEnd);
 
     assert.ok(generationStart > 0 && generationEnd > generationStart);
+    assert.match(generationBlock, /if \(titleGenerationAbortRef\.current \|\| isGenerating\) return/);
     assert.doesNotMatch(generationBlock, /console\.error\(error\)/);
-    assert.match(buttonBlock, /disabled=\{isGenerating\}/);
+    assert.match(buttonBlock, /cancelTitleGeneration/);
     assert.match(transformBlock, /updateTitle\(id, updates\)/);
 });

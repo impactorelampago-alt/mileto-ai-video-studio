@@ -40,6 +40,10 @@ export interface BackgroundExportRequest {
     projectId: string;
     /** Job de origem, quando a exportação pertence a um executor externo. */
     sourceJobId?: string;
+    /** Revisão do mesmo job no Ops; não altera a identidade do projeto. */
+    executionRevision?: number;
+    /** Chave nova da revisão, persistida pelo worker e reutilizada apenas neste upload. */
+    uploadIdempotencyKey?: string;
     opsMetadata?: OpsExportMetadata;
     destination: { kind: 'local' | 'shared' | 'ops'; folderPath?: string; companyId?: string; opsFolderId?: string | null; viewContextId?: string | null };
 }
@@ -374,6 +378,9 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                             fileName,
                             companyId: activeExport.destination.companyId,
                             folderId: activeExport.destination.opsFolderId || '',
+                            ...(activeExport.uploadIdempotencyKey
+                                ? { idempotencyKey: activeExport.uploadIdempotencyKey }
+                                : {}),
                             ...activeExport.opsMetadata,
                         }),
                     });
@@ -418,6 +425,9 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                             assetId,
                             companyId: activeExport.destination.kind === 'ops' ? activeExport.destination.companyId : undefined,
                             folderId: activeExport.destination.kind === 'ops' ? (activeExport.destination.opsFolderId || null) : null,
+                            sourceJobId: activeExport.sourceJobId,
+                            executionRevision: activeExport.executionRevision,
+                            uploadIdempotencyKey: activeExport.uploadIdempotencyKey,
                             exportedAt: new Date().toISOString(),
                             renderResult: exportResult,
                         }));

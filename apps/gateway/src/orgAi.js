@@ -82,12 +82,12 @@ const titleType = (styleId, name, fontFamily, layout, animationId = 'pop', custo
 });
 
 export const DEFAULT_TITLE_GENERATOR_CONFIG = {
-    version: 3,
+    version: 4,
     ai: {
         provider: 'openai',
         model: 'gpt-5-mini',
-        reasoning: 'equilibrado',
-        maxOutputTokens: 4096,
+        reasoning: 'rapido',
+        maxOutputTokens: 1400,
     },
     extractionPrompt: 'Detecte fatos explícitos da narração e transforme cada um em uma etiqueta visual curta. Preserve separadamente o trecho literal completo usado como evidência. Priorize substantivos, nomes próprios, valores e ações concretas; remova artigos, possessivos e conectores sem valor visual. Nunca invente texto, preço, benefício, bônus, urgência ou localização.',
     maxTitles: 8,
@@ -324,9 +324,24 @@ const migrateV2Config = (input) => {
     return { ...source, version: 3, triggers: migrated };
 };
 
+const migrateV3Config = (input) => {
+    const source = migrateV2Config(input);
+    if (Number(source.version) >= 4) return source;
+    const ai = source.ai || {};
+    const usesLegacyAiPreset = String(ai.provider || 'openai') === 'openai'
+        && String(ai.model || 'gpt-5-mini') === 'gpt-5-mini'
+        && String(ai.reasoning || 'equilibrado') === 'equilibrado'
+        && Number(ai.maxOutputTokens ?? 4096) === 4096;
+    return {
+        ...source,
+        version: 4,
+        ai: usesLegacyAiPreset ? clone(DEFAULT_TITLE_GENERATOR_CONFIG.ai) : ai,
+    };
+};
+
 export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERATOR_CONFIG) => {
     const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-    const source = migrateV2Config(raw);
+    const source = migrateV3Config(raw);
     const sourceTriggers = Array.isArray(source.triggers) && source.triggers.length ? source.triggers.slice(0, 30) : base.triggers;
     const triggers = sourceTriggers.map((item, index) => normalizeTrigger(
         item,
@@ -343,7 +358,7 @@ export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERA
         throw new Error('Todo gatilho ativo precisa ter pelo menos um modelo de título.');
     }
     return {
-        version: 3,
+        version: 4,
         ai: {
             provider: ['openai', 'gemini'].includes(String(source.ai?.provider))
                 ? String(source.ai.provider)

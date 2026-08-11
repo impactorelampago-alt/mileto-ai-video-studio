@@ -18,6 +18,13 @@ const GATEWAY_URL = (process.env.GATEWAY_BASE_URL || 'https://api.miletoaivideo.
 // créditos antes de o servidor local abandonar a conexão.
 // O gateway limita cada tentativa e faz uma recuperacao curta de falhas transitórias.
 const CHAT_GATEWAY_TIMEOUT_MS = 90000;
+/**
+ * Títulos usam um prompt curto e fallback determinístico local. Um limite menor
+ * impede que uma indisponibilidade do provedor prenda a etapa editorial pelo mesmo
+ * tempo de um chat longo, sem alterar o orçamento do chat comum.
+ */
+export const TITLE_GENERATION_TOTAL_TIMEOUT_MS = 35000;
+export const TITLE_GENERATION_PREFLIGHT_TIMEOUT_MS = 10000;
 
 export class GatewayHttpError extends Error {
     status: number;
@@ -148,7 +155,8 @@ export interface GatewayChatPayload {
 export const gatewayChat = async (
     token: string,
     payload: GatewayChatPayload,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    timeoutMs = CHAT_GATEWAY_TIMEOUT_MS,
 ): Promise<GatewayChatResult> => {
     const res = await fetchWithTimeout(
         `${GATEWAY_URL}/v1/chat`,
@@ -158,7 +166,7 @@ export const gatewayChat = async (
             body: JSON.stringify(payload),
             signal,
         },
-        CHAT_GATEWAY_TIMEOUT_MS
+        Math.max(1000, Math.min(CHAT_GATEWAY_TIMEOUT_MS, Number(timeoutMs) || CHAT_GATEWAY_TIMEOUT_MS))
     );
     const data = await parseBody(res);
     if (!res.ok || data?.ok === false) {

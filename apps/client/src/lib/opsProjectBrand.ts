@@ -7,6 +7,108 @@ import {
 } from './gateway';
 import type { AdData, BrandPalette, OpsProjectCompany } from '../types';
 
+export const OPS_BRAND_DIRECTORY_CACHE_TTL_MS = 30_000;
+export const OPS_BRAND_RESOLUTION_DEADLINE_MS = 10_000;
+
+export interface ResolveOpsProjectBrandOptions {
+    signal?: AbortSignal;
+    deadlineMs?: number;
+}
+
+type TimedCacheEntry<T> = {
+    value: T;
+    expiresAt: number;
+};
+
+type OpsBrandAccess = Omit<OpsBrandDirectory, 'companies'>;
+
+const accessCache = new Map<string, TimedCacheEntry<OpsBrandAccess>>();
+const accessRequests = new Map<string, Promise<OpsBrandAccess>>();
+const directoryCache = new Map<string, TimedCacheEntry<OpsBrandDirectory>>();
+const directoryRequests = new Map<string, Promise<OpsBrandDirectory>>();
+const resolvedBrandCache = new Map<string, TimedCacheEntry<ResolvedOpsProjectBrand>>();
+const resolvedBrandRequests = new Map<string, Promise<ResolvedOpsProjectBrand>>();
+let cacheEpoch = 0;
+
+const selectionCacheKey = (selection?: OpsProjectCompany | null) => [
+    String(selection?.id || 'none').trim(),
+    String(selection?.viewContextIdentity || 'default').trim().toLocaleLowerCase('pt-BR'),
+].map(encodeURIComponent).join(':');
+
+const cachedValue = <T,>(cache: Map<string, TimedCacheEntry<T>>, key: string): T | undefined => {
+    const cached = cache.get(key);
+    if (!cached) return undefined;
+    if (cached.expiresAt <= Date.now()) {
+        cache.delete(key);
+        return undefined;
+    }
+    return cached.value;
+};
+
+const brandAbortError = (message = 'Consulta da marca cancelada.') => {
+    const error = new Error(message);
+    error.name = 'AbortError';
+    return error;
+};
+
+const waitForSharedRequest = <T,>(request: Promise<T>, signal?: AbortSignal): Promise<T> => {
+    if (!signal) return request;
+    if (signal.aborted) return Promise.reject(brandAbortError());
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = () => {
+            cleanup();
+            reject(brandAbortError());
+        };
+        const cleanup = () => signal.removeEventListener('abort', onAbort);
+        signal.addEventListener('abort', onAbort, { once: true });
+        request.then(
+            (value) => { cleanup(); resolve(value); },
+            (error) => { cleanup(); reject(error); },
+        );
+    });
+};
+
+const runWithBrandDeadline = <T,>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    deadlineMs: number,
+): Promise<T> => {
+    const controller = new AbortController();
+    const safeDeadline = Number.isFinite(deadlineMs) && deadlineMs > 0
+        ? Math.round(deadlineMs)
+        : OPS_BRAND_RESOLUTION_DEADLINE_MS;
+    return new Promise<T>((resolve, reject) => {
+        let settled = false;
+        const finish = (callback: () => void) => {
+            if (settled) return;
+            settled = true;
+            globalThis.clearTimeout(timeout);
+            callback();
+        };
+        const timeout = globalThis.setTimeout(() => {
+            controller.abort();
+            finish(() => reject(new Error('O Mileto Ops excedeu o prazo seguro ao confirmar a marca.')));
+        }, safeDeadline);
+        operation(controller.signal).then(
+            (value) => finish(() => resolve(value)),
+            (error) => finish(() => reject(error)),
+        );
+    });
+};
+
+/**
+ * Limpa status, contextos, empresas e paletas mantidos apenas em memória.
+ * Deve ser chamada quando a sessão ou a conexão do Ops mudar.
+ */
+export const invalidateOpsBrandDirectoryCache = () => {
+    cacheEpoch += 1;
+    accessCache.clear();
+    accessRequests.clear();
+    directoryCache.clear();
+    directoryRequests.clear();
+    resolvedBrandCache.clear();
+    resolvedBrandRequests.clear();
+};
+
 export const opsViewContextIdentity = (context: Pick<OpsViewContext, 'mode' | 'label' | 'subtitle'>) =>
     `${context.mode}:${context.label.trim().toLocaleLowerCase('pt-BR')}:${context.subtitle.trim().toLocaleLowerCase('pt-BR')}`;
 
@@ -36,21 +138,80 @@ const preferredContext = (contexts: OpsViewContext[], defaultContextId: string, 
         || null;
 };
 
-export const loadOpsBrandDirectory = async (company?: OpsProjectCompany | null): Promise<OpsBrandDirectory> => {
-    const status = await gatewayApi.opsConnection();
+const fetchOpsBrandAccess = async (
+    company?: OpsProjectCompany | null,
+    signal?: AbortSignal,
+): Promise<OpsBrandAccess> => {
+    const status = await gatewayApi.opsConnection(signal);
     const required = opsConnectionRequiresCompany(status);
     const linked = status.userLink?.status === 'confirmed';
     if (!required || !linked) {
-        return { status, required, linked, contexts: [], context: null, companies: [] };
+        return { status, required, linked, contexts: [], context: null };
     }
 
-    const response = await gatewayApi.opsViewContexts();
+    const response = await gatewayApi.opsViewContexts(signal);
     const contexts = Array.isArray(response.data?.contexts) ? response.data.contexts : [];
     const context = preferredContext(contexts, response.data.defaultContextId, company);
+    return { status, required, linked, contexts, context };
+};
+
+const loadOpsBrandAccess = async (
+    company?: OpsProjectCompany | null,
+    signal?: AbortSignal,
+): Promise<OpsBrandAccess> => {
+    const key = selectionCacheKey(company);
+    const cached = cachedValue(accessCache, key);
+    if (cached) return cached;
+    const pending = accessRequests.get(key);
+    if (pending) return pending;
+
+    const requestEpoch = cacheEpoch;
+    const request = fetchOpsBrandAccess(company, signal).then((access) => {
+        if (requestEpoch === cacheEpoch) {
+            accessCache.set(key, {
+                value: access,
+                expiresAt: Date.now() + OPS_BRAND_DIRECTORY_CACHE_TTL_MS,
+            });
+        }
+        return access;
+    }).finally(() => {
+        if (accessRequests.get(key) === request) accessRequests.delete(key);
+    });
+    accessRequests.set(key, request);
+    return request;
+};
+
+const fetchOpsBrandDirectory = async (company?: OpsProjectCompany | null): Promise<OpsBrandDirectory> => {
+    const access = await loadOpsBrandAccess(company);
+    const { context } = access;
     const companies = context
         ? (await gatewayApi.opsCompanies('', context.contextId)).data.filter(isRealOpsCompany)
         : [];
-    return { status, required, linked, contexts, context, companies };
+    return { ...access, companies };
+};
+
+export const loadOpsBrandDirectory = async (company?: OpsProjectCompany | null): Promise<OpsBrandDirectory> => {
+    const key = selectionCacheKey(company);
+    const cached = cachedValue(directoryCache, key);
+    if (cached) return cached;
+
+    const pending = directoryRequests.get(key);
+    if (pending) return pending;
+
+    const requestEpoch = cacheEpoch;
+    const request = fetchOpsBrandDirectory(company).then((directory) => {
+        if (requestEpoch === cacheEpoch) {
+            directoryCache.set(key, {
+                value: directory,
+                expiresAt: Date.now() + OPS_BRAND_DIRECTORY_CACHE_TTL_MS,
+            });
+        }
+        return directory;
+    }).finally(() => {
+        if (directoryRequests.get(key) === request) directoryRequests.delete(key);
+    });
+    directoryRequests.set(key, request);
+    return request;
 };
 
 export interface ResolvedOpsProjectBrand {
@@ -61,23 +222,52 @@ export interface ResolvedOpsProjectBrand {
     paletteUpdatedAt: string | null;
 }
 
-export const resolveOpsProjectBrand = async (selection?: OpsProjectCompany | null): Promise<ResolvedOpsProjectBrand> => {
-    const directory = await loadOpsBrandDirectory(selection);
-    if (!directory.required) {
-        return { required: false, company: null, context: null, palette: null, paletteUpdatedAt: null };
-    }
-    if (!directory.linked) throw new Error('Seu usuário precisa estar vinculado ao Mileto Ops antes de continuar.');
-    if (!selection?.id) throw new Error('Selecione a empresa do Mileto Ops usada neste projeto.');
-    const company = directory.companies.find((candidate) => candidate.id === selection.id);
-    if (!company) throw new Error('A empresa deste projeto não está disponível no contexto autorizado do Mileto Ops.');
-    const palette = normalizeBrandPalette(company.palette);
-    return {
-        required: true,
-        company,
-        context: directory.context,
-        palette,
-        paletteUpdatedAt: palette ? company.paletteUpdatedAt ?? null : null,
-    };
+export const resolveOpsProjectBrand = async (
+    selection?: OpsProjectCompany | null,
+    options: ResolveOpsProjectBrandOptions = {},
+): Promise<ResolvedOpsProjectBrand> => {
+    if (options.signal?.aborted) throw brandAbortError();
+    const key = selectionCacheKey(selection);
+    const cached = cachedValue(resolvedBrandCache, key);
+    if (cached) return cached;
+
+    const pending = resolvedBrandRequests.get(key);
+    if (pending) return waitForSharedRequest(pending, options.signal);
+
+    const requestEpoch = cacheEpoch;
+    const request = runWithBrandDeadline(async (signal): Promise<ResolvedOpsProjectBrand> => {
+        const access = await loadOpsBrandAccess(selection, signal);
+        if (!access.required) {
+            return { required: false, company: null, context: null, palette: null, paletteUpdatedAt: null };
+        }
+        if (!access.linked) throw new Error('Seu usuário precisa estar vinculado ao Mileto Ops antes de continuar.');
+        if (!selection?.id) throw new Error('Selecione a empresa do Mileto Ops usada neste projeto.');
+        if (!access.context) throw new Error('O contexto autorizado do Mileto Ops não está disponível.');
+        const company = (await gatewayApi.opsCompany(selection.id, access.context.contextId, signal)).data;
+        if (!company || !isRealOpsCompany(company)) {
+            throw new Error('A empresa deste projeto não está disponível no contexto autorizado do Mileto Ops.');
+        }
+        const palette = normalizeBrandPalette(company.palette);
+        return {
+            required: true,
+            company,
+            context: access.context,
+            palette,
+            paletteUpdatedAt: palette ? company.paletteUpdatedAt ?? null : null,
+        };
+    }, options.deadlineMs ?? OPS_BRAND_RESOLUTION_DEADLINE_MS).then((resolved) => {
+        if (requestEpoch === cacheEpoch) {
+            resolvedBrandCache.set(key, {
+                value: resolved,
+                expiresAt: Date.now() + OPS_BRAND_DIRECTORY_CACHE_TTL_MS,
+            });
+        }
+        return resolved;
+    }).finally(() => {
+        if (resolvedBrandRequests.get(key) === request) resolvedBrandRequests.delete(key);
+    });
+    resolvedBrandRequests.set(key, request);
+    return waitForSharedRequest(request, options.signal);
 };
 
 const normalizeHex = (value: unknown) => /^#[0-9a-f]{6}$/i.test(String(value || '').trim())

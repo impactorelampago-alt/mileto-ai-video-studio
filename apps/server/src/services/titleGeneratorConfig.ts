@@ -121,12 +121,12 @@ const titleType = (
  * efetiva da organização. A configuração salva no gateway sempre tem prioridade.
  */
 export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
-    version: 3,
+    version: 4,
     ai: {
         provider: 'openai',
         model: 'gpt-5-mini',
-        reasoning: 'equilibrado',
-        maxOutputTokens: 4096,
+        reasoning: 'rapido',
+        maxOutputTokens: 1400,
     },
     extractionPrompt: 'Detecte fatos explícitos da narração e transforme cada um em uma etiqueta visual curta. Preserve separadamente o trecho literal completo usado como evidência. Priorize substantivos, nomes próprios, valores e ações concretas; remova artigos, possessivos e conectores sem valor visual. Nunca invente texto, preço, benefício, bônus, urgência ou localização.',
     maxTitles: 8,
@@ -336,18 +336,25 @@ const normalizeConfig = (input: unknown): TitleGeneratorConfig => {
 
     const usable = triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length);
     if (!usable.length) return structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
+    const sourceVersion = Number(source.version || 3);
+    const usesLegacyAiPreset = sourceVersion < 4
+        && String(source.ai?.provider || 'openai') === 'openai'
+        && String(source.ai?.model || 'gpt-5-mini') === 'gpt-5-mini'
+        && String(source.ai?.reasoning || 'equilibrado') === 'equilibrado'
+        && Number(source.ai?.maxOutputTokens ?? 4096) === 4096;
+    const ai = usesLegacyAiPreset ? DEFAULT_TITLE_GENERATOR_CONFIG.ai : source.ai;
     return {
-        version: Math.max(3, Math.round(numberInRange(source.version, 3, 2, 100))),
+        version: Math.max(4, Math.round(numberInRange(source.version, 4, 2, 100))),
         ai: {
-            provider: ['openai', 'gemini'].includes(String(source.ai?.provider))
-                ? source.ai?.provider as 'openai' | 'gemini'
+            provider: ['openai', 'gemini'].includes(String(ai?.provider))
+                ? ai?.provider as 'openai' | 'gemini'
                 : DEFAULT_TITLE_GENERATOR_CONFIG.ai.provider,
-            model: text(source.ai?.model, DEFAULT_TITLE_GENERATOR_CONFIG.ai.model, 160),
-            reasoning: ['rapido', 'equilibrado', 'profundo'].includes(String(source.ai?.reasoning))
-                ? source.ai?.reasoning as 'rapido' | 'equilibrado' | 'profundo'
+            model: text(ai?.model, DEFAULT_TITLE_GENERATOR_CONFIG.ai.model, 160),
+            reasoning: ['rapido', 'equilibrado', 'profundo'].includes(String(ai?.reasoning))
+                ? ai?.reasoning as 'rapido' | 'equilibrado' | 'profundo'
                 : DEFAULT_TITLE_GENERATOR_CONFIG.ai.reasoning,
             maxOutputTokens: Math.round(numberInRange(
-                source.ai?.maxOutputTokens,
+                ai?.maxOutputTokens,
                 DEFAULT_TITLE_GENERATOR_CONFIG.ai.maxOutputTokens,
                 512,
                 32768
@@ -359,12 +366,32 @@ const normalizeConfig = (input: unknown): TitleGeneratorConfig => {
     };
 };
 
-export const loadEffectiveTitleGeneratorConfig = async (token: string): Promise<{
+export const loadEffectiveTitleGeneratorConfig = async (
+    token: string,
+    signal?: AbortSignal,
+    timeoutMs?: number,
+): Promise<{
     config: TitleGeneratorConfig;
     source: 'organization' | 'global' | 'compatibility-default';
 }> => {
+    const deadlineAt = Number.isFinite(timeoutMs) && Number(timeoutMs) > 0
+        ? Date.now() + Number(timeoutMs)
+        : null;
+    const remainingTimeoutMs = () => {
+        if (deadlineAt === null) return undefined;
+        const remaining = Math.floor(deadlineAt - Date.now());
+        if (remaining < 1000) {
+            throw new GatewayHttpError(504, 'O carregamento da configuração de títulos excedeu o prazo.');
+        }
+        return remaining;
+    };
     try {
-        const effective = await gatewayJson<{ config?: unknown; source?: 'organization' | 'global' }>(token, '/v1/ai/title-generator');
+        const effective = await gatewayJson<{ config?: unknown; source?: 'organization' | 'global' }>(
+            token,
+            '/v1/ai/title-generator',
+            { signal },
+            remainingTimeoutMs(),
+        );
         return { config: normalizeConfig(effective.config), source: effective.source || 'organization' };
     } catch (error) {
         if (!(error instanceof GatewayHttpError) || error.status !== 404) throw error;
@@ -373,7 +400,12 @@ export const loadEffectiveTitleGeneratorConfig = async (token: string): Promise<
     // Compatibilidade com gateways que já têm o editor da agência, mas ainda não
     // publicaram o endpoint efetivo /v1 usado pelo desktop.
     try {
-        const account = await gatewayJson<{ config?: unknown; usesDefault?: boolean }>(token, '/account/ai/title-generator');
+        const account = await gatewayJson<{ config?: unknown; usesDefault?: boolean }>(
+            token,
+            '/account/ai/title-generator',
+            { signal },
+            remainingTimeoutMs(),
+        );
         return {
             config: normalizeConfig(account.config),
             source: account.usesDefault ? 'global' : 'organization',

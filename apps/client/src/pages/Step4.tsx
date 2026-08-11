@@ -19,14 +19,13 @@ import {
     RotateCcw,
     Type,
     CopyPlus,
+    X,
 } from 'lucide-react';
 import { useWizard, SHOW_DEBUG_FEATURES } from '../context/WizardContext';
 import { VideoSequencePreview, VideoSequencePreviewRef } from '../components/VideoSequencePreview';
 import { TitleHook } from '../types';
 import { toast } from 'sonner';
 import { cn, generateId } from '../lib/utils';
-import axios from 'axios';
-import { localAuthHeaders } from '../lib/serverAuth';
 import { DynamicTitleRenderer } from '../components/DynamicTitleRenderer';
 import { TextAnimationPicker } from '../components/TextAnimationPicker';
 import { ExportModal } from '../components/ExportModal';
@@ -42,9 +41,13 @@ import {
 } from '../lib/titleModelCatalog';
 import { missingForCompletion, pendingWarningText } from '../lib/workflowWarnings';
 import { narrationSourceKey } from '../lib/narrationState';
-import { bindTitlesToBrandPalette, resolveOpsProjectBrand } from '../lib/opsProjectBrand';
 import { TITLE_EDITOR_PORTRAIT_PREVIEW_WIDTH } from '../lib/titlePreviewGeometry';
 import { applyManualTitleUpdate, duplicateTitleAfter } from '../lib/titleEditing';
+import {
+    generateAutomaticTitlesResilient,
+    isTitleGenerationAbortError,
+    LocalApiError,
+} from '../lib/videoAgentWorkflow';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -207,9 +210,12 @@ export const Step4 = () => {
     const [isCustomImgOpen, setIsCustomImgOpen] = useState(false);
     const [isUploadingImage, setIsUploadingImage] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
+    const [titleGenerationProgress, setTitleGenerationProgress] = useState('');
     const previewRef = useRef<VideoSequencePreviewRef>(null);
+    const titleGenerationAbortRef = useRef<AbortController | null>(null);
 
     const currentSourceKey = narrationSourceKey(adData);
+    useEffect(() => () => titleGenerationAbortRef.current?.abort(), [currentSourceKey]);
     const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
     const titles = (adData.captions?.segments?.length && !currentCaptions)
         || (adData.dynamicTitlesSourceKey && adData.dynamicTitlesSourceKey !== currentSourceKey)
@@ -361,8 +367,14 @@ export const Step4 = () => {
         setSelectedTitleId(null);
     }, []);
 
+    const cancelTitleGeneration = useCallback(() => {
+        if (!titleGenerationAbortRef.current) return;
+        setTitleGenerationProgress('Cancelando geração…');
+        titleGenerationAbortRef.current.abort();
+    }, []);
+
     const handleGenerateTitles = async () => {
-        if (isGenerating) return;
+        if (titleGenerationAbortRef.current || isGenerating) return;
         if (!currentCaptions?.segments?.length) {
             toast.error(adData.captions?.segments?.length
                 ? 'A narração mudou. Gere novamente as legendas na Etapa 3 antes dos títulos.'
@@ -370,92 +382,73 @@ export const Step4 = () => {
             return;
         }
 
+        const controller = new AbortController();
+        titleGenerationAbortRef.current = controller;
         setIsGenerating(true);
-        const toastId = toast.loading('Lendo roteiro e gerando ganchos de atenção com IA...');
+        setTitleGenerationProgress('Preparando geração…');
+        const toastId = toast.loading('Preparando geração de títulos…');
 
         try {
-            const resolvedBrand = await resolveOpsProjectBrand(adData.opsCompany);
-            const effectivePalette = resolvedBrand.required ? resolvedBrand.palette : adData.brandPalette;
-            if (resolvedBrand.required) {
-                const nextAdData = { ...adData, brandPalette: effectivePalette, brandPaletteUpdatedAt: resolvedBrand.paletteUpdatedAt };
-                updateAdData({
-                    brandPalette: effectivePalette,
-                    brandPaletteUpdatedAt: resolvedBrand.paletteUpdatedAt,
-                    dynamicTitles: bindTitlesToBrandPalette(nextAdData),
-                });
-            }
-            const apiBaseUrl = (window as Window & { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
-            const res = await axios.post(
-                `${apiBaseUrl}/api/video/generate-titles`,
-                {
-                    script: adData.narrationText,
-                    captions: currentCaptions,
-                    format: adData.format,
-                    brandPalette: effectivePalette,
-                    companyId: resolvedBrand.company?.id || null,
-                    opsViewContextId: resolvedBrand.context?.contextId || null,
+            const result = await generateAutomaticTitlesResilient(adData, {
+                signal: controller.signal,
+                onProgress: (progress) => {
+                    if (titleGenerationAbortRef.current !== controller) return;
+                    setTitleGenerationProgress(progress.message);
+                    toast.loading(progress.message, { id: toastId });
                 },
-                { headers: await localAuthHeaders() }
-            );
+            });
+            if (controller.signal.aborted) throw new DOMException('Operação cancelada.', 'AbortError');
 
-            if (res.data.ok && Array.isArray(res.data.titles)) {
-                const finalTitles = (res.data.titles || []).map((t: TitleHook) => ({
-                    ...t,
-                    isActive: true,
-                    hasSound: true,
-                }));
-                const warning = String(res.data.warning || '').trim() || undefined;
-                updateAdData({
-                    dynamicTitles: finalTitles,
-                    dynamicTitlesSourceKey: currentSourceKey,
-                    titleGenerationSummary: {
-                        requested: true,
-                        outcome: finalTitles.length
-                            ? (res.data.source === 'local' ? 'fallback' : 'ai')
-                            : 'none',
-                        titleCount: finalTitles.length,
-                        serverAttempts: Number(res.data.attempts) || 0,
-                        clientRequests: 1,
-                        configSource: res.data.configSource,
-                        semanticCoverage: res.data.semanticCoverage,
-                        metrics: res.data.metrics,
-                        warning,
-                        warnings: res.data.warnings,
-                        diagnostic: res.data.diagnostic,
-                        generatedAt: new Date().toISOString(),
-                    },
+            const generated = result.adData;
+            const finalTitles = generated.dynamicTitles || [];
+            updateAdData({
+                brandPalette: generated.brandPalette,
+                brandPaletteUpdatedAt: generated.brandPaletteUpdatedAt,
+                dynamicTitles: finalTitles,
+                dynamicTitlesSourceKey: generated.dynamicTitlesSourceKey,
+                titleGenerationSummary: generated.titleGenerationSummary,
+            });
+            setSelectedTitleId(null);
+            if (finalTitles.length) {
+                const sourceLabel = result.source === 'local' ? 'fallback local' : 'IA';
+                toast.success(`${finalTitles.length} título(s) gerado(s) por ${sourceLabel}.`, {
+                    id: toastId,
+                    description: result.warning,
                 });
-                setSelectedTitleId(null);
-                if (finalTitles.length) {
-                    const sourceLabel = res.data.source === 'local' ? 'fallback local' : 'IA';
-                    toast.success(`${finalTitles.length} título(s) gerado(s) por ${sourceLabel}.`, {
-                        id: toastId,
-                        description: warning,
-                    });
-                } else {
-                    toast.warning(warning || 'O vídeo pode continuar sem títulos automáticos.', { id: toastId });
-                }
             } else {
-                throw new Error(res.data.message || 'Falha ao gerar');
+                toast.warning(result.warning || 'O vídeo pode continuar sem títulos automáticos.', { id: toastId });
             }
         } catch (error: unknown) {
-            const responseData = axios.isAxiosError<{
-                message?: string;
-                code?: string;
-                requestId?: string;
-                phase?: string;
-            }>(error) ? error.response?.data : undefined;
-            const diagnostic = {
-                code: responseData?.code || (axios.isAxiosError(error) ? error.code : undefined) || 'title_generation_failed',
-                status: axios.isAxiosError(error) ? Number(error.response?.status || 0) : 0,
-                phase: responseData?.phase || 'manual_titles',
-                requestId: responseData?.requestId,
-            };
-            console.error('[title-generation]', diagnostic);
-            const errMsg = responseData?.message || 'Erro ao comunicar com a inteligência artificial';
-            toast.error(errMsg, { id: toastId });
+            if (isTitleGenerationAbortError(error) || controller.signal.aborted) {
+                toast.info('Geração de títulos cancelada.', { id: toastId });
+            } else {
+                const safeError = error instanceof LocalApiError
+                    ? {
+                        code: error.code,
+                        status: error.status,
+                        phase: error.phase || 'manual_titles',
+                        requestId: error.requestId,
+                    }
+                    : {
+                        code: 'title_generation_failed',
+                        phase: 'manual_titles',
+                    };
+                console.error('[title-generation]', {
+                    ...safeError,
+                });
+                toast.error(
+                    error instanceof LocalApiError
+                        ? error.message
+                        : 'Erro ao comunicar com a inteligência artificial',
+                    { id: toastId },
+                );
+            }
         } finally {
-            setIsGenerating(false);
+            if (titleGenerationAbortRef.current === controller) {
+                titleGenerationAbortRef.current = null;
+                setIsGenerating(false);
+                setTitleGenerationProgress('');
+            }
         }
     };
 
@@ -562,17 +555,26 @@ export const Step4 = () => {
                 {/* COLUMN 1: AI Hooks (Left) */}
                 <div className="custom-scrollbar relative flex min-h-0 flex-col gap-3 overflow-y-auto rounded-2xl border border-black/5 bg-brand-card p-3 shadow-xl dark:border-white/5">
                     <button
-                        onClick={handleGenerateTitles}
-                        disabled={isGenerating}
-                        className="z-10 flex w-full items-center justify-center gap-2 rounded-xl bg-linear-to-r from-brand-lime to-brand-accent py-3 text-[11px] font-bold uppercase tracking-wider text-[#0a0f12] transition-all hover:scale-[1.01] hover:shadow-[0_0_15px_rgba(0,230,118,0.4)] active:scale-[0.98] disabled:opacity-50"
+                        onClick={isGenerating ? cancelTitleGeneration : handleGenerateTitles}
+                        className={cn(
+                            'z-10 flex w-full items-center justify-center gap-2 rounded-xl py-3 text-[11px] font-bold uppercase tracking-wider transition-all active:scale-[0.98]',
+                            isGenerating
+                                ? 'border border-amber-300/35 bg-amber-300/10 text-amber-100 hover:bg-amber-300/15'
+                                : 'bg-linear-to-r from-brand-lime to-brand-accent text-[#0a0f12] hover:scale-[1.01] hover:shadow-[0_0_15px_rgba(0,230,118,0.4)]',
+                        )}
                     >
                         {isGenerating ? (
-                            <div className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
+                            <X className="h-4 w-4" />
                         ) : (
                             <Wand2 className="w-4 h-4" />
                         )}
-                        {isGenerating ? 'Analisando...' : 'Gerar Títulos com IA'}
+                        {isGenerating ? 'Cancelar geração' : 'Gerar Títulos com IA'}
                     </button>
+                    {isGenerating && titleGenerationProgress && (
+                        <p className="-mt-1 text-center text-[9px] font-semibold text-brand-muted" aria-live="polite">
+                            {titleGenerationProgress}
+                        </p>
+                    )}
 
                     <div className="grid grid-cols-2 gap-2">
                     <button

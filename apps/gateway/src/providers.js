@@ -148,7 +148,7 @@ const pauseBeforeChatRetry = async (signal) => {
 };
 
 // O segundo resultado soma o uso do primeiro para a conciliação de créditos.
-const completeChatRequest = async (request, signal) => {
+export const completeChatRequest = async (request, signal) => {
     let first;
     try {
         first = await request();

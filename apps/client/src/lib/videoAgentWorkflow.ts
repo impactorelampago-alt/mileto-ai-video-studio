@@ -2,13 +2,18 @@ import { API_BASE_URL } from './apiBase';
 import { repairCaptionCurrencySegments } from './captionCurrency';
 import { gatewayApi, type OpsAsset, type OpsViewContext } from './gateway';
 import { invalidatedNarrationDerivatives, narrationSourceKey } from './narrationState';
-import { bindTitlesToBrandPalette, resolveOpsProjectBrand } from './opsProjectBrand';
+import {
+    bindTitlesToBrandPalette,
+    resolveOpsProjectBrand,
+    type ResolvedOpsProjectBrand,
+} from './opsProjectBrand';
 import { localAuthHeaders } from './serverAuth';
 import type {
     AdData,
     CaptionStyle,
     MediaTake,
     TitleGenerationDiagnostic,
+    TitleGenerationTimings,
     TitleHook,
 } from '../types';
 import type { OpsExportMetadata } from '../context/ExportJobsContext';
@@ -219,13 +224,86 @@ export type AutomaticTitleGenerationOutcome = {
     diagnostic?: TitleGenerationDiagnostic;
 };
 
-const CLIENT_TITLE_GENERATION_ATTEMPTS = 2;
-const CLIENT_TRANSIENT_TITLE_STATUSES = new Set([0, 408, 425, 429, 500, 502, 503, 504]);
+export const TITLE_AI_REQUEST_DEADLINE_MS = 55_000;
+export const TITLE_LOCAL_FALLBACK_DEADLINE_MS = 20_000;
 
-const isTransientClientTitleError = (error: unknown) =>
-    error instanceof TypeError
-    || (error instanceof LocalApiError
-        && (error.retryable || CLIENT_TRANSIENT_TITLE_STATUSES.has(error.status)));
+export type TitleGenerationProgressPhase = 'brand' | 'ai' | 'fallback' | 'completed';
+
+export interface TitleGenerationProgress {
+    phase: TitleGenerationProgressPhase;
+    message: string;
+}
+
+export interface AutomaticTitleGenerationOptions {
+    signal?: AbortSignal;
+    resolvedBrand?: ResolvedOpsProjectBrand;
+    aiDeadlineMs?: number;
+    localFallbackDeadlineMs?: number;
+    onProgress?: (progress: TitleGenerationProgress) => void;
+}
+
+const elapsedMs = (startedAt: number) => Math.max(0, Math.round(Date.now() - startedAt));
+
+const positiveDeadline = (value: number | undefined, fallback: number) =>
+    Number.isFinite(value) && Number(value) > 0 ? Math.round(Number(value)) : fallback;
+
+const titleGenerationAbortError = () => {
+    const error = new Error('Geração de títulos cancelada.');
+    error.name = 'AbortError';
+    return error;
+};
+
+export const isTitleGenerationAbortError = (error: unknown) =>
+    error instanceof Error && error.name === 'AbortError';
+
+const runTitleRequestWithDeadline = async <T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    deadlineMs: number,
+    parentSignal: AbortSignal | undefined,
+    phase: 'ai' | 'local_fallback',
+): Promise<T> => {
+    if (parentSignal?.aborted) throw titleGenerationAbortError();
+    const controller = new AbortController();
+    let timedOut = false;
+    const onParentAbort = () => controller.abort();
+    parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+    const timeout = globalThis.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, deadlineMs);
+    try {
+        return await operation(controller.signal);
+    } catch (error) {
+        if (parentSignal?.aborted) throw titleGenerationAbortError();
+        if (timedOut) {
+            throw new LocalApiError(
+                phase === 'ai'
+                    ? 'A IA excedeu o tempo seguro; iniciando o fallback local.'
+                    : 'O fallback local excedeu o tempo seguro.',
+                0,
+                'title_generation_timeout',
+                true,
+                undefined,
+                phase,
+            );
+        }
+        throw error;
+    } finally {
+        globalThis.clearTimeout(timeout);
+        parentSignal?.removeEventListener('abort', onParentAbort);
+    }
+};
+
+export const sanitizeTitleGenerationServerTimings = (value: unknown): Record<string, number> | undefined => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const allowedKeys = new Set(['companyPalette', 'configuration', 'generation', 'formatting', 'total']);
+    const timings: Record<string, number> = {};
+    for (const [key, raw] of Object.entries(value).slice(0, 24)) {
+        if (!allowedKeys.has(key) || typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) continue;
+        timings[key] = Math.min(Number.MAX_SAFE_INTEGER, Math.round(raw));
+    }
+    return Object.keys(timings).length ? timings : undefined;
+};
 
 const safeTitleDiagnostic = (error: unknown) => error instanceof LocalApiError
     ? {
@@ -252,16 +330,16 @@ const uniqueTitleDiagnostics = (
     });
 };
 
-const titleRetryDelay = (attempt: number) =>
-    new Promise<void>((resolve) => window.setTimeout(resolve, 300 * attempt));
-
 export const generateAutomaticTitlesResilient = async (
     input: AdData,
+    options: AutomaticTitleGenerationOptions = {},
 ): Promise<AutomaticTitleGenerationOutcome> => {
+    const operationStartedAt = Date.now();
     const sourceKey = narrationSourceKey(input);
     const captions = input.captions?.sourceKey === sourceKey ? input.captions : undefined;
     if (!captions?.segments?.length) {
         const warning = AUTOMATIC_TITLES_UNAVAILABLE_WARNING;
+        options.onProgress?.({ phase: 'completed', message: warning });
         return {
             adData: {
                 ...input,
@@ -287,13 +365,17 @@ export const generateAutomaticTitlesResilient = async (
     let brandPaletteUpdatedAt = input.brandPaletteUpdatedAt;
     let companyId: string | null = null;
     let opsViewContextId: string | null = null;
+    const brandStartedAt = Date.now();
+    options.onProgress?.({ phase: 'brand', message: 'Confirmando empresa e paleta do projeto…' });
     try {
-        const brand = await resolveOpsProjectBrand(input.opsCompany);
+        if (options.signal?.aborted) throw titleGenerationAbortError();
+        const brand = options.resolvedBrand || await resolveOpsProjectBrand(input.opsCompany, { signal: options.signal });
         brandPalette = brand.required ? brand.palette : input.brandPalette;
         brandPaletteUpdatedAt = brand.required ? brand.paletteUpdatedAt : input.brandPaletteUpdatedAt;
         companyId = brand.company?.id || null;
         opsViewContextId = brand.context?.contextId || null;
     } catch (error) {
+        if (isTitleGenerationAbortError(error) || options.signal?.aborted) throw titleGenerationAbortError();
         // A indisponibilidade do diretório de marcas não transforma títulos em
         // etapa fatal. O servidor ainda pode executar os detectores locais com a
         // paleta já persistida no projeto, sem alterar empresa ou destino do job.
@@ -302,8 +384,11 @@ export const generateAutomaticTitlesResilient = async (
             ...safeTitleDiagnostic(error),
         });
     }
+    const brandResolutionMs = elapsedMs(brandStartedAt);
 
     let clientRequests = 0;
+    let aiRequestMs: number | undefined;
+    let localFallbackRequestMs: number | undefined;
     type TitleResponse = {
         titles?: TitleHook[];
         source?: 'ai' | 'local' | 'none';
@@ -314,45 +399,63 @@ export const generateAutomaticTitlesResilient = async (
         semanticCoverage?: NonNullable<AdData['titleGenerationSummary']>['semanticCoverage'];
         metrics?: NonNullable<AdData['titleGenerationSummary']>['metrics'];
         warnings?: NonNullable<AdData['titleGenerationSummary']>['warnings'];
+        timingsMs?: unknown;
     };
     const request = async (mode: 'ai' | 'local') => {
         clientRequests += 1;
-        const response = await fetch(`${API_BASE_URL}/api/video/generate-titles`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
-            body: JSON.stringify({
-                script: input.narrationText,
-                captions,
-                format: input.format,
-                brandPalette,
-                companyId,
-                opsViewContextId,
-                mode,
-            }),
+        const startedAt = Date.now();
+        const isAi = mode === 'ai';
+        options.onProgress?.({
+            phase: isAi ? 'ai' : 'fallback',
+            message: isAi
+                ? 'Gerando ganchos com IA…'
+                : 'A IA não respondeu a tempo. Aplicando fallback local…',
         });
-        return readApi<TitleResponse>(response);
+        try {
+            const headers = { 'Content-Type': 'application/json', ...(await localAuthHeaders()) };
+            return await runTitleRequestWithDeadline(async (signal) => {
+                const response = await fetch(`${API_BASE_URL}/api/video/generate-titles`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        script: input.narrationText,
+                        captions,
+                        format: input.format,
+                        brandPalette,
+                        companyId,
+                        opsViewContextId,
+                        mode,
+                    }),
+                    signal,
+                });
+                return readApi<TitleResponse>(response);
+            }, positiveDeadline(
+                isAi ? options.aiDeadlineMs : options.localFallbackDeadlineMs,
+                isAi ? TITLE_AI_REQUEST_DEADLINE_MS : TITLE_LOCAL_FALLBACK_DEADLINE_MS,
+            ), options.signal, isAi ? 'ai' : 'local_fallback');
+        } finally {
+            if (isAi) aiRequestMs = elapsedMs(startedAt);
+            else localFallbackRequestMs = elapsedMs(startedAt);
+        }
     };
 
     let primaryData: Awaited<ReturnType<typeof request>> | null = null;
     let fallbackData: Awaited<ReturnType<typeof request>> | null = null;
     let lastError: unknown;
     const requestDiagnostics: TitleGenerationDiagnostic[] = [];
-    for (let attempt = 1; attempt <= CLIENT_TITLE_GENERATION_ATTEMPTS; attempt += 1) {
-        try {
-            primaryData = await request('ai');
-            break;
-        } catch (error) {
-            lastError = error;
-            requestDiagnostics.push(safeTitleDiagnostic(error));
-            if (!isTransientClientTitleError(error) || attempt === CLIENT_TITLE_GENERATION_ATTEMPTS) break;
-            await titleRetryDelay(attempt);
-        }
+    try {
+        primaryData = await request('ai');
+    } catch (error) {
+        if (isTitleGenerationAbortError(error) || options.signal?.aborted) throw titleGenerationAbortError();
+        lastError = error;
+        requestDiagnostics.push(safeTitleDiagnostic(error));
     }
 
-    if (!primaryData?.titles?.length) {
+    if (primaryData === null) {
         try {
             fallbackData = await request('local');
         } catch (error) {
+            if (isTitleGenerationAbortError(error) || options.signal?.aborted) throw titleGenerationAbortError();
             lastError = error;
             requestDiagnostics.push(safeTitleDiagnostic(error));
         }
@@ -375,6 +478,16 @@ export const generateAutomaticTitlesResilient = async (
         ...requestDiagnostics,
         fallbackData?.diagnostic,
     ]);
+    const timingSnapshot = (): TitleGenerationTimings => {
+        const server = sanitizeTitleGenerationServerTimings(data?.timingsMs);
+        return {
+            clientTotalMs: elapsedMs(operationStartedAt),
+            brandResolutionMs,
+            ...(aiRequestMs !== undefined ? { aiRequestMs } : {}),
+            ...(localFallbackRequestMs !== undefined ? { localFallbackRequestMs } : {}),
+            ...(server ? { server } : {}),
+        };
+    };
 
     if (!data?.titles?.length) {
         const diagnostic = data?.diagnostic || diagnostics[0] || safeTitleDiagnostic(lastError);
@@ -387,6 +500,7 @@ export const generateAutomaticTitlesResilient = async (
             warnings.push({ code: 'automatic_titles_unavailable', message: warning });
         }
         console.warn('[title-generation]', { event: 'completed_without_titles', ...diagnostic });
+        options.onProgress?.({ phase: 'completed', message: warning });
         return {
             adData: {
                 ...input,
@@ -405,6 +519,7 @@ export const generateAutomaticTitlesResilient = async (
                     metrics: data?.metrics,
                     attemptsBySource,
                     metricsBySource,
+                    timings: timingSnapshot(),
                     warning,
                     warnings,
                     diagnostic,
@@ -432,6 +547,10 @@ export const generateAutomaticTitlesResilient = async (
         warnings.unshift({ code: 'title_fallback_used', message: AUTOMATIC_TITLES_FALLBACK_WARNING });
     }
     const diagnostic = fallbackUsed ? (primaryData?.diagnostic || diagnostics[0] || data.diagnostic) : data.diagnostic;
+    options.onProgress?.({
+        phase: 'completed',
+        message: fallbackUsed ? 'Títulos prontos pelo fallback local.' : 'Títulos gerados com IA.',
+    });
 
     const next: AdData = {
         ...input,
@@ -450,6 +569,7 @@ export const generateAutomaticTitlesResilient = async (
             metrics: data.metrics,
             attemptsBySource,
             metricsBySource,
+            timings: timingSnapshot(),
             warning,
             warnings,
             diagnostic,
@@ -465,8 +585,11 @@ export const generateAutomaticTitlesResilient = async (
     };
 };
 
-export const generateAutomaticTitles = async (input: AdData): Promise<AdData> => {
-    const result = await generateAutomaticTitlesResilient(input);
+export const generateAutomaticTitles = async (
+    input: AdData,
+    options: AutomaticTitleGenerationOptions = {},
+): Promise<AdData> => {
+    const result = await generateAutomaticTitlesResilient(input, options);
     return result.adData;
 };
 

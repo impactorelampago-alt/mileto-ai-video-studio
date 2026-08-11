@@ -81,7 +81,7 @@ const billingError = (res, e) => {
 // CORS liberado para o app local. Em produção, restrinja à origem do app.
 app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Ops-View-Context, X-Mileto-Job-Token');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Ops-View-Context, X-Mileto-Job-Token, Idempotency-Key');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
@@ -484,6 +484,7 @@ app.get('/v1/integrations/mileto-ops/video-jobs/next', authed, asyncHandler(opsI
 app.get('/v1/integrations/mileto-ops/video-jobs/:jobId', authed, asyncHandler(opsIntegration.getVideoJob));
 app.post('/v1/integrations/mileto-ops/video-workers/heartbeat', authed, asyncHandler(opsIntegration.heartbeatVideoWorker));
 app.post('/v1/integrations/mileto-ops/video-jobs/:jobId/claim', authed, asyncHandler(opsIntegration.claimVideoJob));
+app.post('/v1/integrations/mileto-ops/video-jobs/:jobId/retry', authed, asyncHandler(opsIntegration.retryVideoJob));
 app.patch('/v1/integrations/mileto-ops/video-jobs/:jobId', authed, asyncHandler(opsIntegration.updateVideoJob));
 app.post('/v1/integrations/mileto-ops/companies/:companyId/assets/export', authed, opsExportUpload.single('file'), asyncHandler(opsIntegration.uploadExport));
 app.get('/v1/integrations/mileto-ops/assets/:assetId', authed, asyncHandler(opsIntegration.getAsset));

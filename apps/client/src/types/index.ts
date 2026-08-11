@@ -290,6 +290,19 @@ export interface TitleGenerationMetrics {
     droppedByCoverageLimitOrOverlap?: number;
 }
 
+export interface TitleGenerationTimings {
+    /** Tempo total observado pelo cliente, incluindo marca, IA e fallback. */
+    clientTotalMs?: number;
+    /** Tempo gasto para confirmar empresa, contexto e paleta do projeto. */
+    brandResolutionMs?: number;
+    /** Duração da única requisição de IA feita pelo cliente. */
+    aiRequestMs?: number;
+    /** Duração do fallback local, quando necessário. */
+    localFallbackRequestMs?: number;
+    /** Fases devolvidas pelo servidor, limitadas a inteiros não negativos. */
+    server?: Record<string, number>;
+}
+
 export interface TitleGenerationDiagnostic {
     code?: string;
     status?: number;
@@ -309,6 +322,7 @@ export interface TitleGenerationSummary {
     /** Mantém separadas as tentativas da IA e do fallback para não apagar a causa da degradação. */
     attemptsBySource?: { ai?: number; fallback?: number };
     metricsBySource?: { ai?: TitleGenerationMetrics; fallback?: TitleGenerationMetrics };
+    timings?: TitleGenerationTimings;
     warning?: string;
     warnings?: Array<{ code: string; message?: string; missingRoles?: TitleSemanticRole[] }>;
     diagnostic?: TitleGenerationDiagnostic;

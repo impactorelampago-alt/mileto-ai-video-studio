@@ -1,6 +1,7 @@
 import type { OpsVideoJob, OpsVideoJobStage } from './gateway';
+import type { ExportResultDiagnostics } from './exportIntegrity';
 
-export const OPS_VIDEO_WORKER_APP_VERSION = '1.4.27';
+export const OPS_VIDEO_WORKER_APP_VERSION = '1.4.28';
 export const OPS_VIDEO_WORKER_STATE_KEY = 'mileto:ops-video-worker:active:v1';
 
 export type OpsVideoWorkerLocalStatus =
@@ -16,6 +17,8 @@ export interface OpsVideoWorkerResumeData {
     renderStarted: boolean;
     exportJobId?: string | null;
     outputAssetId?: string | null;
+    uploadIdempotencyKey?: string | null;
+    renderResult?: ExportResultDiagnostics | null;
 }
 
 export interface PersistedOpsVideoWorkerJob {
@@ -23,6 +26,8 @@ export interface PersistedOpsVideoWorkerJob {
     jobId: string;
     projectId: string;
     companyId: string;
+    executionRevision: number;
+    requiresFreshRender: boolean;
     destinationFolderId: string | null;
     takeAssetIds: string[];
     viewContextId: string;
@@ -60,7 +65,28 @@ const browserStorage = (): WorkerStorage | null => {
 
 const text = (value: unknown, max = 2_000) => String(value || '').trim().slice(0, max);
 
-export const opsVideoJobSignature = (job: OpsVideoJob): string => JSON.stringify({
+const versionParts = (value: string): [number, number, number] | null => {
+    const match = String(value || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i);
+    if (!match) return null;
+    return [Number(match[1]), Number(match[2]), Number(match[3])];
+};
+
+export const opsWorkerSupportsMinimumVersion = (
+    minimumVersion?: string | null,
+    currentVersion = OPS_VIDEO_WORKER_APP_VERSION,
+): boolean => {
+    if (!minimumVersion) return true;
+    const minimum = versionParts(minimumVersion);
+    const current = versionParts(currentVersion);
+    if (!minimum || !current) return false;
+    for (let index = 0; index < minimum.length; index += 1) {
+        if (current[index] > minimum[index]) return true;
+        if (current[index] < minimum[index]) return false;
+    }
+    return true;
+};
+
+const opsVideoJobCoreIdentity = (job: OpsVideoJob) => ({
     jobId: job.id,
     workOrderId: job.workOrderId,
     companyId: job.companyId,
@@ -79,16 +105,33 @@ export const opsVideoJobSignature = (job: OpsVideoJob): string => JSON.stringify
     settings: job.settings,
 });
 
+const legacyOpsVideoJobSignature = (job: OpsVideoJob): string => JSON.stringify(opsVideoJobCoreIdentity(job));
+
+export const opsVideoJobSignature = (job: OpsVideoJob): string => JSON.stringify({
+    ...opsVideoJobCoreIdentity(job),
+    execution: {
+        revision: Math.max(1, Number(job.execution?.revision || 1)),
+        intent: job.execution?.intent || 'initial',
+        requiresFreshRender: job.execution?.requiresFreshRender === true,
+        minimumAppVersion: job.execution?.minimumAppVersion || null,
+        previousOutputAssetId: job.execution?.previousOutputAssetId || null,
+    },
+});
+
 export const createPersistedOpsVideoJob = (
     job: OpsVideoJob,
     viewContextId: string,
 ): PersistedOpsVideoWorkerJob => {
     const now = new Date().toISOString();
+    const executionRevision = Math.max(1, Number(job.execution?.revision || 1));
+    const requiresFreshRender = job.execution?.requiresFreshRender === true;
     return {
         version: 1,
         jobId: job.id,
         projectId: job.projectId,
         companyId: job.companyId,
+        executionRevision,
+        requiresFreshRender,
         destinationFolderId: job.destinationFolderId || null,
         takeAssetIds: [...job.takeAssetIds],
         viewContextId,
@@ -103,7 +146,9 @@ export const createPersistedOpsVideoJob = (
             projectPrepared: false,
             renderStarted: false,
             exportJobId: null,
-            outputAssetId: job.outputAssetId || null,
+            outputAssetId: requiresFreshRender ? null : (job.outputAssetId || null),
+            uploadIdempotencyKey: null,
+            renderResult: null,
         },
     };
 };
@@ -120,7 +165,23 @@ export const loadPersistedOpsVideoJob = (
         // O token de claim nunca faz parte desta estrutura. Um estado antigo ou
         // adulterado que contenha esse segredo e descartado por inteiro.
         if ('claimToken' in (parsed as unknown as Record<string, unknown>)) return null;
-        return parsed;
+        const executionRevision = Math.max(1, Number(parsed.executionRevision || 1));
+        const requiresFreshRender = parsed.requiresFreshRender === true;
+        return {
+            ...parsed,
+            executionRevision,
+            requiresFreshRender,
+            resume: {
+                projectPrepared: parsed.resume?.projectPrepared === true,
+                renderStarted: parsed.resume?.renderStarted === true,
+                exportJobId: parsed.resume?.exportJobId || null,
+                outputAssetId: requiresFreshRender && !parsed.executionRevision
+                    ? null
+                    : (parsed.resume?.outputAssetId || null),
+                uploadIdempotencyKey: parsed.resume?.uploadIdempotencyKey || null,
+                renderResult: parsed.resume?.renderResult || null,
+            },
+        };
     } catch {
         return null;
     }
@@ -148,6 +209,8 @@ export const updatePersistedOpsVideoJob = (
         jobId: current.jobId,
         projectId: current.projectId,
         companyId: current.companyId,
+        executionRevision: current.executionRevision,
+        requiresFreshRender: current.requiresFreshRender,
         viewContextId: current.viewContextId,
         jobSignature: current.jobSignature,
         resume: { ...current.resume, ...(changes.resume || {}) },
@@ -183,11 +246,23 @@ export const clearPersistedOpsVideoJob = (storage: WorkerStorage | null = browse
 export const isPersistedJobCompatible = (
     state: PersistedOpsVideoWorkerJob,
     job: OpsVideoJob,
-): boolean => state.jobId === job.id
-    && state.projectId === job.projectId
-    && state.companyId === job.companyId
-    && state.destinationFolderId === (job.destinationFolderId || null)
-    && state.jobSignature === opsVideoJobSignature(job);
+): boolean => {
+    const jobRevision = Math.max(1, Number(job.execution?.revision || 1));
+    const freshRender = job.execution?.requiresFreshRender === true;
+    const signatureMatches = state.jobSignature === opsVideoJobSignature(job)
+        || (
+            state.jobSignature === legacyOpsVideoJobSignature(job)
+            && jobRevision === 1
+            && !freshRender
+        );
+    return state.jobId === job.id
+        && state.projectId === job.projectId
+        && state.companyId === job.companyId
+        && state.executionRevision === jobRevision
+        && state.requiresFreshRender === freshRender
+        && state.destinationFolderId === (job.destinationFolderId || null)
+        && signatureMatches;
+};
 
 export const progressWithinStage = (stage: keyof typeof OPS_VIDEO_PROGRESS, fraction: number): number => {
     const band = OPS_VIDEO_PROGRESS[stage];

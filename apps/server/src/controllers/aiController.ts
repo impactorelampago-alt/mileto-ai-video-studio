@@ -4,7 +4,14 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { randomUUID as uuidv4 } from 'crypto';
-import { bearerFrom, gatewayChat, gatewayJson, GatewayHttpError } from '../services/gatewayClient';
+import {
+    bearerFrom,
+    gatewayChat,
+    gatewayJson,
+    GatewayHttpError,
+    TITLE_GENERATION_PREFLIGHT_TIMEOUT_MS,
+    TITLE_GENERATION_TOTAL_TIMEOUT_MS,
+} from '../services/gatewayClient';
 import {
     DEFAULT_TITLE_GENERATOR_CONFIG,
     loadEffectiveTitleGeneratorConfig,
@@ -457,6 +464,15 @@ export const getRunwayJobStatus = async (req: Request, res: Response) => {
 };
 
 export const generateTitles = async (req: Request, res: Response) => {
+    const requestStartedAt = Date.now();
+    const timingsMs = {
+        companyPalette: 0,
+        configuration: 0,
+        generation: 0,
+        formatting: 0,
+        total: 0,
+    };
+    const elapsedMs = (startedAt: number) => Math.max(0, Date.now() - startedAt);
     const {
         script,
         captions,
@@ -526,26 +542,48 @@ Responda exclusivamente em JSON válido, nesta estrutura:
   ]
 }`;
 
+    const requestController = new AbortController();
+    const abortDisconnectedRequest = () => requestController.abort();
+    const abortClosedResponse = () => {
+        // `close` também ocorre depois de uma resposta normal. Só cancelamos o
+        // upstream quando o socket fechou antes de o Express concluir o envio.
+        if (!res.writableEnded) requestController.abort();
+    };
+    req.once('aborted', abortDisconnectedRequest);
+    res.once('close', abortClosedResponse);
+
     try {
-        phase = 'company_palette';
-        let effectiveBrandPalette: BrandPaletteInput = brandPalette;
-        if (companyId) {
-            const contextHeaders: Record<string, string> = opsViewContextId
-                ? { 'X-Ops-View-Context': String(opsViewContextId) }
-                : {};
+        phase = 'preparation';
+        // Paleta/autorização da empresa e configuração editorial são leituras
+        // independentes. Rodam juntas para pagar apenas o maior RTT, preservando a
+        // validação delegada: quando há companyId, nunca confiamos na paleta do body.
+        const palettePromise = (async (): Promise<BrandPaletteInput> => {
+            const startedAt = Date.now();
+            const deadlineAt = startedAt + TITLE_GENERATION_PREFLIGHT_TIMEOUT_MS;
+            const remainingPaletteTimeoutMs = () => {
+                const remaining = Math.floor(deadlineAt - Date.now());
+                if (remaining < 1000) {
+                    throw new GatewayHttpError(504, 'A validação da empresa excedeu o prazo.');
+                }
+                return remaining;
+            };
             try {
+                if (!companyId) return brandPalette;
+                const contextHeaders: Record<string, string> = opsViewContextId
+                    ? { 'X-Ops-View-Context': String(opsViewContextId) }
+                    : {};
                 try {
                     const companyResponse = await gatewayJson<{ data?: { palette?: BrandPaletteInput } }>(
                         token,
                         `/v1/integrations/mileto-ops/companies/${encodeURIComponent(String(companyId))}`,
-                        { headers: contextHeaders }
+                        { headers: contextHeaders, signal: requestController.signal },
+                        remainingPaletteTimeoutMs(),
                     );
-                    effectiveBrandPalette = companyResponse.data?.palette || null;
+                    return companyResponse.data?.palette || null;
                 } catch (error) {
                     if (!(error instanceof GatewayHttpError) || error.status !== 404) throw error;
-                    // Compatibilidade com o gateway de produção anterior à rota de
-                    // detalhe: refazemos a validação no servidor pela listagem delegada
-                    // e pelo mesmo X-Ops-View-Context; não confiamos na paleta do body.
+                    // Compatibilidade com o gateway anterior à rota de detalhe:
+                    // valida pela listagem delegada e pelo mesmo contexto seguro.
                     let cursor: string | null = null;
                     let delegatedCompany: { id?: string; kind?: string; palette?: BrandPaletteInput } | null = null;
                     for (let page = 0; page < 100 && !delegatedCompany; page += 1) {
@@ -554,7 +592,12 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                         const listing = await gatewayJson<{
                             data?: { id?: string; kind?: string; palette?: BrandPaletteInput }[];
                             meta?: { nextCursor?: string | null };
-                        }>(token, `/v1/integrations/mileto-ops/companies?${query}`, { headers: contextHeaders });
+                        }>(
+                            token,
+                            `/v1/integrations/mileto-ops/companies?${query}`,
+                            { headers: contextHeaders, signal: requestController.signal },
+                            remainingPaletteTimeoutMs(),
+                        );
                         delegatedCompany = (listing.data || []).find((company) =>
                             String(company.id || '') === String(companyId) && company.kind !== 'archive'
                         ) || null;
@@ -564,29 +607,44 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                     if (!delegatedCompany) {
                         throw new GatewayHttpError(404, 'A empresa não pertence ao contexto delegado do Mileto Ops.');
                     }
-                    effectiveBrandPalette = delegatedCompany.palette || null;
+                    return delegatedCompany.palette || null;
                 }
             } catch (error) {
                 if (!isTransientTitleGenerationError(error)) throw error;
-                const diagnostic = titleGenerationDiagnostic(error, phase, requestId);
+                const diagnostic = titleGenerationDiagnostic(error, 'company_palette', requestId);
                 logTitleGenerationDiagnostic('company_palette_fallback', diagnostic);
-                // A paleta do body não é confiável quando existe uma empresa do Ops.
-                // Na indisponibilidade transitória usamos apenas o fallback visual seguro.
-                effectiveBrandPalette = null;
+                // Fallback visual seguro; a paleta não validada do body é descartada.
+                return null;
+            } finally {
+                timingsMs.companyPalette = elapsedMs(startedAt);
             }
-        }
-        phase = 'configuration';
-        let titleSettings: Awaited<ReturnType<typeof loadEffectiveTitleGeneratorConfig>>;
-        try {
-            titleSettings = await loadEffectiveTitleGeneratorConfig(token);
-        } catch (error) {
-            const diagnostic = titleGenerationDiagnostic(error, phase, requestId);
-            logTitleGenerationDiagnostic('configuration_fallback', diagnostic);
-            titleSettings = {
-                config: structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG),
-                source: 'compatibility-default',
-            };
-        }
+        })();
+        const configurationPromise = (async (): Promise<Awaited<ReturnType<typeof loadEffectiveTitleGeneratorConfig>>> => {
+            const startedAt = Date.now();
+            try {
+                return await loadEffectiveTitleGeneratorConfig(
+                    token,
+                    requestController.signal,
+                    TITLE_GENERATION_PREFLIGHT_TIMEOUT_MS,
+                );
+            } catch (error) {
+                const diagnostic = titleGenerationDiagnostic(error, 'configuration', requestId);
+                logTitleGenerationDiagnostic('configuration_fallback', diagnostic);
+                return {
+                    config: structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG),
+                    source: 'compatibility-default',
+                };
+            } finally {
+                timingsMs.configuration = elapsedMs(startedAt);
+            }
+        })();
+        // A única rejeição não degradável deste par é a validação de
+        // empresa; a configuração sempre possui fallback local compatível.
+        phase = 'company_palette';
+        const [effectiveBrandPalette, titleSettings] = await Promise.all([
+            palettePromise,
+            configurationPromise,
+        ]);
         const titleConfig = titleSettings.config;
         const spokenWords = captions.segments.flatMap((segment: any) =>
             (segment.words || []).map((word: any) => ({
@@ -605,38 +663,50 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 .filter(Boolean)
                 .map((candidate) => ({ text: candidate, kind: trigger.id }))
         );
-        const deterministicCandidates = [
+        const deterministicSpokenCandidates = [
             ...deterministicCaptionTitleCandidates(spokenWords),
             ...deterministicTitleCandidates(script),
+        ];
+        const deterministicCandidates = [
+            ...deterministicSpokenCandidates,
             ...configuredLiteralCandidates,
         ];
         const systemPrompt = titleConfig?.triggers?.some((trigger) => trigger.enabled)
             ? titleExtractionPrompt(titleConfig)
             : fallbackSystemPrompt;
         phase = mode === 'local' ? 'local_fallback' : 'ai';
+        const generationStartedAt = Date.now();
         const resilientGeneration = await runResilientTitleGeneration<any>({
             skipPrimary: mode === 'local',
-            maxAttempts: 3,
+            // A retry real pertence ao gateway (inclusive versões anteriores).
+            // Uma única chamada local impede amplificação 2x2 e continua
+            // permitindo duas tentativas de provedor dentro do prazo total.
+            maxAttempts: 1,
             phase: 'ai',
             requestId,
             primary: async () => {
                 const result = await gatewayChat(token, {
-                messages: [{
-                    role: 'user',
-                    content: `Narração final: ${script}\n\nLegendas temporizadas autorizadas para a saída literal: ${wordTimings}`,
-                }],
-                system: systemPrompt,
-                json: true,
-                model: titleConfig.ai.model,
-                reasoning: titleConfig.ai.reasoning,
-                maxOutputTokens: titleConfig.ai.maxOutputTokens,
-                locale: 'pt-BR',
-                });
+                    messages: [{
+                        role: 'user',
+                        content: `Narração final: ${script}\n\nLegendas temporizadas autorizadas para a saída literal: ${wordTimings}`,
+                    }],
+                    system: systemPrompt,
+                    json: true,
+                    model: titleConfig.ai.model,
+                    reasoning: titleConfig.ai.reasoning,
+                    maxOutputTokens: titleConfig.ai.maxOutputTokens,
+                    locale: 'pt-BR',
+                }, requestController.signal, TITLE_GENERATION_TOTAL_TIMEOUT_MS);
                 const parsed: any = parseGatewayJson(result.text);
                 return Array.isArray(parsed) ? parsed : Array.isArray(parsed.titles) ? parsed.titles : [];
             },
             fallback: async () => deterministicCandidates,
+        }).finally(() => {
+            timingsMs.generation = elapsedMs(generationStartedAt);
         });
+        if (requestController.signal.aborted) {
+            throw new GatewayHttpError(499, 'A geração de títulos foi cancelada pelo cliente.');
+        }
         if (resilientGeneration.diagnostic) {
             logTitleGenerationDiagnostic(
                 resilientGeneration.source === 'local' ? 'ai_fallback_used' : 'generation_unavailable',
@@ -656,13 +726,13 @@ Responda exclusivamente em JSON válido, nesta estrutura:
         const videoFormat = (['9:16', '16:9', '4:5', '1:1'].includes(String(format)) ? format : '9:16') as VideoFormat;
         const titleCandidates = resilientGeneration.source === 'ai'
             ? [
-                ...deterministicCaptionTitleCandidates(spokenWords),
-                ...deterministicTitleCandidates(script),
+                ...deterministicSpokenCandidates,
                 ...resilientGeneration.items,
                 ...configuredLiteralCandidates,
             ]
             : resilientGeneration.items;
         phase = 'formatting';
+        const formattingStartedAt = Date.now();
 
         // Format titles, snap them to a real spoken word, and reject duplicates.
         // The effective organization settings own style, size, position and color.
@@ -802,6 +872,8 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 message: AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
             }] : []),
         ];
+        timingsMs.formatting = elapsedMs(formattingStartedAt);
+        timingsMs.total = elapsedMs(requestStartedAt);
         const metrics = {
             rawCandidateCount: titleCandidates.length,
             formattedCandidateCount: generatedTitles.length,
@@ -810,26 +882,47 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             droppedOutOfBoundsOrInvisible: generatedTitles.length - timelineCandidates.length,
             droppedByCoverageLimitOrOverlap: Math.max(0, timelineCandidates.length - finalTitles.length),
         };
+        const responseSource = finalTitles.length ? resilientGeneration.source : 'none';
+        console.info('[title-generation]', JSON.stringify({
+            event: 'request_completed',
+            requestId,
+            source: responseSource,
+            attempts: resilientGeneration.attempts,
+            timingsMs,
+        }));
 
         res.json({
             ok: true,
             titles: finalTitles,
             configSource: titleSettings.source,
-            source: finalTitles.length ? resilientGeneration.source : 'none',
+            source: responseSource,
             attempts: resilientGeneration.attempts,
             timelineDurationSec,
             semanticCoverage,
             metrics,
+            timingsMs: { ...timingsMs },
             ...(warnings.length ? { warnings } : {}),
             ...(warning ? { warning } : {}),
             ...(resilientGeneration.diagnostic ? { diagnostic: resilientGeneration.diagnostic } : {}),
         });
     } catch (error: unknown) {
+        timingsMs.total = elapsedMs(requestStartedAt);
         const diagnostic = titleGenerationDiagnostic(error, phase, requestId);
         logTitleGenerationDiagnostic('request_failed', diagnostic);
+        console.warn('[title-generation]', JSON.stringify({
+            event: 'request_timing',
+            requestId,
+            outcome: 'error',
+            timingsMs,
+        }));
         const responseStatus = diagnostic.status >= 400 && diagnostic.status <= 599
             ? diagnostic.status
             : 500;
-        res.status(responseStatus).json({ ok: false, ...diagnostic });
+        if (!res.writableEnded && !res.destroyed) {
+            res.status(responseStatus).json({ ok: false, ...diagnostic, timingsMs });
+        }
+    } finally {
+        req.off('aborted', abortDisconnectedRequest);
+        res.off('close', abortClosedResponse);
     }
 };

@@ -10,12 +10,15 @@ const executorActivity = read('../../client/src/lib/opsExecutorActivity.ts');
 const mainLayout = read('../../client/src/layouts/MainLayout.tsx');
 const workerState = read('../../client/src/lib/opsVideoWorkerState.ts');
 const gatewayClient = read('../../client/src/lib/gateway.ts');
+const retryClient = read('../../client/src/lib/opsVideoJobRetry.ts');
+const exportJobs = read('../../client/src/context/ExportJobsContext.tsx');
+const opsController = read('../../server/src/controllers/opsController.ts');
 const takeSelection = read('../../client/src/lib/opsTakeSelection.ts');
 const projectController = read('../../server/src/controllers/projectController.ts');
 const electron = read('../../client/electron-main/main.cjs');
 
 test('CORS permite o token efemero usado nas atualizacoes de progresso do job', () => {
-    assert.match(server, /Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Ops-View-Context, X-Mileto-Job-Token'/);
+    assert.match(server, /Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Ops-View-Context, X-Mileto-Job-Token, Idempotency-Key'/);
 });
 
 const handler = (start, end) => {
@@ -25,20 +28,22 @@ const handler = (start, end) => {
     return integration.slice(from, to === -1 ? integration.length : to);
 };
 
-test('expõe polling, leitura, heartbeat, claim e atualização somente pelo gateway autenticado', () => {
+test('expõe polling, leitura, heartbeat, claim, revisão e atualização somente pelo gateway autenticado', () => {
     assert.match(server, /app\.get\('\/v1\/integrations\/mileto-ops\/video-jobs\/next', authed/);
     assert.match(server, /app\.get\('\/v1\/integrations\/mileto-ops\/video-jobs\/:jobId', authed/);
     assert.match(server, /app\.post\('\/v1\/integrations\/mileto-ops\/video-workers\/heartbeat', authed/);
     assert.match(server, /app\.post\('\/v1\/integrations\/mileto-ops\/video-jobs\/:jobId\/claim', authed/);
+    assert.match(server, /app\.post\('\/v1\/integrations\/mileto-ops\/video-jobs\/:jobId\/retry', authed/);
     assert.match(server, /app\.patch\('\/v1\/integrations\/mileto-ops\/video-jobs\/:jobId', authed/);
 });
 
-test('fila, leitura, presença, claim e PATCH preservam delegação, assets.write e X-Ops-View-Context', () => {
+test('fila, leitura, presença, claim, revisão e PATCH preservam delegação, assets.write e X-Ops-View-Context', () => {
     const handlers = [
         handler('export const nextVideoJob', 'export const getVideoJob'),
         handler('export const getVideoJob', 'export const heartbeatVideoWorker'),
         handler('export const heartbeatVideoWorker', 'export const claimVideoJob'),
-        handler('export const claimVideoJob', 'export const updateVideoJob'),
+        handler('export const claimVideoJob', 'export const retryVideoJob'),
+        handler('export const retryVideoJob', 'export const updateVideoJob'),
         handler('export const updateVideoJob', 'export const uploadExport'),
     ];
     for (const source of handlers) {
@@ -48,9 +53,9 @@ test('fila, leitura, presença, claim e PATCH preservam delegação, assets.writ
     }
 });
 
-test('heartbeat usa versão 1.4.27, campo oficial mode e job atual', () => {
+test('heartbeat usa versão 1.4.28, campo oficial mode e job atual', () => {
     const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
-    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.27'/);
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.28'/);
     assert.match(coordinator, /mode: modeRef\.current/);
     assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
     assert.match(coordinator, /resolvePersistedJob\(persisted\)/);
@@ -157,11 +162,27 @@ test('retomada rejeita mudança de empresa, pasta, takes ou payload do job', () 
     assert.match(workerState, /takeAssetIds: job\.takeAssetIds/);
 });
 
-test('checkpoint preparado evita recriar o projeto e exportação já concluída é reutilizada', () => {
+test('revisão mais nova do mesmo job descarta somente o checkpoint antigo e inicia outro claim', () => {
+    const resolve = coordinator.slice(
+        coordinator.indexOf('const resolvePersistedJob'),
+        coordinator.indexOf('const validateBeforeClaim'),
+    );
+    assert.match(resolve, /latestRevision > state\.executionRevision/);
+    assert.match(resolve, /clearPersistedOpsVideoJob\(\)/);
+    assert.match(resolve, /return \{ job, context \}/);
+});
+
+test('checkpoint preparado evita recriar o projeto, mas revisão fresh bloqueia todo cache anterior', () => {
     assert.match(coordinator, /persisted\.resume\.projectPrepared/);
     assert.match(coordinator, /completedExportFor\(job\)/);
     assert.match(coordinator, /previousAssetId/);
     assert.match(coordinator, /Video ja concluido e confirmado no Mileto Ops/);
+    assert.match(coordinator, /job\.execution\?\.requiresFreshRender === true/);
+    assert.match(coordinator, /const previousAssetId = requiresFreshRender[\s\S]*revisionResume\?\.assetId/);
+    assert.match(workerState, /outputAssetId: requiresFreshRender \? null/);
+    assert.match(workerState, /executionRevision: current\.executionRevision/);
+    assert.match(coordinator, /if \(isRevisionExecution && !canResumeProject\)/);
+    assert.match(coordinator, /fresh_render_project_unavailable/);
 });
 
 test('quantidade de takes vem da narracao real, usa TAKES recentes e varia por lote de forma estavel', () => {
@@ -184,13 +205,71 @@ test('projeto do agente continua listado e editavel depois da exportacao', () =>
 });
 
 test('job só conclui com assetId real confirmado pelo fluxo de exportação', () => {
-    const exportAt = coordinator.indexOf('const completedExport = await waitForOpsExport(job.projectId)');
+    const exportAt = coordinator.indexOf('const completedExport = await waitForOpsExport(job.projectId, exportJobId)');
     const assetAt = coordinator.indexOf('const assetId = completedExport.assetId', exportAt);
     const completionAt = coordinator.indexOf("await patch('completed'", exportAt);
     assert.ok(exportAt >= 0);
     assert.ok(assetAt > exportAt);
     assert.ok(completionAt > assetAt);
-    assert.match(coordinator.slice(completionAt, completionAt + 280), /outputAssetId: assetId/);
+    assert.match(coordinator.slice(completionAt, completionAt + 420), /outputAssetId: assetId/);
+});
+
+test('PATCH final envia a revisão e o renderResult integral somente depois do novo asset', () => {
+    const completionAt = coordinator.lastIndexOf("await patch('completed'");
+    const completion = coordinator.slice(completionAt, completionAt + 520);
+    assert.match(completion, /status: 'completed'/);
+    assert.match(completion, /revision: job\.execution\?\.revision/);
+    assert.match(completion, /outputAssetId: assetId/);
+    assert.match(completion, /renderResult: completedExport\.renderResult/);
+    assert.match(coordinator, /render_integrity_report_missing/);
+    assert.match(coordinator, /assetId === job\.execution\?\.previousOutputAssetId/);
+    assert.doesNotMatch(
+        coordinator.slice(
+            coordinator.indexOf("await patch('export', OPS_VIDEO_PROGRESS.export.end"),
+            completionAt,
+        ),
+        /outputAssetId/,
+    );
+});
+
+test('novo render usa novo exportJobId e chave de upload persistida pela revisão', () => {
+    assert.match(coordinator, /waitForOpsExport\(job\.projectId, exportJobId\)/);
+    assert.match(coordinator, /detail\.exportJobId !== exportJobId/);
+    assert.match(coordinator, /persisted\.resume\.uploadIdempotencyKey/);
+    assert.match(coordinator, /uploadIdempotencyKey = crypto\.randomUUID\(\)/);
+    assert.match(exportJobs, /idempotencyKey: activeExport\.uploadIdempotencyKey/);
+    assert.match(opsController, /idempotencyKey \? \{ idempotencyKey \} : \{\}/);
+});
+
+test('409 de revision mismatch relê o mesmo job e renova o claim token', () => {
+    const patchAt = coordinator.indexOf('const patch = async');
+    const patchSource = coordinator.slice(patchAt, coordinator.indexOf('const showLocalProgress', patchAt));
+    assert.match(patchSource, /video_job_revision_mismatch/);
+    assert.match(patchSource, /gatewayApi\.getOpsVideoJob\(job\.id/);
+    assert.match(patchSource, /activeClaim = await gatewayApi\.claimOpsVideoJob/);
+    assert.match(patchSource, /activeClaim\.claimToken/);
+    assert.match(patchSource, /video_job_revision_changed/);
+});
+
+test('asset recusado como antigo limpa o upload da revisão antes de renderizar novamente', () => {
+    const rejectionAt = coordinator.indexOf("parsed.code === 'output_asset_not_fresh'");
+    const rejection = coordinator.slice(rejectionAt, rejectionAt + 1_100);
+    assert.ok(rejectionAt >= 0);
+    assert.match(rejection, /outputAssetId: null/);
+    assert.match(rejection, /uploadIdempotencyKey: null/);
+    assert.match(rejection, /renderResult: null/);
+    assert.match(rejection, /renderStarted: false/);
+    assert.match(rejection, /stage: 'export'/);
+    assert.match(rejection, /progress: OPS_VIDEO_PROGRESS\.export\.start/);
+    assert.doesNotMatch(rejection, /status: 'completed'/);
+});
+
+test('HTTP 426 e minimumAppVersion exigem atualização do aplicativo', () => {
+    assert.match(workerState, /opsWorkerSupportsMinimumVersion/);
+    assert.match(coordinator, /video_worker_upgrade_required/);
+    assert.match(coordinator, /video_job_revision_invalid/);
+    assert.match(coordinator, /error\.status === 426/);
+    assert.match(coordinator, /updateRequired \? 'paused'/);
 });
 
 test('falhas permanentes são estruturadas e falhas recuperáveis ficam pausadas', () => {
@@ -228,4 +307,16 @@ test('cliente do gateway expõe leitura e presença com X-Ops-View-Context', () 
     assert.match(gatewayClient, /async getOpsVideoJob/);
     assert.match(gatewayClient, /async heartbeatOpsVideoWorker/);
     assert.match(gatewayClient, /opsContextHeaders\(viewContextId\)/);
+});
+
+test('cliente do gateway expõe revisão com chave persistida pelo caller', () => {
+    assert.match(gatewayClient, /async retryOpsVideoJob/);
+    assert.match(gatewayClient, /async requestTemporalIntegrityRetry/);
+    assert.match(gatewayClient, /requestTemporalIntegrityRetryWithPersistentKey/);
+    assert.match(gatewayClient, /idempotencyKey: string/);
+    assert.match(gatewayClient, /'Idempotency-Key': idempotencyKey/);
+    assert.match(gatewayClient, /return response\.data\.job/);
+    assert.match(retryClient, /persistentRetryIdempotencyKey/);
+    assert.match(retryClient, /integrity_temporal_1_4_27/);
+    assert.match(retryClient, /minimumAppVersion: TEMPORAL_INTEGRITY_MINIMUM_APP_VERSION/);
 });

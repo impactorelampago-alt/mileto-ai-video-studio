@@ -1,6 +1,11 @@
 import { gatewayUrl } from './apiBase';
 import { authStorage } from './authStorage';
 import type { BrandPalette } from '../types';
+import type { ExportResultDiagnostics } from './exportIntegrity';
+import {
+    requestTemporalIntegrityRetry as requestTemporalIntegrityRetryWithPersistentKey,
+    type TemporalIntegrityRetryRequest,
+} from './opsVideoJobRetry';
 
 /** Erro do gateway com o status HTTP preservado (401 = sessão, 402 = saldo). */
 export class GatewayError extends Error {
@@ -274,6 +279,17 @@ export interface OpsVideoJob {
     settings: Record<string, unknown>;
     progress: { percent?: number; message?: string };
     outputAssetId?: string | null;
+    execution?: {
+        revision: number;
+        intent: 'initial' | 'revision';
+        requiresFreshRender: boolean;
+        minimumAppVersion?: string | null;
+        retryRequestedAt?: string | null;
+        retryReason?: string | null;
+        previousOutputAssetId?: string | null;
+    } | null;
+    renderResult?: ExportResultDiagnostics | null;
+    heartbeatAt?: string | null;
     error?: { code?: string | null; message?: string | null } | null;
     createdAt: string;
     updatedAt: string;
@@ -289,9 +305,18 @@ export interface OpsVideoJobUpdate {
     stage?: Exclude<OpsVideoJobStage, 'queued'>;
     percent?: number;
     message?: string;
+    revision?: number;
     outputAssetId?: string | null;
+    renderResult?: ExportResultDiagnostics;
     errorCode?: string | null;
     errorMessage?: string | null;
+}
+
+export interface OpsVideoJobRetryInput {
+    projectId: string;
+    expectedRevision: number;
+    reason: string;
+    minimumAppVersion: string;
 }
 
 export type OpsVideoWorkerExecutionMode = 'foreground' | 'background';
@@ -459,8 +484,8 @@ export const gatewayApi = {
         });
     },
 
-    async opsConnection(): Promise<OpsIntegrationStatus> {
-        return gatewayFetch('/v1/integrations/mileto-ops/connection');
+    async opsConnection(signal?: AbortSignal): Promise<OpsIntegrationStatus> {
+        return gatewayFetch('/v1/integrations/mileto-ops/connection', { signal });
     },
 
     async startOpsConnection(reconnect = false): Promise<{ attemptId: string; authorizationUrl: string; expiresAt: string }> {
@@ -497,8 +522,8 @@ export const gatewayApi = {
         await gatewayFetch(`/v1/integrations/mileto-ops/user-links/${aiUserId}`, { method: 'DELETE' });
     },
 
-    async opsViewContexts(): Promise<{ data: OpsViewContexts }> {
-        return gatewayFetch('/v1/integrations/mileto-ops/view-contexts');
+    async opsViewContexts(signal?: AbortSignal): Promise<{ data: OpsViewContexts }> {
+        return gatewayFetch('/v1/integrations/mileto-ops/view-contexts', { signal });
     },
 
     async opsCompanies(
@@ -522,10 +547,14 @@ export const gatewayApi = {
         return { data: companies, meta: { nextCursor: cursor } };
     },
 
-    async opsCompany(companyId: string, viewContextId?: string | null): Promise<{ data: OpsCompany }> {
+    async opsCompany(
+        companyId: string,
+        viewContextId?: string | null,
+        signal?: AbortSignal,
+    ): Promise<{ data: OpsCompany }> {
         return gatewayFetch(
             `/v1/integrations/mileto-ops/companies/${encodeURIComponent(companyId)}`,
-            { headers: opsContextHeaders(viewContextId) }
+            { headers: opsContextHeaders(viewContextId), signal }
         );
     },
 
@@ -637,6 +666,35 @@ export const gatewayApi = {
             { method: 'POST', headers: opsContextHeaders(viewContextId) }
         );
         return response.data;
+    },
+
+    async retryOpsVideoJob(
+        jobId: string,
+        idempotencyKey: string,
+        input: OpsVideoJobRetryInput,
+        viewContextId?: string | null
+    ): Promise<OpsVideoJob> {
+        const response = await gatewayFetch<{ data: { job: OpsVideoJob } }>(
+            `/v1/integrations/mileto-ops/video-jobs/${encodeURIComponent(jobId)}/retry`,
+            {
+                method: 'POST',
+                headers: {
+                    ...opsContextHeaders(viewContextId),
+                    'Idempotency-Key': idempotencyKey,
+                },
+                body: JSON.stringify(input),
+            }
+        );
+        return response.data.job;
+    },
+
+    async requestTemporalIntegrityRetry(input: TemporalIntegrityRetryRequest): Promise<OpsVideoJob> {
+        return requestTemporalIntegrityRetryWithPersistentKey(
+            input,
+            (jobId, idempotencyKey, retryInput, viewContextId) => (
+                gatewayApi.retryOpsVideoJob(jobId, idempotencyKey, retryInput, viewContextId)
+            ),
+        );
     },
 
     async updateOpsVideoJob(

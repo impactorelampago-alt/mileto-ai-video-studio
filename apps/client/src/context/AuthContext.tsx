@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
 import { authStorage } from '../lib/authStorage';
 import { gatewayApi, GatewayError, MiletoUser } from '../lib/gateway';
+import { invalidateOpsBrandDirectoryCache } from '../lib/opsProjectBrand';
 
 type AuthStatus = 'loading' | 'authed' | 'anon';
 
@@ -23,6 +24,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const refreshMe = useCallback(async () => {
         const token = await authStorage.get();
         if (!token) {
+            invalidateOpsBrandDirectoryCache();
             setUser(null);
             setBalance(null);
             setStatus('anon');
@@ -37,6 +39,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             // Token inválido/expirado (401) → limpa e volta para login.
             if (err instanceof GatewayError && err.status === 401) {
                 await authStorage.clear();
+                invalidateOpsBrandDirectoryCache();
                 setUser(null);
                 setBalance(null);
                 setStatus('anon');
@@ -56,6 +59,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const login = useCallback(async (email: string, password: string) => {
         const { token, user: u } = await gatewayApi.login(email, password);
         await authStorage.set(token);
+        invalidateOpsBrandDirectoryCache();
         setUser(u);
         setStatus('authed');
         // Busca saldo/assentos atualizados logo após entrar.
@@ -65,6 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const logout = useCallback(async () => {
         await gatewayApi.logout();
         await authStorage.clear();
+        invalidateOpsBrandDirectoryCache();
         setUser(null);
         setBalance(null);
         setStatus('anon');

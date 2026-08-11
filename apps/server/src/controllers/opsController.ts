@@ -28,6 +28,7 @@ const OPS_MEDIA_ORIGIN = new URL(OPS_BASE_URL).origin;
 const OPS_MEDIA_PATH = /^\/api\/integrations\/mileto-ai-video\/delivery\/[^/]+$/;
 const OPS_VIEW_CONTEXT_HEADER = 'x-ops-view-context';
 const OPS_EXPORT_MAX_BYTES = Math.max(25 * 1024 * 1024, Number(process.env.OPS_EXPORT_MAX_BYTES || 512 * 1024 * 1024));
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const viewContextFrom = (req: Request): string | null => {
     const raw = req.headers[OPS_VIEW_CONTEXT_HEADER];
@@ -883,10 +884,15 @@ export const uploadExport = async (req: Request, res: Response) => {
             sourceProjectId: req.body?.sourceProjectId,
             sourceProjectTitle: req.body?.sourceProjectTitle,
         });
+        const idempotencyKey = String(req.body?.idempotencyKey || '').trim();
+        if (idempotencyKey && !UUID_PATTERN.test(idempotencyKey)) {
+            throw new GatewayHttpError(422, 'A chave idempotente da exportação é inválida.', 'invalid_idempotency_key');
+        }
         const viewContext = viewContextFrom(req);
         const result = await gatewayUploadFile(token || '', `/v1/integrations/mileto-ops/companies/${encodeURIComponent(companyId)}/assets/export`, sourcePath, {
             folderId: String(req.body?.folderId || ''),
             fileName: fileName.endsWith('.mp4') ? fileName : `${fileName}.mp4`,
+            ...(idempotencyKey ? { idempotencyKey } : {}),
             ...metadata,
         }, viewContext ? { 'X-Ops-View-Context': viewContext } : {});
         res.json(result);

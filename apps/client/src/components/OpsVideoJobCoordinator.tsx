@@ -8,6 +8,7 @@ import {
     type OpsAsset,
     type OpsCompany,
     type OpsVideoJob,
+    type OpsVideoJobUpdate,
     type OpsVideoJobStage,
     type OpsViewContext,
     type OpsVideoWorkerExecutionMode,
@@ -20,6 +21,8 @@ import {
     loadPersistedOpsVideoJob,
     OPS_VIDEO_PROGRESS,
     OPS_VIDEO_WORKER_APP_VERSION,
+    opsVideoJobSignature,
+    opsWorkerSupportsMinimumVersion,
     progressWithinStage,
     rebindPersistedOpsVideoJobContext,
     savePersistedOpsVideoJob,
@@ -35,6 +38,7 @@ import {
     generateAutomaticCaptions,
     generateAutomaticTitlesResilient,
     generateNarrationAndMix,
+    isTitleGenerationAbortError,
     loadAutomatedProject,
     materializeOpsTake,
     persistAutomatedProject,
@@ -60,11 +64,17 @@ const EXPORT_TIMEOUT_MS = 60 * 60 * 1_000;
 type QueuedJob = { job: OpsVideoJob; context: OpsViewContext; resume?: PersistedOpsVideoWorkerJob | null };
 type OpsExportEvent = {
     projectId?: string;
+    exportJobId?: string;
     assetId?: string;
     message?: string;
     renderResult?: ExportResultDiagnostics;
 };
-type CompletedOpsExport = { assetId: string; renderResult?: ExportResultDiagnostics };
+type CompletedOpsExport = {
+    assetId: string;
+    renderResult?: ExportResultDiagnostics;
+    sourceJobId?: string;
+    executionRevision?: number;
+};
 type JobDisplayState = OpsExecutorActivity;
 
 type ElectronIpc = {
@@ -120,6 +130,7 @@ const isRecoverableInterruption = (error: unknown, code: string) => {
             || error.status === 408
             || error.status === 409
             || error.status === 423
+            || error.status === 426
             || error.status === 429
             || error.status >= 500;
     }
@@ -129,10 +140,13 @@ const isRecoverableInterruption = (error: unknown, code: string) => {
         'worker_interrupted',
         'claim_unavailable',
         'gateway_unavailable',
+        'video_worker_upgrade_required',
+        'video_job_revision_changed',
     ].includes(code) || (error instanceof Error && error.name === 'AbortError');
 };
 
 const completedExportFor = (job: OpsVideoJob): CompletedOpsExport | null => {
+    if (job.execution?.requiresFreshRender === true) return null;
     try {
         const raw = localStorage.getItem(`mileto:ops-export:${job.projectId}`);
         if (!raw) return null;
@@ -141,10 +155,20 @@ const completedExportFor = (job: OpsVideoJob): CompletedOpsExport | null => {
             companyId?: string;
             folderId?: string | null;
             renderResult?: ExportResultDiagnostics;
+            sourceJobId?: string;
+            executionRevision?: number;
         };
         if (!value.assetId || value.companyId !== job.companyId) return null;
         if ((value.folderId || null) !== (job.destinationFolderId || null)) return null;
-        return { assetId: value.assetId, renderResult: value.renderResult };
+        if (value.sourceJobId && value.sourceJobId !== job.id) return null;
+        const revision = Math.max(1, Number(job.execution?.revision || 1));
+        if (value.executionRevision && value.executionRevision !== revision) return null;
+        return {
+            assetId: value.assetId,
+            renderResult: value.renderResult,
+            sourceJobId: value.sourceJobId,
+            executionRevision: value.executionRevision,
+        };
     } catch {
         return null;
     }
@@ -184,7 +208,7 @@ const hydratePreparedTakes = async (
     return result;
 };
 
-const waitForOpsExport = (projectId: string): Promise<CompletedOpsExport> => new Promise((resolve, reject) => {
+const waitForOpsExport = (projectId: string, exportJobId: string): Promise<CompletedOpsExport> => new Promise((resolve, reject) => {
     let timeout = 0;
     const cleanup = () => {
         window.removeEventListener('mileto:ops-export-complete', onComplete as EventListener);
@@ -193,7 +217,7 @@ const waitForOpsExport = (projectId: string): Promise<CompletedOpsExport> => new
     };
     const onComplete = (event: Event) => {
         const detail = (event as CustomEvent<OpsExportEvent>).detail || {};
-        if (detail.projectId !== projectId || !detail.assetId) return;
+        if (detail.projectId !== projectId || detail.exportJobId !== exportJobId || !detail.assetId) return;
         cleanup();
         resolve({ assetId: detail.assetId, renderResult: detail.renderResult });
     };
@@ -243,6 +267,15 @@ const resolvePersistedJob = async (state: PersistedOpsVideoWorkerJob): Promise<Q
         try {
             const job = await gatewayApi.getOpsVideoJob(state.jobId, context.contextId);
             if (job.status !== 'completed' && job.status !== 'failed' && !isPersistedJobCompatible(state, job)) {
+                const latestRevision = Math.max(1, Number(job.execution?.revision || 1));
+                const sameJobAdvancedRevision = job.id === state.jobId
+                    && job.projectId === state.projectId
+                    && job.companyId === state.companyId
+                    && latestRevision > state.executionRevision;
+                if (sameJobAdvancedRevision) {
+                    clearPersistedOpsVideoJob();
+                    return { job, context };
+                }
                 throw new Error('job_resume_mismatch: O trabalho mudou no Ops e nao pode ser retomado com o estado local anterior.');
             }
             const resume = context.contextId === state.viewContextId
@@ -260,6 +293,21 @@ const resolvePersistedJob = async (state: PersistedOpsVideoWorkerJob): Promise<Q
 };
 
 const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): Promise<PreparedJob> => {
+    if (
+        job.execution?.requiresFreshRender === true
+        && (
+            !Number.isInteger(job.execution.revision)
+            || job.execution.revision < 1
+        )
+    ) {
+        throw new Error('video_job_revision_invalid: O Ops não forneceu uma revisão válida para o fresh render seguro.');
+    }
+    const minimumAppVersion = job.execution?.minimumAppVersion || null;
+    if (!opsWorkerSupportsMinimumVersion(minimumAppVersion)) {
+        throw new Error(
+            `video_worker_upgrade_required: Este trabalho exige o Mileto AI Video ${minimumAppVersion} ou superior. Atualize o aplicativo antes de continuar.`,
+        );
+    }
     const company = (await gatewayApi.opsCompany(job.companyId, context.contextId)).data;
     const voice = job.voicePresetId
         ? SYSTEM_VOICES.find((candidate) => candidate.id === canonicalSystemVoiceId(job.voicePresetId))
@@ -304,6 +352,7 @@ export const OpsVideoJobCoordinator = () => {
     const exportingRef = useRef(isExporting);
     const currentJobRef = useRef<string | null>(loadPersistedOpsVideoJob()?.jobId || null);
     const heartbeatContextRef = useRef<string | null>(loadPersistedOpsVideoJob()?.viewContextId || null);
+    const titleGenerationAbortRef = useRef<AbortController | null>(null);
     const modeRef = useRef<OpsVideoWorkerExecutionMode>('foreground');
     const [display, setDisplay] = useState<JobDisplayState>(() => {
         const persisted = loadPersistedOpsVideoJob();
@@ -323,6 +372,7 @@ export const OpsVideoJobCoordinator = () => {
     });
 
     useEffect(() => { exportingRef.current = isExporting; }, [isExporting]);
+    useEffect(() => () => titleGenerationAbortRef.current?.abort(), []);
 
     useEffect(() => {
         publishOpsExecutorActivity(display);
@@ -396,6 +446,7 @@ export const OpsVideoJobCoordinator = () => {
         const timer = window.setInterval(() => { void heartbeat(); }, HEARTBEAT_INTERVAL_MS);
         const ipc = electronIpc();
         const shutdown = () => {
+            titleGenerationAbortRef.current?.abort();
             const active = loadPersistedOpsVideoJob();
             if (active && active.status !== 'completed' && active.status !== 'failed') {
                 const paused = updatePersistedOpsVideoJob({
@@ -444,8 +495,8 @@ export const OpsVideoJobCoordinator = () => {
             errorCode: undefined,
         }));
 
-        const claim = await gatewayApi.claimOpsVideoJob(queued.job.id, queued.context.contextId);
-        const job = claim.job;
+        let activeClaim = await gatewayApi.claimOpsVideoJob(queued.job.id, queued.context.contextId);
+        const job = activeClaim.job;
         const resume = Boolean(queued.resume);
         persisted = updatePersistedOpsVideoJob({ status: 'claimed', message: 'Trabalho assumido pelo executor local.' }) || persisted;
 
@@ -453,39 +504,98 @@ export const OpsVideoJobCoordinator = () => {
             stage: Exclude<OpsVideoJobStage, 'queued'>,
             percent: number,
             message: string,
-            extra: { status?: 'running' | 'completed' | 'failed'; outputAssetId?: string; errorCode?: string; errorMessage?: string } = {},
+            extra: {
+                status?: 'running' | 'completed' | 'failed';
+                revision?: number;
+                outputAssetId?: string;
+                renderResult?: ExportResultDiagnostics;
+                errorCode?: string;
+                errorMessage?: string;
+            } = {},
         ) => {
             const localStatus: OpsVideoWorkerLocalStatus = extra.status || 'running';
-            persisted = updatePersistedOpsVideoJob({
-                stage,
-                progress: percent,
-                message,
-                status: localStatus,
-                errorCode: extra.errorCode || null,
-                errorMessage: extra.errorMessage || null,
-                resume: extra.outputAssetId ? { outputAssetId: extra.outputAssetId } : undefined,
-            }) || persisted;
-            setDisplay((current) => ({
-                ...current,
-                jobId: job.id,
-                companyName,
-                projectTitle: job.projectTitle,
-                stage,
+            const completing = extra.status === 'completed';
+            const applyLocalPatch = () => {
+                persisted = updatePersistedOpsVideoJob({
+                    stage,
+                    progress: percent,
+                    message,
+                    status: localStatus,
+                    errorCode: extra.errorCode || null,
+                    errorMessage: extra.errorMessage || null,
+                    resume: extra.outputAssetId || extra.renderResult
+                        ? { outputAssetId: extra.outputAssetId, renderResult: extra.renderResult }
+                        : undefined,
+                }) || persisted;
+                setDisplay((current) => ({
+                    ...current,
+                    jobId: job.id,
+                    companyName,
+                    projectTitle: job.projectTitle,
+                    stage,
+                    status: extra.status || 'running',
+                    percent,
+                    message,
+                    assetId: extra.outputAssetId || current.assetId,
+                    errorCode: extra.errorCode,
+                }));
+            };
+            // A conclusão só vira estado local terminal depois que o Ops confirma
+            // atomicamente revisão, claim, novo asset e renderResult.
+            if (!completing) applyLocalPatch();
+            const update: OpsVideoJobUpdate = {
                 status: extra.status || 'running',
+                stage,
                 percent,
                 message,
-                assetId: extra.outputAssetId || current.assetId,
-                errorCode: extra.errorCode,
-            }));
-            return gatewayApi.updateOpsVideoJob(job.id, claim.claimToken, {
-                status: extra.status || 'running',
-                stage,
-                percent,
-                message,
+                revision: extra.revision ?? job.execution?.revision,
                 outputAssetId: extra.outputAssetId,
+                renderResult: extra.renderResult,
                 errorCode: extra.errorCode,
                 errorMessage: extra.errorMessage,
-            }, queued.context.contextId);
+            };
+            const sendUpdate = () => gatewayApi.updateOpsVideoJob(
+                job.id,
+                activeClaim.claimToken,
+                update,
+                queued.context.contextId,
+            );
+            let updatedJob: OpsVideoJob;
+            try {
+                updatedJob = await sendUpdate();
+            } catch (error) {
+                const revisionConflict = error instanceof GatewayError
+                    && error.status === 409
+                    && ['video_job_revision_mismatch', 'video_job_not_claimed'].includes(String(error.code || ''));
+                if (!revisionConflict) throw error;
+
+                const latest = await gatewayApi.getOpsVideoJob(job.id, queued.context.contextId);
+                const currentRevision = Math.max(1, Number(job.execution?.revision || 1));
+                const latestRevision = Math.max(1, Number(latest.execution?.revision || 1));
+                if (
+                    latestRevision !== currentRevision
+                    || latest.projectId !== job.projectId
+                    || latest.companyId !== job.companyId
+                ) {
+                    clearPersistedOpsVideoJob();
+                    throw new Error('video_job_revision_changed: O Ops abriu uma revisão mais nova. O executor descartou o estado anterior e fará um novo claim do mesmo job.');
+                }
+                if (
+                    latest.status === 'completed'
+                    && extra.status === 'completed'
+                    && latest.outputAssetId === extra.outputAssetId
+                ) {
+                    updatedJob = latest;
+                } else if (opsVideoJobSignature(latest) !== opsVideoJobSignature(job)) {
+                    clearPersistedOpsVideoJob();
+                    throw new Error('video_job_revision_changed: O conteúdo da revisão mudou no Ops. O executor descartou o estado anterior e fará um novo claim do mesmo job.');
+                } else {
+                    activeClaim = await gatewayApi.claimOpsVideoJob(job.id, queued.context.contextId);
+                    updatedJob = await sendUpdate();
+                }
+            }
+            if (completing) applyLocalPatch();
+            return updatedJob;
         };
 
         const showLocalProgress = (stage: OpsVideoJobStage, percent: number, message: string) => {
@@ -503,17 +613,44 @@ export const OpsVideoJobCoordinator = () => {
                 await patch('narration', OPS_VIDEO_PROGRESS.narration.start, 'Preparando a narração.');
             }
 
+            const executionRevision = Math.max(1, Number(job.execution?.revision || 1));
+            const requiresFreshRender = job.execution?.requiresFreshRender === true;
+            const isRevisionExecution = job.execution?.intent === 'revision' || executionRevision > 1;
+            const revisionResume = requiresFreshRender
+                && persisted.executionRevision === executionRevision
+                && persisted.resume.outputAssetId
+                && persisted.resume.renderResult
+                && persisted.resume.renderResult.sourceJobId === job.id
+                && persisted.resume.renderResult.projectId === job.projectId
+                ? {
+                    assetId: persisted.resume.outputAssetId,
+                    renderResult: persisted.resume.renderResult,
+                }
+                : null;
             const previousExport = completedExportFor(job);
-            const previousAssetId = job.outputAssetId || previousExport?.assetId || persisted.resume.outputAssetId;
+            const previousAssetId = requiresFreshRender
+                ? revisionResume?.assetId
+                : (job.outputAssetId || previousExport?.assetId || persisted.resume.outputAssetId);
+            const previousRenderResult = requiresFreshRender
+                ? revisionResume?.renderResult
+                : previousExport?.renderResult;
             if (previousAssetId) {
-                const previousWarning = previousExport?.renderResult
-                    ? exportWarningSummary(previousExport.renderResult.warnings)
+                if (requiresFreshRender && previousAssetId === job.execution?.previousOutputAssetId) {
+                    throw new Error('output_asset_not_fresh: A revisão tentou reutilizar o asset anterior e foi bloqueada antes da conclusão.');
+                }
+                if (requiresFreshRender && !previousRenderResult) {
+                    throw new Error('render_integrity_report_missing: A revisão não pode concluir sem o diagnóstico do novo MP4.');
+                }
+                const previousWarning = previousRenderResult
+                    ? exportWarningSummary(previousRenderResult.warnings)
                     : undefined;
                 await patch('completed', 100, previousWarning
                     ? `${previousWarning}; vídeo já concluído e confirmado no Mileto Ops.`
                     : 'Video ja concluido e confirmado no Mileto Ops.', {
                     status: 'completed',
+                    revision: job.execution?.revision,
                     outputAssetId: previousAssetId,
+                    renderResult: previousRenderResult,
                 });
                 clearPersistedOpsVideoJob();
                 currentJobRef.current = null;
@@ -525,7 +662,7 @@ export const OpsVideoJobCoordinator = () => {
             let finalTakes: MediaTake[] = [];
             let captionStyle = { ...DEFAULT_CAPTION_STYLE };
             let selectedMusicId = readiness.musicId;
-            const savedProject = persisted.resume.projectPrepared
+            const savedProject = (persisted.resume.projectPrepared || isRevisionExecution)
                 ? await loadAutomatedProject(job.projectId)
                 : null;
             const canResumeProject = Boolean(
@@ -536,6 +673,10 @@ export const OpsVideoJobCoordinator = () => {
                 && savedProject.adData.format === job.format
                 && savedProject.mediaTakes.length > 0,
             );
+
+            if (isRevisionExecution && !canResumeProject) {
+                throw new Error('fresh_render_project_unavailable: A revisão exige o projeto original completo neste computador. Nenhum job ou projeto substituto foi criado.');
+            }
 
             if (canResumeProject && savedProject) {
                 showLocalProgress('titles', OPS_VIDEO_PROGRESS.titles.end, 'Restaurando o projeto salvo e renovando as URLs dos takes.');
@@ -614,11 +755,35 @@ export const OpsVideoJobCoordinator = () => {
                     ? 'Aplicando gatilhos, modelos e paleta da empresa.'
                     : 'Titulos automaticos nao solicitados.');
                 if (job.automaticTitles) {
+                    const titleController = new AbortController();
+                    titleGenerationAbortRef.current = titleController;
                     try {
-                        const titleResult = await generateAutomaticTitlesResilient(adData);
+                        const titleResult = await generateAutomaticTitlesResilient(adData, {
+                            signal: titleController.signal,
+                            resolvedBrand: {
+                                required: true,
+                                company: readiness.company,
+                                context: queued.context,
+                                // A validação feita antes do claim é a fonte fresca.
+                                // Um projeto retomado pode conter uma paleta antiga.
+                                palette: readiness.initialAdData.brandPalette || null,
+                                paletteUpdatedAt: readiness.initialAdData.brandPaletteUpdatedAt || null,
+                            },
+                            onProgress: (progress) => {
+                                const fraction = progress.phase === 'brand'
+                                    ? 0.1
+                                    : progress.phase === 'ai'
+                                      ? 0.35
+                                      : progress.phase === 'fallback'
+                                        ? 0.75
+                                        : 0.95;
+                                showLocalProgress('titles', progressWithinStage('titles', fraction), progress.message);
+                            },
+                        });
                         adData = titleResult.adData;
                         titleWarning = titleResult.warning || null;
-                    } catch {
+                    } catch (error) {
+                        if (isTitleGenerationAbortError(error)) throw error;
                         // Títulos são um enriquecimento opcional. Uma falha inesperada não pode
                         // invalidar narração, takes, legendas ou o projeto já montado.
                         adData = {
@@ -643,6 +808,10 @@ export const OpsVideoJobCoordinator = () => {
                             code: 'automatic_titles_unavailable',
                             stage: 'titles',
                         });
+                    } finally {
+                        if (titleGenerationAbortRef.current === titleController) {
+                            titleGenerationAbortRef.current = null;
+                        }
                     }
                 } else {
                     adData = {
@@ -674,6 +843,13 @@ export const OpsVideoJobCoordinator = () => {
 
             await patch('export', OPS_VIDEO_PROGRESS.export.start, 'Renderizando a versao final e preparando o envio ao Ops.');
             const metadata = await prepareOpsExportMetadata(job.projectId, adData, finalTakes.length);
+            let uploadIdempotencyKey = requiresFreshRender
+                ? String(persisted.resume.uploadIdempotencyKey || '').trim()
+                : '';
+            if (requiresFreshRender && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uploadIdempotencyKey)) {
+                uploadIdempotencyKey = crypto.randomUUID();
+                persisted = updatePersistedOpsVideoJob({ resume: { uploadIdempotencyKey } }) || persisted;
+            }
             const exportJobId = startExport({
                 fileName: technicalFileName(job.projectTitle),
                 outputFolder: `Mileto Ops > ${companyName}`,
@@ -688,6 +864,8 @@ export const OpsVideoJobCoordinator = () => {
                 captionStyle,
                 projectId: job.projectId,
                 sourceJobId: job.id,
+                executionRevision,
+                uploadIdempotencyKey: uploadIdempotencyKey || undefined,
                 opsMetadata: metadata,
                 destination: {
                     kind: 'ops',
@@ -699,13 +877,24 @@ export const OpsVideoJobCoordinator = () => {
             if (!exportJobId) throw new Error('export_busy: Ja existe outra exportacao em andamento neste Mileto AI Video.');
             persisted = updatePersistedOpsVideoJob({ resume: { renderStarted: true, exportJobId } }) || persisted;
             await patch('export', 90, 'Render em andamento. O executor continuara ativo em segundo plano.');
-            const completedExport = await waitForOpsExport(job.projectId);
+            const completedExport = await waitForOpsExport(job.projectId, exportJobId);
             const assetId = completedExport.assetId;
+            if (!completedExport.renderResult) {
+                throw new Error('render_integrity_report_missing: O novo MP4 não possui o diagnóstico obrigatório da versão 1.4.27.');
+            }
+            if (requiresFreshRender && assetId === job.execution?.previousOutputAssetId) {
+                throw new Error('output_asset_not_fresh: O Ops devolveu o asset anterior para uma revisão que exige um novo upload.');
+            }
             const exportWarning = completedExport.renderResult
                 ? exportWarningSummary(completedExport.renderResult.warnings)
                 : undefined;
-            persisted = updatePersistedOpsVideoJob({ resume: { outputAssetId: assetId } }) || persisted;
-            await patch('export', OPS_VIDEO_PROGRESS.export.end, 'Upload concluido; confirmando o asset no Mileto Ops.', { outputAssetId: assetId });
+            persisted = updatePersistedOpsVideoJob({
+                resume: {
+                    outputAssetId: assetId,
+                    renderResult: completedExport.renderResult,
+                },
+            }) || persisted;
+            await patch('export', OPS_VIDEO_PROGRESS.export.end, 'Upload concluido; validando a revisão no Mileto Ops.');
             await persistAutomatedProject({
                 projectId: job.projectId,
                 title: job.projectTitle,
@@ -722,7 +911,9 @@ export const OpsVideoJobCoordinator = () => {
                 ? `${completionWarning}; vídeo criado e entregue na pasta da empresa.`
                 : 'Video criado e entregue na pasta da empresa.', {
                 status: 'completed',
+                revision: job.execution?.revision,
                 outputAssetId: assetId,
+                renderResult: completedExport.renderResult,
             });
             clearPersistedOpsVideoJob();
             currentJobRef.current = null;
@@ -737,6 +928,27 @@ export const OpsVideoJobCoordinator = () => {
         } catch (error) {
             const parsed = errorParts(error);
             const current = loadPersistedOpsVideoJob() || persisted;
+            if (parsed.code === 'output_asset_not_fresh') {
+                const message = 'O Ops recusou o asset anterior. O executor descartou somente o checkpoint de upload e fará outro render desta revisão com uma nova chave.';
+                updatePersistedOpsVideoJob({
+                    status: 'paused',
+                    stage: 'export',
+                    progress: OPS_VIDEO_PROGRESS.export.start,
+                    message,
+                    errorCode: parsed.code,
+                    errorMessage: message,
+                    resume: {
+                        renderStarted: false,
+                        exportJobId: null,
+                        outputAssetId: null,
+                        uploadIdempotencyKey: null,
+                        renderResult: null,
+                    },
+                });
+                setDisplay((value) => ({ ...value, status: 'paused', message, errorCode: parsed.code, assetId: undefined }));
+                toast.warning(`A revisão de "${job.projectTitle}" será renderizada novamente com um upload novo.`, { duration: 12_000 });
+                return;
+            }
             if (isRecoverableInterruption(error, parsed.code)) {
                 updatePersistedOpsVideoJob({
                     status: 'paused',
@@ -798,9 +1010,10 @@ export const OpsVideoJobCoordinator = () => {
             const parsed = errorParts(error);
             const persisted = loadPersistedOpsVideoJob();
             if (persisted) updatePersistedOpsVideoJob({ status: 'paused', message: parsed.message, errorCode: parsed.code, errorMessage: parsed.message });
+            const updateRequired = parsed.code === 'video_worker_upgrade_required';
             setDisplay((current) => ({
                 ...current,
-                status: persisted ? 'paused' : 'offline',
+                status: persisted || updateRequired ? 'paused' : 'offline',
                 message: parsed.message,
                 errorCode: parsed.code,
                 heartbeat: current.heartbeat === 'unsupported' ? 'unsupported' : 'offline',

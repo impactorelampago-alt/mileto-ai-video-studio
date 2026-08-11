@@ -122,7 +122,7 @@ test('migra gatilhos v1, remove gancho e valida modelo e animacao reais', () => 
     v1.triggers[1].titleTypes[0].styleId = 'modelo-inexistente';
     v1.triggers[1].titleTypes[0].animationId = 'rodopia';
     const result = normalizeTitleGeneratorConfig(v1);
-    assert.equal(result.version, 3);
+    assert.equal(result.version, 4);
     assert.ok(!result.triggers.some((trigger) => trigger.id === 'hook'));
     assert.ok(result.triggers.some((trigger) => trigger.id === 'region'));
     assert.ok(result.triggers.some((trigger) => trigger.id === 'price'));
@@ -161,7 +161,7 @@ test('normaliza a IA exclusiva do gerador de titulos sem depender dos agentes do
     assert.deepEqual(normalizeTitleGeneratorConfig(input).ai, {
         provider: 'openai',
         model: 'gpt-5-mini',
-        reasoning: 'equilibrado',
+        reasoning: 'rapido',
         maxOutputTokens: 32768,
     });
 });

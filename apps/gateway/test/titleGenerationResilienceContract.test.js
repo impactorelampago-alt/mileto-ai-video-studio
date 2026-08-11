@@ -10,7 +10,8 @@ const resilience = read('../../server/src/services/titleGenerationResilience.ts'
 
 test('endpoint registra diagnóstico seguro, repete transitórios e usa fallback determinístico', () => {
     assert.match(controller, /runResilientTitleGeneration/);
-    assert.match(controller, /maxAttempts:\s*3/);
+    assert.match(controller, /maxAttempts:\s*1/);
+    assert.doesNotMatch(controller, /maxProviderAttempts/);
     assert.match(controller, /deterministicCaptionTitleCandidates/);
     assert.match(controller, /deterministicTitleCandidates/);
     assert.match(controller, /logTitleGenerationDiagnostic\('request_failed'/);
@@ -18,10 +19,10 @@ test('endpoint registra diagnóstico seguro, repete transitórios e usa fallback
     assert.match(resilience, /Nunca serializamos[\s\S]*token[\s\S]*resposta upstream/);
 });
 
-test('cliente repete o endpoint e solicita explicitamente o modo local como fallback', () => {
-    assert.match(workflow, /CLIENT_TITLE_GENERATION_ATTEMPTS\s*=\s*2/);
-    assert.match(workflow, /request\('ai'\)/);
-    assert.match(workflow, /request\('local'\)/);
+test('cliente faz uma requisicao de IA e solicita explicitamente o modo local como fallback', () => {
+    assert.doesNotMatch(workflow, /CLIENT_TITLE_GENERATION_ATTEMPTS/);
+    assert.match(workflow, /primaryData\s*=\s*await request\('ai'\)/);
+    assert.match(workflow, /fallbackData\s*=\s*await request\('local'\)/);
     assert.match(workflow, /dynamicTitles:\s*\[\]/);
 });
 

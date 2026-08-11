@@ -9,7 +9,7 @@ import {
 const httpError = (status: number, code = 'provider_error') =>
     Object.assign(new Error('upstream body that must not be exposed'), { status, code });
 
-test('repete erro HTTP 500 e usa o detector local sem interromper o vídeo', async () => {
+test('limita retry de erro HTTP 500 e usa o detector local sem interromper o vídeo', async () => {
     let primaryCalls = 0;
     let fallbackCalls = 0;
     const result = await runResilientTitleGeneration({
@@ -26,7 +26,7 @@ test('repete erro HTTP 500 e usa o detector local sem interromper o vídeo', asy
         requestId: 'request-500',
     });
 
-    assert.equal(primaryCalls, 3);
+    assert.equal(primaryCalls, 2);
     assert.equal(fallbackCalls, 1);
     assert.equal(result.source, 'local');
     assert.deepEqual(result.items, [{ text: 'R$ 199,00', kind: 'price' }]);
