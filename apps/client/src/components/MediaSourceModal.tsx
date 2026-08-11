@@ -44,6 +44,9 @@ type Source = 'computer' | 'shared' | 'ops';
 interface MediaSourceModalProps {
     kind: MediaKind;
     onClose: () => void;
+    /** Devolve uma única mídia sem inseri-la na timeline. */
+    onTakePicked?: (take: MediaTake) => void;
+    title?: string;
 }
 
 interface SharedFile {
@@ -223,7 +226,17 @@ const SourceButton = ({
     </button>
 );
 
-const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'local' | 'shared'; onPicked: () => void }) => {
+const LibrarySource = ({
+    kind,
+    scope,
+    onPicked,
+    onTakePicked,
+}: {
+    kind: MediaKind;
+    scope: 'local' | 'shared';
+    onPicked: () => void;
+    onTakePicked?: (take: MediaTake) => void;
+}) => {
     const { addMediaTakes } = useWizard();
     const { registerClientJob, updateClientJob } = useDownloadJobs();
     const category = kind === 'video' ? 'Vídeos' : 'Imagens';
@@ -309,6 +322,7 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
     const toggleFile = (file: SharedFile) => {
         const id = file.id || file.relPath;
         setSelectedIds((current) => {
+            if (onTakePicked) return current.has(id) ? new Set() : new Set([id]);
             const next = new Set(current);
             if (next.has(id)) next.delete(id);
             else next.add(id);
@@ -326,7 +340,7 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
 
     const confirmSelection = () => {
         if (!selectedFiles.length) return;
-        const batch = [...selectedFiles];
+        const batch = onTakePicked ? selectedFiles.slice(0, 1) : [...selectedFiles];
         const total = batch.length;
         const activityId = registerClientJob({
             mode: kind,
@@ -380,7 +394,10 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
                     updateClientJob(activityId, { percent, stepPercent: percent });
                 }
             }
-            if (takes.length) addMediaTakes(takes);
+            if (takes.length) {
+                if (onTakePicked) onTakePicked(takes[0]);
+                else addMediaTakes(takes);
+            }
             updateClientJob(activityId, takes.length ? {
                 phase: 'done',
                 percent: 100,
@@ -797,7 +814,7 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
                             Apagar {selectedFiles.length || ''}
                         </button>
                         <button onClick={confirmSelection} disabled={!selectedFiles.length} className="rounded-lg bg-brand-lime px-3 py-2 text-[10px] font-black text-[#06110c] disabled:opacity-35">
-                            Adicionar {selectedFiles.length || ''} ao projeto
+                            {onTakePicked ? 'Usar como moldura' : `Adicionar ${selectedFiles.length || ''} ao projeto`}
                         </button>
                     </div>
                 </div>
@@ -989,7 +1006,7 @@ const LibrarySource = ({ kind, scope, onPicked }: { kind: MediaKind; scope: 'loc
     );
 };
 
-export const MediaSourceModal = ({ kind, onClose }: MediaSourceModalProps) => {
+export const MediaSourceModal = ({ kind, onClose, onTakePicked, title }: MediaSourceModalProps) => {
     const [source, setSource] = useState<Source>('computer');
 
     useEffect(() => {
@@ -1011,7 +1028,7 @@ export const MediaSourceModal = ({ kind, onClose }: MediaSourceModalProps) => {
                                 {kind === 'video' ? <FileVideo className="h-4 w-4" /> : <FileImage className="h-4 w-4" />}
                             </span>
                             <div className="min-w-0">
-                                <h2 className="truncate text-base font-black text-foreground">Adicionar {labelForKind(kind)}</h2>
+                                <h2 className="truncate text-base font-black text-foreground">{title || `Adicionar ${labelForKind(kind)}`}</h2>
                                 <p className="truncate text-[10px] text-brand-muted">Escolha a origem e selecione os arquivos.</p>
                             </div>
                         </div>
@@ -1027,9 +1044,9 @@ export const MediaSourceModal = ({ kind, onClose }: MediaSourceModalProps) => {
                 </header>
 
                 <div className="min-h-0 flex-1 overflow-hidden">
-                    {source === 'computer' && <LibrarySource kind={kind} scope="local" onPicked={onClose} />}
-                    {source === 'shared' && <LibrarySource kind={kind} scope="shared" onPicked={onClose} />}
-                    {source === 'ops' && <div className="h-full min-h-0 overflow-hidden p-2"><OpsLibrary pickerKind={kind} onPicked={onClose} /></div>}
+                    {source === 'computer' && <LibrarySource kind={kind} scope="local" onPicked={onClose} onTakePicked={onTakePicked} />}
+                    {source === 'shared' && <LibrarySource kind={kind} scope="shared" onPicked={onClose} onTakePicked={onTakePicked} />}
+                    {source === 'ops' && <div className="h-full min-h-0 overflow-hidden p-2"><OpsLibrary pickerKind={kind} onPicked={onClose} onTakePicked={onTakePicked} /></div>}
                 </div>
             </section>
         </div>,

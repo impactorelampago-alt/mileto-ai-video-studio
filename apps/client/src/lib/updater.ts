@@ -27,7 +27,13 @@ export const updater = {
     async check() {
         const ipc = getIpc();
         if (!ipc) return { ok: false, message: 'Auto-update disponível apenas no app instalado.' };
-        return ipc.invoke('update:check') as Promise<{ ok: boolean; message?: string; currentVersion?: string; updateInfo?: { version: string; releaseDate: string } | null }>;
+        return ipc.invoke('update:check') as Promise<{
+            ok: boolean;
+            message?: string;
+            currentVersion?: string;
+            isUpdateAvailable?: boolean;
+            updateInfo?: { version: string; releaseDate: string } | null;
+        }>;
     },
     async download() {
         const ipc = getIpc();

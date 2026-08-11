@@ -271,6 +271,7 @@ export interface OpsVideoJob {
     voicePresetId?: string | null;
     format: '9:16' | '1:1';
     takeAssetIds: string[];
+    frameAssetId?: string | null;
     destinationFolderId?: string | null;
     quickEdit: boolean;
     shuffleTakes: boolean;

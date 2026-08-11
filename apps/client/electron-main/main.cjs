@@ -452,6 +452,7 @@ app.whenReady().then(() => {
             return {
                 ok: true,
                 currentVersion: app.getVersion(),
+                isUpdateAvailable: Boolean(result && result.isUpdateAvailable),
                 updateInfo:
                     result && result.updateInfo
                         ? { version: result.updateInfo.version, releaseDate: result.updateInfo.releaseDate }

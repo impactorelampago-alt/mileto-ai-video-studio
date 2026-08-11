@@ -76,6 +76,8 @@ const ViewContextIcon = ({ mode, className = 'w-4 h-4' }: { mode: OpsViewContext
 interface OpsLibraryProps {
     pickerKind?: 'video' | 'image';
     onPicked?: () => void;
+    /** Seleção unitária para consumidores que não inserem a mídia na timeline. */
+    onTakePicked?: (take: MediaTake) => void;
 }
 
 interface MaterializedOpsSource {
@@ -88,7 +90,7 @@ interface MaterializedOpsSource {
     externalMedia?: MediaTake['externalMedia'];
 }
 
-export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
+export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryProps = {}) => {
     const { addMediaTakes, setMediaTakes } = useWizard();
     const { registerJob, registerClientJob, updateClientJob } = useDownloadJobs();
     const [ready, setReady] = useState(false);
@@ -466,6 +468,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
 
     const toggleAssetSelection = (assetId: string) => {
         setSelectedAssetIds((current) => {
+            if (onTakePicked) return current.has(assetId) ? new Set() : new Set([assetId]);
             const next = new Set(current);
             if (next.has(assetId)) next.delete(assetId);
             else next.add(assetId);
@@ -488,7 +491,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
             return;
         }
 
-        const batch = [...selectedAssets];
+        const batch = onTakePicked ? selectedAssets.slice(0, 1) : [...selectedAssets];
         const total = batch.length;
         const activityId = registerClientJob({
             mode: pickerKind,
@@ -573,7 +576,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
             );
 
             const immediateTakes = orderedTakes.filter((take): take is MediaTake => take !== null);
-            if (immediateTakes.length) addMediaTakes(immediateTakes);
+            if (immediateTakes.length && !onTakePicked) addMediaTakes(immediateTakes);
             updateClientJob(activityId, {
                 percent: 10,
                 stepPercent: 10,
@@ -595,7 +598,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                             placeholder?.id || crypto.randomUUID()
                         );
                         orderedTakes[index] = take;
-                        if (placeholder) {
+                        if (placeholder && !onTakePicked) {
                             const placeholderDuration = placeholderDurations.get(placeholder.id) || placeholder.originalDurationSeconds;
                             setMediaTakes((current) => current.map((existing) => {
                                 if (existing.id !== placeholder.id) return existing;
@@ -616,7 +619,7 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                                     },
                                 };
                             }));
-                        } else {
+                        } else if (!onTakePicked) {
                             addMediaTakes([take]);
                         }
                     } catch (error) {
@@ -641,6 +644,8 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
             );
 
             const takes = orderedTakes.filter((take): take is MediaTake => take !== null);
+
+            if (onTakePicked && takes[0]) onTakePicked(takes[0]);
 
             if (!takes.length) {
                 const firstError = failures[0]?.error || previewFailures[0]?.error;
@@ -1111,18 +1116,22 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                             </div>
                             {selectionMode && (
                                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-brand-lime/20 bg-brand-lime/[0.055] px-3 py-2.5">
-                                    <button
-                                        type="button"
-                                        onClick={() => setSelectedAssetIds(
-                                            selectedAssets.length === visibleAssets.length
-                                                ? new Set()
-                                                : new Set(visibleAssets.map((asset) => asset.id))
-                                        )}
-                                        className="inline-flex items-center gap-2 text-[11px] font-bold text-foreground/75 hover:text-foreground"
-                                    >
-                                        {selectedAssets.length === visibleAssets.length ? <CheckSquare className="h-4 w-4 text-brand-lime" /> : <Square className="h-4 w-4" />}
-                                        {selectedAssets.length === visibleAssets.length ? 'Desmarcar todos' : 'Selecionar todos'}
-                                    </button>
+                                    {onTakePicked ? (
+                                        <span className="text-[11px] font-bold text-foreground/75">Selecione uma moldura PNG</span>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            onClick={() => setSelectedAssetIds(
+                                                selectedAssets.length === visibleAssets.length
+                                                    ? new Set()
+                                                    : new Set(visibleAssets.map((asset) => asset.id))
+                                            )}
+                                            className="inline-flex items-center gap-2 text-[11px] font-bold text-foreground/75 hover:text-foreground"
+                                        >
+                                            {selectedAssets.length === visibleAssets.length ? <CheckSquare className="h-4 w-4 text-brand-lime" /> : <Square className="h-4 w-4" />}
+                                            {selectedAssets.length === visibleAssets.length ? 'Desmarcar todos' : 'Selecionar todos'}
+                                        </button>
+                                    )}
                                     <div className="flex items-center gap-3">
                                         <span className="text-[10px] font-bold text-brand-muted">{selectedAssets.length} selecionado(s)</span>
                                         <button
@@ -1131,7 +1140,11 @@ export const OpsLibrary = ({ pickerKind, onPicked }: OpsLibraryProps = {}) => {
                                             disabled={!selectedAssets.length}
                                             className="rounded-lg bg-brand-lime px-3 py-2 text-[10px] font-black text-[#06110c] shadow-[0_0_18px_rgba(0,239,151,0.12)] disabled:cursor-not-allowed disabled:opacity-35"
                                         >
-                                            {pickerKind ? `Adicionar ${selectedAssets.length || ''} ao projeto` : `Baixar ${selectedAssets.length || ''}`}
+                                            {onTakePicked
+                                                ? 'Usar como moldura'
+                                                : pickerKind
+                                                    ? `Adicionar ${selectedAssets.length || ''} ao projeto`
+                                                    : `Baixar ${selectedAssets.length || ''}`}
                                         </button>
                                     </div>
                                 </div>

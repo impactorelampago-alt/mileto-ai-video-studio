@@ -339,14 +339,6 @@ export const Step2 = () => {
         return acc + duration;
     }, 0);
     const narrationDuration = adData.narrationDuration || 0;
-    // A narração/mixagem é o relógio final. Takes excedentes continuam editáveis,
-    // porém nada depois do fim do áudio entra no preview ou na exportação.
-    const totalDuration = narrationDuration > 0
-        ? Math.min(rawTakesDuration, narrationDuration)
-        : rawTakesDuration;
-    const durationDelta = rawTakesDuration - narrationDuration;
-    const isDurationShort = narrationDuration > 0 && durationDelta < -0.05;
-    const hasDurationReserve = narrationDuration > 0 && durationDelta > 0.05;
     const allTakesMuted = mediaTakes.length > 0 && mediaTakes.every((take) => take.muteOriginalAudio);
     const selectedMusic = musicLibrary.find((music) => music.id === selectedMusicId);
     const narrationTrackDuration = (() => {
@@ -364,8 +356,19 @@ export const Step2 = () => {
         const end = background?.trimEnd ?? selectedMusic?.durationSec ?? 0;
         return end > start ? (background?.offsetSec ?? 0) + (end - start) : 0;
     })();
-    const automaticCutDuration = narrationTrackDuration || narrationDuration || backgroundTrackDuration;
-    const quickEditTargetDuration = backgroundTrackDuration || automaticCutDuration;
+    const narrationFallbackDuration = adData.audioConfig?.narration?.enabled === false ? 0 : narrationDuration;
+    const automaticCutDuration = narrationTrackDuration || narrationFallbackDuration || backgroundTrackDuration;
+    // A mixagem é o relógio final. Takes excedentes continuam editáveis, porém
+    // nada depois do fim efetivo do áudio entra no preview ou na exportação.
+    const totalDuration = automaticCutDuration > 0
+        ? Math.min(rawTakesDuration, automaticCutDuration)
+        : rawTakesDuration;
+    const durationDelta = rawTakesDuration - automaticCutDuration;
+    const isDurationShort = automaticCutDuration > 0 && durationDelta < -0.05;
+    const hasDurationReserve = automaticCutDuration > 0 && durationDelta > 0.05;
+    // O master termina com a narração quando ela existe (`amix duration=first`).
+    // A música só define o relógio do projeto quando não há faixa narrada.
+    const quickEditTargetDuration = automaticCutDuration;
     const quickEditRemaining = Math.max(0, quickEditTargetDuration - rawTakesDuration);
     const canQuickEdit = mediaTakes.length > 0
         && quickEditTargetDuration > 0

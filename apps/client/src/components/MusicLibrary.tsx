@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
-import { Music, Play, Pause, Pencil, Trash2, Check, X, Loader2, ArrowDownToLine, ArrowUpFromLine, HardDrive, Users, LockKeyhole } from 'lucide-react';
+import { Music, Play, Pause, Pencil, Trash2, Check, X, Loader2, ArrowDownToLine, ArrowUpFromLine, HardDrive, Users, LockKeyhole, Scissors } from 'lucide-react';
 import { toast } from 'sonner';
 import type { MusicTrack } from '../types';
 
@@ -18,6 +18,11 @@ const formatDuration = (sec: number) => {
 };
 
 const LOCAL_RENAMES_KEY = 'mileto_music_renames';
+const ALLOW_SYSTEM_MUSIC_TRIM = import.meta.env.DEV;
+
+interface MusicLibraryProps {
+    onTrimTrack?: (_track: MusicTrack) => void;
+}
 
 /** Read locally-cached rename overrides */
 function getLocalRenames(): Record<string, string> {
@@ -43,7 +48,7 @@ function clearLocalRename(id: string) {
     localStorage.setItem(LOCAL_RENAMES_KEY, JSON.stringify(renames));
 }
 
-export const MusicLibrary: React.FC = () => {
+export const MusicLibrary: React.FC<MusicLibraryProps> = ({ onTrimTrack }) => {
     const { musicLibrary, setMusicLibrary, selectedMusicId, setSelectedMusicId, loadMusicLibrary, draftScope } = useWizard();
     const { jobs: downloadJobs } = useDownloadJobs();
 
@@ -255,6 +260,15 @@ export const MusicLibrary: React.FC = () => {
     // ----- Select -----
     const handleSelect = (track: MusicTrack) => {
         setSelectedMusicId(selectedMusicId === track.id ? null : track.id);
+    };
+
+    const handleTrim = (track: MusicTrack) => {
+        if (isSystemMusicTrack(track) && !ALLOW_SYSTEM_MUSIC_TRIM) return;
+        audioRef.current?.pause();
+        stopTimeTracking();
+        setPlayingId(null);
+        setIsPaused(false);
+        onTrimTrack?.(track);
     };
 
     // ----- Rename (optimistic + offline fallback) -----
@@ -619,6 +633,17 @@ export const MusicLibrary: React.FC = () => {
                                                     <span className="px-2">Usar</span>
                                                 )}
                                             </button>
+                                            {onTrimTrack && (!isSystemMusicTrack(track) || ALLOW_SYSTEM_MUSIC_TRIM) && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleTrim(track)}
+                                                    className="p-1.5 text-brand-muted hover:text-brand-accent hover:bg-brand-accent/10 rounded-lg transition-colors"
+                                                    title="Cortar música"
+                                                    aria-label={`Cortar ${track.displayName}`}
+                                                >
+                                                    <Scissors className="w-3.5 h-3.5" />
+                                                </button>
+                                            )}
                                             {track.source !== 'system' && (
                                                 <>
                                                     <button

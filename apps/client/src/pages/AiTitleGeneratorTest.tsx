@@ -1361,7 +1361,7 @@ export const AiTitleGeneratorTest = () => {
                                             className="flex max-w-full flex-wrap justify-center text-center font-black uppercase leading-[1.2] tracking-wide"
                                             style={{
                                                 fontFamily: 'Montserrat',
-                                                fontSize: '20px',
+                                                fontSize: '16px',
                                                 WebkitTextStroke: '1px #000000',
                                                 paintOrder: 'stroke fill',
                                                 textShadow: '0 6px 12px rgba(0,0,0,.8)',
@@ -1384,7 +1384,7 @@ export const AiTitleGeneratorTest = () => {
                                         captionSafeTopPct={
                                             showPreviewCaption
                                                 ? captionSafeTopPercent(
-                                                      { fontSize: 20, strokeWidth: 1, verticalPosition: 23 },
+                                                      { fontSize: 16, strokeWidth: 1, verticalPosition: 23 },
                                                       format
                                                   )
                                                 : undefined

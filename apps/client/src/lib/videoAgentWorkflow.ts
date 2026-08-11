@@ -89,7 +89,6 @@ export const generateNarrationAndMix = async (input: AdData): Promise<AdData> =>
         },
         background: {
             ...input.audioConfig.background,
-            trimEnd: narrationDuration,
         },
     };
     let next: AdData = {
@@ -636,12 +635,15 @@ export const persistAutomatedProject = async (input: {
     selectedMusicId: string | null;
     exported: boolean;
 }) => {
+    const frameOverlay = input.adData.frameOverlay
+        ? serializeAutomatedTake(input.adData.frameOverlay)
+        : undefined;
     const response = await fetch(`${API_BASE_URL}/api/projects/${encodeURIComponent(input.projectId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             data: {
-                adData: { ...input.adData, title: input.title },
+                adData: { ...input.adData, frameOverlay, title: input.title },
                 mediaTakes: input.mediaTakes.map(serializeAutomatedTake),
                 captionStyle: input.captionStyle,
                 selectedMusicId: input.selectedMusicId,
@@ -674,7 +676,7 @@ const DEFAULT_AUTOMATED_CAPTION_STYLE: CaptionStyle = {
     name: 'Padrao do agente',
     previewClass: '',
     fontFamily: 'Anton',
-    fontSize: 20,
+    fontSize: 16,
     strokeWidth: 1,
     activeColor: '#00e676',
     baseColor: '#ffffff',

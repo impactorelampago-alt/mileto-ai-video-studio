@@ -12,12 +12,19 @@ import { toast } from 'sonner';
 interface TimelineEditorProps {
     isOpen: boolean;
     onClose: () => void;
+    initialTrackId?: 'narration' | 'bgm' | null;
+    initialTrackLabel?: string | null;
 }
 
 const DEFAULT_DURATION = 30;
 const HEADER_WIDTH = 128; // Width of the TrackLane header (w-32) // 30 seconds default if no clips
 
-export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose }) => {
+export const TimelineEditor: React.FC<TimelineEditorProps> = ({
+    isOpen,
+    onClose,
+    initialTrackId = null,
+    initialTrackLabel = null,
+}) => {
     const { adData, updateAdData } = useWizard();
     const [timeline, setTimeline] = useState<AudioTimeline | null>(null);
     const [history, setHistory] = useState<AudioTimeline[]>([]);
@@ -191,9 +198,12 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
 
         setTimeline(initialTimeline);
         setHistory([]);
-        setSelectedClipId(null);
-        setSelectedTrackId(null);
-    }, [isOpen, adData.narrationAudioUrl, adData.musicAudioUrl]); // Re-run if URLs change while open
+        const initialTrack = initialTrackId
+            ? initialTimeline.tracks.find((track) => track.id === initialTrackId)
+            : null;
+        setSelectedClipId(initialTrack?.clips[0]?.id ?? null);
+        setSelectedTrackId(initialTrack?.id ?? null);
+    }, [isOpen, adData.narrationAudioUrl, adData.musicAudioUrl, initialTrackId]); // Re-run if URLs change while open
 
     const cloneTimeline = React.useCallback(
         (value: AudioTimeline): AudioTimeline => JSON.parse(JSON.stringify(value)) as AudioTimeline,
@@ -304,6 +314,8 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
 
             updateAdData({
                 audioTimeline: timeline,
+                masterAudioUrl: undefined,
+                sharedMasterAssetId: undefined,
                 audioConfig: {
                     narration: {
                         enabled: narrTrack?.enabled ?? true,
@@ -477,7 +489,18 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                 {/* Header */}
                 <div className="h-14 px-4 flex items-center justify-between border-b border-black/5 dark:border-white/5 bg-card/50 shrink-0">
                     <div className="flex items-center gap-4">
-                        <h2 className="text-base font-semibold text-foreground">Editar Áudio</h2>
+                        <div className="min-w-0">
+                            <h2 className="truncate text-base font-semibold text-foreground">
+                                {initialTrackId === 'bgm'
+                                    ? `Cortar ${initialTrackLabel || 'música de fundo'}`
+                                    : 'Editar Áudio'}
+                            </h2>
+                            {initialTrackId === 'bgm' && (
+                                <p className="text-[10px] text-brand-muted">
+                                    Arraste as bordas da faixa para escolher o início e o fim.
+                                </p>
+                            )}
+                        </div>
                         <div className="h-4 w-px bg-black/10 dark:bg-white/10" />
                         <button
                             onClick={handleAutoZoom}
@@ -504,6 +527,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                 <div className="flex-1 overflow-hidden relative flex flex-col bg-neutral-950/50">
                     {/* Toolbar */}
                     <div className="h-10 border-b border-black/5 dark:border-white/5 bg-muted/5 flex items-center px-4 gap-2 shrink-0">
+                        {initialTrackId !== 'bgm' && <>
                         <button
                             onClick={() => {
                                 if (!selectedClipId || !timeline) return;
@@ -612,6 +636,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                             <Trash2 size={14} />
                         </button>
                         <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1" />
+                        </>}
                         <button
                             onClick={undo}
                             disabled={history.length === 0}
@@ -718,7 +743,9 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
                                 </div>
 
                                 <div className="space-y-4 py-2">
-                                    {timeline.tracks.map((track) => (
+                                    {timeline.tracks
+                                        .filter((track) => !initialTrackId || track.id === initialTrackId)
+                                        .map((track) => (
                                         <div
                                             key={track.id}
                                             onClick={(e) => {
@@ -807,6 +834,8 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({ isOpen, onClose 
 
                                     updateAdData({
                                         audioTimeline: timeline,
+                                        masterAudioUrl: undefined,
+                                        sharedMasterAssetId: undefined,
                                         audioConfig: {
                                             narration: {
                                                 enabled: narrTrack?.enabled ?? true,

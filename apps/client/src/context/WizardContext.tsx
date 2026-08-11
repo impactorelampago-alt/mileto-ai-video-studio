@@ -158,6 +158,13 @@ const serializeTakeForDraft = (take: MediaTake): MediaTake => {
     };
 };
 
+const serializeAdDataForDraft = (adData: AdData): AdData => ({
+    ...adData,
+    ...(adData.frameOverlay
+        ? { frameOverlay: serializeTakeForDraft(adData.frameOverlay) }
+        : { frameOverlay: undefined }),
+});
+
 const DEFAULT_NARRATION_TEXT = '';
 
 const defaultAdData: AdData = {
@@ -187,7 +194,7 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
     name: 'Hacker Matrix',
     previewClass: '',
     fontFamily: 'Montserrat',
-    fontSize: 20,
+    fontSize: 16,
     strokeWidth: 1,
     activeColor: '#00E676',
     baseColor: '#FFFFFF',
@@ -378,6 +385,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             !!s.adData.title?.trim() ||
             !!s.adData.narrationText?.trim() ||
             s.mediaTakes.length > 0 ||
+            !!s.adData.frameOverlay ||
             (s.adData.captions?.segments?.length ?? 0) > 0 ||
             (s.adData.dynamicTitles?.length ?? 0) > 0
         );
@@ -399,7 +407,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         const envelope: DraftRecoveryEnvelope = {
             capturedAt,
             data: {
-                adData: { ...s.adData, title },
+                adData: { ...serializeAdDataForDraft(s.adData), title },
                 mediaTakes: s.mediaTakes.map(serializeTakeForDraft),
                 captionStyle: s.captionStyle,
                 selectedMusicId: s.selectedMusicId,
@@ -475,7 +483,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         exported: boolean;
         title: string;
     }) => {
-        const nextAd = { ...payload.adData };
+        const nextAd = serializeAdDataForDraft(payload.adData);
 
         const syncAudio = async (
             urlKey: 'narrationAudioUrl' | 'musicAudioUrl' | 'masterAudioUrl',
@@ -519,6 +527,27 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         }
         nextAd.narrationAudioPath = null;
 
+        if (nextAd.frameOverlay && nextAd.frameOverlay.externalMedia?.source !== 'mileto_ops') {
+            const frame = nextAd.frameOverlay;
+            const sourceUrl = frame.fileUrl || frame.url;
+            if (isLocalMedia(sourceUrl, frame.backendPath)) {
+                const entry = await importLocalAsset({
+                    sourceUrl,
+                    backendPath: frame.backendPath,
+                    name: frame.fileName || fileNameFrom(sourceUrl, 'moldura.png'),
+                    parent: 'Imagens',
+                });
+                nextAd.frameOverlay = {
+                    ...frame,
+                    sharedAssetId: entry.id,
+                    url: entry.publicUrl,
+                    fileUrl: entry.publicUrl,
+                    proxyUrl: entry.publicUrl,
+                    backendPath: undefined,
+                };
+            }
+        }
+
         const nextTakes = await Promise.all(payload.mediaTakes.map(async (take) => {
             const serializableTake = serializeTakeForDraft(take);
             // Ativos do Ops permanecem referências externas. Copiá-los para o R2
@@ -553,8 +582,13 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     const hydrateSharedPayload = React.useCallback(async (data: LoadedDraftData): Promise<LoadedDraftData> => {
         const nextAd = data.adData ? { ...data.adData } : undefined;
         const nextTakes = Array.isArray(data.mediaTakes) ? data.mediaTakes.map((take) => ({ ...take })) : [];
+        const frameOverlay = nextAd?.frameOverlay
+            ? { ...nextAd.frameOverlay, trim: { ...nextAd.frameOverlay.trim } }
+            : undefined;
+        if (nextAd && frameOverlay) nextAd.frameOverlay = frameOverlay;
+        const hydrationTakes = frameOverlay ? [...nextTakes, frameOverlay] : nextTakes;
         const ids = new Set<string>();
-        for (const take of nextTakes) if (take.sharedAssetId) ids.add(take.sharedAssetId);
+        for (const take of hydrationTakes) if (take.sharedAssetId) ids.add(take.sharedAssetId);
         if (nextAd?.sharedNarrationAssetId) ids.add(nextAd.sharedNarrationAssetId);
         if (nextAd?.sharedMusicAssetId) ids.add(nextAd.sharedMusicAssetId);
         if (nextAd?.sharedMasterAssetId) ids.add(nextAd.sharedMasterAssetId);
@@ -567,7 +601,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 // Mantém a URL anterior para permitir diagnóstico de um item removido.
             }
         }));
-        for (const take of nextTakes) {
+        for (const take of hydrationTakes) {
             const asset = take.sharedAssetId ? assets.get(take.sharedAssetId) : null;
             if (asset) {
                 take.url = asset.publicUrl;
@@ -575,7 +609,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 take.proxyUrl = asset.publicUrl;
             }
         }
-        const hasOpsReferences = nextTakes.some(
+        const hasOpsReferences = hydrationTakes.some(
             (take) => take.externalMedia?.source === 'mileto_ops' && Boolean(take.externalMedia.referenceId)
         );
         let canMaterializeOpsLocally = false;
@@ -593,7 +627,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 canMaterializeOpsLocally = false;
             }
         }
-        await Promise.all(nextTakes.map(async (take) => {
+        await Promise.all(hydrationTakes.map(async (take) => {
             if (take.externalMedia?.source !== 'mileto_ops' || !take.externalMedia.referenceId) return;
             const referenceId = take.externalMedia.referenceId;
             const originalReference = take.externalMedia;
@@ -717,6 +751,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         const current = stateRef.current;
         const s = {
             ...current,
+            adData: serializeAdDataForDraft(current.adData),
             mediaTakes: current.mediaTakes.map(serializeTakeForDraft),
         };
         const exported = !!opts?.exported;
@@ -1171,6 +1206,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             ...ad,
             musicAudioUrl: nextUrl,
             masterAudioUrl: undefined,
+            sharedMasterAssetId: undefined,
             audioConfig: {
                 ...ad.audioConfig,
                 background: {

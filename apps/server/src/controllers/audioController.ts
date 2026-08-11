@@ -21,6 +21,101 @@ if (!fs.existsSync(AUDIO_MIXES_DIR)) {
     fs.mkdirSync(AUDIO_MIXES_DIR, { recursive: true });
 }
 
+const MAX_AUDIO_SECONDS = 6 * 60 * 60;
+
+interface NormalizedAudioTrackConfig {
+    enabled: boolean;
+    volume: number;
+    offsetSec: number;
+    trimStart: number;
+    trimEnd?: number;
+    fadeInSec: number;
+    fadeOutSec: number;
+}
+
+const boundedNumber = (value: unknown, fallback: number, min: number, max: number): number => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+};
+
+export const normalizeAudioTrackConfig = (
+    value: Record<string, unknown> | undefined,
+    defaultVolume: number,
+): NormalizedAudioTrackConfig => {
+    const trimStart = boundedNumber(value?.trimStart, 0, 0, MAX_AUDIO_SECONDS);
+    const parsedTrimEnd = Number(value?.trimEnd);
+    const trimEnd = Number.isFinite(parsedTrimEnd) && parsedTrimEnd > 0
+        ? Math.min(parsedTrimEnd, MAX_AUDIO_SECONDS)
+        : undefined;
+
+    if (trimEnd !== undefined && trimEnd <= trimStart) {
+        throw new Error('O fim do corte deve ficar depois do início.');
+    }
+
+    return {
+        enabled: value?.enabled !== false,
+        volume: boundedNumber(value?.volume, defaultVolume, 0, 2),
+        offsetSec: boundedNumber(value?.offsetSec, 0, 0, MAX_AUDIO_SECONDS),
+        trimStart,
+        trimEnd,
+        fadeInSec: boundedNumber(value?.fadeInSec, 0, 0, 60),
+        fadeOutSec: boundedNumber(value?.fadeOutSec, 0, 0, 60),
+    };
+};
+
+const probeAudioDuration = (inputPath: string): Promise<number> => new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(inputPath, (error, metadata) => {
+        if (error) {
+            reject(error);
+            return;
+        }
+        const duration = Number(metadata.format.duration || 0);
+        if (!Number.isFinite(duration) || duration <= 0) {
+            reject(new Error('A duração da faixa de áudio é inválida.'));
+            return;
+        }
+        resolve(duration);
+    });
+});
+
+const fitConfigToSource = (
+    config: NormalizedAudioTrackConfig,
+    sourceDuration: number,
+): NormalizedAudioTrackConfig => {
+    if (config.trimStart >= sourceDuration - 0.01) {
+        throw new Error('O início do corte ultrapassa a duração da faixa.');
+    }
+    const trimEnd = Math.min(config.trimEnd ?? sourceDuration, sourceDuration);
+    if (trimEnd <= config.trimStart) {
+        throw new Error('O intervalo de corte da faixa está vazio.');
+    }
+    return { ...config, trimEnd };
+};
+
+const filterNumber = (value: number): string => Number(value.toFixed(3)).toString();
+
+export const buildAudioFilterChain = (config: NormalizedAudioTrackConfig): string => {
+    const trimEnd = config.trimEnd;
+    if (trimEnd === undefined) throw new Error('Não foi possível determinar o fim da faixa.');
+
+    const clipDuration = trimEnd - config.trimStart;
+    const fadeIn = Math.min(config.fadeInSec, clipDuration / 2);
+    const fadeOut = Math.min(config.fadeOutSec, clipDuration / 2);
+    const filters = [
+        `atrim=start=${filterNumber(config.trimStart)}:end=${filterNumber(trimEnd)}`,
+        'asetpts=PTS-STARTPTS',
+        `volume=${filterNumber(config.volume)}`,
+    ];
+    if (fadeIn > 0) filters.push(`afade=t=in:st=0:d=${filterNumber(fadeIn)}`);
+    if (fadeOut > 0) {
+        filters.push(`afade=t=out:st=${filterNumber(clipDuration - fadeOut)}:d=${filterNumber(fadeOut)}`);
+    }
+    if (config.offsetSec > 0) {
+        filters.push(`adelay=${Math.round(config.offsetSec * 1000)}:all=1`);
+    }
+    return filters.join(',');
+};
+
 export const mixAudio = async (req: Request, res: Response) => {
     try {
         const { narrationUrl, musicUrl, audioConfig } = req.body;
@@ -29,9 +124,10 @@ export const mixAudio = async (req: Request, res: Response) => {
             return res.status(400).json({ ok: false, message: 'Nenhum áudio fornecido para mixagem.' });
         }
 
-        // Parse volumes from frontend config
-        const narrationVol = audioConfig?.narration?.enabled ? (audioConfig.narration.volume ?? 1) : 0;
-        const musicVol = audioConfig?.background?.enabled ? (audioConfig.background.volume ?? 0.3) : 0;
+        const narrationConfig = normalizeAudioTrackConfig(audioConfig?.narration, 1);
+        const musicConfig = normalizeAudioTrackConfig(audioConfig?.background, 0.3);
+        const narrationRequested = Boolean(narrationUrl && narrationConfig.enabled && narrationConfig.volume > 0);
+        const musicRequested = Boolean(musicUrl && musicConfig.enabled && musicConfig.volume > 0);
 
         // Resolve o input do ffmpeg com CONTAINMENT (nada de `../../etc/passwd`) e
         // bloqueia SSRF (URL externa tem que ser http(s) para host público).
@@ -65,25 +161,8 @@ export const mixAudio = async (req: Request, res: Response) => {
         const isLocalInput = (input: string) =>
             !!input && !/^https?:\/\//.test(input);
 
-        const narrationPath = resolveAudioInput(narrationUrl);
-        const musicPath = resolveAudioInput(musicUrl);
-
-        // Hash inputs to cache the mix
-        // v2 invalida mixes antigos que podiam ter sido cacheados sem a música por
-        // causa do caminho percent-encoded descrito acima.
-        const hashStr = `v2-${narrationUrl}-${musicUrl}-${narrationVol}-${musicVol}`;
-        const hash = crypto.createHash('md5').update(hashStr).digest('hex');
-        const outputFileName = `mix-${hash}.mp3`;
-        const outputPath = path.join(AUDIO_MIXES_DIR, outputFileName);
-        const publicUrl = `/mixes/${outputFileName}`;
-
-        // Return cached mix if exists
-        if (fs.existsSync(outputPath)) {
-            return res.json({ ok: true, masterAudioUrl: publicUrl });
-        }
-
-        const command = ffmpeg();
-        let inputCount = 0;
+        const narrationPath = narrationRequested ? resolveAudioInput(narrationUrl) : '';
+        const musicPath = musicRequested ? resolveAudioInput(musicUrl) : '';
 
         const FAKE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -145,48 +224,75 @@ export const mixAudio = async (req: Request, res: Response) => {
         const finalNarrationPath = await ensureLocalFile(narrationPath, 'narration');
         const finalMusicPath = await ensureLocalFile(musicPath, 'music');
 
-        const narrationReady = !!finalNarrationPath && narrationVol > 0 && fs.existsSync(finalNarrationPath);
-        const musicReady = !!finalMusicPath && musicVol > 0 && fs.existsSync(finalMusicPath);
+        const narrationReady = narrationRequested && !!finalNarrationPath && fs.existsSync(finalNarrationPath);
+        const musicReady = musicRequested && !!finalMusicPath && fs.existsSync(finalMusicPath);
 
-        if (narrationUrl && narrationVol > 0 && !narrationReady) {
+        if (narrationRequested && !narrationReady) {
             throw new Error('A narração selecionada não foi encontrada no disco.');
         }
-        if (musicUrl && musicVol > 0 && !musicReady) {
+        if (musicRequested && !musicReady) {
             throw new Error('A música selecionada não foi encontrada no disco. Selecione-a novamente.');
         }
 
+        const [narrationDuration, musicDuration] = await Promise.all([
+            narrationReady ? probeAudioDuration(finalNarrationPath) : Promise.resolve(0),
+            musicReady ? probeAudioDuration(finalMusicPath) : Promise.resolve(0),
+        ]);
+        const effectiveNarrationConfig = narrationReady
+            ? fitConfigToSource(narrationConfig, narrationDuration)
+            : narrationConfig;
+        const effectiveMusicConfig = musicReady
+            ? fitConfigToSource(musicConfig, musicDuration)
+            : musicConfig;
+
+        const readyInputs: Array<{
+            kind: 'narration' | 'music';
+            inputPath: string;
+            config: NormalizedAudioTrackConfig;
+        }> = [];
         if (narrationReady) {
-            command.input(finalNarrationPath);
-            inputCount++;
+            readyInputs.push({ kind: 'narration', inputPath: finalNarrationPath, config: effectiveNarrationConfig });
         }
-
         if (musicReady) {
-            command.input(finalMusicPath);
-            inputCount++;
+            readyInputs.push({ kind: 'music', inputPath: finalMusicPath, config: effectiveMusicConfig });
         }
 
-        console.log(`[Audio Mix Debug]`);
-        console.log(`- narrationUrl: ${narrationUrl}`);
-        console.log(`- finalNarrationPath: ${finalNarrationPath}`);
-        console.log(`- narrationReady? ${narrationReady}`);
-        console.log(`- narrationVol: ${narrationVol}`);
-        console.log(`- musicUrl: ${musicUrl}`);
-        console.log(`- finalMusicPath: ${finalMusicPath}`);
-        console.log(`- musicReady? ${musicReady}`);
-        console.log(`- musicVol: ${musicVol}`);
-        console.log(`-> inputCount: ${inputCount}`);
-
-        if (inputCount === 0) {
+        if (readyInputs.length === 0) {
             return res.json({ ok: true, masterAudioUrl: null });
         }
 
-        if (inputCount === 1) {
-            // Se tem só um válido, o input já foi adicionado
-            const singleVol = narrationReady ? narrationVol : musicVol;
+        const hashStr = JSON.stringify({
+            version: 3,
+            narrationUrl,
+            musicUrl,
+            narration: narrationReady ? effectiveNarrationConfig : null,
+            music: musicReady ? effectiveMusicConfig : null,
+        });
+        const hash = crypto.createHash('md5').update(hashStr).digest('hex');
+        const outputFileName = `mix-${hash}.mp3`;
+        const outputPath = path.join(AUDIO_MIXES_DIR, outputFileName);
+        const publicUrl = `/mixes/${outputFileName}`;
+        if (fs.existsSync(outputPath)) {
+            return res.json({ ok: true, masterAudioUrl: publicUrl });
+        }
+
+        const command = ffmpeg();
+        readyInputs.forEach((input) => command.input(input.inputPath));
+
+        console.log('[Audio Mix]', readyInputs.map((input) => ({
+            kind: input.kind,
+            trimStart: input.config.trimStart,
+            trimEnd: input.config.trimEnd,
+            offsetSec: input.config.offsetSec,
+            volume: input.config.volume,
+        })));
+
+        if (readyInputs.length === 1) {
+            const singleInput = readyInputs[0];
 
             await new Promise<void>((resolve, reject) => {
                 command
-                    .audioFilters(`volume=${singleVol}`)
+                    .audioFilters(buildAudioFilterChain(singleInput.config))
                     .save(outputPath)
                     .on('end', () => resolve())
                     .on('error', (err) => reject(err));
@@ -195,15 +301,15 @@ export const mixAudio = async (req: Request, res: Response) => {
             return res.json({ ok: true, masterAudioUrl: publicUrl });
         }
 
-        // Se tem dois, aplica amix
-        // A duração do master será a duração da narração (shortest)
-        // O amix por padrão pode misturar as durações, então usamos duration=shortest
+        const filteredInputs = readyInputs.map((input, index) => (
+            `[${index}:a]${buildAudioFilterChain(input.config)}[a${index}]`
+        ));
+        const mixInputs = readyInputs.map((_, index) => `[a${index}]`).join('');
         await new Promise<void>((resolve, reject) => {
             command
                 .complexFilter([
-                    `[0:a]volume=${narrationVol}[a0]`,
-                    `[1:a]volume=${musicVol}[a1]`,
-                    `[a0][a1]amix=inputs=2:duration=first:dropout_transition=2:normalize=0[aout]`,
+                    ...filteredInputs,
+                    `${mixInputs}amix=inputs=${readyInputs.length}:duration=first:dropout_transition=2:normalize=0[aout]`,
                 ])
                 .map('[aout]')
                 .save(outputPath)

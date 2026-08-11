@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useSyncExternalStore } from 'react';
+import { useState, useEffect, useRef, useSyncExternalStore, useCallback } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
     Bell,
@@ -51,6 +51,11 @@ const PLAN_LABEL: Record<string, string> = {
     enterprise: 'Plano Enterprise',
 };
 
+// O layout pode montar novamente em desenvolvimento (React StrictMode) ou após
+// um novo login. A checagem automática deve acontecer somente uma vez por sessão
+// do renderer; o botão manual continua disponível a qualquer momento.
+let automaticUpdateCheckStarted = false;
+
 export const MainLayout = () => {
     const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
     const [isDownloadPanelOpen, setIsDownloadPanelOpen] = useState(false);
@@ -58,6 +63,8 @@ export const MainLayout = () => {
     const navigate = useNavigate();
     const location = useLocation();
     const progressToastId = useRef<string | number | null>(null);
+    const updateCheckInFlightRef = useRef(false);
+    const manualUpdateFlowRef = useRef(false);
     const { saveProject } = useWizard();
     const { user, logout } = useAuth();
     const { activeCount, jobs, clearHistory } = useDownloadJobs();
@@ -135,55 +142,79 @@ export const MainLayout = () => {
                 toast.success(`Versão ${s.version} baixada. Reiniciando para instalar...`, { duration: 2500 });
                 setTimeout(() => void updater.install(), 2000);
             } else if (s.type === 'error') {
+                const shouldNotify = manualUpdateFlowRef.current;
                 if (progressToastId.current != null) {
                     toast.dismiss(progressToastId.current);
                     progressToastId.current = null;
                 }
-                toast.error(`Erro na atualização: ${s.message}`);
+                if (shouldNotify) toast.error(`Erro na atualização: ${s.message}`);
+                updateCheckInFlightRef.current = false;
+                manualUpdateFlowRef.current = false;
                 setIsCheckingUpdate(false);
             }
         });
         return off;
     }, []);
 
-    const handleCheckUpdates = async () => {
-        if (isCheckingUpdate) return;
-
+    const runUpdateCheck = useCallback(async (manual: boolean) => {
+        if (updateCheckInFlightRef.current) return;
         if (!updater.isAvailable()) {
-            window.open('https://github.com/impactorelampago-alt/mileto-ai-video-studio/releases', '_blank');
+            if (manual) {
+                window.open('https://github.com/impactorelampago-alt/mileto-ai-video-studio/releases', '_blank');
+            }
             return;
         }
 
+        updateCheckInFlightRef.current = true;
+        manualUpdateFlowRef.current = manual;
         setIsCheckingUpdate(true);
-        const checkToastId = toast.loading('Verificando atualizações...');
+        const checkToastId = manual ? toast.loading('Verificando atualizações...') : null;
+
+        const finishWithoutRestart = () => {
+            updateCheckInFlightRef.current = false;
+            manualUpdateFlowRef.current = false;
+            setIsCheckingUpdate(false);
+        };
 
         try {
             const res = await updater.check();
-            toast.dismiss(checkToastId);
+            if (checkToastId != null) toast.dismiss(checkToastId);
 
             if (!res.ok) {
-                toast.error(res.message || 'Falha ao verificar atualizações');
-                setIsCheckingUpdate(false);
+                if (manual) toast.error(res.message || 'Falha ao verificar atualizações');
+                finishWithoutRestart();
                 return;
             }
 
-            if (!res.updateInfo || res.updateInfo.version === res.currentVersion) {
-                toast.success(`Você já está na versão mais recente (${res.currentVersion}).`);
-                setIsCheckingUpdate(false);
+            if (!res.isUpdateAvailable || !res.updateInfo) {
+                if (manual) {
+                    toast.success(`Você já está na versão mais recente (${res.currentVersion}).`);
+                }
+                finishWithoutRestart();
                 return;
             }
 
             toast.info(`Nova versão ${res.updateInfo.version} disponível. Baixando...`);
             const dl = await updater.download();
             if (!dl.ok) {
-                toast.error(dl.message || 'Falha ao baixar atualização');
-                setIsCheckingUpdate(false);
+                if (manual) toast.error(dl.message || 'Falha ao baixar atualização');
+                finishWithoutRestart();
             }
         } catch (err: unknown) {
-            toast.dismiss(checkToastId);
-            toast.error(err instanceof Error ? err.message : 'Erro desconhecido');
-            setIsCheckingUpdate(false);
+            if (checkToastId != null) toast.dismiss(checkToastId);
+            if (manual) toast.error(err instanceof Error ? err.message : 'Erro desconhecido');
+            finishWithoutRestart();
         }
+    }, []);
+
+    useEffect(() => {
+        if (automaticUpdateCheckStarted || !updater.isAvailable()) return;
+        automaticUpdateCheckStarted = true;
+        void runUpdateCheck(false);
+    }, [runUpdateCheck]);
+
+    const handleCheckUpdates = () => {
+        void runUpdateCheck(true);
     };
 
     const notificationJobs = [...jobs]

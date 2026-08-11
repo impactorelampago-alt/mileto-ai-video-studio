@@ -106,6 +106,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const wizard = useWizard();
         const captionStyle = captionStyleOverride === undefined ? wizard.captionStyle : captionStyleOverride;
         const adData = adDataOverride || wizard.adData;
+        const frameOverlaySource = adData.frameOverlay
+            ? adData.frameOverlay.proxyUrl || adData.frameOverlay.fileUrl || adData.frameOverlay.url
+            : '';
         const isDebugMode = debugModeOverride ?? wizard.isDebugMode;
         const enhancementFilterId = `mileto-sharpness-${useId().replace(/:/g, '')}`;
 
@@ -155,7 +158,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             () =>
                 captions?.enabled !== false && captions?.segments?.length
                     ? captionSafeTopPercent(
-                          captionStyle || { fontSize: 20, strokeWidth: 1, verticalPosition: 23 },
+                          captionStyle || { fontSize: 16, strokeWidth: 1, verticalPosition: 23 },
                           adData.format
                       )
                     : undefined,
@@ -1663,7 +1666,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     try {
                         const node = overlayContainerRef.current;
                         const clientW = node.offsetWidth || 360;
-                        const scaleRatio = TARGET_W / clientW;
+                        const clientH = node.offsetHeight || (adData.format === '1:1' ? 360 : 640);
+                        const capturePixelRatio = TARGET_W / clientW;
 
                         // Espera TODAS as fontes terminarem de carregar antes de capturar
                         // (senão o snapshot sai com fonte fallback).
@@ -1672,19 +1676,30 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         } catch {
                             /* ignore */
                         }
+                        // O flush do frame de exportação e o carregamento da fonte podem
+                        // invalidar layout no mesmo tick. Dois RAFs garantem a geometria final.
+                        await new Promise<void>((resolve) => {
+                            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+                        });
                         // Embed determinístico: usa NOSSAS fontes locais (data-URI, mesma origem) direto,
                         // em vez do getFontEmbedCSS do html-to-image (que buscava do Google e falhava).
-                        overlayFontCssRef.current = selfHostedFontCss;
+                        overlayFontCssRef.current = selfHostedFontCss.replace(
+                            /font-display\s*:\s*swap/gi,
+                            'font-display:block'
+                        );
 
                         const overlayCanvas = await toCanvas(node, {
-                            width: TARGET_W,
-                            height: TARGET_H,
-                            pixelRatio: 1,
+                            // Rasteriza no viewport de design (360×640/360) e aumenta
+                            // somente a densidade. Redimensionar o clone para 1080px fazia
+                            // a fonte recalcular quebras de linha e cortar a última linha.
+                            width: clientW,
+                            height: clientH,
+                            pixelRatio: capturePixelRatio,
                             style: {
-                                transform: `scale(${scaleRatio})`,
+                                transform: 'none',
                                 transformOrigin: 'top left',
                                 width: `${clientW}px`,
-                                height: `${node.offsetHeight || 640}px`,
+                                height: `${clientH}px`,
                             },
                             backgroundColor: 'rgba(0,0,0,0)',
                             skipFonts: false,
@@ -1696,6 +1711,33 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         ctx.drawImage(overlayCanvas, 0, 0, TARGET_W, TARGET_H);
                     } catch (overlayErr) {
                         console.warn('[DOMCapture] Falha ao capturar overlays (texto/legenda):', overlayErr);
+                    }
+                }
+
+                // A moldura é rasterizada diretamente no canvas final. Isso mantém
+                // os quatro cantos íntegros e evita diferenças de CORS/layout do clone DOM.
+                if (frameOverlaySource) {
+                    try {
+                        const frame = new Image();
+                        frame.crossOrigin = 'anonymous';
+                        frame.src = await fetchAsBlobUrl(frameOverlaySource);
+                        if (typeof frame.decode === 'function') await frame.decode();
+                        else {
+                            await new Promise<void>((resolve, reject) => {
+                                frame.onload = () => resolve();
+                                frame.onerror = () => reject(new Error('Falha ao carregar a moldura.'));
+                            });
+                        }
+                        const frameW = frame.naturalWidth;
+                        const frameH = frame.naturalHeight;
+                        if (frameW > 0 && frameH > 0) {
+                            const scale = Math.min(TARGET_W / frameW, TARGET_H / frameH);
+                            const drawW = frameW * scale;
+                            const drawH = frameH * scale;
+                            ctx.drawImage(frame, (TARGET_W - drawW) / 2, (TARGET_H - drawH) / 2, drawW, drawH);
+                        }
+                    } catch (frameError) {
+                        console.warn('[DOMCapture] Falha ao rasterizar a moldura:', frameError);
                     }
                 }
 
@@ -2015,7 +2057,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                 transformOrigin: 'top center',
                             }}
                         >
-                            {captions?.segments && (
+                            {captions?.enabled !== false && captions?.segments && (
                                 <div
                                     className={cn(
                                         'absolute inset-x-0 flex items-center justify-center pointer-events-none z-30 px-6',
@@ -2037,7 +2079,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                                     fontFamily: captionStyle?.fontFamily || 'Montserrat',
                                                     fontSize: captionStyle?.fontSize
                                                         ? `${captionStyle.fontSize}px`
-                                                        : '20px',
+                                                        : '16px',
                                                     WebkitTextStroke: `${captionStyle?.strokeWidth ?? 1}px ${captionStyle?.strokeColor || 'black'}`,
                                                     paintOrder: 'stroke fill',
                                                     textShadow: '0px 6px 12px rgba(0,0,0,0.8)',
@@ -2228,6 +2270,16 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             )}
                         </div>
                     </div>
+
+                    {frameOverlaySource && (
+                        <img
+                            src={frameOverlaySource}
+                            alt=""
+                            aria-hidden="true"
+                            crossOrigin="anonymous"
+                            className="pointer-events-none absolute inset-0 z-40 h-full w-full object-contain"
+                        />
+                    )}
 
                     {/* Big Play Button Overlay */}
                     {!isPlaying && (

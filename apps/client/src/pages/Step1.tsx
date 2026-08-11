@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import { VoiceSelector } from '../components/VoiceSelector';
 import { VoiceSettingsPanel } from '../components/VoiceSettingsPanel';
-import type { TtsProvider } from '../types';
+import type { MusicTrack, TtsProvider } from '../types';
 import { cn } from '../lib/utils';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { ArrowRight, Wand2, Loader2, Music2, Check, Pencil, Mic, Pause, Play, Trash2 } from 'lucide-react';
@@ -16,11 +16,13 @@ import { invalidatedNarrationDerivatives } from '../lib/narrationState';
 import { OpsProjectCompanyPicker, type OpsCompanyRequirementState } from '../components/OpsProjectCompanyPicker';
 
 export const Step1 = () => {
-    const { adData, updateAdData } = useWizard();
+    const { adData, updateAdData, selectedMusicId, setSelectedMusicId } = useWizard();
     const navigate = useNavigate();
     const [isGenerating, setIsGenerating] = useState(false);
     const [isMixing, setIsMixing] = useState(false);
     const [isAudioEditorOpen, setIsAudioEditorOpen] = useState(false);
+    const [audioEditorFocus, setAudioEditorFocus] = useState<'bgm' | null>(null);
+    const [audioEditorTrackName, setAudioEditorTrackName] = useState<string | null>(null);
     const [opsCompanyState, setOpsCompanyState] = useState<OpsCompanyRequirementState>({
         loading: true,
         required: false,
@@ -154,7 +156,6 @@ export const Step1 = () => {
                 },
                 background: {
                     ...adData.audioConfig.background,
-                    trimEnd: narrationDuration > 0 ? narrationDuration : undefined,
                 },
             };
 
@@ -638,7 +639,14 @@ export const Step1 = () => {
                     </div>
 
                     {/* Music Library */}
-                    <MusicLibrary />
+                    <MusicLibrary
+                        onTrimTrack={(track: MusicTrack) => {
+                            if (selectedMusicId !== track.id) setSelectedMusicId(track.id);
+                            setAudioEditorFocus('bgm');
+                            setAudioEditorTrackName(track.displayName);
+                            setIsAudioEditorOpen(true);
+                        }}
+                    />
                 </div>
 
                 {/* Right Column: Voice */}
@@ -664,7 +672,11 @@ export const Step1 = () => {
             <div className="fixed bottom-0 right-0 left-0 z-50 flex h-16 items-center border-t border-black/5 bg-brand-dark/95 px-5 pr-24 backdrop-blur-xl dark:border-white/5">
                 <div className="mx-auto flex w-full max-w-[1500px] justify-end gap-3">
                     <button
-                        onClick={() => setIsAudioEditorOpen(true)}
+                        onClick={() => {
+                            setAudioEditorFocus(null);
+                            setAudioEditorTrackName(null);
+                            setIsAudioEditorOpen(true);
+                        }}
                         className="flex items-center gap-2 rounded-xl border border-black/5 bg-brand-card px-5 py-2.5 text-xs font-bold text-foreground transition-all hover:border-black/10 hover:bg-black/5 dark:border-white/5 dark:bg-white/5 dark:hover:border-white/10"
                     >
                         <Pencil className="w-4 h-4 text-brand-muted" />
@@ -686,7 +698,16 @@ export const Step1 = () => {
                 </div>
             </div>
 
-            <TimelineEditor isOpen={isAudioEditorOpen} onClose={() => setIsAudioEditorOpen(false)} />
+            <TimelineEditor
+                isOpen={isAudioEditorOpen}
+                initialTrackId={audioEditorFocus}
+                initialTrackLabel={audioEditorTrackName}
+                onClose={() => {
+                    setIsAudioEditorOpen(false);
+                    setAudioEditorFocus(null);
+                    setAudioEditorTrackName(null);
+                }}
+            />
         </div>
     );
 };

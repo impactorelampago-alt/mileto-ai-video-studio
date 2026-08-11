@@ -33,79 +33,18 @@ if (probePath && fs.existsSync(probePath)) {
 });
 
 // ─── Hardware-accelerated encoder detection ──────────────────────────────────
-type HwEncoder = 'h264_nvenc' | 'h264_qsv' | 'h264_amf' | 'libx264';
+export type HwEncoder = 'h264_nvenc' | 'h264_qsv' | 'h264_amf' | 'libx264';
 let CACHED_ENCODER: HwEncoder | null = null;
 
 const resolveFfmpegExe = (): string => (ffPath && fs.existsSync(ffPath) ? ffPath : 'ffmpeg');
 const resolveFfprobeExe = (): string => (probePath && fs.existsSync(probePath) ? probePath : 'ffprobe');
-
-const testEncoder = (enc: string): boolean => {
-    try {
-        execFileSync(
-            resolveFfmpegExe(),
-            [
-                '-hide_banner',
-                '-loglevel',
-                'error',
-                '-f',
-                'lavfi',
-                '-i',
-                'color=c=black:s=64x64:d=0.1',
-                '-c:v',
-                enc,
-                '-f',
-                'null',
-                '-',
-            ],
-            { timeout: 10000, stdio: 'pipe' }
-        );
-        return true;
-    } catch {
-        return false;
-    }
-};
-
-const detectBestEncoder = (): HwEncoder => {
-    if (CACHED_ENCODER) return CACHED_ENCODER;
-    if (process.env.DISABLE_GPU_ENCODE === '1') {
-        console.log('[FFmpeg] GPU encode desabilitado via DISABLE_GPU_ENCODE=1 → libx264');
-        CACHED_ENCODER = 'libx264';
-        return CACHED_ENCODER;
-    }
-    let listed = '';
-    try {
-        listed = execFileSync(resolveFfmpegExe(), ['-hide_banner', '-encoders'], {
-            encoding: 'utf8',
-            timeout: 5000,
-        });
-    } catch (err) {
-        console.warn('[FFmpeg] Falha ao listar encoders, usando libx264:', err);
-        CACHED_ENCODER = 'libx264';
-        return CACHED_ENCODER;
-    }
-    const candidates: HwEncoder[] = ['h264_nvenc', 'h264_qsv', 'h264_amf'];
-    for (const enc of candidates) {
-        if (listed.includes(enc) && testEncoder(enc)) {
-            console.log(`[FFmpeg] ✅ Encoder de hardware ativo: ${enc}`);
-            CACHED_ENCODER = enc;
-            return enc;
-        }
-    }
-    console.log('[FFmpeg] Nenhum encoder GPU disponível → libx264 (CPU)');
-    CACHED_ENCODER = 'libx264';
-    return 'libx264';
-};
-
-// Pre-detect once on module load so the first export call doesn't pay the cost
-detectBestEncoder();
 
 export interface EncoderArgsOpts {
     quality?: number;
     speed?: 'ultrafast' | 'veryfast' | 'fast';
 }
 
-export const getVideoEncoderArgs = (opts: EncoderArgsOpts = {}): string[] => {
-    const enc = detectBestEncoder();
+export const getVideoEncoderArgsFor = (enc: HwEncoder, opts: EncoderArgsOpts = {}): string[] => {
     const q = opts.quality ?? 20;
     const speed = opts.speed ?? 'fast';
     if (enc === 'h264_nvenc') {
@@ -158,6 +97,137 @@ export const getVideoEncoderArgs = (opts: EncoderArgsOpts = {}): string[] => {
         ];
     }
     return ['-c:v', 'libx264', '-preset', speed, '-crf', String(q), '-pix_fmt', 'yuv420p'];
+};
+
+const testEncoder = (enc: HwEncoder): boolean => {
+    try {
+        execFileSync(
+            resolveFfmpegExe(),
+            [
+                '-hide_banner',
+                '-loglevel',
+                'error',
+                '-f',
+                'lavfi',
+                '-i',
+                // NVENC rejeita quadros 64x64 mesmo quando a GPU funciona. A
+                // sonda usa dimensões realistas e os mesmos parâmetros do render.
+                'color=c=black:s=256x256:r=30:d=0.2',
+                '-frames:v',
+                '3',
+                ...getVideoEncoderArgsFor(enc, { quality: 20, speed: 'fast' }),
+                '-f',
+                'null',
+                '-',
+            ],
+            { timeout: 10000, stdio: 'pipe' }
+        );
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+const detectBestEncoder = (): HwEncoder => {
+    if (CACHED_ENCODER) return CACHED_ENCODER;
+    if (process.env.DISABLE_GPU_ENCODE === '1') {
+        console.log('[FFmpeg] GPU encode desabilitado via DISABLE_GPU_ENCODE=1 → libx264');
+        CACHED_ENCODER = 'libx264';
+        return CACHED_ENCODER;
+    }
+    let listed = '';
+    try {
+        listed = execFileSync(resolveFfmpegExe(), ['-hide_banner', '-encoders'], {
+            encoding: 'utf8',
+            timeout: 5000,
+        });
+    } catch (err) {
+        console.warn('[FFmpeg] Falha ao listar encoders, usando libx264:', err);
+        CACHED_ENCODER = 'libx264';
+        return CACHED_ENCODER;
+    }
+    const candidates: HwEncoder[] = ['h264_nvenc', 'h264_qsv', 'h264_amf'];
+    for (const enc of candidates) {
+        if (listed.includes(enc) && testEncoder(enc)) {
+            console.log(`[FFmpeg] ✅ Encoder de hardware ativo: ${enc}`);
+            CACHED_ENCODER = enc;
+            return enc;
+        }
+    }
+    console.log('[FFmpeg] Nenhum encoder GPU disponível → libx264 (CPU)');
+    CACHED_ENCODER = 'libx264';
+    return 'libx264';
+};
+
+// Pre-detect once on module load so the first export call doesn't pay the cost
+detectBestEncoder();
+
+export const getVideoEncoderArgs = (opts: EncoderArgsOpts = {}): string[] => {
+    return getVideoEncoderArgsFor(detectBestEncoder(), opts);
+};
+
+const FFMPEG_DIAGNOSTIC_MAX_LENGTH = 640;
+
+export const summarizeFfmpegStderr = (stderr: string): string => {
+    const lines = String(stderr || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        // execFile can prefix an Error with the entire command. Never surface it.
+        .filter((line) => !/^command failed:/i.test(line) && !/^configuration:/i.test(line));
+    const relevant = lines.filter((line) =>
+        /error|failed|failure|invalid|unsupported|cannot|unable|device|mfx|qsv|nvenc|amf|nothing was written/i.test(
+            line
+        )
+    );
+    const selected = (relevant.length ? relevant : lines).slice(-5);
+    const sanitized = selected
+        .map((line) =>
+            line
+                .replace(/(["'])(?:[A-Za-z]:\\|\\\\)[^"']+\1/g, '$1<arquivo local>$1')
+                .replace(/(?:[A-Za-z]:\\|\\\\).*$/g, '<arquivo local>')
+                .replace(/(["'])\/(?:Users|home|tmp|var|private)\/[^"']+\1/g, '$1<arquivo local>$1')
+                .replace(/\/(?:Users|home|tmp|var|private)\/.*$/g, '<arquivo local>')
+        )
+        .join(' | ');
+    return sanitized.slice(0, FFMPEG_DIAGNOSTIC_MAX_LENGTH);
+};
+
+export class FfmpegExecutionError extends Error {
+    readonly code = 'ffmpeg_execution_failed';
+    readonly retryable = true;
+
+    constructor(
+        readonly encoder: HwEncoder,
+        readonly diagnostic: string
+    ) {
+        super(
+            diagnostic
+                ? `Não foi possível concluir a codificação do vídeo (${encoder}). ${diagnostic}`
+                : `Não foi possível concluir a codificação do vídeo (${encoder}).`
+        );
+        this.name = 'FfmpegExecutionError';
+    }
+}
+
+export interface EncoderFallbackResult<T> {
+    value: T;
+    encoder: HwEncoder;
+    fallbackUsed: boolean;
+}
+
+export const runWithSoftwareEncoderFallback = async <T>(
+    primaryEncoder: HwEncoder,
+    run: (encoder: HwEncoder) => Promise<T>,
+    onFallback?: (failedEncoder: HwEncoder, error: unknown) => void
+): Promise<EncoderFallbackResult<T>> => {
+    try {
+        return { value: await run(primaryEncoder), encoder: primaryEncoder, fallbackUsed: false };
+    } catch (error) {
+        if (primaryEncoder === 'libx264') throw error;
+        onFallback?.(primaryEncoder, error);
+        return { value: await run('libx264'), encoder: 'libx264', fallbackUsed: true };
+    }
 };
 
 export interface VideoMetadata {
@@ -785,7 +855,10 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         args.push('-filter_complex', filterGraph);
         args.push('-map', '[finalVideo]');
         args.push('-map', expectedDuration ? '[finalAudio]' : `${audioIdx}:a`);
-        args.push(...getVideoEncoderArgs({ quality: 18, speed: 'fast' }));
+        const primaryEncoder = detectBestEncoder();
+        const encoderArgsOffset = args.length;
+        const primaryEncoderArgs = getVideoEncoderArgsFor(primaryEncoder, { quality: 18, speed: 'fast' });
+        args.push(...primaryEncoderArgs);
         args.push('-c:a', 'aac');
         args.push('-b:a', '192k');
         // Ambas as streams já foram fechadas explicitamente na duração
@@ -827,28 +900,89 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         // Use the bundled FFmpeg path if available, fallback to global 'ffmpeg'
         const ffmpegExecutable = ffPath && fs.existsSync(ffPath) ? ffPath : 'ffmpeg';
 
-        const proc = execFile(
-            ffmpegExecutable,
-            args,
-            { maxBuffer: 50 * 1024 * 1024 },
-            (error: Error | null, _stdout: string, stderr: string) => {
-                if (error) {
-                    console.error('[FFmpeg Hybrid Direct] ❌ FALHA:', error.message);
-                    console.error('[FFmpeg Hybrid Direct] stderr:', stderr?.slice(-1000));
-                    cleanup();
-                    reject(error);
-                } else {
-                    console.log('[FFmpeg Hybrid Direct] ✅ Vídeo exportado com sucesso.');
-                    cleanup();
-                    resolve(outputPath);
-                }
-            }
-        );
+        const commandArgsFor = (encoder: HwEncoder): string[] => {
+            const commandArgs = [...args];
+            commandArgs.splice(
+                encoderArgsOffset,
+                primaryEncoderArgs.length,
+                ...getVideoEncoderArgsFor(encoder, { quality: 18, speed: 'fast' })
+            );
+            return commandArgs;
+        };
 
-        proc.on('error', (err: Error) => {
-            console.error('[FFmpeg Hybrid Direct] Erro ao iniciar ffmpeg:', err);
-            cleanup();
-            reject(err);
-        });
+        const runEncoder = (encoder: HwEncoder): Promise<void> =>
+            new Promise((resolveRun, rejectRun) => {
+                let settled = false;
+                const fail = (diagnostic: string) => {
+                    if (settled) return;
+                    settled = true;
+                    rejectRun(new FfmpegExecutionError(encoder, diagnostic));
+                };
+
+                const proc = execFile(
+                    ffmpegExecutable,
+                    commandArgsFor(encoder),
+                    { maxBuffer: 50 * 1024 * 1024, windowsHide: true, encoding: 'utf8' },
+                    (error, _stdout, stderr) => {
+                        if (settled) return;
+                        if (error) {
+                            fail(
+                                summarizeFfmpegStderr(stderr) ||
+                                    'O processo de codificação foi encerrado antes de concluir.'
+                            );
+                            return;
+                        }
+                        settled = true;
+                        resolveRun();
+                    }
+                );
+
+                proc.once('error', () => {
+                    fail('Não foi possível iniciar o processo de codificação.');
+                });
+            });
+
+        void (async () => {
+            try {
+                const result = await runWithSoftwareEncoderFallback(primaryEncoder, runEncoder, (failed, error) => {
+                    CACHED_ENCODER = 'libx264';
+                    const diagnostic = error instanceof FfmpegExecutionError ? error.diagnostic : '';
+                    console.warn(
+                        `[FFmpeg Hybrid Direct] Encoder ${failed} falhou; repetindo com libx264.${
+                            diagnostic ? ` ${diagnostic}` : ''
+                        }`
+                    );
+                    // O processo anterior já terminou. Remover somente o MP4 parcial;
+                    // a sequência alpha precisa continuar disponível para o fallback.
+                    if (fs.existsSync(outputPath)) {
+                        try {
+                            fs.rmSync(outputPath, { force: true });
+                        } catch {
+                            /* o segundo ffmpeg reportará se ainda não conseguir sobrescrever */
+                        }
+                    }
+                });
+
+                console.log(
+                    `[FFmpeg Hybrid Direct] Vídeo exportado com ${result.encoder}${
+                        result.fallbackUsed ? ' (fallback CPU)' : ''
+                    }.`
+                );
+                cleanup();
+                resolve(outputPath);
+            } catch (error) {
+                // Somente agora, depois de esgotar o fallback, é seguro apagar os
+                // quadros temporários usados por ambas as tentativas.
+                cleanup();
+                if (fs.existsSync(outputPath)) {
+                    try {
+                        fs.rmSync(outputPath, { force: true });
+                    } catch {
+                        /* ignore */
+                    }
+                }
+                reject(error);
+            }
+        })();
     });
 };

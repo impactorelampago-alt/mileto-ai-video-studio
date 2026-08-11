@@ -15,15 +15,15 @@ import {
     MapPin,
     Image as ImageIcon,
     Trash2,
-    Upload,
     RotateCcw,
     Type,
     CopyPlus,
+    Plus,
     X,
 } from 'lucide-react';
 import { useWizard, SHOW_DEBUG_FEATURES } from '../context/WizardContext';
 import { VideoSequencePreview, VideoSequencePreviewRef } from '../components/VideoSequencePreview';
-import { TitleHook } from '../types';
+import { MediaTake, TitleHook } from '../types';
 import { toast } from 'sonner';
 import { cn, generateId } from '../lib/utils';
 import { DynamicTitleRenderer } from '../components/DynamicTitleRenderer';
@@ -32,7 +32,6 @@ import { ExportModal } from '../components/ExportModal';
 import { PREMIUM_TITLE_GROUPS, PREMIUM_TITLE_MODELS } from '../lib/premiumTitleModels';
 import {
     CTA_TITLE_MODELS,
-    IMAGE_TITLE_MODEL,
     LOCATION_TITLE_MODELS,
     SIMPLE_TITLE_MODELS,
     titleStylePresetById,
@@ -48,6 +47,7 @@ import {
     isTitleGenerationAbortError,
     LocalApiError,
 } from '../lib/videoAgentWorkflow';
+import { MediaSourceModal } from '../components/MediaSourceModal';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -209,6 +209,7 @@ export const Step4 = () => {
     const [isLocationOpen, setIsLocationOpen] = useState(false);
     const [isCustomImgOpen, setIsCustomImgOpen] = useState(false);
     const [isUploadingImage, setIsUploadingImage] = useState(false);
+    const [isFramePickerOpen, setIsFramePickerOpen] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
     const [titleGenerationProgress, setTitleGenerationProgress] = useState('');
     const previewRef = useRef<VideoSequencePreviewRef>(null);
@@ -230,6 +231,29 @@ export const Step4 = () => {
             .map(({ title }) => title),
         [titles]
     );
+
+    const handleFramePicked = useCallback((take: MediaTake) => {
+        if (!/\.png$/i.test(take.fileName || '')) {
+            toast.error('A moldura precisa ser um arquivo PNG com transparência.');
+            return;
+        }
+
+        const isFirstFrame = !adData.frameOverlay;
+        updateAdData({
+            frameOverlay: { ...take, objectFit: 'contain' },
+            ...(isFirstFrame && adData.captions
+                ? { captions: { ...adData.captions, enabled: false } }
+                : {}),
+            ...(isFirstFrame
+                ? { dynamicTitles: (adData.dynamicTitles || []).map((title) => ({ ...title, isActive: false })) }
+                : {}),
+        });
+        toast.success(
+            isFirstFrame
+                ? 'Moldura aplicada. Legendas e títulos foram desativados por padrão.'
+                : 'Moldura atualizada.'
+        );
+    }, [adData.captions, adData.dynamicTitles, adData.frameOverlay, updateAdData]);
     const titleStateRef = useRef<TitleHook[]>(titles);
     const titleHistoryRef = useRef<{
         undo: TitleHook[][];
@@ -554,30 +578,29 @@ export const Step4 = () => {
             <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(250px,.8fr)_minmax(420px,1.45fr)_minmax(240px,.75fr)]">
                 {/* COLUMN 1: AI Hooks (Left) */}
                 <div className="custom-scrollbar relative flex min-h-0 flex-col gap-3 overflow-y-auto rounded-2xl border border-black/5 bg-brand-card p-3 shadow-xl dark:border-white/5">
+                    <div className="grid grid-cols-[minmax(0,1fr)_repeat(2,2rem)] items-center gap-1.5 rounded-xl border border-black/5 bg-brand-dark/70 p-1.5 shadow-sm dark:border-white/5">
                     <button
+                        type="button"
                         onClick={isGenerating ? cancelTitleGeneration : handleGenerateTitles}
                         className={cn(
-                            'z-10 flex w-full items-center justify-center gap-2 rounded-xl py-3 text-[11px] font-bold uppercase tracking-wider transition-all active:scale-[0.98]',
+                            'z-10 flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 text-[9px] font-extrabold tracking-wide transition-all active:scale-[0.98]',
                             isGenerating
                                 ? 'border border-amber-300/35 bg-amber-300/10 text-amber-100 hover:bg-amber-300/15'
-                                : 'bg-linear-to-r from-brand-lime to-brand-accent text-[#0a0f12] hover:scale-[1.01] hover:shadow-[0_0_15px_rgba(0,230,118,0.4)]',
+                                : 'border-brand-accent/30 bg-brand-accent/10 text-brand-accent hover:border-brand-accent/55 hover:bg-brand-accent/15',
                         )}
                     >
                         {isGenerating ? (
                             <X className="h-4 w-4" />
                         ) : (
-                            <Wand2 className="w-4 h-4" />
+                            <Wand2 className="h-3.5 w-3.5 shrink-0" />
                         )}
-                        {isGenerating ? 'Cancelar geração' : 'Gerar Títulos com IA'}
+                        <span className="truncate">{isGenerating ? 'Cancelar' : 'Títulos inteligentes'}</span>
                     </button>
-                    {isGenerating && titleGenerationProgress && (
-                        <p className="-mt-1 text-center text-[9px] font-semibold text-brand-muted" aria-live="polite">
-                            {titleGenerationProgress}
-                        </p>
-                    )}
-
-                    <div className="grid grid-cols-2 gap-2">
                     <button
+                        type="button"
+                        disabled={isGenerating}
+                        aria-label="Adicionar título manual"
+                        title="Adicionar título manual"
                         onClick={() => {
                             const startSec = currentPreviewTime();
                             const stylePreset = titleStylePresetById('solid-ribbon') || SIMPLE_TITLE_MODELS[0];
@@ -604,61 +627,71 @@ export const Step4 = () => {
                                 `Título criado em ${startSec.toFixed(1)}s. Dê dois cliques nele para editar.`
                             );
                         }}
-                        className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl border border-brand-accent/30 py-2.5 text-[10px] font-bold uppercase tracking-wider text-brand-accent transition-all hover:border-brand-accent/60 hover:bg-brand-accent/5"
+                        className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-foreground/75 transition-all hover:border-brand-accent/45 hover:bg-brand-accent/10 hover:text-brand-accent active:scale-95 disabled:cursor-not-allowed disabled:opacity-35"
                     >
-                        <Sparkles className="w-4 h-4" />
-                        Criar Título
+                        <Plus className="h-4 w-4" />
+                        <span className="sr-only">Adicionar título manual</span>
                     </button>
 
                     <button
-                        onClick={() => {
-                            // Create file input for image upload
-                            const input = document.createElement('input');
-                            input.type = 'file';
-                            input.accept = 'image/*';
-                            input.onchange = async (e) => {
-                                const file = (e.target as HTMLInputElement).files?.[0];
-                                if (!file) return;
-
-                                // Validate file size (max 5MB)
-                                if (file.size > 5 * 1024 * 1024) {
-                                    toast.error('Imagem muito grande! Máximo 5MB.');
-                                    return;
-                                }
-
-                                // Create title with uploaded image
-                                const imageUrl = URL.createObjectURL(file);
-                                const startSec = currentPreviewTime();
-                                const newTitle: TitleHook = {
-                                    id: `upload-${Date.now()}`,
-                                    text: file.name.replace(/\.[^/.]+$/, ''), // Remove extension
-                                    styleId: 'image-overlay', // Custom style for uploaded images
-                                    startSec,
-                                    durationSec: 3,
-                                    isActive: true,
-                                    hasSound: false,
-                                    posY: 50,
-                                    posX: 50,
-                                    scale: 1,
-                                    primaryColor: IMAGE_TITLE_MODEL.primaryColor,
-                                    secondaryColor: IMAGE_TITLE_MODEL.secondaryColor,
-                                    animationId: 'fade',
-                                    fontFamily: IMAGE_TITLE_MODEL.fontFamily,
-                                    imageUrl: imageUrl, // Store the blob URL
-                                };
-                                persistManualTitles([...titles, newTitle]);
-                                setSelectedTitleId(newTitle.id);
-                                handleTargetTime(startSec);
-                                toast.success('Imagem de título carregada!');
-                            };
-                            input.click();
-                        }}
-                        className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl border border-blue-500/30 py-2.5 text-[10px] font-bold uppercase tracking-wider text-blue-400 transition-all hover:border-blue-500/60 hover:bg-blue-500/5"
+                        type="button"
+                        disabled={isGenerating}
+                        aria-label={adData.frameOverlay ? 'Trocar moldura' : 'Escolher moldura PNG'}
+                        title={adData.frameOverlay ? 'Trocar moldura' : 'Escolher moldura PNG'}
+                        aria-pressed={Boolean(adData.frameOverlay)}
+                        onClick={() => setIsFramePickerOpen(true)}
+                        className={cn(
+                            'relative grid h-8 w-8 place-items-center rounded-lg border transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-35',
+                            adData.frameOverlay
+                                ? 'border-brand-accent/55 bg-brand-accent/10 text-brand-accent'
+                                : 'border-white/10 text-foreground/75 hover:border-violet-400/50 hover:bg-violet-500/10 hover:text-violet-300'
+                        )}
                     >
-                        <Upload className="w-4 h-4" />
-                        Upload de Imagem
+                        <ImageIcon className="h-4 w-4" />
+                        {adData.frameOverlay && (
+                            <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-brand-accent shadow-[0_0_5px_rgba(0,230,118,.75)]" />
+                        )}
+                        <span className="sr-only">Moldura</span>
                     </button>
                     </div>
+                    {isGenerating && titleGenerationProgress && (
+                        <p className="-mt-1 text-center text-[9px] font-semibold text-brand-muted" aria-live="polite">
+                            {titleGenerationProgress}
+                        </p>
+                    )}
+
+                    {adData.frameOverlay && (
+                        <div className="flex items-center gap-3 rounded-xl border border-brand-accent/30 bg-brand-accent/[.07] p-3">
+                            <div className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-lg border border-white/10 bg-black/30">
+                                <img
+                                    src={adData.frameOverlay.proxyUrl || adData.frameOverlay.fileUrl || adData.frameOverlay.url}
+                                    alt="Moldura selecionada"
+                                    className="h-full w-full object-contain"
+                                />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs font-extrabold text-foreground">{adData.frameOverlay.fileName}</p>
+                                <p className="mt-0.5 text-[9px] font-semibold uppercase tracking-wider text-brand-muted">
+                                    PNG aplicado ao vídeo inteiro
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setIsFramePickerOpen(true)}
+                                className="rounded-lg border border-white/10 px-2.5 py-2 text-[9px] font-black uppercase text-foreground/75 hover:border-brand-accent/35 hover:text-brand-accent"
+                            >
+                                Trocar
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => updateAdData({ frameOverlay: undefined })}
+                                className="grid h-8 w-8 place-items-center rounded-lg border border-red-400/15 bg-red-500/5 text-red-300 hover:bg-red-500/15"
+                                title="Remover moldura"
+                            >
+                                <Trash2 className="h-4 w-4" />
+                            </button>
+                        </div>
+                    )}
 
                     <div className="space-y-2 mt-1">
                         {titles.length === 0 && !isGenerating && (
@@ -1542,6 +1575,15 @@ export const Step4 = () => {
                     )}
                 </div>
             </div>
+
+            {isFramePickerOpen && (
+                <MediaSourceModal
+                    kind="image"
+                    title="Escolher moldura PNG"
+                    onClose={() => setIsFramePickerOpen(false)}
+                    onTakePicked={handleFramePicked}
+                />
+            )}
 
             {/* Footer Navigation */}
             <div className="fixed bottom-0 right-0 left-0 z-40 flex h-16 items-center justify-between border-t border-black/5 bg-background/95 px-5 pr-24 shadow-2xl backdrop-blur-xl dark:border-white/5">

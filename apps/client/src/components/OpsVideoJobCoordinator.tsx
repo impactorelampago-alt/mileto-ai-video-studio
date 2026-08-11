@@ -89,6 +89,7 @@ type PreparedJob = {
     company: OpsCompany;
     assetById: Map<string, OpsAsset>;
     eligibleAssets: OpsAsset[];
+    frameAsset: OpsAsset | null;
     initialAdData: AdData;
     musicId: string | null;
 };
@@ -344,6 +345,21 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
     if (eligibleAssets.some((asset) => asset.companyId !== job.companyId)) {
         throw new Error('ops_take_company_mismatch: O Ops devolveu um take que nao pertence a empresa do job.');
     }
+    const settingsFrameId = typeof job.settings?.frameOverlayAssetId === 'string'
+        ? job.settings.frameOverlayAssetId
+        : null;
+    const frameAssetId = job.frameAssetId || settingsFrameId;
+    const frameAsset = frameAssetId ? assetById.get(frameAssetId) || null : null;
+    if (frameAssetId && !frameAsset) {
+        throw new Error('ops_frame_missing: A moldura PNG solicitada nao esta mais disponivel na empresa.');
+    }
+    if (frameAsset && (
+        frameAsset.companyId !== job.companyId
+        || frameAsset.kind !== 'image'
+        || frameAsset.mimeType?.toLowerCase() !== 'image/png'
+    )) {
+        throw new Error('ops_frame_invalid: A moldura precisa ser um PNG autorizado da empresa do job.');
+    }
     const initialAdData = createDefaultAdData({
         title: job.projectTitle,
         format: job.format,
@@ -365,7 +381,7 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
         brandPalette: company.palette || null,
         brandPaletteUpdatedAt: company.paletteUpdatedAt || null,
     });
-    return { company, assetById, eligibleAssets, initialAdData, musicId: music?.id || null };
+    return { company, assetById, eligibleAssets, frameAsset, initialAdData, musicId: music?.id || null };
 };
 
 export const OpsVideoJobCoordinator = () => {
@@ -738,7 +754,20 @@ export const OpsVideoJobCoordinator = () => {
                 return;
             }
 
-            let adData = readiness.initialAdData;
+            let frameOverlay: MediaTake | undefined;
+            if (readiness.frameAsset) {
+                const materializedFrame = await materializeOpsTake(
+                    readiness.frameAsset,
+                    queued.context,
+                    `${job.projectId}-frame-${readiness.frameAsset.id}`,
+                );
+                if (materializedFrame.type !== 'image') {
+                    throw new Error('ops_frame_invalid: O ativo materializado nao e uma imagem PNG.');
+                }
+                frameOverlay = { ...materializedFrame, objectFit: 'contain' };
+            }
+
+            let adData: AdData = { ...readiness.initialAdData, frameOverlay };
             let titleWarning: string | null = null;
             let finalTakes: MediaTake[] = [];
             let captionStyle = { ...DEFAULT_CAPTION_STYLE };
@@ -752,6 +781,7 @@ export const OpsVideoJobCoordinator = () => {
                 && savedProject.adData.opsCompany?.id === job.companyId
                 && savedProject.adData.narrationText.trim() === (job.narration?.trim() || '')
                 && savedProject.adData.format === job.format
+                && (savedProject.adData.frameOverlay?.externalMedia?.assetId || null) === (readiness.frameAsset?.id || null)
                 && savedProject.mediaTakes.length > 0,
             );
 
@@ -761,7 +791,7 @@ export const OpsVideoJobCoordinator = () => {
 
             if (canResumeProject && savedProject) {
                 showLocalProgress('titles', OPS_VIDEO_PROGRESS.titles.end, 'Restaurando o projeto salvo e renovando as URLs dos takes.');
-                adData = savedProject.adData;
+                adData = { ...savedProject.adData, frameOverlay };
                 titleWarning = savedProject.adData.titleGenerationSummary?.warning || null;
                 captionStyle = savedProject.captionStyle;
                 selectedMusicId = savedProject.selectedMusicId;

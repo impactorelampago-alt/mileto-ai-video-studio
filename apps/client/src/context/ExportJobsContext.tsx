@@ -65,9 +65,12 @@ const overlayFrameKey = (
     frameIndex: number,
     captions: CaptionTrack | undefined,
     titles: TitleHook[],
-    customOverlayUrl?: string
+    customOverlayUrl?: string,
+    frameOverlayKey?: string
 ) => {
-    const segmentIndex = captions?.segments?.findIndex((segment) => time >= segment.start && time <= segment.end) ?? -1;
+    const segmentIndex = captions?.enabled !== false
+        ? captions?.segments?.findIndex((segment) => time >= segment.start && time <= segment.end) ?? -1
+        : -1;
     let wordIndex = -1;
     if (segmentIndex >= 0 && captions?.segments) {
         const segment = captions.segments[segmentIndex];
@@ -83,7 +86,7 @@ const overlayFrameKey = (
         .filter((title) => title.isActive && time >= title.startSec && time <= title.startSec + title.durationSec)
         .map((title) => title.id);
     const animatedFrame = activeTitleIds.length ? frameIndex : 'static';
-    return `${segmentIndex}:${wordIndex}:${activeTitleIds.join(',')}:${animatedFrame}:${customOverlayUrl || ''}`;
+    return `${segmentIndex}:${wordIndex}:${activeTitleIds.join(',')}:${animatedFrame}:${customOverlayUrl || ''}:${frameOverlayKey || ''}`;
 };
 
 export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) => {
@@ -203,7 +206,8 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                         frameIndex,
                         activeExport.adData.captions,
                         titles,
-                        activeExport.adData.customOverlayUrl
+                        activeExport.adData.customOverlayUrl,
+                        activeExport.adData.frameOverlay?.id || activeExport.adData.frameOverlay?.url
                     );
 
                     if (lastKey !== null && frameKey === lastKey) {

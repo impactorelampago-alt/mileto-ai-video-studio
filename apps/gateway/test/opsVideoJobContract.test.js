@@ -53,9 +53,9 @@ test('fila, leitura, presença, claim, revisão e PATCH preservam delegação, a
     }
 });
 
-test('heartbeat usa versão 1.4.29, campo oficial mode e job atual', () => {
+test('heartbeat usa versão 1.4.30, campo oficial mode e job atual', () => {
     const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
-    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.29'/);
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.30'/);
     assert.match(coordinator, /mode: modeRef\.current/);
     assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
     assert.match(coordinator, /resolvePersistedJob\(persisted\)/);
@@ -160,6 +160,17 @@ test('retomada rejeita mudança de empresa, pasta, takes ou payload do job', () 
     assert.match(workerState, /state\.destinationFolderId === \(job\.destinationFolderId \|\| null\)/);
     assert.match(workerState, /jobSignature === opsVideoJobSignature\(job\)/);
     assert.match(workerState, /takeAssetIds: job\.takeAssetIds/);
+});
+
+test('job com moldura valida PNG, materializa o overlay e preserva flags opcionais', () => {
+    assert.match(gatewayClient, /frameAssetId\?: string \| null/);
+    assert.match(coordinator, /job\.settings\?\.frameOverlayAssetId/);
+    assert.match(coordinator, /frameAsset\.mimeType\?\.toLowerCase\(\) !== 'image\/png'/);
+    assert.match(coordinator, /materializeOpsTake\([\s\S]*readiness\.frameAsset/);
+    assert.match(coordinator, /frameOverlay = \{ \.\.\.materializedFrame, objectFit: 'contain' \}/);
+    assert.match(coordinator, /if \(job\.captions\) adData = await generateAutomaticCaptions/);
+    assert.match(coordinator, /if \(job\.automaticTitles\)/);
+    assert.match(workerState, /settings: job\.settings/);
 });
 
 test('revisão mais nova do mesmo job descarta somente o checkpoint antigo e inicia outro claim', () => {

@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
+import './fonts-selfhosted.css';
 import { WizardProvider } from './context/WizardContext';
 import { AuthProvider } from './context/AuthContext';
 import { Toaster } from 'sonner';

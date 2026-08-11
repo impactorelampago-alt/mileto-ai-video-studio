@@ -12,7 +12,7 @@ const PRESETS: Preset[] = [
     { id: 'cyan-clean', name: 'Cyan Clean', s: { activeColor: '#00D1FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Inter', fontSize: 38, textCase: 'uppercase' } },
     { id: 'cinematic-gold', name: 'Cinematic Gold', s: { activeColor: '#FFD700', baseColor: '#F5F5F5', strokeColor: '#1A1A1A', strokeWidth: 1, fontFamily: 'Playfair Display', fontSize: 50, textCase: 'uppercase' } },
     { id: 'cyberpunk', name: 'Cyberpunk', s: { activeColor: '#FF00FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Impact', fontSize: 44, textCase: 'uppercase' } },
-    { id: 'hacker-matrix', name: 'Hacker Matrix', s: { activeColor: '#00E676', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Montserrat', fontSize: 20, verticalPosition: 23, textCase: 'uppercase' } },
+    { id: 'hacker-matrix', name: 'Hacker Matrix', s: { activeColor: '#00E676', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Montserrat', fontSize: 16, verticalPosition: 23, textCase: 'uppercase' } },
     { id: 'minimal', name: 'Minimalista', s: { activeColor: '#FFFFFF', baseColor: '#A0A0A0', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Roboto', fontSize: 32, textCase: 'uppercase' } },
     { id: 'youtuber-kids', name: 'Youtuber Kids', s: { activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Comic Sans MS', fontSize: 40, textCase: 'uppercase' } },
 ];

@@ -190,7 +190,7 @@ export const muxFinalExport = async (req: Request, res: Response) => {
 };
 
 // ─── HYBRID PIPELINE ────────────────────────────────────────────────────────┐
-import { buildHybridVideo } from '../services/ffmpeg';
+import { buildHybridVideo, FfmpegExecutionError } from '../services/ffmpeg';
 
 const renderProbeFailureDiagnostics = (
     stage: 'preflight' | 'output',
@@ -351,11 +351,11 @@ export const exportHybrid = async (req: Request, res: Response) => {
             finalPath: exportedPath,
             sizeBytes: exportedStats.size,
             renderDiagnostics,
-            message: 'Exportação Híbrida concluída puramente por Hardware.',
+            message: 'Exportação híbrida concluída.',
         });
     } catch (e: any) {
-        console.error('[HYBRID EXPORT ERR]:', e);
         if (e instanceof RenderIntegrityError) {
+            console.error('[HYBRID EXPORT ERR] Falha de integridade:', e.code);
             return res.status(e.status).json({
                 ok: false,
                 code: e.code,
@@ -364,6 +364,23 @@ export const exportHybrid = async (req: Request, res: Response) => {
                 diagnostics: e.diagnostics,
             });
         }
-        res.status(500).json({ ok: false, message: e.message || 'Erro fatídico ao construir video hibrido' });
+        if (e instanceof FfmpegExecutionError) {
+            console.error(`[HYBRID EXPORT ERR] ${e.encoder}: ${e.diagnostic || 'sem diagnóstico do FFmpeg'}`);
+            return res.status(500).json({
+                ok: false,
+                code: e.code,
+                message: e.message,
+                retryable: e.retryable,
+            });
+        }
+        // Não devolver Error.message genérico: erros de execFile incluem o comando
+        // completo, caminhos locais e todo o filtergraph do projeto.
+        console.error('[HYBRID EXPORT ERR] Falha inesperada:', e instanceof Error ? e.name : typeof e);
+        return res.status(500).json({
+            ok: false,
+            code: 'render_failed',
+            message: 'Não foi possível montar o vídeo final. Tente exportar novamente.',
+            retryable: true,
+        });
     }
 };

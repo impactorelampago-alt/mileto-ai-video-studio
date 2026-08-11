@@ -424,6 +424,8 @@ export interface AdData {
     /** Empresa que define a marca do projeto; mídias podem vir de outras empresas autorizadas. */
     opsCompany?: OpsProjectCompany | null;
     customOverlayUrl?: string; // Imagem customizada de logo/título no Step4
+    /** PNG de tela inteira sobreposto ao vídeo, com referência persistente da origem. */
+    frameOverlay?: MediaTake;
 }
 
 export interface CaptionStyle {
