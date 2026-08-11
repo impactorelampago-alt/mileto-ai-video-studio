@@ -1,5 +1,28 @@
 import type { AdData } from '../types';
 
+type NarrationGenerationInput = Pick<
+    AdData,
+    'narrationText' | 'selectedVoiceId' | 'selectedVoiceProvider' | 'voiceSettings'
+>;
+
+/**
+ * Identifica somente os campos enviados para a síntese. Música e mixagem ficam
+ * deliberadamente de fora para que uma troca de trilha durante a TTS não descarte
+ * uma narração ainda válida.
+ */
+export const narrationGenerationInputFingerprint = (adData: NarrationGenerationInput): string => JSON.stringify([
+    adData.narrationText,
+    adData.selectedVoiceId || '',
+    adData.selectedVoiceProvider || 'fishAudio',
+    {
+        speed: adData.voiceSettings?.speed ?? null,
+        volume: adData.voiceSettings?.volume ?? null,
+        stability: adData.voiceSettings?.stability ?? null,
+        similarityBoost: adData.voiceSettings?.similarityBoost ?? null,
+        fishModel: adData.voiceSettings?.fishModel ?? null,
+    },
+]);
+
 /**
  * Identifica a fonte exata usada para criar legendas e títulos.
  *

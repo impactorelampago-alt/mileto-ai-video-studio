@@ -34,7 +34,26 @@ export function isSafeSegment(seg: unknown): seg is string {
     return typeof seg === 'string' && seg.length > 0 && seg !== '.' && seg !== '..' && /^[A-Za-z0-9._-]+$/.test(seg);
 }
 
-const PRIVATE_V4 = [/^127\./, /^10\./, /^192\.168\./, /^169\.254\./, /^0\./, /^172\.(1[6-9]|2\d|3[0-1])\./];
+const isNonPublicV4 = (host: string): boolean => {
+    const parts = host.split('.').map(Number);
+    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+        return true;
+    }
+    const [a, b] = parts;
+    return a === 0
+        || a === 10
+        || a === 127
+        || (a === 100 && b >= 64 && b <= 127)
+        || (a === 169 && b === 254)
+        || (a === 172 && b >= 16 && b <= 31)
+        || (a === 192 && b === 0)
+        || (a === 192 && b === 168)
+        || (a === 192 && b === 0 && parts[2] === 2)
+        || (a === 198 && (b === 18 || b === 19))
+        || (a === 198 && b === 51 && parts[2] === 100)
+        || (a === 203 && b === 0 && parts[2] === 113)
+        || a >= 224;
+};
 
 /**
  * URL http(s) apontando para host PÚBLICO? Bloqueia esquemas não-http, loopback,
@@ -49,10 +68,25 @@ export function isSafeRemoteUrl(raw: string): boolean {
         return false;
     }
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
-    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (!host || host === 'localhost' || host === '0.0.0.0' || host === '::1' || host === '::') return false;
+    const host = u.hostname
+        .toLowerCase()
+        .replace(/^\[|\]$/g, '')
+        .replace(/\.+$/, '');
+    if (
+        !host ||
+        host === 'localhost' ||
+        host.endsWith('.localhost') ||
+        host.endsWith('.local') ||
+        host.endsWith('.internal') ||
+        host.endsWith('.lan') ||
+        host.endsWith('.home') ||
+        host.endsWith('.home.arpa') ||
+        host === '0.0.0.0' ||
+        host === '::1' ||
+        host === '::'
+    ) return false;
     // IPv6 ULA (fc00::/7) e link-local (fe80::)
     if (host.startsWith('fc') || host.startsWith('fd') || /^fe[89ab]/.test(host) || host.startsWith('::ffff:')) return false;
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) && PRIVATE_V4.some((r) => r.test(host))) return false;
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) && isNonPublicV4(host)) return false;
     return true;
 }

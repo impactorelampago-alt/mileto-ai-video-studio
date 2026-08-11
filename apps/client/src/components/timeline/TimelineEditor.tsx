@@ -53,7 +53,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                 const newTracks = prev.tracks.map((track) => {
                     const newClips = track.clips.map((clip) => {
                         if (clip.sourceUrl === sourceUrl) {
-                            if (clip.outSec === 0) {
+                            if (clip.outSec === 0 || clip.outSec > duration) {
                                 hasChanges = true;
                                 return { ...clip, outSec: duration };
                             }
@@ -473,6 +473,69 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
         [handleClipMouseDown]
     );
 
+    const handleAutomaticAdjustment = React.useCallback(() => {
+        if (!timeline) return;
+        const narrationTrack = timeline.tracks.find((track) => track.id === 'narration');
+        const backgroundTrack = timeline.tracks.find((track) => track.id === 'bgm');
+        const narrationClip = narrationTrack?.clips[0];
+        const backgroundClip = backgroundTrack?.clips[0];
+
+        if (!narrationClip || !backgroundClip) {
+            handleAutoZoom();
+            toast.info('Adicione narração e música para fazer o ajuste automático.');
+            return;
+        }
+
+        const narrationBuffer = audioBuffers.get(narrationClip.sourceUrl);
+        const narrationOut = narrationClip.outSec > narrationClip.inSec
+            ? narrationClip.outSec
+            : narrationBuffer?.duration || Number(adData.narrationDuration || 0);
+        const narrationEnd = narrationClip.startSec + Math.max(0, narrationOut - narrationClip.inSec);
+        const availableMusicTime = narrationEnd - backgroundClip.startSec;
+        if (availableMusicTime <= 0) {
+            toast.error('A música começa depois do fim da narração.');
+            return;
+        }
+
+        const backgroundBuffer = audioBuffers.get(backgroundClip.sourceUrl);
+        const requestedOut = backgroundClip.inSec + availableMusicTime;
+        const nextOut = backgroundBuffer
+            ? Math.min(requestedOut, backgroundBuffer.duration)
+            : requestedOut;
+        if (nextOut <= backgroundClip.inSec) {
+            toast.error('Não foi possível encontrar um intervalo válido para a música.');
+            return;
+        }
+
+        if (Math.abs(backgroundClip.outSec - nextOut) <= 0.01) {
+            handleAutoZoom();
+            toast.info('A música já está ajustada ao fim da narração.');
+            return;
+        }
+
+        pause();
+        rememberTimeline(timeline);
+        const nextTracks = timeline.tracks.map((track) => (
+            track.id === 'bgm'
+                ? {
+                    ...track,
+                    clips: track.clips.map((clip) => (
+                        clip.id === backgroundClip.id ? { ...clip, outSec: nextOut } : clip
+                    )),
+                }
+                : track
+        ));
+        const durationSec = nextTracks.reduce((max, track) => Math.max(
+            max,
+            ...track.clips.map((clip) => {
+                const sourceEnd = clip.outSec || audioBuffers.get(clip.sourceUrl)?.duration || clip.inSec;
+                return clip.startSec + Math.max(0, sourceEnd - clip.inSec);
+            }),
+        ), 0);
+        setTimeline({ ...timeline, tracks: nextTracks, durationSec });
+        toast.success('Música ajustada automaticamente ao fim da narração.');
+    }, [adData.narrationDuration, audioBuffers, handleAutoZoom, pause, rememberTimeline, timeline]);
+
     if (!isOpen || !timeline) return null;
 
     const handlePlayPause = () => {
@@ -503,8 +566,9 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                         </div>
                         <div className="h-4 w-px bg-black/10 dark:bg-white/10" />
                         <button
-                            onClick={handleAutoZoom}
+                            onClick={handleAutomaticAdjustment}
                             className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 text-primary text-xs font-medium rounded-full hover:bg-primary/20 transition-colors"
+                            title="Alinhar o fim da música ao fim da narração"
                         >
                             <Wand2 size={12} /> Ajuste Automático
                         </button>

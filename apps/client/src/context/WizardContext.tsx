@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
+import { toast } from 'sonner';
 import type { AdData, MediaTake, CaptionStyle, ApiKeys, MusicTrack, CustomVoice } from '../types';
 import { DEFAULT_VIDEO_ENHANCEMENT, normalizeVideoEnhancement } from '../lib/videoEnhancement';
 import { gatewayApi, type SharedAsset } from '../lib/gateway';
@@ -20,6 +21,7 @@ import {
     systemMusicTrackFor,
     withSystemMusicTracks,
 } from '../lib/systemMusic';
+import { refreshSharedAudioSourceUrl } from '../lib/sharedMediaRecovery';
 
 export const SHOW_DEBUG_FEATURES = false;
 
@@ -281,6 +283,10 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     const [musicLibrary, setMusicLibrary] = useState<MusicTrack[]>(SYSTEM_MUSIC_TRACKS);
     const [selectedMusicId, setSelectedMusicIdState] = useState<string | null>(SYSTEM_MUSIC_IDS.batida);
     const systemMusicAliasesRef = useRef<Record<string, string>>({});
+    const musicSelectionRequestRef = useRef(0);
+    const invalidatePendingMusicSelection = React.useCallback(() => {
+        musicSelectionRequestRef.current += 1;
+    }, []);
     const [projectId, setProjectId] = useState<string>(() => {
         // Sobrevive ao refresh do Electron: se havia um rascunho ativo, reuso o id.
         try {
@@ -588,9 +594,21 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         if (nextAd && frameOverlay) nextAd.frameOverlay = frameOverlay;
         const hydrationTakes = frameOverlay ? [...nextTakes, frameOverlay] : nextTakes;
         const ids = new Set<string>();
+        // Rascunhos anteriores ao campo sharedMusicAssetId já persistiam o ID
+        // compartilhado em selectedMusicId. Recuperamos esse vínculo somente para
+        // URLs remotas; uploads locais e faixas do sistema continuam intocados.
+        const legacySharedMusicId = nextAd
+            && !nextAd.sharedMusicAssetId
+            && data.selectedMusicId
+            && !isSystemMusicId(data.selectedMusicId)
+            && nextAd.musicAudioUrl
+            && !isLocalMedia(nextAd.musicAudioUrl, null)
+            ? data.selectedMusicId
+            : undefined;
         for (const take of hydrationTakes) if (take.sharedAssetId) ids.add(take.sharedAssetId);
         if (nextAd?.sharedNarrationAssetId) ids.add(nextAd.sharedNarrationAssetId);
         if (nextAd?.sharedMusicAssetId) ids.add(nextAd.sharedMusicAssetId);
+        if (legacySharedMusicId) ids.add(legacySharedMusicId);
         if (nextAd?.sharedMasterAssetId) ids.add(nextAd.sharedMasterAssetId);
 
         const assets = new Map<string, SharedAsset>();
@@ -734,10 +752,14 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         }));
         if (nextAd) {
             const narration = nextAd.sharedNarrationAssetId ? assets.get(nextAd.sharedNarrationAssetId) : null;
-            const music = nextAd.sharedMusicAssetId ? assets.get(nextAd.sharedMusicAssetId) : null;
+            const resolvedMusicAssetId = nextAd.sharedMusicAssetId || legacySharedMusicId;
+            const music = resolvedMusicAssetId ? assets.get(resolvedMusicAssetId) : null;
             const master = nextAd.sharedMasterAssetId ? assets.get(nextAd.sharedMasterAssetId) : null;
             if (narration) nextAd.narrationAudioUrl = narration.publicUrl;
-            if (music) nextAd.musicAudioUrl = music.publicUrl;
+            if (music) {
+                nextAd.sharedMusicAssetId = music.id;
+                nextAd.musicAudioUrl = music.publicUrl;
+            }
             if (master) nextAd.masterAudioUrl = master.publicUrl;
         }
         return {
@@ -865,6 +887,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     }, [prepareSharedPayload]);
 
     const applyLoadedDraft = React.useCallback((data: LoadedDraftData) => {
+        invalidatePendingMusicSelection();
         const title = data.adData?.title?.trim() || data.title?.trim() || '';
         setDraftTitle(title);
         if (data.adData) setAdData(mergeAdData({ ...data.adData, title }));
@@ -873,9 +896,10 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             setCaptionStyle(data.captionStyle ?? null);
         }
         setSelectedMusicIdState(data.selectedMusicId ?? null);
-    }, []);
+    }, [invalidatePendingMusicSelection]);
 
     const loadProject = React.useCallback(async () => {
+        invalidatePendingMusicSelection();
         const recovery = readDraftRecovery(projectId, draftScopeState);
         try {
             if (draftScopeState === 'shared') {
@@ -914,9 +938,10 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 }
             }
         }
-    }, [projectId, draftScopeState, applyLoadedDraft, hydrateSharedPayload]);
+    }, [projectId, draftScopeState, applyLoadedDraft, hydrateSharedPayload, invalidatePendingMusicSelection]);
 
     const loadDraft = React.useCallback(async (id: string, scope: 'local' | 'shared' = draftScopeState): Promise<number | null> => {
+        invalidatePendingMusicSelection();
         initialDraftLoadCompleteRef.current = false;
         if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
         const recovery = readDraftRecovery(id, scope);
@@ -969,7 +994,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             initialDraftLoadCompleteRef.current = true;
             return null;
         }
-    }, [applyLoadedDraft, draftScopeState, hydrateSharedPayload, setDraftScope]);
+    }, [applyLoadedDraft, draftScopeState, hydrateSharedPayload, invalidatePendingMusicSelection, setDraftScope]);
 
     const applyProjectSnapshot = React.useCallback((snapshot: {
         projectId: string;
@@ -979,6 +1004,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         captionStyle?: CaptionStyle | null;
         selectedMusicId?: string | null;
     }) => {
+        invalidatePendingMusicSelection();
         initialDraftLoadCompleteRef.current = false;
         if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
         const title = snapshot.title.trim();
@@ -1012,9 +1038,10 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             // O estado em memória continua válido quando o armazenamento está indisponível.
         }
         initialDraftLoadCompleteRef.current = true;
-    }, [setDraftScope]);
+    }, [invalidatePendingMusicSelection, setDraftScope]);
 
     const startNewDraft = React.useCallback((opts?: { id?: string; scope?: 'local' | 'shared'; title?: string }): string => {
+        invalidatePendingMusicSelection();
         initialDraftLoadCompleteRef.current = false;
         if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
         const newId = opts?.id?.trim() || generateDraftId();
@@ -1038,7 +1065,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             initialDraftLoadCompleteRef.current = true;
         }, 0);
         return newId;
-    }, [setDraftScope]);
+    }, [invalidatePendingMusicSelection, setDraftScope]);
 
     // Tenta recuperar o rascunho ativo no mount (sobrevive a refresh do Electron).
     // Se não existir no servidor (404), mantém os defaults — é um projeto novo.
@@ -1186,6 +1213,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     // (spinner eterno/onda vazia no editor). A seleção só muda quando o ID existe na
     // biblioteca atualmente visível e o mix antigo é invalidado.
     const setSelectedMusicId = React.useCallback((id: string | null) => {
+        const requestId = ++musicSelectionRequestRef.current;
         const requestedTrack = id ? musicLibrary.find((candidate) => candidate.id === id) : null;
         const canonicalSystemTrack = systemMusicTrackFor(requestedTrack || id);
         const canonicalId = canonicalSystemTrack?.id || id;
@@ -1195,38 +1223,94 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             : null;
         if (id && !track) return;
 
-        setSelectedMusicIdState(canonicalId);
-        const nextUrl = track
-            ? (/^https?:\/\//.test(track.publicUrl)
-                ? track.publicUrl
-                : `${API_BASE_URL}${track.publicUrl}`)
-            : null;
+        const applySelection = (resolvedTrack: MusicTrack | null, nextUrl: string | null) => setAdData((ad) => {
+            const narration = ad.audioConfig.narration;
+            const narrationDuration = Number(ad.narrationDuration || 0);
+            const narrationSourceEnd = Number(narration.trimEnd || narrationDuration);
+            const narrationTimelineEnd = narrationSourceEnd > narration.trimStart
+                ? narration.offsetSec + (narrationSourceEnd - narration.trimStart)
+                : 0;
+            const musicDuration = Number(resolvedTrack?.durationSec || 0);
+            const automaticTrimEnd = narrationTimelineEnd > 0
+                ? (musicDuration > 0 ? Math.min(narrationTimelineEnd, musicDuration) : narrationTimelineEnd)
+                : undefined;
 
-        setAdData((ad) => ({
-            ...ad,
-            musicAudioUrl: nextUrl,
-            masterAudioUrl: undefined,
-            sharedMasterAssetId: undefined,
-            audioConfig: {
-                ...ad.audioConfig,
-                background: {
-                    ...ad.audioConfig.background,
-                    offsetSec: 0,
-                    trimStart: 0,
-                    trimEnd: undefined,
+            return {
+                ...ad,
+                musicAudioUrl: nextUrl,
+                sharedMusicAssetId: resolvedTrack?.scope === 'shared'
+                    ? resolvedTrack.sharedAssetId || resolvedTrack.id
+                    : undefined,
+                masterAudioUrl: undefined,
+                sharedMasterAssetId: undefined,
+                audioConfig: {
+                    ...ad.audioConfig,
+                    background: {
+                        ...ad.audioConfig.background,
+                        offsetSec: 0,
+                        trimStart: 0,
+                        trimEnd: automaticTrimEnd,
+                    },
                 },
-            },
-            audioTimeline: ad.audioTimeline
-                ? {
-                    ...ad.audioTimeline,
-                    tracks: ad.audioTimeline.tracks.map((timelineTrack) =>
-                        timelineTrack.id === 'bgm'
-                            ? { ...timelineTrack, clips: [] }
-                            : timelineTrack
-                    ),
-                }
-                : ad.audioTimeline,
-        }));
+                audioTimeline: ad.audioTimeline
+                    ? {
+                        ...ad.audioTimeline,
+                        tracks: ad.audioTimeline.tracks.map((timelineTrack) =>
+                            timelineTrack.id === 'bgm'
+                                ? { ...timelineTrack, clips: [] }
+                                : timelineTrack
+                        ),
+                    }
+                    : ad.audioTimeline,
+            };
+        });
+
+        setSelectedMusicIdState(canonicalId);
+        if (!track) {
+            applySelection(null, null);
+            return;
+        }
+
+        const sharedAssetId = track.scope === 'shared'
+            ? String(track.sharedAssetId || track.id || '').trim()
+            : '';
+        if (sharedAssetId) {
+            // Não reutiliza a capability antiga enquanto a nova é solicitada.
+            // O ID permanece no estado para que qualquer tentativa de mixagem no
+            // mesmo instante também possa renová-la antes de usar o áudio.
+            applySelection(
+                { ...track, sharedAssetId, scope: 'shared' },
+                null,
+            );
+            void refreshSharedAudioSourceUrl(
+                sharedAssetId,
+                track.publicUrl,
+                'shared_music_source_unavailable',
+            ).then((freshUrl) => {
+                if (requestId !== musicSelectionRequestRef.current || !freshUrl) return;
+                setMusicLibrary((current) => current.map((candidate) => (
+                    candidate.id === track.id
+                        ? { ...candidate, publicUrl: freshUrl, sharedAssetId, scope: 'shared' }
+                        : candidate
+                )));
+                applySelection(
+                    { ...track, publicUrl: freshUrl, sharedAssetId, scope: 'shared' },
+                    freshUrl,
+                );
+            }).catch((error) => {
+                if (requestId !== musicSelectionRequestRef.current) return;
+                setSelectedMusicIdState(null);
+                applySelection(null, null);
+                console.error('Shared music refresh failed:', error);
+                toast.error('A música compartilhada expirou e não pôde ser renovada. Tente novamente.');
+            });
+            return;
+        }
+
+        const nextUrl = /^https?:\/\//.test(track.publicUrl)
+            ? track.publicUrl
+            : `${API_BASE_URL}${track.publicUrl}`;
+        applySelection(track, nextUrl);
     }, [musicLibrary]);
 
     const contextValue = React.useMemo(

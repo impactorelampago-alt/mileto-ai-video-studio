@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import { VoiceSelector } from '../components/VoiceSelector';
 import { VoiceSettingsPanel } from '../components/VoiceSettingsPanel';
-import type { MusicTrack, TtsProvider } from '../types';
+import type { AdData, MusicTrack, TtsProvider } from '../types';
 import { cn } from '../lib/utils';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { ArrowRight, Wand2, Loader2, Music2, Check, Pencil, Mic, Pause, Play, Trash2 } from 'lucide-react';
@@ -12,11 +12,20 @@ import { toast } from 'sonner';
 import { AudioPlayer } from '../components/AudioPlayer';
 import { MusicLibrary } from '../components/MusicLibrary';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
-import { invalidatedNarrationDerivatives } from '../lib/narrationState';
+import { invalidatedNarrationDerivatives, narrationGenerationInputFingerprint } from '../lib/narrationState';
+import { backgroundTrimEndForNarration } from '../lib/audioAutoFit';
+import { refreshSharedAudioSourceUrl } from '../lib/sharedMediaRecovery';
 import { OpsProjectCompanyPicker, type OpsCompanyRequirementState } from '../components/OpsProjectCompanyPicker';
 
+const audioMixRequestIdentity = (data: AdData, musicId: string | null): string => JSON.stringify({
+    musicId,
+    narrationSource: data.sharedNarrationAssetId || data.narrationAudioUrl || null,
+    musicSource: data.sharedMusicAssetId || data.musicAudioUrl || null,
+    audioConfig: data.audioConfig,
+});
+
 export const Step1 = () => {
-    const { adData, updateAdData, selectedMusicId, setSelectedMusicId } = useWizard();
+    const { adData, updateAdData, selectedMusicId, setSelectedMusicId, musicLibrary } = useWizard();
     const navigate = useNavigate();
     const [isGenerating, setIsGenerating] = useState(false);
     const [isMixing, setIsMixing] = useState(false);
@@ -31,6 +40,13 @@ export const Step1 = () => {
         autoSelected: false,
     });
     const defaultCompanyNoticeRef = useRef(false);
+    const automaticMixRequestRef = useRef(0);
+    const nextMixRequestRef = useRef(0);
+    const narrationGenerationRequestRef = useRef(0);
+    const currentAudioConfigRef = useRef(adData.audioConfig);
+    const latestAdDataRef = useRef(adData);
+    const latestSelectedMusicIdRef = useRef(selectedMusicId);
+    const latestMusicLibraryRef = useRef(musicLibrary);
 
     // Gravar a própria voz (alternativa à narração por IA).
     const [isRecording, setIsRecording] = useState(false);
@@ -52,8 +68,115 @@ export const Step1 = () => {
     // mais a navegação entre as etapas.
     const isTitleValid = !!adData.title?.trim();
     const isTextValid = !!adData.narrationText?.trim();
+    const isAudioOperationBusy = isMixing || isGenerating || isRecording || isUploadingRec;
+    const automaticMixConfigFingerprint = JSON.stringify(adData.audioConfig);
+
+    useLayoutEffect(() => {
+        currentAudioConfigRef.current = adData.audioConfig;
+        latestAdDataRef.current = adData;
+        latestSelectedMusicIdRef.current = selectedMusicId;
+        latestMusicLibraryRef.current = musicLibrary;
+    }, [adData, musicLibrary, selectedMusicId]);
+
+    // A troca de música invalida o master anterior no WizardContext. Quando já
+    // existe narração, refazemos a mixagem imediatamente para o player da etapa 1
+    // não cair para "somente narração". O contador + AbortController impedem que
+    // uma resposta lenta da faixa anterior sobrescreva a seleção mais recente.
+    useEffect(() => {
+        if (
+            isAudioEditorOpen
+            || (!adData.narrationAudioUrl && !adData.sharedNarrationAssetId)
+            || (!adData.musicAudioUrl && !adData.sharedMusicAssetId)
+            || adData.masterAudioUrl
+        ) return;
+
+        const controller = new AbortController();
+        const requestId = ++automaticMixRequestRef.current;
+        const apiBase = (window as any).API_BASE_URL || 'http://localhost:3301';
+        setIsMixing(true);
+
+        void (async () => {
+            try {
+                const [narrationUrl, musicUrl] = await Promise.all([
+                    refreshSharedAudioSourceUrl(
+                        adData.sharedNarrationAssetId,
+                        adData.narrationAudioUrl,
+                        'shared_narration_source_unavailable',
+                    ),
+                    refreshSharedAudioSourceUrl(
+                        adData.sharedMusicAssetId,
+                        adData.musicAudioUrl,
+                        'shared_music_source_unavailable',
+                    ),
+                ]);
+                if (controller.signal.aborted || requestId !== automaticMixRequestRef.current) return;
+                if (!narrationUrl || !musicUrl) {
+                    throw new Error('A narração ou a música de fundo não está disponível.');
+                }
+                const response = await fetch(`${apiBase}/api/audio/mix`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        narrationUrl,
+                        musicUrl,
+                        audioConfig: currentAudioConfigRef.current,
+                    }),
+                });
+                const data = await response.json();
+                if (!response.ok || !data.ok || !data.masterAudioUrl) {
+                    throw new Error(data.message || 'A trilha não pôde ser preparada.');
+                }
+                if (requestId !== automaticMixRequestRef.current) return;
+                const masterAudioUrl = /^https?:\/\//i.test(data.masterAudioUrl)
+                    ? data.masterAudioUrl
+                    : `${apiBase}${data.masterAudioUrl}`;
+                updateAdData({
+                    masterAudioUrl,
+                    sharedMasterAssetId: undefined,
+                    ...(adData.sharedNarrationAssetId ? { narrationAudioUrl: narrationUrl } : {}),
+                    ...(adData.sharedMusicAssetId ? { musicAudioUrl: musicUrl } : {}),
+                });
+            } catch (error) {
+                if (controller.signal.aborted || requestId !== automaticMixRequestRef.current) return;
+                console.error('Automatic audio remix error:', error);
+                toast.warning(
+                    `A música foi trocada, mas a nova mixagem ainda precisa ser preparada: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
+                    { duration: 7000 },
+                );
+            } finally {
+                if (requestId === automaticMixRequestRef.current) setIsMixing(false);
+            }
+        })();
+
+        return () => {
+            controller.abort();
+            if (requestId === automaticMixRequestRef.current) {
+                automaticMixRequestRef.current += 1;
+                setIsMixing(false);
+            }
+        };
+    }, [
+        adData.masterAudioUrl,
+        adData.musicAudioUrl,
+        adData.narrationAudioUrl,
+        adData.sharedMusicAssetId,
+        adData.sharedNarrationAssetId,
+        automaticMixConfigFingerprint,
+        isAudioEditorOpen,
+        selectedMusicId,
+        updateAdData,
+    ]);
 
     const handleNext = async () => {
+        if (isGenerating || isRecording || isUploadingRec) {
+            toast.info(
+                isRecording
+                    ? 'Finalize a gravação antes de avançar.'
+                    : 'Aguarde a narração terminar antes de avançar.',
+            );
+            return;
+        }
         if (opsCompanyState.loading) {
             toast.info('Aguarde a validação da empresa no Mileto Ops.');
             return;
@@ -78,50 +201,107 @@ export const Step1 = () => {
 
         // Sem fonte de áudio não há o que mixar. Isso não bloqueia mais a
         // montagem visual: o usuário pode estruturar o restante primeiro.
-        if (!adData.narrationAudioUrl && !adData.musicAudioUrl) {
-            updateAdData({ masterAudioUrl: undefined });
+        if (
+            !adData.narrationAudioUrl &&
+            !adData.musicAudioUrl &&
+            !adData.sharedNarrationAssetId &&
+            !adData.sharedMusicAssetId
+        ) {
+            updateAdData({ masterAudioUrl: undefined, sharedMasterAssetId: undefined });
             navigate('/wizard/step/2');
             return;
         }
+
+        const requestId = ++nextMixRequestRef.current;
+        const requestIdentity = audioMixRequestIdentity(adData, selectedMusicId);
+        const requestIsCurrent = () => (
+            requestId === nextMixRequestRef.current
+            && requestIdentity === audioMixRequestIdentity(
+                latestAdDataRef.current,
+                latestSelectedMusicIdRef.current,
+            )
+        );
 
         setIsMixing(true);
         const toastId = toast.loading('Mixando áudio e preparando preview...');
 
         try {
+            const [narrationUrl, musicUrl] = await Promise.all([
+                refreshSharedAudioSourceUrl(
+                    adData.sharedNarrationAssetId,
+                    adData.narrationAudioUrl,
+                    'shared_narration_source_unavailable',
+                ),
+                refreshSharedAudioSourceUrl(
+                    adData.sharedMusicAssetId,
+                    adData.musicAudioUrl,
+                    'shared_music_source_unavailable',
+                ),
+            ]);
+            if (!requestIsCurrent()) {
+                toast.info('A música ou a narração mudou. Prepare a trilha atual antes de avançar.', {
+                    id: toastId,
+                    duration: 4500,
+                });
+                return;
+            }
             const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/audio/mix`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    narrationUrl: adData.narrationAudioUrl,
-                    musicUrl: adData.musicAudioUrl,
+                    narrationUrl,
+                    musicUrl,
                     audioConfig: adData.audioConfig,
                 }),
             });
 
             const data = await res.json();
             if (!data.ok) throw new Error(data.message);
+            if (!requestIsCurrent()) {
+                toast.info('A música ou a narração mudou. A mixagem anterior foi descartada.', {
+                    id: toastId,
+                    duration: 4500,
+                });
+                return;
+            }
 
             if (data.masterAudioUrl) {
-                updateAdData({ masterAudioUrl: `${((window as any).API_BASE_URL || 'http://localhost:3301')}${data.masterAudioUrl}` });
+                const apiBase = ((window as any).API_BASE_URL || 'http://localhost:3301');
+                const masterAudioUrl = /^https?:\/\//i.test(data.masterAudioUrl)
+                    ? data.masterAudioUrl
+                    : `${apiBase}${data.masterAudioUrl}`;
+                updateAdData({
+                    masterAudioUrl,
+                    sharedMasterAssetId: undefined,
+                    ...(adData.sharedNarrationAssetId ? { narrationAudioUrl: narrationUrl } : {}),
+                    ...(adData.sharedMusicAssetId ? { musicAudioUrl: musicUrl } : {}),
+                });
             } else {
-                updateAdData({ masterAudioUrl: undefined }); // Fallback clear
+                updateAdData({ masterAudioUrl: undefined, sharedMasterAssetId: undefined });
             }
 
             toast.success('Áudio preparado para o preview.', { id: toastId, duration: 1800 });
         } catch (error: unknown) {
+            if (!requestIsCurrent()) return;
             console.error('Audio mix error:', error);
             const errMsg = error instanceof Error ? error.message : 'Erro desconhecido';
-            toast.warning(`Você avançou, mas a mixagem ainda precisa ser preparada: ${errMsg}`, {
+            toast.error(`Não foi possível preparar a mixagem: ${errMsg}`, {
                 id: toastId,
                 duration: 8000,
             });
+            return;
         } finally {
-            setIsMixing(false);
+            if (requestId === nextMixRequestRef.current) setIsMixing(false);
         }
+        if (!requestIsCurrent()) return;
         navigate('/wizard/step/2');
     };
 
     const handleGenerateNarration = async (auto = false) => {
+        if (isRecording || isUploadingRec) {
+            if (!auto) toast.info('Finalize a gravação antes de gerar outra narração.');
+            return;
+        }
         if (!adData.narrationText) {
             toast.error('Digite o texto da narração');
             return;
@@ -129,6 +309,12 @@ export const Step1 = () => {
 
         // A voz escolhida define o provedor; a chave da IA fica no gateway.
         const provider: TtsProvider = adData.selectedVoiceProvider ?? 'fishAudio';
+        const requestId = ++narrationGenerationRequestRef.current;
+        const requestFingerprint = narrationGenerationInputFingerprint(adData);
+        const requestIsObsolete = () => (
+            requestId !== narrationGenerationRequestRef.current
+            || narrationGenerationInputFingerprint(latestAdDataRef.current) !== requestFingerprint
+        );
 
         setIsGenerating(true);
         try {
@@ -144,18 +330,37 @@ export const Step1 = () => {
             });
 
             const data = await response.json();
+            if (requestIsObsolete()) {
+                if (!auto && requestId === narrationGenerationRequestRef.current) {
+                    toast.info('O roteiro ou a voz mudou durante a geração. O áudio antigo foi descartado.');
+                }
+                return;
+            }
             if (!data.ok) throw new Error(data.message);
 
             const apiBase = (window as any).API_BASE_URL || 'http://localhost:3301';
             const narrationUrl = `${apiBase}${data.url}`;
             const narrationDuration = Number(data.duration || 0);
+            const latestAdData = latestAdDataRef.current;
+            const latestSelectedMusicId = latestSelectedMusicIdRef.current;
+            const latestMusicLibrary = latestMusicLibraryRef.current;
+            const selectedMusic = latestMusicLibrary.find((track) => track.id === latestSelectedMusicId);
+            const backgroundTrimEnd = backgroundTrimEndForNarration({
+                backgroundTrimStart: latestAdData.audioConfig.background.trimStart,
+                backgroundOffsetSec: latestAdData.audioConfig.background.offsetSec,
+                narrationDurationSec: narrationDuration,
+                narrationOffsetSec: latestAdData.audioConfig.narration.offsetSec,
+                backgroundSourceDurationSec: selectedMusic?.durationSec,
+            });
             const nextAudioConfig = {
                 narration: {
-                    ...adData.audioConfig.narration,
+                    ...latestAdData.audioConfig.narration,
+                    trimStart: 0,
                     trimEnd: narrationDuration > 0 ? narrationDuration : undefined,
                 },
                 background: {
-                    ...adData.audioConfig.background,
+                    ...latestAdData.audioConfig.background,
+                    trimEnd: backgroundTrimEnd,
                 },
             };
 
@@ -170,36 +375,15 @@ export const Step1 = () => {
                 masterAudioUrl: undefined,
             });
 
-            if (adData.musicAudioUrl) {
-                try {
-                    const mixResponse = await fetch(`${apiBase}/api/audio/mix`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            narrationUrl,
-                            musicUrl: adData.musicAudioUrl,
-                            audioConfig: nextAudioConfig,
-                        }),
-                    });
-                    const mixData = await mixResponse.json();
-                    if (!mixResponse.ok || !mixData.ok || !mixData.masterAudioUrl) {
-                        throw new Error(mixData.message || 'A trilha não pôde ser preparada.');
-                    }
-                    updateAdData({ masterAudioUrl: `${apiBase}${mixData.masterAudioUrl}` });
-                    if (!auto) toast.success('Narração e música preparadas no preset da voz!');
-                } catch (mixError) {
-                    console.error('Automatic audio mix error:', mixError);
-                    if (!auto) {
-                        toast.warning(
-                            `A narração foi gerada, mas a trilha ainda precisa ser preparada: ${mixError instanceof Error ? mixError.message : 'erro desconhecido'}`,
-                            { duration: 7000 },
-                        );
-                    }
+            if (!auto) {
+                if (latestAdData.musicAudioUrl) {
+                    toast.success('Narração gerada. Preparando a música de fundo...');
+                } else {
+                    toast.success('Narração gerada com sucesso!');
                 }
-            } else if (!auto) {
-                toast.success('Narração gerada com sucesso!');
             }
         } catch (error: unknown) {
+            if (requestIsObsolete()) return;
             console.error(error);
             const errMsg = error instanceof Error ? error.message : 'Erro desconhecido';
             if (!auto) {
@@ -215,7 +399,7 @@ export const Step1 = () => {
                 }
             }
         } finally {
-            setIsGenerating(false);
+            if (requestId === narrationGenerationRequestRef.current) setIsGenerating(false);
         }
     };
 
@@ -234,12 +418,44 @@ export const Step1 = () => {
             });
             const data = await response.json();
             if (!data.ok) throw new Error(data.message);
+            const narrationDuration = Number(data.duration || 0);
+            if (!Number.isFinite(narrationDuration) || narrationDuration <= 0) {
+                throw new Error('A gravação foi salva sem uma duração válida.');
+            }
+            const latestAdData = latestAdDataRef.current;
+            const latestSelectedMusicId = latestSelectedMusicIdRef.current;
+            const selectedMusic = latestMusicLibraryRef.current.find(
+                (track) => track.id === latestSelectedMusicId,
+            );
+            const backgroundTrimEnd = backgroundTrimEndForNarration({
+                backgroundTrimStart: latestAdData.audioConfig.background.trimStart,
+                backgroundOffsetSec: latestAdData.audioConfig.background.offsetSec,
+                narrationDurationSec: narrationDuration,
+                narrationOffsetSec: latestAdData.audioConfig.narration.offsetSec,
+                backgroundSourceDurationSec: selectedMusic?.durationSec,
+            });
             updateAdData({
                 ...invalidatedNarrationDerivatives(),
                 isNarrationGenerated: true,
                 narrationSource: 'recording',
                 narrationAudioUrl: `${apiBase}${data.url}`,
-                narrationDuration: data.duration,
+                narrationAudioPath: null,
+                sharedNarrationAssetId: undefined,
+                narrationDuration,
+                audioConfig: {
+                    narration: {
+                        ...latestAdData.audioConfig.narration,
+                        trimStart: 0,
+                        trimEnd: narrationDuration,
+                    },
+                    background: {
+                        ...latestAdData.audioConfig.background,
+                        trimEnd: backgroundTrimEnd,
+                    },
+                },
+                audioTimeline: undefined,
+                masterAudioUrl: undefined,
+                sharedMasterAssetId: undefined,
             });
             toast.success('Sua gravação virou a narração! 🎙️', { id: toastId });
         } catch (error: unknown) {
@@ -514,7 +730,13 @@ export const Step1 = () => {
                             <div className="space-y-3">
                                 <button
                                     onClick={() => handleGenerateNarration()}
-                                    disabled={!adData.narrationText || !adData.selectedVoiceId || isGenerating}
+                                    disabled={
+                                        !adData.narrationText ||
+                                        !adData.selectedVoiceId ||
+                                        isGenerating ||
+                                        isRecording ||
+                                        isUploadingRec
+                                    }
                                     className="flex w-full items-center justify-center gap-2 rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-5 py-2.5 text-sm font-bold text-brand-accent transition-all hover:bg-brand-accent/20 disabled:border-black/5 disabled:bg-black/5 disabled:text-foreground/30 dark:disabled:border-white/5 dark:disabled:bg-white/5"
                                 >
                                     {isGenerating ? (
@@ -684,16 +906,26 @@ export const Step1 = () => {
                     </button>
                     <button
                         onClick={handleNext}
-                        disabled={isMixing}
+                        disabled={isAudioOperationBusy}
                         className={cn(
                             'flex items-center gap-2 rounded-xl px-7 py-2.5 text-xs font-black uppercase tracking-wide transition-all',
-                            !isMixing
+                            !isAudioOperationBusy
                                 ? 'bg-linear-to-r from-brand-lime to-brand-accent text-[#0a0f12] shadow-[0_0_20px_rgba(0,230,118,0.3)] hover:shadow-[0_0_30px_rgba(0,230,118,0.6)] transform hover:scale-[1.02]'
                                 : 'bg-black/5 dark:bg-white/5 text-foreground/30 cursor-not-allowed border border-black/5 dark:border-white/5'
                         )}
                     >
-                        {isMixing ? 'Preparando Motor...' : 'Próximo Passo'}
-                        {isMixing ? <Loader2 className="w-5 h-5 animate-spin" /> : <ArrowRight className="w-5 h-5" />}
+                        {isRecording
+                            ? 'Finalize a gravação'
+                            : isGenerating
+                                ? 'Gerando narração...'
+                                : isUploadingRec
+                                    ? 'Salvando gravação...'
+                                    : isMixing
+                                        ? 'Preparando Motor...'
+                                        : 'Próximo Passo'}
+                        {isAudioOperationBusy
+                            ? <Loader2 className="w-5 h-5 animate-spin" />
+                            : <ArrowRight className="w-5 h-5" />}
                     </button>
                 </div>
             </div>

@@ -25,6 +25,10 @@ import {
     validateRenderPreflight,
     type RenderIntegrityDiagnostics,
 } from '../services/renderIntegrity';
+import {
+    findMissingHybridInput,
+    missingHybridInputHttpFailure,
+} from '../services/hybridInputPreflight';
 
 // O export escreve no temp do SO (via IPC do Electron) e no dir de dados. Limitar a
 // GRAVAÇÃO a essas raízes impede que um caller aponte a saída do ffmpeg para um
@@ -237,6 +241,12 @@ export const exportHybrid = async (req: Request, res: Response) => {
         }
         if (!isWithinRoots(finalPath, WRITE_ROOTS)) {
             return res.status(400).json({ ok: false, message: 'Caminho de saída não permitido.' });
+        }
+
+        const missingInput = findMissingHybridInput(takes, transitionPath);
+        if (missingInput) {
+            const failure = missingHybridInputHttpFailure(missingInput);
+            return res.status(failure.status).json(failure.body);
         }
 
         const fsCheck = await import('fs');

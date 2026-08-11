@@ -9,6 +9,12 @@ import { useWizard } from './WizardContext';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { resolveTakeEnhancement, resolveTakeSharpness } from '../lib/videoEnhancement';
 import { narrationSourceKey } from '../lib/narrationState';
+import { prepareOpsTakeForExport } from '../lib/opsMediaRecovery';
+import {
+    refreshSharedMasterAudioForExport,
+    refreshSharedTakeForExport,
+    safeExportMediaName,
+} from '../lib/sharedMediaRecovery';
 import {
     exportWarningSummary,
     titleOriginForExport,
@@ -237,14 +243,60 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                 await flushRepeatedFrames();
 
                 updateProgress(67, 'Preparando áudio e montagem final');
+                const hasConfiguredBackgroundAudio = Boolean(
+                    activeExport.adData.musicAudioUrl || activeExport.adData.sharedMusicAssetId,
+                );
+                const hasPreparedMasterAudio = Boolean(
+                    activeExport.adData.masterAudioUrl || activeExport.adData.sharedMasterAssetId,
+                );
+                if (hasConfiguredBackgroundAudio && !hasPreparedMasterAudio) {
+                    throw new Error(
+                        'export_audio_mix_required: A música de fundo ainda não foi mixada. Volte à etapa de áudio e prepare a trilha antes de exportar.',
+                    );
+                }
+                const sharedExportAudioAssetId = activeExport.adData.sharedMasterAssetId
+                    || (!activeExport.adData.masterAudioUrl
+                        ? activeExport.adData.sharedNarrationAssetId
+                        : undefined);
+                const exportMasterAudioUrl = sharedExportAudioAssetId
+                    ? await refreshSharedMasterAudioForExport(sharedExportAudioAssetId)
+                    : activeExport.masterAudioUrl;
                 const finishResult = (await engine.finish(
                     `${API_BASE_URL}/api`,
-                    activeExport.masterAudioUrl,
+                    exportMasterAudioUrl,
                     `${activeExport.fileName}_overlay`,
                     ''
                 )) as { videoPath: string; audioPath: string };
                 if (!finishResult.videoPath || !finishResult.audioPath) {
                     throw new Error('Os arquivos temporários da exportação não foram criados.');
+                }
+
+                updateProgress(68, 'Revalidando mídias da exportação');
+                const preparedMediaTakes: MediaTake[] = [];
+                // Usa o snapshot do início do job para preservar cortes e efeitos.
+                // A preparação sequencial também evita duas materializações
+                // concorrentes quando o mesmo ativo aparece mais de uma vez.
+                for (const take of activeExport.mediaTakes) {
+                    if (take.sharedAssetId) {
+                        preparedMediaTakes.push(await refreshSharedTakeForExport(take));
+                        continue;
+                    }
+                    if (take.externalMedia?.source !== 'mileto_ops') {
+                        preparedMediaTakes.push(take);
+                        continue;
+                    }
+                    try {
+                        const prepared = await prepareOpsTakeForExport(take);
+                        if (!prepared.backendPath) {
+                            throw new Error('A cópia local não foi criada.');
+                        }
+                        preparedMediaTakes.push(prepared);
+                    } catch (error) {
+                        const reason = error instanceof Error ? error.message : String(error);
+                        throw new Error(
+                            `ops_export_take_unavailable: ${safeExportMediaName(take.fileName, 'take_ops')}: ${reason}`,
+                        );
+                    }
                 }
 
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -260,10 +312,14 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        takes: activeExport.mediaTakes.map((take) => ({
+                        takes: preparedMediaTakes.map((take) => ({
                             id: take.id,
                             type: take.type,
-                            file_path: take.backendPath || take.fileUrl,
+                            file_path: take.sharedAssetId
+                                ? take.fileUrl
+                                : take.externalMedia?.source === 'mileto_ops'
+                                    ? take.backendPath
+                                    : take.backendPath || take.fileUrl,
                             start: take.trim.start,
                             end: take.trim.end,
                             speed: take.speedPresetId && take.speedPresetId !== 'normal' ? take.speedPresetId : 1,

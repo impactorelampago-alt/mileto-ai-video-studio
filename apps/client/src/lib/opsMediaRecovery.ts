@@ -15,7 +15,9 @@ interface ResolvedOpsViewContext {
     hint: OpsViewContextHint;
 }
 
-interface RestoredOpsCacheSource {
+export interface RestoredOpsCacheSource {
+    type?: MediaTake['type'] | null;
+    fileName?: string | null;
     url?: string | null;
     proxyUrl?: string | null;
     path?: string | null;
@@ -160,6 +162,67 @@ const absoluteLocalUrl = (url?: string | null) => {
     return /^https?:\/\//i.test(url) ? url : `${API_BASE_URL}${url.startsWith('/') ? url : `/${url}`}`;
 };
 
+const OPS_SOURCE_DURATION_TOLERANCE_SECONDS = 0.05;
+
+const validateRecoveredOpsSource = (take: MediaTake, source: RestoredOpsCacheSource) => {
+    const recoveredType = String(source.type || '').trim();
+    if (recoveredType && recoveredType !== take.type) {
+        throw new GatewayError(
+            422,
+            `O arquivo recuperado pelo Mileto Ops mudou de tipo (${recoveredType}).`,
+            'ops_source_type_mismatch',
+        );
+    }
+
+    if (take.type !== 'video') return;
+    const recoveredDuration = Number(source.duration);
+    const trimEnd = Number(take.trim?.end);
+    if (!Number.isFinite(recoveredDuration) || recoveredDuration <= 0) {
+        throw new GatewayError(
+            422,
+            'O Mileto Ops não informou uma duração válida para o vídeo recuperado.',
+            'ops_source_duration_invalid',
+        );
+    }
+    if (
+        Number.isFinite(trimEnd) &&
+        trimEnd > recoveredDuration + OPS_SOURCE_DURATION_TOLERANCE_SECONDS
+    ) {
+        throw new GatewayError(
+            422,
+            'O vídeo recuperado pelo Mileto Ops não cobre mais o corte salvo neste projeto.',
+            'ops_source_trim_out_of_bounds',
+        );
+    }
+};
+
+export const mergeOpsTakeWithCacheSource = (
+    take: MediaTake,
+    source: RestoredOpsCacheSource,
+    reference: ExternalMediaReference,
+    context?: ResolvedOpsViewContext | null,
+): MediaTake => {
+    const url = absoluteLocalUrl(source.url);
+    const proxyUrl = absoluteLocalUrl(source.proxyUrl) || url;
+    if (!url) throw new Error('O cache local devolveu uma fonte vazia para este take.');
+    validateRecoveredOpsSource(take, source);
+    const nextReference: ExternalMediaReference = {
+        ...reference,
+        ...(source.externalMedia || {}),
+        source: 'mileto_ops',
+        cacheId: source.cacheId || source.externalMedia?.cacheId || reference.cacheId || null,
+    };
+
+    return {
+        ...take,
+        url,
+        fileUrl: url,
+        proxyUrl,
+        backendPath: source.path || undefined,
+        externalMedia: context ? withResolvedOpsContext(nextReference, context) : nextReference,
+    };
+};
+
 /**
  * Restaura primeiro a cópia persistente deste computador. Não consulta o Ops,
  * não depende de URL assinada e preserva cortes/efeitos do take original.
@@ -197,37 +260,268 @@ export const restoreCachedOpsTake = async (take: MediaTake): Promise<MediaTake> 
         throw error;
     }
 
-    const source = result.source;
-    const url = absoluteLocalUrl(source.url);
-    const proxyUrl = absoluteLocalUrl(source.proxyUrl) || url;
-    if (!url) throw new Error('O cache local devolveu uma fonte vazia para este take.');
-    const duration = Number(source.duration || take.originalDurationSeconds || 0);
-    const previousDuration = Number(take.originalDurationSeconds || 0);
-    const followedFullDuration =
-        Number(take.trim?.end || 0) <= 0 ||
-        (previousDuration > 0 && Math.abs(Number(take.trim?.end || 0) - previousDuration) < 0.05);
-    const nextEnd = duration > 0
-        ? (followedFullDuration ? duration : Math.min(Math.max(0, Number(take.trim?.end || 0)), duration))
-        : Number(take.trim?.end || 0);
+    return mergeOpsTakeWithCacheSource(take, result.source, reference);
+};
 
-    return {
-        ...take,
-        url,
-        fileUrl: url,
-        proxyUrl,
-        backendPath: source.path || undefined,
-        originalDurationSeconds: duration || previousDuration,
-        trim: duration > 0 ? {
-            start: Math.min(Math.max(0, Number(take.trim?.start || 0)), Math.max(0, nextEnd - 0.05)),
-            end: nextEnd,
-        } : take.trim,
-        externalMedia: {
-            ...reference,
-            ...(source.externalMedia || {}),
-            source: 'mileto_ops',
-            cacheId: source.cacheId || source.externalMedia?.cacheId || reference.cacheId || null,
-        },
+const materializeOpsReference = async (
+    take: MediaTake,
+    reference: ExternalMediaReference,
+    context: ResolvedOpsViewContext,
+): Promise<MediaTake> => {
+    let response: Response;
+    try {
+        response = await fetch(`${API_BASE_URL}/api/ops/cache/materialize`, {
+            method: 'POST',
+            headers: {
+                ...(await localAuthHeaders()),
+                'Content-Type': 'application/json',
+                'X-Ops-View-Context': context.contextId,
+            },
+            body: JSON.stringify({ referenceId: reference.referenceId }),
+        });
+    } catch {
+        throw new GatewayError(0, 'Sem conexão com o servidor local durante a recuperação do take.');
+    }
+    const result = await response.json().catch(() => ({})) as {
+        ok?: boolean;
+        code?: string;
+        message?: string;
+        source?: RestoredOpsCacheSource;
     };
+    if (!response.ok || !result.ok || !result.source) {
+        throw new GatewayError(
+            response.status,
+            result.message || 'Não foi possível preparar este take para a exportação.',
+            result.code || null,
+        );
+    }
+    const materialized = mergeOpsTakeWithCacheSource(take, result.source, reference, context);
+    if (!materialized.backendPath) {
+        throw new Error('O Mileto Ops não devolveu uma cópia local para este take.');
+    }
+    return materialized;
+};
+
+const referenceFromFreshOpsReference = (
+    current: ExternalMediaReference,
+    fresh: Awaited<ReturnType<typeof gatewayApi.createOpsReference>>,
+): ExternalMediaReference => ({
+    ...current,
+    referenceId: fresh.id,
+    connectionId: fresh.connectionId,
+    accountId: fresh.accountId,
+    companyId: fresh.companyId,
+    folderId: fresh.folderId,
+    assetId: fresh.assetId,
+    mid: fresh.mid,
+    version: fresh.version,
+    checksum: fresh.checksum,
+    opsUpdatedAt: fresh.opsUpdatedAt,
+    cacheId: null,
+});
+
+type OpsExportPreparationState = 'resolve_context' | 'materialize' | 'renew_reference';
+
+const MAX_OPS_EXPORT_STATE_ATTEMPTS = 5;
+const MAX_OPS_CONTEXT_REFRESHES = 2;
+const TRANSIENT_MATERIALIZATION_422_CODES = new Set([
+    'ops_materialization_incomplete',
+    'ops_download_incomplete',
+    'ops_download_size_mismatch',
+    'ops_download_checksum_mismatch',
+    'ops_delivery_size_mismatch',
+    'ops_delivery_checksum_mismatch',
+]);
+
+const gatewayStatus = (error: unknown) => error instanceof GatewayError ? error.status : null;
+
+const isStaleOpsReferenceError = (error: unknown) => {
+    if (!(error instanceof GatewayError)) return false;
+    return [404, 410].includes(error.status)
+        || ['ops_reference_not_found', 'ops_reference_stale'].includes(String(error.code || ''));
+};
+
+const isTransientOpsGatewayError = (error: unknown) => {
+    if (!(error instanceof GatewayError)) return false;
+    return error.status === 0
+        || [408, 409, 425, 429].includes(error.status)
+        || error.status >= 500;
+};
+
+const isTransientMaterialization422 = (error: unknown) => {
+    if (!(error instanceof GatewayError) || error.status !== 422) return false;
+    if (TRANSIENT_MATERIALIZATION_422_CODES.has(String(error.code || ''))) return true;
+
+    // Compatibilidade com servidores locais anteriores aos códigos explícitos.
+    const message = String(error.message || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLocaleLowerCase('pt-BR');
+    return message.includes('arquivo local ficou incompleto')
+        || message.includes('tamanho baixado nao confere')
+        || message.includes('checksum baixado nao confere');
+};
+
+const waitForOpsRetry = async (attempt: number) => {
+    const delayMs = Math.min(7_200, 900 * (2 ** Math.max(0, attempt - 1)));
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+};
+
+const tryRestoreAfterConcurrentMaterialization = async (
+    take: MediaTake,
+    reference: ExternalMediaReference,
+) => {
+    try {
+        const restored = await restoreCachedOpsTake({ ...take, externalMedia: reference });
+        return restored.backendPath ? restored : null;
+    } catch (error) {
+        if (
+            error instanceof GatewayError &&
+            (error.status === 401 || [400, 413, 422].includes(error.status))
+        ) {
+            throw error;
+        }
+        return null;
+    }
+};
+
+/**
+ * Fecha a janela entre abrir um projeto e iniciar o FFmpeg. O cache do Ops pode
+ * ter sido limpo nesse intervalo; por isso a exportação revalida a cópia local
+ * no último instante e, se necessário, baixa novamente o mesmo ativo.
+ */
+export const prepareOpsTakeForExport = async (take: MediaTake): Promise<MediaTake> => {
+    const initialReference = take.externalMedia;
+    if (initialReference?.source !== 'mileto_ops') return take;
+
+    try {
+        const restored = await restoreCachedOpsTake(take);
+        if (restored.backendPath) return restored;
+    } catch (error) {
+        if (
+            error instanceof GatewayError &&
+            (error.status === 401 || [400, 413, 422].includes(error.status))
+        ) {
+            throw error;
+        }
+    }
+
+    let context: ResolvedOpsViewContext | null = null;
+    let reference = initialReference;
+    let state: OpsExportPreparationState = 'resolve_context';
+    let resumeAfterContext: Exclude<OpsExportPreparationState, 'resolve_context'> = 'materialize';
+    let forceContextRefresh = false;
+    let renewedReference = false;
+    let contextRefreshes = 0;
+    let transientMaterialization422Retries = 0;
+    const stateAttempts: Record<OpsExportPreparationState, number> = {
+        resolve_context: 0,
+        materialize: 0,
+        renew_reference: 0,
+    };
+
+    while (true) {
+        const currentState: OpsExportPreparationState = state;
+        stateAttempts[currentState] += 1;
+        try {
+            if (currentState === 'resolve_context') {
+                context = await resolveOpsCompanyContext(
+                    reference.companyId,
+                    reference.viewContext,
+                    forceContextRefresh,
+                );
+                reference = withResolvedOpsContext(reference, context);
+                forceContextRefresh = false;
+                stateAttempts.resolve_context = 0;
+                state = resumeAfterContext;
+                continue;
+            }
+
+            if (!context) {
+                resumeAfterContext = currentState;
+                state = 'resolve_context';
+                continue;
+            }
+
+            if (currentState === 'renew_reference') {
+                if (!reference.assetId) {
+                    throw new GatewayError(
+                        422,
+                        'A referência do Mileto Ops não informa qual ativo deve ser recuperado.',
+                        'ops_reference_asset_missing',
+                    );
+                }
+                const fresh = await gatewayApi.createOpsReference(reference.assetId, context.contextId);
+                reference = withResolvedOpsContext(referenceFromFreshOpsReference(reference, fresh), context);
+                renewedReference = true;
+                stateAttempts.renew_reference = 0;
+                state = 'materialize';
+                continue;
+            }
+
+            return await materializeOpsReference(
+                { ...take, externalMedia: reference },
+                reference,
+                context,
+            );
+        } catch (error) {
+            const status = gatewayStatus(error);
+            if (status === 401 || status === 400 || status === 413) throw error;
+
+            if (currentState === 'resolve_context') {
+                if (
+                    isTransientOpsGatewayError(error) &&
+                    stateAttempts.resolve_context < MAX_OPS_EXPORT_STATE_ATTEMPTS
+                ) {
+                    await waitForOpsRetry(stateAttempts.resolve_context);
+                    continue;
+                }
+                throw error;
+            }
+
+            if (status === 403 && contextRefreshes < MAX_OPS_CONTEXT_REFRESHES) {
+                invalidateOpsCompanyContext(reference.companyId);
+                context = null;
+                contextRefreshes += 1;
+                forceContextRefresh = true;
+                resumeAfterContext = currentState;
+                stateAttempts.resolve_context = 0;
+                state = 'resolve_context';
+                continue;
+            }
+
+            if (currentState === 'materialize' && isStaleOpsReferenceError(error)) {
+                if (renewedReference || !reference.assetId) throw error;
+                stateAttempts.renew_reference = 0;
+                state = 'renew_reference';
+                continue;
+            }
+
+            if (currentState === 'materialize' && isTransientMaterialization422(error)) {
+                if (transientMaterialization422Retries >= 1) throw error;
+                transientMaterialization422Retries += 1;
+                await waitForOpsRetry(stateAttempts.materialize);
+                const restored = await tryRestoreAfterConcurrentMaterialization(take, reference);
+                if (restored) return restored;
+                continue;
+            }
+
+            if (status === 422) throw error;
+
+            if (
+                isTransientOpsGatewayError(error) &&
+                stateAttempts[currentState] < MAX_OPS_EXPORT_STATE_ATTEMPTS
+            ) {
+                await waitForOpsRetry(stateAttempts[currentState]);
+                if (currentState === 'materialize') {
+                    const restored = await tryRestoreAfterConcurrentMaterialization(take, reference);
+                    if (restored) return restored;
+                }
+                continue;
+            }
+            throw error;
+        }
+    }
 };
 
 /** Cache local primeiro; stream assinado do Ops somente como último recurso. */

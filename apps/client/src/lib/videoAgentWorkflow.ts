@@ -1,4 +1,5 @@
 import { API_BASE_URL } from './apiBase';
+import { backgroundTrimEndForNarration } from './audioAutoFit';
 import { repairCaptionCurrencySegments } from './captionCurrency';
 import { gatewayApi, type OpsAsset, type OpsViewContext } from './gateway';
 import { invalidatedNarrationDerivatives, narrationSourceKey } from './narrationState';
@@ -82,13 +83,21 @@ export const generateNarrationAndMix = async (input: AdData): Promise<AdData> =>
     if (!Number.isFinite(narrationDuration) || narrationDuration <= 0) {
         throw new Error('tts_duration_invalid: A síntese terminou sem uma duração válida.');
     }
+    const backgroundTrimEnd = backgroundTrimEndForNarration({
+        backgroundTrimStart: input.audioConfig.background.trimStart,
+        backgroundOffsetSec: input.audioConfig.background.offsetSec,
+        narrationDurationSec: narrationDuration,
+        narrationOffsetSec: input.audioConfig.narration.offsetSec,
+    });
     const audioConfig = {
         narration: {
             ...input.audioConfig.narration,
+            trimStart: 0,
             trimEnd: narrationDuration,
         },
         background: {
             ...input.audioConfig.background,
+            trimEnd: backgroundTrimEnd,
         },
     };
     let next: AdData = {

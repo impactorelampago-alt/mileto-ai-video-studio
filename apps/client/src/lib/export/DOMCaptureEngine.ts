@@ -229,7 +229,12 @@ export class DOMCaptureEngine {
             await this.saveAudio(masterAudioUrl);
         } catch (audioErr) {
             console.error('[DOMCapture] Erro ao salvar áudio:', audioErr);
-            // Don't block export - fall back to silent
+            // Se havia áudio contratado, exportar em silêncio esconderia uma URL
+            // expirada ou um download corrompido. Silêncio só é válido quando o
+            // projeto realmente não possui nenhuma fonte de áudio.
+            if (masterAudioUrl) {
+                throw new Error('export_audio_source_unavailable: Não foi possível preparar o áudio da exportação.');
+            }
             await this.saveAudio(); // silent fallback
         }
 

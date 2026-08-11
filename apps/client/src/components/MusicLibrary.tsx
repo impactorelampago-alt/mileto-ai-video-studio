@@ -98,6 +98,8 @@ export const MusicLibrary: React.FC<MusicLibraryProps> = ({ onTrimTrack }) => {
                 filePath: '',
                 durationSec: Number(file.durationSec || 0),
                 createdAt: file.createdAt,
+                scope: 'shared',
+                sharedAssetId: file.id,
             }));
             setMusicLibrary(tracks);
         } catch (error) {
@@ -211,9 +213,21 @@ export const MusicLibrary: React.FC<MusicLibraryProps> = ({ onTrimTrack }) => {
         if (playingId === track.id) {
             if (audioRef.current) {
                 if (audioRef.current.paused) {
-                    audioRef.current.play().catch(() => {});
-                    setIsPaused(false);
-                    startTimeTracking();
+                    const audio = audioRef.current;
+                    void audio.play()
+                        .then(() => {
+                            if (audioRef.current !== audio) return;
+                            setIsPaused(false);
+                            startTimeTracking();
+                        })
+                        .catch((error) => {
+                            if (audioRef.current !== audio) return;
+                            console.error('Music preview failed:', error);
+                            setPlayingId(null);
+                            setIsPaused(false);
+                            stopTimeTracking();
+                            toast.error('Não foi possível reproduzir esta música. Selecione-a novamente.');
+                        });
                 } else {
                     audioRef.current.pause();
                     setIsPaused(true);
@@ -241,11 +255,23 @@ export const MusicLibrary: React.FC<MusicLibraryProps> = ({ onTrimTrack }) => {
         audio.onloadedmetadata = () => {
             setDuration(audio.duration || 0);
         };
-        audio.play().catch(() => {});
-        setPlayingId(track.id);
-        setIsPaused(false);
         setCurrentTime(0);
-        startTimeTracking();
+        void audio.play()
+            .then(() => {
+                if (audioRef.current !== audio) return;
+                setPlayingId(track.id);
+                setIsPaused(false);
+                startTimeTracking();
+            })
+            .catch((error) => {
+                if (audioRef.current !== audio) return;
+                console.error('Music preview failed:', error);
+                audioRef.current = null;
+                setPlayingId(null);
+                setIsPaused(false);
+                stopTimeTracking();
+                toast.error('Não foi possível reproduzir esta música. Selecione-a novamente.');
+            });
     };
 
     // Seek handler

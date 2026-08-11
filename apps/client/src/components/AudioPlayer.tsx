@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Play, Pause, Volume2, VolumeX } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { toast } from 'sonner';
 
 interface AudioPlayerProps {
     src: string;
@@ -45,15 +46,22 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, className }) => {
         };
     }, [src]);
 
-    const togglePlay = () => {
+    const togglePlay = async () => {
         const audio = audioRef.current;
         if (!audio) return;
         if (isPlaying) {
             audio.pause();
+            setIsPlaying(false);
         } else {
-            audio.play().catch(() => {});
+            try {
+                await audio.play();
+                setIsPlaying(true);
+            } catch (error) {
+                setIsPlaying(false);
+                console.error('Audio playback failed:', error);
+                toast.error('Não foi possível reproduzir este áudio. Selecione a música novamente.');
+            }
         }
-        setIsPlaying(!isPlaying);
     };
 
     const toggleMute = () => {
@@ -82,7 +90,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, className }) => {
             <audio ref={audioRef} src={src} preload="metadata" />
 
             <button
-                onClick={togglePlay}
+                onClick={() => void togglePlay()}
                 className="w-8 h-8 rounded-full bg-primary hover:bg-primary-hover text-slate-950 flex items-center justify-center transition-colors flex-shrink-0"
             >
                 {isPlaying ? (

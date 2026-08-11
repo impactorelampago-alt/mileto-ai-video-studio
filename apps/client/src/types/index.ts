@@ -451,6 +451,8 @@ export interface MusicTrack {
     durationSec: number;
     createdAt: string;
     source?: 'system' | 'user';
+    scope?: 'local' | 'shared';
+    sharedAssetId?: string;
     systemKey?: string;
     locked?: boolean;
 }

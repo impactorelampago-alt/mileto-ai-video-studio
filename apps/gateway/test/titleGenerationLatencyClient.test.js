@@ -10,6 +10,9 @@ const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const clientPath = (relative) => path.resolve(__dirname, '../../client/src', relative);
+const defaultDependencyMocks = {
+    './audioAutoFit': { backgroundTrimEndForNarration: () => undefined },
+};
 
 const compileClientModule = (relative) => {
     const sourcePath = clientPath(relative);
@@ -31,6 +34,7 @@ const evaluateCommonJs = ({ compiled }, dependencyMocks, sandboxPatch = {}) => {
     const runtimeModule = { exports: {} };
     const runtimeRequire = (specifier) => {
         if (Object.hasOwn(dependencyMocks, specifier)) return dependencyMocks[specifier];
+        if (Object.hasOwn(defaultDependencyMocks, specifier)) return defaultDependencyMocks[specifier];
         return require(specifier);
     };
     const sandbox = {

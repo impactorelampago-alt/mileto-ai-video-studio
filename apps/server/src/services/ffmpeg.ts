@@ -13,6 +13,7 @@ const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '../..
 const FRAMES_DIR = path.join(BASE_DATA_PATH, 'frame_cache'); // Reusing the naming convention from index.ts
 const VIDEOS_DIR = path.join(BASE_DATA_PATH, 'videos');
 const TEMP_DIR = path.join(BASE_DATA_PATH, 'temp');
+const MAX_TAKE_FRAME_PAD_SEC = 0.25;
 
 // ─── FFmpeg Path Configuration ───
 // Detect if we are running in an Electron bundle and use the included binaries
@@ -771,7 +772,12 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             }
             const enhancementStr = enhancementFilters.length ? `,${enhancementFilters.join(',')}` : '';
 
-            const frameContract = `,trim=end_frame=${takeFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`;
+            // `trim` apenas remove excesso; ele não cria os poucos quadros que
+            // podem faltar quando o container termina depois da stream de vídeo.
+            // O limite corrige essa margem de mux/timebase sem mascarar uma fonte
+            // severamente truncada com um congelamento longo.
+            const framePadDuration = Math.min(frameLockedDuration, MAX_TAKE_FRAME_PAD_SEC);
+            const frameContract = `,tpad=stop_mode=clone:stop_duration=${framePadDuration.toFixed(9)},trim=end_frame=${takeFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`;
             filterGraph += `[${index}:v]${sourceTimelineStr}${scaleStr}${motionStr}${enhancementStr}${frameContract}[v${index}];`;
             concatInputs.push(`[v${index}]`);
         });

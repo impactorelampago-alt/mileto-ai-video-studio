@@ -35,6 +35,30 @@ const makeVideo = (directory: string, name: string, fps: number, duration: numbe
     return output;
 };
 
+const makeVideoWithTrailingAudio = (
+    directory: string,
+    name: string,
+    fps: number,
+    videoDuration: number,
+    containerDuration: number,
+) => {
+    const output = path.join(directory, name);
+    runFfmpeg([
+        '-f', 'lavfi',
+        '-i', `color=c=0x2864dc:s=160x90:r=${fps}:d=${videoDuration},drawgrid=w=20:h=15:t=2:c=white@0.85`,
+        '-f', 'lavfi',
+        '-i', `anullsrc=r=48000:cl=stereo:d=${containerDuration}`,
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        output,
+    ]);
+    return output;
+};
+
 const makeAudio = (directory: string, duration: number) => {
     const output = path.join(directory, `audio-${duration}.wav`);
     runFfmpeg([
@@ -282,6 +306,100 @@ test('imagem sustentada e take acelerado com zoom preservam a timeline', {
         const diagnostics = validateRenderedOutput({ expectedDurationSec: duration, media: probe, outputFps: 25 });
         assert.equal(diagnostics.status, 'passed', JSON.stringify(diagnostics.issues));
         assert.equal(probe.videoFrameCount, 30, JSON.stringify(probe));
+    } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('completa take quando a stream visual termina antes do trim planejado', {
+    skip: !hasBundledBinaries,
+    timeout: 120_000,
+}, async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-render-short-video-stream-'));
+    try {
+        const { buildHybridVideo, probeMediaDurations } = require('../src/services/ffmpeg');
+        const duration = 1.2;
+        const outputFps = 30;
+        const sourcePath = makeVideoWithTrailingAudio(directory, 'short-video-stream.mp4', 24, 1.05, duration);
+        const audioPath = makeAudio(directory, duration);
+        const overlayPath = makeOverlay(directory, 'transparent-overlay.mov', duration);
+        const outputPath = path.join(directory, 'render-padded-take.mp4');
+
+        const sourceProbe = await probeMediaDurations(sourcePath);
+        const visualDeficit = duration - Number(sourceProbe.videoDurationSec);
+        assert.ok(visualDeficit > 2 / outputFps, `Déficit curto insuficiente: ${JSON.stringify(sourceProbe)}`);
+        assert.ok(visualDeficit < 0.25, `Déficit curto excedeu o limite: ${JSON.stringify(sourceProbe)}`);
+
+        await buildHybridVideo({
+            takes: [{
+                id: 'short-video-stream',
+                type: 'video',
+                file_path: sourcePath,
+                start: 0,
+                end: duration,
+                speed: 1,
+            }],
+            audioPath,
+            overlayPath,
+            outputPath,
+            duration,
+            targetW: 160,
+            targetH: 90,
+            outputFps,
+        });
+
+        const probe = await probeMediaDurations(outputPath);
+        const diagnostics = validateRenderedOutput({ expectedDurationSec: duration, media: probe, outputFps });
+        assert.equal(diagnostics.status, 'passed', JSON.stringify(diagnostics.issues));
+        assert.equal(probe.videoFrameCount, 36, JSON.stringify(probe));
+    } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('não mascara take severamente truncado com congelamento longo', {
+    skip: !hasBundledBinaries,
+    timeout: 120_000,
+}, async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-render-truncated-video-stream-'));
+    try {
+        const { buildHybridVideo, probeMediaDurations } = require('../src/services/ffmpeg');
+        const duration = 1.2;
+        const outputFps = 30;
+        const sourcePath = makeVideoWithTrailingAudio(directory, 'truncated-video-stream.mp4', 24, 0.5, duration);
+        const audioPath = makeAudio(directory, duration);
+        const overlayPath = makeOverlay(directory, 'transparent-overlay.mov', duration);
+        const outputPath = path.join(directory, 'render-truncated-take.mp4');
+
+        const sourceProbe = await probeMediaDurations(sourcePath);
+        assert.ok(
+            duration - Number(sourceProbe.videoDurationSec) > 0.25,
+            `A fonte de teste deveria exceder o limite de preenchimento: ${JSON.stringify(sourceProbe)}`,
+        );
+
+        await buildHybridVideo({
+            takes: [{
+                id: 'truncated-video-stream',
+                type: 'video',
+                file_path: sourcePath,
+                start: 0,
+                end: duration,
+                speed: 1,
+            }],
+            audioPath,
+            overlayPath,
+            outputPath,
+            duration,
+            targetW: 160,
+            targetH: 90,
+            outputFps,
+        });
+
+        const probe = await probeMediaDurations(outputPath);
+        const diagnostics = validateRenderedOutput({ expectedDurationSec: duration, media: probe, outputFps });
+        assert.equal(diagnostics.status, 'failed', JSON.stringify(diagnostics));
+        assert.ok(Number(probe.videoFrameCount) < 36, JSON.stringify(probe));
+        assert.ok(diagnostics.issues.some((issue) => issue.code === 'render_video_frame_count_mismatch'));
     } finally {
         fs.rmSync(directory, { recursive: true, force: true });
     }

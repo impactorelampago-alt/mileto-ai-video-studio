@@ -682,7 +682,11 @@ export const materialize = async (req: Request, res: Response) => {
             const stat = fs.statSync(partialPath);
             if (stat.size !== downloaded.receivedBytes) {
                 fs.rmSync(partialPath, { force: true });
-                throw new GatewayHttpError(422, 'O arquivo local ficou incompleto durante a gravação.');
+                throw new GatewayHttpError(
+                    422,
+                    'O arquivo local ficou incompleto durante a gravação.',
+                    'ops_materialization_incomplete',
+                );
             }
             if (stat.size > MAX_BYTES) {
                 fs.rmSync(partialPath, { force: true });
@@ -690,7 +694,11 @@ export const materialize = async (req: Request, res: Response) => {
             }
             if (downloaded.contentLength && stat.size !== downloaded.contentLength) {
                 fs.rmSync(partialPath, { force: true });
-                throw new GatewayHttpError(422, 'O tamanho baixado não confere com a entrega do Mileto Ops.');
+                throw new GatewayHttpError(
+                    422,
+                    'O tamanho baixado não confere com a entrega do Mileto Ops.',
+                    'ops_download_size_mismatch',
+                );
             }
             const localSha256 = await hashFile(partialPath);
             const deliveryChecksum = String(latest.download.checksum || '').toLowerCase();
@@ -700,7 +708,11 @@ export const materialize = async (req: Request, res: Response) => {
             }
             if (deliveryChecksum && localSha256.toLowerCase() !== deliveryChecksum) {
                 fs.rmSync(partialPath, { force: true });
-                throw new GatewayHttpError(422, 'O checksum baixado não confere com a entrega do Mileto Ops.');
+                throw new GatewayHttpError(
+                    422,
+                    'O checksum baixado não confere com a entrega do Mileto Ops.',
+                    'ops_download_checksum_mismatch',
+                );
             }
             const extension = extensionFor(latest.reference, latest.download);
             const finalPath = safeResolve(directory, `${cacheId}${extension}`);
