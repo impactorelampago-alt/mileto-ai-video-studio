@@ -647,7 +647,8 @@ export const gatewayApi = {
 
     async heartbeatOpsVideoWorker(
         input: OpsVideoWorkerHeartbeatInput,
-        viewContextId?: string | null
+        viewContextId?: string | null,
+        signal?: AbortSignal,
     ): Promise<OpsVideoWorkerHeartbeatResult> {
         const response = await gatewayFetch<{ data: OpsVideoWorkerHeartbeatResult }>(
             '/v1/integrations/mileto-ops/video-workers/heartbeat',
@@ -655,6 +656,7 @@ export const gatewayApi = {
                 method: 'POST',
                 headers: opsContextHeaders(viewContextId),
                 body: JSON.stringify(input),
+                signal,
             }
         );
         return response.data;

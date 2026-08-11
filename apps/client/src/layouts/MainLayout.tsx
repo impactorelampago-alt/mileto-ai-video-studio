@@ -36,8 +36,10 @@ import { useAuth } from '../context/AuthContext';
 import { useDownloadJobs } from '../context/DownloadJobsContext';
 import {
     getOpsExecutorActivity,
+    opsExecutorCurrentMonitorError,
     opsExecutorIsOnline,
     opsExecutorIsWorking,
+    opsExecutorVisibleJobError,
     OPS_EXECUTOR_STAGE_LABELS,
     subscribeOpsExecutorActivity,
 } from '../lib/opsExecutorActivity';
@@ -193,10 +195,15 @@ export const MainLayout = () => {
     const finishedNotificationCount = jobs.filter((job) => job.phase !== 'downloading').length;
     const executorOnline = opsExecutorIsOnline(executorActivity);
     const executorWorking = opsExecutorIsWorking(executorActivity);
+    const executorJobErrorCode = opsExecutorVisibleJobError(executorActivity);
+    const executorMonitorError = opsExecutorCurrentMonitorError(executorActivity);
+    const activitiesLabel = executorMonitorError
+        ? 'Atividades; comunicação temporariamente indisponível'
+        : 'Atividades em segundo plano';
     const totalActiveCount = activeCount + Number(executorWorking);
     const executorHeartbeatState = executorOnline
         ? 'online'
-        : executorActivity.heartbeat === 'offline' || executorActivity.status === 'offline'
+        : executorActivity.heartbeat === 'offline'
           ? 'offline'
           : executorActivity.heartbeat === 'unsupported'
             ? 'unsupported'
@@ -237,6 +244,16 @@ export const MainLayout = () => {
 
     return (
         <div className="flex h-screen bg-background text-foreground font-sans overflow-hidden transition-colors duration-300">
+            <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+                {executorMonitorError
+                    ? `Comunicação temporariamente indisponível. ${executorActivity.status === 'completed'
+                        ? 'O último vídeo continua concluído.'
+                        : 'O executor tentará novamente automaticamente.'}`
+                    : ''}
+            </p>
+            <p className="sr-only" role="alert" aria-atomic="true">
+                {executorJobErrorCode ? `O trabalho foi pausado ou falhou: ${executorJobErrorCode}` : ''}
+            </p>
             {/* Sidebar Lateral - Visível na Home e na aba Arquivos */}
             {(location.pathname === '/' ||
                 location.pathname === '/files' ||
@@ -493,13 +510,15 @@ export const MainLayout = () => {
                         <button
                             type="button"
                             onClick={() => setIsDownloadPanelOpen((open) => !open)}
-                            aria-label="Atividades em segundo plano"
+                            aria-label={activitiesLabel}
                             aria-expanded={isDownloadPanelOpen}
-                            title="Atividades"
+                            title={activitiesLabel}
                             className={cn(
                                 'relative flex h-9 w-9 items-center justify-center rounded-xl border transition-all',
                                 isDownloadPanelOpen
                                     ? 'border-brand-lime/30 bg-brand-lime/15 text-brand-lime'
+                                    : executorMonitorError
+                                      ? 'border-amber-300/30 bg-amber-300/10 text-amber-300'
                                     : 'border-white/10 bg-white/5 text-brand-muted hover:border-white/20 hover:text-foreground'
                             )}
                         >
@@ -602,7 +621,7 @@ export const MainLayout = () => {
                                                 <div className="mt-2 flex items-center justify-between gap-3 text-[9px] text-brand-muted">
                                                     <span className="truncate">
                                                         {executorActivity.jobId
-                                                            ? OPS_EXECUTOR_STAGE_LABELS[executorActivity.stage]
+                                                            ? `${executorActivity.status === 'completed' || executorActivity.status === 'failed' ? 'Último job' : 'Etapa'}: ${OPS_EXECUTOR_STAGE_LABELS[executorActivity.stage]}`
                                                             : executorActivity.message}
                                                     </span>
                                                     {executorActivity.jobId && (
@@ -626,9 +645,19 @@ export const MainLayout = () => {
                                                         />
                                                     </div>
                                                 )}
-                                                {executorActivity.errorCode && (
+                                                {executorMonitorError && (
+                                                    <p
+                                                        className="mt-1.5 text-[9px] leading-relaxed text-amber-200"
+                                                        title={`Diagnóstico do monitor: ${executorMonitorError.code}`}
+                                                    >
+                                                        Comunicação temporariamente indisponível. {executorActivity.status === 'completed'
+                                                            ? 'O último vídeo continua concluído.'
+                                                            : 'O executor tentará novamente automaticamente.'}
+                                                    </p>
+                                                )}
+                                                {executorJobErrorCode && (
                                                     <p className="mt-1.5 truncate text-[9px] text-red-300">
-                                                        {executorActivity.errorCode}
+                                                        {executorJobErrorCode}
                                                     </p>
                                                 )}
                                             </div>

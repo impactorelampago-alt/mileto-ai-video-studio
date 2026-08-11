@@ -53,9 +53,9 @@ test('fila, leitura, presença, claim, revisão e PATCH preservam delegação, a
     }
 });
 
-test('heartbeat usa versão 1.4.28, campo oficial mode e job atual', () => {
+test('heartbeat usa versão 1.4.29, campo oficial mode e job atual', () => {
     const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
-    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.28'/);
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.29'/);
     assert.match(coordinator, /mode: modeRef\.current/);
     assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
     assert.match(coordinator, /resolvePersistedJob\(persisted\)/);
@@ -106,7 +106,7 @@ test('job só é assumido depois da validação e da persistência local segura'
 test('varios jobs continuam em fila e somente um executor roda por vez', () => {
     assert.match(coordinator, /if \(runningRef\.current \|\| exportingRef\.current\) return/);
     assert.match(coordinator, /runningRef\.current = true/);
-    assert.match(coordinator, /await execute\(queued\)/);
+    assert.match(coordinator, /await execute\(activeQueued\)/);
     assert.match(coordinator, /runningRef\.current = false/);
 });
 
@@ -269,7 +269,8 @@ test('HTTP 426 e minimumAppVersion exigem atualização do aplicativo', () => {
     assert.match(coordinator, /video_worker_upgrade_required/);
     assert.match(coordinator, /video_job_revision_invalid/);
     assert.match(coordinator, /error\.status === 426/);
-    assert.match(coordinator, /updateRequired \? 'paused'/);
+    assert.match(coordinator, /const blockedBeforeClaim = Boolean\(queued\)/);
+    assert.match(coordinator, /status: 'paused'/);
 });
 
 test('falhas permanentes são estruturadas e falhas recuperáveis ficam pausadas', () => {
@@ -284,12 +285,12 @@ test('cliente Electron de desenvolvimento e instalado compartilham o mesmo worke
     assert.equal((coordinator.match(/export const OpsVideoJobCoordinator/g) || []).length, 1);
 });
 
-test('interface publica presença, modo, job, empresa, etapa, percentual, erro e asset no indicador global', () => {
+test('interface separa presença, monitor e erro do job no indicador global', () => {
     assert.match(coordinator, /publishOpsExecutorActivity\(display\)/);
-    for (const marker of ['mode', 'jobId', 'companyName', 'stage', 'percent', 'errorCode', 'assetId']) {
+    for (const marker of ['mode', 'jobId', 'companyName', 'stage', 'percent', 'errorCode', 'monitorErrors', 'assetId']) {
         assert.match(executorActivity, new RegExp(`\\b${marker}\\b`));
     }
-    for (const marker of ['Wifi', 'WifiOff', 'executorActivity.companyName', 'OPS_EXECUTOR_STAGE_LABELS[executorActivity.stage]', 'executorActivity.percent', 'executorActivity.errorCode']) {
+    for (const marker of ['Wifi', 'WifiOff', 'executorActivity.companyName', 'OPS_EXECUTOR_STAGE_LABELS[executorActivity.stage]', 'executorActivity.percent', 'executorJobErrorCode', 'executorMonitorError']) {
         assert.match(mainLayout, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
 });

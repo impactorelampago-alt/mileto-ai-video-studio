@@ -52,5 +52,5 @@ test('conclusão degradada libera o executor para o próximo job sequencial', ()
     assert.match(coordinator, /clearPersistedOpsVideoJob\(\);[\s\S]*currentJobRef\.current = null/);
     assert.match(coordinator, /finally\s*\{[\s\S]*runningRef\.current = false/);
     assert.match(coordinator, /if \(runningRef\.current \|\| exportingRef\.current\) return/);
-    assert.match(coordinator, /await execute\(queued\)/);
+    assert.match(coordinator, /await execute\(activeQueued\)/);
 });

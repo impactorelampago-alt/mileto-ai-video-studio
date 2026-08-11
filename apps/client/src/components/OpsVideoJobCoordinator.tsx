@@ -47,8 +47,10 @@ import {
 import { selectOpsTakesForNarration } from '../lib/opsTakeSelection';
 import { API_BASE_URL } from '../lib/apiBase';
 import {
+    createOpsExecutorHeartbeatQueue,
     IDLE_OPS_EXECUTOR_ACTIVITY,
     publishOpsExecutorActivity,
+    transitionOpsExecutorMonitor,
     type OpsExecutorActivity,
 } from '../lib/opsExecutorActivity';
 import type { AdData, MediaTake } from '../types';
@@ -144,6 +146,12 @@ const isRecoverableInterruption = (error: unknown, code: string) => {
         'video_job_revision_changed',
     ].includes(code) || (error instanceof Error && error.name === 'AbortError');
 };
+
+const isPersistedResolutionFailure = (code: string) => [
+    'job_resume_mismatch',
+    'view_context_expired',
+    'worker_state_unavailable',
+].includes(code);
 
 const completedExportFor = (job: OpsVideoJob): CompletedOpsExport | null => {
     if (job.execution?.requiresFreshRender === true) return null;
@@ -245,14 +253,28 @@ const orderedContexts = async (): Promise<OpsViewContext[]> => {
 };
 
 const findQueuedJob = async (): Promise<QueuedJob | null> => {
+    let successfulLookups = 0;
+    let lastAccessError: unknown = null;
+    let transientLookupError: unknown = null;
     for (const context of await orderedContexts()) {
         try {
             const job = await gatewayApi.nextOpsVideoJob(context.contextId);
+            successfulLookups += 1;
             if (job) return { job, context };
-        } catch {
+        } catch (error) {
             // Um contexto pode expirar enquanto os demais continuam validos.
+            if (error instanceof GatewayError && [401, 403, 404].includes(error.status)) {
+                lastAccessError = error;
+            } else {
+                transientLookupError = error;
+            }
         }
     }
+    // Nao afirmar que a fila esta vazia se algum contexto acessivel sofreu
+    // timeout/5xx. Erros de acesso isolados podem ser ignorados quando outro
+    // contexto respondeu normalmente.
+    if (transientLookupError) throw transientLookupError;
+    if (successfulLookups === 0 && lastAccessError) throw lastAccessError;
     return null;
 };
 
@@ -350,18 +372,27 @@ export const OpsVideoJobCoordinator = () => {
     const { isExporting, startExport } = useExportJobs();
     const runningRef = useRef(false);
     const exportingRef = useRef(isExporting);
-    const currentJobRef = useRef<string | null>(loadPersistedOpsVideoJob()?.jobId || null);
-    const heartbeatContextRef = useRef<string | null>(loadPersistedOpsVideoJob()?.viewContextId || null);
+    const [initialPersistedJob] = useState(() => loadPersistedOpsVideoJob());
+    const currentJobRef = useRef<string | null>(
+        initialPersistedJob && initialPersistedJob.status !== 'completed' && initialPersistedJob.status !== 'failed'
+            ? initialPersistedJob.jobId
+            : null,
+    );
+    const heartbeatContextRef = useRef<string | null>(initialPersistedJob?.viewContextId || null);
+    const heartbeatGenerationRef = useRef(0);
+    const heartbeatAbortRef = useRef<AbortController | null>(null);
     const titleGenerationAbortRef = useRef<AbortController | null>(null);
     const modeRef = useRef<OpsVideoWorkerExecutionMode>('foreground');
     const [display, setDisplay] = useState<JobDisplayState>(() => {
-        const persisted = loadPersistedOpsVideoJob();
+        const persisted = initialPersistedJob;
         return persisted ? {
             jobId: persisted.jobId,
             companyName: persisted.companyId,
             projectTitle: persisted.projectId,
             stage: persisted.stage,
-            status: persisted.status === 'paused' ? 'paused' : 'queued',
+            status: persisted.status === 'paused' || persisted.status === 'completed' || persisted.status === 'failed'
+                ? persisted.status
+                : 'queued',
             percent: persisted.progress,
             message: persisted.message,
             assetId: persisted.resume.outputAssetId || undefined,
@@ -372,7 +403,11 @@ export const OpsVideoJobCoordinator = () => {
     });
 
     useEffect(() => { exportingRef.current = isExporting; }, [isExporting]);
-    useEffect(() => () => titleGenerationAbortRef.current?.abort(), []);
+    useEffect(() => () => {
+        titleGenerationAbortRef.current?.abort();
+        heartbeatGenerationRef.current += 1;
+        heartbeatAbortRef.current?.abort();
+    }, []);
 
     useEffect(() => {
         publishOpsExecutorActivity(display);
@@ -403,10 +438,15 @@ export const OpsVideoJobCoordinator = () => {
         };
     }, [setMode]);
 
-    const heartbeat = useCallback(async (stateOverride?: 'idle' | 'busy' | 'offline') => {
+    const performHeartbeat = useCallback(async (stateOverride?: 'idle' | 'busy' | 'offline') => {
+        const generation = heartbeatGenerationRef.current + 1;
+        heartbeatGenerationRef.current = generation;
+        const controller = new AbortController();
+        heartbeatAbortRef.current = controller;
+        const isLatest = () => generation === heartbeatGenerationRef.current && !controller.signal.aborted;
         let contextId = heartbeatContextRef.current;
-        if (!contextId) {
-            try {
+        try {
+            if (!contextId) {
                 const activeJobId = currentJobRef.current;
                 const persisted = activeJobId ? loadPersistedOpsVideoJob() : null;
                 if (activeJobId && persisted?.jobId === activeJobId) {
@@ -416,30 +456,57 @@ export const OpsVideoJobCoordinator = () => {
                     contextId = (await orderedContexts())[0]?.contextId || null;
                 }
                 heartbeatContextRef.current = contextId;
-            } catch {
-                setDisplay((current) => ({ ...current, heartbeat: 'offline' }));
+            }
+            if (!isLatest()) return;
+            if (!contextId) {
+                setDisplay((current) => transitionOpsExecutorMonitor(current, {
+                    type: 'monitor-recovered',
+                    source: 'heartbeat',
+                    heartbeat: 'unsupported',
+                }));
                 return;
             }
-        }
-        if (!contextId) {
-            setDisplay((current) => ({ ...current, heartbeat: 'unsupported' }));
-            return;
-        }
-        try {
             const result = await gatewayApi.heartbeatOpsVideoWorker({
                 appVersion: OPS_VIDEO_WORKER_APP_VERSION,
                 mode: modeRef.current,
                 state: stateOverride || (currentJobRef.current ? 'busy' : 'idle'),
                 currentJobId: currentJobRef.current,
-            }, contextId);
-            setDisplay((current) => ({ ...current, heartbeat: result.supported ? 'online' : 'unsupported' }));
+            }, contextId, controller.signal);
+            if (!isLatest()) return;
+            setDisplay((current) => transitionOpsExecutorMonitor(current, {
+                type: 'monitor-recovered',
+                source: 'heartbeat',
+                heartbeat: stateOverride === 'offline'
+                    ? 'offline'
+                    : (result.supported ? 'online' : 'unsupported'),
+            }));
         } catch (error) {
+            if (!isLatest()) return;
             if (error instanceof GatewayError && [401, 403, 404].includes(error.status)) {
                 heartbeatContextRef.current = null;
             }
-            setDisplay((current) => ({ ...current, heartbeat: 'offline' }));
+            const parsed = errorParts(error);
+            setDisplay((current) => transitionOpsExecutorMonitor(current, {
+                type: 'monitor-failed',
+                source: 'heartbeat',
+                code: parsed.code,
+                message: parsed.message,
+            }));
+        } finally {
+            if (heartbeatAbortRef.current === controller) {
+                heartbeatAbortRef.current = null;
+            }
         }
     }, []);
+
+    const heartbeatQueueRef = useRef<ReturnType<typeof createOpsExecutorHeartbeatQueue> | null>(null);
+    if (!heartbeatQueueRef.current) {
+        heartbeatQueueRef.current = createOpsExecutorHeartbeatQueue(performHeartbeat);
+    }
+    const heartbeat = useCallback(
+        (stateOverride?: 'idle' | 'busy' | 'offline') => heartbeatQueueRef.current!.request(stateOverride),
+        [],
+    );
 
     useEffect(() => {
         void heartbeat();
@@ -484,7 +551,7 @@ export const OpsVideoJobCoordinator = () => {
         heartbeatContextRef.current = queued.context.contextId;
         const companyName = opsProjectCompanyName(readiness.company);
         setDisplay((current) => ({
-            ...current,
+            ...transitionOpsExecutorMonitor(current, { type: 'monitor-recovered', source: 'poll' }),
             jobId: queued.job.id,
             companyName,
             projectTitle: queued.job.projectTitle,
@@ -499,6 +566,9 @@ export const OpsVideoJobCoordinator = () => {
         const job = activeClaim.job;
         const resume = Boolean(queued.resume);
         persisted = updatePersistedOpsVideoJob({ status: 'claimed', message: 'Trabalho assumido pelo executor local.' }) || persisted;
+        toast.info(resume
+            ? `Retomando "${job.projectTitle}" no mesmo projeto.`
+            : `O agente Video Maker iniciou "${job.projectTitle}".`, { duration: 6_000 });
 
         const patch = async (
             stage: Exclude<OpsVideoJobStage, 'queued'>,
@@ -595,12 +665,23 @@ export const OpsVideoJobCoordinator = () => {
                 }
             }
             if (completing) applyLocalPatch();
+            setDisplay((current) => transitionOpsExecutorMonitor(current, {
+                type: 'monitor-recovered',
+                source: 'poll',
+            }));
             return updatedJob;
         };
 
         const showLocalProgress = (stage: OpsVideoJobStage, percent: number, message: string) => {
             persisted = updatePersistedOpsVideoJob({ stage, progress: percent, message, status: 'running' }) || persisted;
-            setDisplay((current) => ({ ...current, stage, status: 'running', percent, message }));
+            setDisplay((current) => ({
+                ...current,
+                stage,
+                status: 'running',
+                percent,
+                message,
+                errorCode: undefined,
+            }));
         };
 
         try {
@@ -945,6 +1026,7 @@ export const OpsVideoJobCoordinator = () => {
                         renderResult: null,
                     },
                 });
+                currentJobRef.current = null;
                 setDisplay((value) => ({ ...value, status: 'paused', message, errorCode: parsed.code, assetId: undefined }));
                 toast.warning(`A revisão de "${job.projectTitle}" será renderizada novamente com um upload novo.`, { duration: 12_000 });
                 return;
@@ -956,6 +1038,7 @@ export const OpsVideoJobCoordinator = () => {
                     errorCode: parsed.code,
                     errorMessage: parsed.message,
                 });
+                currentJobRef.current = null;
                 setDisplay((value) => ({ ...value, status: 'paused', message: parsed.message, errorCode: parsed.code }));
                 toast.warning(`O trabalho "${job.projectTitle}" foi pausado e sera retomado: ${parsed.message}`, { duration: 12_000 });
                 return;
@@ -979,45 +1062,104 @@ export const OpsVideoJobCoordinator = () => {
     const poll = useCallback(async () => {
         if (runningRef.current || exportingRef.current) return;
         runningRef.current = true;
+        let queued: QueuedJob | null = null;
         try {
             const persisted = loadPersistedOpsVideoJob();
-            const queued = persisted ? await resolvePersistedJob(persisted) : await findQueuedJob();
-            if (!queued) return;
-            heartbeatContextRef.current = queued.context.contextId;
-            if (queued.job.status === 'completed' || queued.job.status === 'failed') {
+            try {
+                queued = persisted ? await resolvePersistedJob(persisted) : await findQueuedJob();
+            } catch (error) {
+                const parsed = errorParts(error);
+                if (persisted && isPersistedResolutionFailure(parsed.code)) {
+                    const paused = updatePersistedOpsVideoJob({
+                        status: 'paused',
+                        message: parsed.message,
+                        errorCode: parsed.code,
+                        errorMessage: parsed.message,
+                    }) || persisted;
+                    currentJobRef.current = null;
+                    setDisplay((current) => ({
+                        ...transitionOpsExecutorMonitor(current, { type: 'monitor-recovered', source: 'poll' }),
+                        jobId: paused.jobId,
+                        projectTitle: paused.projectId,
+                        companyName: paused.companyId,
+                        stage: paused.stage,
+                        status: 'paused',
+                        percent: paused.progress,
+                        message: parsed.message,
+                        errorCode: parsed.code,
+                    }));
+                } else {
+                    setDisplay((current) => transitionOpsExecutorMonitor(current, {
+                        type: 'monitor-failed',
+                        source: 'poll',
+                        code: parsed.code,
+                        message: parsed.message,
+                    }));
+                }
+                return;
+            }
+            if (!queued) {
+                currentJobRef.current = null;
+                setDisplay((current) => transitionOpsExecutorMonitor(current, { type: 'queue-empty' }));
+                return;
+            }
+            const activeQueued = queued;
+            heartbeatContextRef.current = activeQueued.context.contextId;
+            if (activeQueued.job.status === 'completed' || activeQueued.job.status === 'failed') {
                 setDisplay((current) => ({
-                    ...current,
-                    jobId: queued.job.id,
-                    projectTitle: queued.job.projectTitle,
-                    companyName: queued.job.companyId,
-                    stage: queued.job.stage,
-                    status: queued.job.status,
-                    percent: Number(queued.job.progress?.percent || (queued.job.status === 'completed' ? 100 : 0)),
-                    message: queued.job.progress?.message || (queued.job.status === 'completed' ? 'Trabalho concluido no Ops.' : 'Trabalho encerrado com falha no Ops.'),
-                    assetId: queued.job.outputAssetId || undefined,
-                    errorCode: queued.job.error?.code || undefined,
+                    ...transitionOpsExecutorMonitor(current, { type: 'monitor-recovered', source: 'poll' }),
+                    jobId: activeQueued.job.id,
+                    projectTitle: activeQueued.job.projectTitle,
+                    companyName: activeQueued.job.companyId,
+                    stage: activeQueued.job.stage,
+                    status: activeQueued.job.status,
+                    percent: Number(activeQueued.job.progress?.percent || (activeQueued.job.status === 'completed' ? 100 : 0)),
+                    message: activeQueued.job.progress?.message || (activeQueued.job.status === 'completed' ? 'Trabalho concluido no Ops.' : 'Trabalho encerrado com falha no Ops.'),
+                    assetId: activeQueued.job.outputAssetId || undefined,
+                    errorCode: activeQueued.job.status === 'failed' ? (activeQueued.job.error?.code || undefined) : undefined,
                 }));
                 clearPersistedOpsVideoJob();
                 currentJobRef.current = null;
                 return;
             }
-            currentJobRef.current = queued.job.id;
-            toast.info(queued.resume
-                ? `Retomando "${queued.job.projectTitle}" no mesmo projeto.`
-                : `O agente Video Maker iniciou "${queued.job.projectTitle}".`, { duration: 6_000 });
-            await execute(queued);
+            await execute(activeQueued);
         } catch (error) {
             const parsed = errorParts(error);
             const persisted = loadPersistedOpsVideoJob();
             if (persisted) updatePersistedOpsVideoJob({ status: 'paused', message: parsed.message, errorCode: parsed.code, errorMessage: parsed.message });
             const updateRequired = parsed.code === 'video_worker_upgrade_required';
-            setDisplay((current) => ({
-                ...current,
-                status: persisted || updateRequired ? 'paused' : 'offline',
-                message: parsed.message,
-                errorCode: parsed.code,
-                heartbeat: current.heartbeat === 'unsupported' ? 'unsupported' : 'offline',
-            }));
+            const blockedBeforeClaim = Boolean(queued)
+                && (updateRequired || !isRecoverableInterruption(error, parsed.code));
+            if (persisted) {
+                currentJobRef.current = null;
+                setDisplay((current) => ({
+                    ...current,
+                    status: 'paused',
+                    message: parsed.message,
+                    errorCode: parsed.code,
+                }));
+            } else if (blockedBeforeClaim && queued) {
+                const blockedJob = queued.job;
+                setDisplay((current) => ({
+                    ...transitionOpsExecutorMonitor(current, { type: 'monitor-recovered', source: 'poll' }),
+                    jobId: blockedJob.id,
+                    projectTitle: blockedJob.projectTitle,
+                    companyName: blockedJob.companyId,
+                    stage: blockedJob.stage,
+                    status: 'paused',
+                    percent: Number(blockedJob.progress?.percent || 0),
+                    message: parsed.message,
+                    assetId: undefined,
+                    errorCode: parsed.code,
+                }));
+            } else {
+                setDisplay((current) => transitionOpsExecutorMonitor(current, {
+                    type: 'monitor-failed',
+                    source: 'poll',
+                    code: parsed.code,
+                    message: parsed.message,
+                }));
+            }
         } finally {
             runningRef.current = false;
         }
