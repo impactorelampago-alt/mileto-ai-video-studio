@@ -1,5 +1,12 @@
 import { DEFAULT_VOICE_SETTINGS, type TtsProvider, type VoicePreset } from '../types';
 import { DEFAULT_PRESET_AUDIO_CONFIG, SYSTEM_MUSIC_IDS } from './systemMusic';
+import {
+    applySystemVoicePresetOverride,
+    compactSystemVoicePresetOverride,
+    isEmptySystemVoicePresetOverride,
+    migrateLegacySystemVoicePresetOverrides,
+    type SystemVoicePresetOverride,
+} from './systemVoicePresetOverrides';
 
 export interface SystemVoice {
     id: string;
@@ -57,6 +64,8 @@ export const SYSTEM_VOICES: SystemVoice[] = [
     },
 ];
 
+const RODEIO_SYSTEM_VOICE_ID = 'fffaeef680cf41cdaff2c65d8cdd8650';
+
 const LEGACY_SYSTEM_VOICE_ID_MAP: Record<string, string> = {
     // Até a v1.4.21 este era o ID da antiga "Padrão Masculina". Projetos
     // persistidos devem passar a usar a voz masculina atual sem ficar órfãos.
@@ -73,16 +82,48 @@ export const SYSTEM_VOICE_IDS = new Set([
 
 export const DEFAULT_SYSTEM_VOICE = SYSTEM_VOICES[0];
 
-const SYSTEM_VOICE_PRESETS_KEY = 'mileto_system_voice_presets_v1';
+const LEGACY_SYSTEM_VOICE_PRESETS_KEY = 'mileto_system_voice_presets_v1';
+const SYSTEM_VOICE_PRESETS_KEY = 'mileto_system_voice_presets_v2';
 
-const readPresetOverrides = (): Record<string, VoicePreset> => {
-    if (typeof window === 'undefined') return {};
+const readStoredRecord = <T,>(key: string): Record<string, T> | null => {
+    if (typeof window === 'undefined') return null;
     try {
-        const parsed = JSON.parse(window.localStorage.getItem(SYSTEM_VOICE_PRESETS_KEY) || '{}');
-        return parsed && typeof parsed === 'object' ? parsed : {};
+        const parsed = JSON.parse(window.localStorage.getItem(key) || 'null');
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
     } catch {
-        return {};
+        return null;
     }
+};
+
+const readPresetOverrides = (): Record<string, SystemVoicePresetOverride> => {
+    if (typeof window === 'undefined') return {};
+    const current = readStoredRecord<SystemVoicePresetOverride>(SYSTEM_VOICE_PRESETS_KEY);
+    if (current) return current;
+
+    const legacy = readStoredRecord<VoicePreset>(LEGACY_SYSTEM_VOICE_PRESETS_KEY) || {};
+    const fallbackByVoiceId = Object.fromEntries(
+        SYSTEM_VOICES.map((voice) => [voice.id, voice.preset]),
+    );
+    const legacyRodeioPreset = createPreset(1, 0, null);
+    const migrated = migrateLegacySystemVoicePresetOverrides(legacy, {
+        canonicalVoiceId: (id) => canonicalSystemVoiceId(id) || id,
+        fallbackByVoiceId,
+        bundledUpgrades: {
+            // Antes da v1.4.22, salvar o padrão original do Rodeio gravava um
+            // snapshot sem música. Esse snapshot não era uma escolha explícita
+            // e não deve esconder a faixa Rodeio adicionada ao produto.
+            [RODEIO_SYSTEM_VOICE_ID]: {
+                from: legacyRodeioPreset,
+                to: fallbackByVoiceId[RODEIO_SYSTEM_VOICE_ID],
+            },
+        },
+    });
+    try {
+        window.localStorage.setItem(SYSTEM_VOICE_PRESETS_KEY, JSON.stringify(migrated));
+    } catch {
+        // O fallback canônico continua disponível quando o armazenamento falha.
+    }
+    return migrated;
 };
 
 export const effectiveSystemVoicePreset = (id?: string | null): VoicePreset | undefined => {
@@ -91,22 +132,19 @@ export const effectiveSystemVoicePreset = (id?: string | null): VoicePreset | un
     if (!fallback || !canonicalId) return fallback;
     const overrides = readPresetOverrides();
     const override = overrides[canonicalId] || (id ? overrides[id] : undefined);
-    return override ? {
-        voiceSettings: { ...fallback.voiceSettings, ...override.voiceSettings },
-        musicTrackId: override.musicTrackId ?? null,
-        audioConfig: {
-            narration: { ...fallback.audioConfig.narration, ...override.audioConfig?.narration },
-            background: { ...fallback.audioConfig.background, ...override.audioConfig?.background },
-        },
-    } : fallback;
+    return applySystemVoicePresetOverride(fallback, override);
 };
 
 export const saveSystemVoicePreset = (id: string, preset: VoicePreset) => {
     if (typeof window === 'undefined' || !SYSTEM_VOICE_IDS.has(id)) return;
-    window.localStorage.setItem(SYSTEM_VOICE_PRESETS_KEY, JSON.stringify({
-        ...readPresetOverrides(),
-        [id]: preset,
-    }));
+    const canonicalId = canonicalSystemVoiceId(id);
+    const fallback = SYSTEM_VOICES.find((voice) => voice.id === canonicalId)?.preset;
+    if (!canonicalId || !fallback) return;
+    const next = { ...readPresetOverrides() };
+    const override = compactSystemVoicePresetOverride(fallback, preset);
+    if (isEmptySystemVoicePresetOverride(override)) delete next[canonicalId];
+    else next[canonicalId] = override;
+    window.localStorage.setItem(SYSTEM_VOICE_PRESETS_KEY, JSON.stringify(next));
 };
 
 export const findVoicePreset = (id?: string | null): VoicePreset | undefined =>

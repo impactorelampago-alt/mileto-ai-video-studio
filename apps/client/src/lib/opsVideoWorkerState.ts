@@ -1,7 +1,7 @@
 import type { OpsVideoJob, OpsVideoJobStage } from './gateway';
 import type { ExportResultDiagnostics } from './exportIntegrity';
 
-export const OPS_VIDEO_WORKER_APP_VERSION = '1.4.30';
+export const OPS_VIDEO_WORKER_APP_VERSION = '1.4.31';
 export const OPS_VIDEO_WORKER_STATE_KEY = 'mileto:ops-video-worker:active:v1';
 
 export type OpsVideoWorkerLocalStatus =
