@@ -75,3 +75,13 @@ test('valida campos obrigatórios e limites antes de falar com o Ops', () => {
     input.metadata.title = '';
     assert.throws(() => buildOpsUploadIntentPayload(input), /title é obrigatório/);
 });
+
+test('preserva a extensão mp4 quando o nome técnico excede o limite', () => {
+    const input = baseInput();
+    input.fileName = `${'video-final-'.repeat(30)}.mp4`;
+
+    const payload = buildOpsUploadIntentPayload(input);
+
+    assert.ok(payload.fileName.length <= 180);
+    assert.match(payload.fileName, /\.mp4$/i);
+});

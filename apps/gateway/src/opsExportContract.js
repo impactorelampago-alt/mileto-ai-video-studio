@@ -48,8 +48,12 @@ export const buildOpsUploadIntentPayload = ({
     metadata,
 }) => {
     const normalizedMetadata = normalizeOpsExportMetadata(metadata);
-    const normalizedFileName = compactOpsExportText(fileName).slice(0, 180);
-    if (!normalizedFileName) throw contractError('fileName é obrigatório para exportar ao Mileto Ops.');
+    const rawFileName = compactOpsExportText(fileName);
+    if (!rawFileName) throw contractError('fileName é obrigatório para exportar ao Mileto Ops.');
+    // O Ops valida o nome junto com o MIME. Preserve a extensão ao aplicar o
+    // limite para que um nome técnico longo continue sendo um MP4 válido.
+    const fileStem = rawFileName.replace(/\.mp4$/i, '').trim().slice(0, 176).trim() || 'video';
+    const normalizedFileName = `${fileStem}.mp4`;
     if (!Number.isSafeInteger(Number(sizeBytes)) || Number(sizeBytes) <= 0) {
         throw contractError('sizeBytes é inválido para exportar ao Mileto Ops.');
     }
