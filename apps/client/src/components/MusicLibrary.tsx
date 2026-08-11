@@ -101,9 +101,14 @@ export const MusicLibrary: React.FC<MusicLibraryProps> = ({ onTrimTrack }) => {
                 scope: 'shared',
                 sharedAssetId: file.id,
             }));
-            setMusicLibrary(tracks);
+            // As faixas oficiais acompanham toda instalação e também devem
+            // aparecer neste escopo. A união ainda elimina uploads legados de
+            // Batida/Blogueira/Rodeio que possam existir no R2.
+            setMusicLibrary(withSystemMusicTracks(tracks));
         } catch (error) {
-            setMusicLibrary([]);
+            // Mesmo sem acesso momentâneo ao R2, as faixas embarcadas continuam
+            // utilizáveis e não devem desaparecer da aba compartilhada.
+            setMusicLibrary(withSystemMusicTracks([]));
             toast.error(error instanceof Error ? error.message : 'Falha ao carregar músicas compartilhadas.');
         }
     }, [loadMusicLibrary, setMusicLibrary]);

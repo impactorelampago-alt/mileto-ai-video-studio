@@ -7,6 +7,11 @@ import fetch, { RequestInit } from 'node-fetch';
 import ffmpeg from 'fluent-ffmpeg';
 import { bearerFrom, GatewayHttpError } from '../services/gatewayClient';
 import { BASE_DATA_PATH } from './fileExplorerController';
+import {
+    downloadRemoteAudioFile,
+    ensureValidAudioCacheFile,
+    isUsableAudioCacheFile,
+} from './audioController';
 
 const GATEWAY_URL = (process.env.GATEWAY_BASE_URL || 'https://api.miletoaivideo.com.br').replace(/\/+$/, '');
 
@@ -241,6 +246,92 @@ const probeDuration = (filePath: string) =>
             resolve(Number(metadata.format.duration || 1));
         });
     });
+
+const MAX_CAPTION_AUDIO_BYTES = 25 * 1024 * 1024;
+const SHARED_AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.webm', '.mp4']);
+
+const isAllowedSharedAudioUrl = (rawUrl: string) => {
+    try {
+        const parsed = new URL(rawUrl);
+        const hostname = parsed.hostname.toLowerCase().replace(/\.+$/, '');
+        const r2Suffix = '.r2.cloudflarestorage.com';
+        const r2Prefix = hostname.endsWith(r2Suffix)
+            ? hostname.slice(0, -r2Suffix.length)
+            : '';
+        return parsed.protocol === 'https:'
+            && (!parsed.port || parsed.port === '443')
+            && !parsed.username
+            && !parsed.password
+            && Boolean(r2Prefix)
+            && r2Prefix.split('.').every((label) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label));
+    } catch {
+        return false;
+    }
+};
+
+const downloadSharedAudio = async (sourceUrl: string, targetPath: string, expectedSize: number) => {
+    if (expectedSize > MAX_CAPTION_AUDIO_BYTES) {
+        throw new GatewayHttpError(413, 'O áudio excede o limite de 25 MB para gerar legendas.');
+    }
+    if (!isAllowedSharedAudioUrl(sourceUrl)) {
+        throw new GatewayHttpError(502, 'O ambiente compartilhado devolveu uma URL de áudio inválida.');
+    }
+
+    await ensureValidAudioCacheFile(
+        targetPath,
+        async (temporaryPath) => {
+            // O downloader comum limita bytes durante o streaming e revalida
+            // cada redirect. A validação R2 exclusiva impede SSRF.
+            await downloadRemoteAudioFile(
+                sourceUrl,
+                temporaryPath,
+                MAX_CAPTION_AUDIO_BYTES,
+                isAllowedSharedAudioUrl,
+            );
+        },
+        isUsableAudioCacheFile,
+    );
+};
+
+export const materializeAudio = async (req: Request, res: Response) => {
+    try {
+        const assetId = String(req.params.assetId || '').trim().toLowerCase();
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(assetId)) {
+            throw new GatewayHttpError(400, 'Identificador do áudio compartilhado inválido.');
+        }
+        const detail = (await gatewayRequest(
+            req,
+            `/shared/files/item/${encodeURIComponent(assetId)}`
+        )) as { item?: { id?: string; name?: string; publicUrl?: string; type?: string; size?: number } };
+        const item = detail.item;
+        if (!item?.publicUrl) throw new GatewayHttpError(404, 'Narração compartilhada não encontrada.');
+        if (item.type !== 'audio') throw new GatewayHttpError(415, 'O item compartilhado selecionado não é um áudio.');
+
+        const originalName = String(item.name || 'narracao.mp3');
+        const extension = path.extname(originalName).toLowerCase();
+        if (!SHARED_AUDIO_EXTENSIONS.has(extension)) {
+            throw new GatewayHttpError(415, 'O formato do áudio compartilhado não é compatível com legendas.');
+        }
+
+        const targetDir = path.join(BASE_DATA_PATH, 'narrations', 'shared');
+        await fs.promises.mkdir(targetDir, { recursive: true });
+        const filename = `shared-${assetId}${extension}`;
+        const targetPath = path.join(targetDir, filename);
+        await downloadSharedAudio(item.publicUrl, targetPath, Number(item.size || 0));
+
+        res.json({
+            ok: true,
+            audio: {
+                sharedAssetId: assetId,
+                originalName,
+                publicUrl: `/narrations/shared/${filename}`,
+            },
+        });
+    } catch (error) {
+        const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 500;
+        res.status(status).json({ ok: false, message: (error as Error).message || 'Falha ao preparar o áudio compartilhado.' });
+    }
+};
 
 export const materializeTransition = async (req: Request, res: Response) => {
     try {

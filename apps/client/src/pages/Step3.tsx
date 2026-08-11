@@ -10,6 +10,7 @@ import { localAuthHeaders } from '../lib/serverAuth';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 import { narrationSourceKey } from '../lib/narrationState';
 import { repairCaptionCurrencySegments } from '../lib/captionCurrency';
+import { materializeSharedAudioForCaptions } from '../lib/sharedMediaRecovery';
 
 export const Step3 = () => {
     const { adData, updateAdData, mediaTakes, setMediaTakes, captionStyle, setCaptionStyle } = useWizard();
@@ -96,7 +97,13 @@ export const Step3 = () => {
         try {
             // Pick the best available audio for transcription:
             // Preferably narration-only (cleaner for STT), fallback to master if needed
-            const audioToTranscribe = adData.narrationAudioUrl || adData.masterAudioUrl;
+            let audioToTranscribe = adData.narrationAudioUrl || adData.masterAudioUrl;
+            const sharedAudioAssetId = adData.narrationAudioUrl
+                ? adData.sharedNarrationAssetId
+                : adData.sharedMasterAssetId;
+            if (sharedAudioAssetId) {
+                audioToTranscribe = await materializeSharedAudioForCaptions(sharedAudioAssetId);
+            }
 
             const response = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/stt/generate-captions`, {
                 method: 'POST',

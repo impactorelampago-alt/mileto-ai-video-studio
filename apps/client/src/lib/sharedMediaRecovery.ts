@@ -1,5 +1,7 @@
 import type { MediaTake } from '../types';
 import { gatewayApi } from './gateway';
+import { API_BASE_URL } from './apiBase';
+import { localAuthHeaders } from './serverAuth';
 
 type SharedAssetLookup = (id: string) => Promise<{ publicUrl?: string | null }>;
 
@@ -54,6 +56,30 @@ export const refreshSharedAudioSourceUrl = async (
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(`${errorCode}: ${reason}`);
     }
+};
+
+/**
+ * Baixa para o cache privado do servidor local um áudio pertencente ao draft.
+ * O renderer envia somente o ID estável; o servidor confirma o acesso no gateway
+ * e obtém uma capability R2 nova antes de fazer o download.
+ */
+export const materializeSharedAudioForCaptions = async (
+    assetId: string,
+): Promise<string> => {
+    const normalizedAssetId = String(assetId || '').trim();
+    if (!normalizedAssetId) throw new Error('A narração compartilhada perdeu sua identificação.');
+    const response = await fetch(
+        `${API_BASE_URL}/api/shared/files/item/${encodeURIComponent(normalizedAssetId)}/materialize-audio`,
+        {
+            method: 'POST',
+            headers: await localAuthHeaders(),
+        },
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok || !result.audio?.publicUrl) {
+        throw new Error(result.message || 'Não foi possível preparar a narração compartilhada.');
+    }
+    return String(result.audio.publicUrl);
 };
 
 export const refreshSharedTakeForExport = async (

@@ -23,6 +23,7 @@ import {
 } from '../lib/systemMusic';
 import { refreshSharedAudioSourceUrl } from '../lib/sharedMediaRecovery';
 import { isIncludedTransition } from '../lib/transitionExportRecovery';
+import { narrationSourceKey, rebindNarrationDerivativeSourceKeys } from '../lib/narrationState';
 
 export const SHOW_DEBUG_FEATURES = false;
 
@@ -493,6 +494,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         title: string;
     }) => {
         const nextAd = serializeAdDataForDraft(payload.adData);
+        const previousNarrationSourceKey = narrationSourceKey(nextAd);
 
         const syncTransition = async (
             transition: TransitionAsset | null | undefined,
@@ -567,6 +569,18 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             nextAd.narrationAudioPath,
             'project',
         );
+        const portableNarrationSourceKey = narrationSourceKey(nextAd);
+        if (portableNarrationSourceKey !== previousNarrationSourceKey) {
+            // O upload para o Compartilhado troca somente o endereço/identidade
+            // de transporte. O conteúdo da narração continua idêntico, então
+            // legendas e títulos que pertenciam à fonte local precisam acompanhar
+            // a nova identidade estável, em vez de desaparecerem ao reabrir o draft.
+            Object.assign(nextAd, rebindNarrationDerivativeSourceKeys(
+                nextAd,
+                previousNarrationSourceKey,
+                portableNarrationSourceKey,
+            ));
+        }
         const musicEntry = isSystemMusicId(payload.selectedMusicId)
             ? null
             : await syncAudio('musicAudioUrl', 'sharedMusicAssetId', 'musica.mp3');
@@ -866,7 +880,34 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             const resolvedMusicAssetId = nextAd.sharedMusicAssetId || legacySharedMusicId;
             const music = resolvedMusicAssetId ? assets.get(resolvedMusicAssetId) : null;
             const master = nextAd.sharedMasterAssetId ? assets.get(nextAd.sharedMasterAssetId) : null;
-            if (narration) nextAd.narrationAudioUrl = narration.publicUrl;
+            if (narration) {
+                nextAd.narrationAudioUrl = narration.publicUrl;
+                const stableNarrationSourceKey = narrationSourceKey({
+                    narrationText: nextAd.narrationText || '',
+                    narrationAudioUrl: nextAd.narrationAudioUrl ?? null,
+                    narrationAudioPath: nextAd.narrationAudioPath ?? null,
+                    sharedNarrationAssetId: nextAd.sharedNarrationAssetId,
+                });
+                const storedCaptionSourceKey = nextAd.captions?.sourceKey;
+                // v1.4.33 podia salvar as legendas com a assinatura do caminho
+                // local anterior ao upload. A existência do asset autenticado e
+                // dos segmentos comprova que se trata da mesma narração, apenas
+                // com identidade de transporte diferente.
+                const canRepairTransportIdentity = Boolean(
+                    nextAd.isNarrationGenerated
+                    && nextAd.captions?.segments?.length
+                    && storedCaptionSourceKey
+                    && /^narration-v1-[a-f0-9]+$/i.test(storedCaptionSourceKey)
+                    && storedCaptionSourceKey !== stableNarrationSourceKey
+                );
+                if (canRepairTransportIdentity && nextAd.captions) {
+                    Object.assign(nextAd, rebindNarrationDerivativeSourceKeys(
+                        nextAd,
+                        storedCaptionSourceKey!,
+                        stableNarrationSourceKey,
+                    ));
+                }
+            }
             if (music) {
                 nextAd.sharedMusicAssetId = music.id;
                 nextAd.musicAudioUrl = music.publicUrl;

@@ -41,9 +41,38 @@ export const narrationSourceKey = (adData: Pick<AdData, 'narrationText' | 'narra
     return `narration-v1-${(hash >>> 0).toString(16)}`;
 };
 
+type NarrationDerivativeIdentity = Pick<AdData, 'captions' | 'dynamicTitlesSourceKey'>;
+
+/**
+ * Reatribui os derivados quando somente a identidade de transporte mudou.
+ * Os arrays/segmentos permanecem intactos; apenas suas chaves de origem mudam.
+ */
+export const rebindNarrationDerivativeSourceKeys = (
+    adData: NarrationDerivativeIdentity,
+    previousSourceKey: string,
+    nextSourceKey: string,
+): Partial<AdData> => {
+    if (
+        !previousSourceKey
+        || !nextSourceKey
+        || previousSourceKey === nextSourceKey
+        || adData.captions?.sourceKey !== previousSourceKey
+    ) {
+        return {};
+    }
+    return {
+        captions: { ...adData.captions, sourceKey: nextSourceKey },
+        ...(adData.dynamicTitlesSourceKey === previousSourceKey
+            ? { dynamicTitlesSourceKey: nextSourceKey }
+            : {}),
+    };
+};
+
 /** Tudo abaixo depende do áudio atual e precisa ser refeito ao trocar a voz. */
 export const invalidatedNarrationDerivatives = (): Partial<AdData> => ({
     narrationSource: undefined,
+    narrationAudioPath: null,
+    sharedNarrationAssetId: undefined,
     captions: undefined,
     dynamicTitles: [],
     dynamicTitlesSourceKey: undefined,

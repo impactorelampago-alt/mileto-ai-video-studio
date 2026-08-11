@@ -6,6 +6,10 @@ import {
     applySystemVoicePresetOverride,
     migrateLegacySystemVoicePresetOverrides,
 } from '../../client/src/lib/systemVoicePresetOverrides.ts';
+import {
+    SYSTEM_MUSIC_IDS,
+    withSystemMusicTracks,
+} from '../../client/src/lib/systemMusic.ts';
 
 const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf8');
 const systemMusic = read('../../client/src/lib/systemMusic.ts');
@@ -64,6 +68,47 @@ test('fixa os três recortes oficiais que acompanham todas as instalações', ()
         assert.match(serverMusic, new RegExp(`/system-music/${fileName.replace('.', '\\.')}`));
     }
     assert.match(builder, /assets\/system-music\/\*\*\/\*/);
+});
+
+test('biblioteca compartilhada sempre inclui as três faixas oficiais sem depender do R2', () => {
+    const sharedLegacyTracks = [
+        {
+            id: '11111111-1111-4111-8111-111111111111',
+            originalName: '1 - Batida.mp3',
+            displayName: '1 - Batida',
+            publicUrl: 'https://r2.example/batida-expirada.mp3',
+            filePath: '',
+            durationSec: 76.584,
+            createdAt: '2026-08-05T00:00:00.000Z',
+            scope: 'shared',
+            sharedAssetId: '11111111-1111-4111-8111-111111111111',
+        },
+        {
+            id: '22222222-2222-4222-8222-222222222222',
+            originalName: 'Blogueira 1.mp3',
+            displayName: 'Blogueira 1',
+            publicUrl: 'https://r2.example/blogueira-expirada.mp3',
+            filePath: '',
+            durationSec: 94.272,
+            createdAt: '2026-08-05T00:00:00.000Z',
+            scope: 'shared',
+            sharedAssetId: '22222222-2222-4222-8222-222222222222',
+        },
+    ];
+
+    const result = withSystemMusicTracks(sharedLegacyTracks);
+
+    assert.deepEqual(result.map((track) => track.id), [
+        SYSTEM_MUSIC_IDS.batida,
+        SYSTEM_MUSIC_IDS.blogueira,
+        SYSTEM_MUSIC_IDS.rodeio,
+    ]);
+    for (const track of result) {
+        assert.equal(track.source, 'system');
+        assert.equal(track.scope, undefined);
+        assert.equal(track.sharedAssetId, undefined);
+        assert.match(track.publicUrl, /^\/system-music\//);
+    }
 });
 
 test('Rodeio nasce com a própria música no catálogo global', () => {

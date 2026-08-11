@@ -149,10 +149,10 @@ test('job inicial fresh revision 1 sem asset anterior continua válido', () => {
     assert.equal(worker.isPersistedJobCompatible(state, job), true);
 });
 
-test('minimumAppVersion exige atualização sem bloquear a própria 1.4.33', () => {
+test('minimumAppVersion exige atualização sem bloquear a própria 1.4.34', () => {
     const worker = loadClientModule('opsVideoWorkerState.ts');
-    assert.equal(worker.opsWorkerSupportsMinimumVersion('1.4.32', '1.4.33'), true);
-    assert.equal(worker.opsWorkerSupportsMinimumVersion('1.4.33', '1.4.33'), true);
-    assert.equal(worker.opsWorkerSupportsMinimumVersion('1.4.34', '1.4.33'), false);
-    assert.equal(worker.opsWorkerSupportsMinimumVersion('v2.0.0', '1.4.33'), false);
+    assert.equal(worker.opsWorkerSupportsMinimumVersion('1.4.33', '1.4.34'), true);
+    assert.equal(worker.opsWorkerSupportsMinimumVersion('1.4.34', '1.4.34'), true);
+    assert.equal(worker.opsWorkerSupportsMinimumVersion('1.4.35', '1.4.34'), false);
+    assert.equal(worker.opsWorkerSupportsMinimumVersion('v2.0.0', '1.4.34'), false);
 });

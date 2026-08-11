@@ -122,12 +122,23 @@ export const withSystemMusicTracks = (tracks: MusicTrack[]): MusicTrack[] => {
     const canonicalTracks = SYSTEM_MUSIC_TRACKS.map((systemTrack) => {
         const installedCopy = tracks.find((track) => systemMusicTrackFor(track)?.id === systemTrack.id);
         if (!installedCopy) return { ...systemTrack };
+        // A biblioteca compartilhada pode conter uploads legados das faixas
+        // oficiais. Eles não devem transformar uma música embarcada em asset do
+        // R2 (com URL assinada e expiração): em qualquer escopo, a cópia do
+        // sistema continua sendo a fonte canônica e sempre disponível localmente.
+        const isSharedCopy = installedCopy.scope === 'shared' || Boolean(installedCopy.sharedAssetId);
         return {
             ...installedCopy,
             ...systemTrack,
-            publicUrl: installedCopy.publicUrl || systemTrack.publicUrl,
-            filePath: installedCopy.filePath || systemTrack.filePath,
+            publicUrl: isSharedCopy
+                ? systemTrack.publicUrl
+                : installedCopy.publicUrl || systemTrack.publicUrl,
+            filePath: isSharedCopy
+                ? systemTrack.filePath
+                : installedCopy.filePath || systemTrack.filePath,
             durationSec: installedCopy.durationSec || systemTrack.durationSec,
+            scope: undefined,
+            sharedAssetId: undefined,
         };
     });
     return [

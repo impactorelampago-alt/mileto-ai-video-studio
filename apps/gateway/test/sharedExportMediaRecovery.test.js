@@ -34,6 +34,8 @@ const gatewayApi = {
 };
 const runtimeRequire = (specifier) => {
     if (specifier === './gateway') return { gatewayApi };
+    if (specifier === './apiBase') return { API_BASE_URL: 'http://localhost:3301' };
+    if (specifier === './serverAuth') return { localAuthHeaders: async () => ({}) };
     throw new Error(`require inesperado: ${specifier}`);
 };
 const runtimeModule = { exports: {} };
