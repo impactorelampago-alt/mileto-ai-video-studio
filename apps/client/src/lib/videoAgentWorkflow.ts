@@ -304,7 +304,7 @@ const runTitleRequestWithDeadline = async <T>(
 
 export const sanitizeTitleGenerationServerTimings = (value: unknown): Record<string, number> | undefined => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-    const allowedKeys = new Set(['companyPalette', 'configuration', 'generation', 'formatting', 'total']);
+    const allowedKeys = new Set(['companyPalette', 'configuration', 'generation', 'formatting', 'editorialReview', 'total']);
     const timings: Record<string, number> = {};
     for (const [key, raw] of Object.entries(value).slice(0, 24)) {
         if (!allowedKeys.has(key) || typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) continue;
@@ -406,6 +406,7 @@ export const generateAutomaticTitlesResilient = async (
         configSource?: string;
         semanticCoverage?: NonNullable<AdData['titleGenerationSummary']>['semanticCoverage'];
         metrics?: NonNullable<AdData['titleGenerationSummary']>['metrics'];
+        editorialReview?: NonNullable<AdData['titleGenerationSummary']>['editorialReview'];
         warnings?: NonNullable<AdData['titleGenerationSummary']>['warnings'];
         timingsMs?: unknown;
     };
@@ -525,6 +526,7 @@ export const generateAutomaticTitlesResilient = async (
                     configSource: data?.configSource,
                     semanticCoverage: data?.semanticCoverage,
                     metrics: data?.metrics,
+                    editorialReview: data?.editorialReview,
                     attemptsBySource,
                     metricsBySource,
                     timings: timingSnapshot(),
@@ -575,6 +577,7 @@ export const generateAutomaticTitlesResilient = async (
             configSource: data.configSource,
             semanticCoverage: data.semanticCoverage,
             metrics: data.metrics,
+            editorialReview: data.editorialReview,
             attemptsBySource,
             metricsBySource,
             timings: timingSnapshot(),

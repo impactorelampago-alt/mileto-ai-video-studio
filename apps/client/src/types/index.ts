@@ -288,6 +288,19 @@ export interface TitleGenerationMetrics {
     acceptedCount?: number;
     droppedOutOfBoundsOrInvisible?: number;
     droppedByCoverageLimitOrOverlap?: number;
+    editorialReviewedCount?: number;
+    editorialCorrectedCount?: number;
+    editorialFallbackToLegacy?: number;
+}
+
+export interface TitleEditorialReviewSummary {
+    configuredStrategy: 'legacy-v4' | 'reviewed-v1';
+    appliedStrategy: 'legacy-v4' | 'reviewed-v1';
+    model?: string;
+    attempted: boolean;
+    reviewedCount: number;
+    correctedCount: number;
+    fallbackToLegacy: boolean;
 }
 
 export interface TitleGenerationTimings {
@@ -319,6 +332,7 @@ export interface TitleGenerationSummary {
     configSource?: string;
     semanticCoverage?: TitleSemanticCoverage;
     metrics?: TitleGenerationMetrics;
+    editorialReview?: TitleEditorialReviewSummary;
     /** Mantém separadas as tentativas da IA e do fallback para não apagar a causa da degradação. */
     attemptsBySource?: { ai?: number; fallback?: number };
     metricsBySource?: { ai?: TitleGenerationMetrics; fallback?: TitleGenerationMetrics };

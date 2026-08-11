@@ -15,6 +15,8 @@ import { OpsLibrary } from './OpsLibrary';
 import { PremiumSelect } from './ExportModal';
 import { OpsViewContextPicker } from './OpsViewContextPicker';
 import { gatewayApi, type OpsCompany, type OpsFolder, type OpsViewContext } from '../lib/gateway';
+import { AudioPlayer } from './AudioPlayer';
+import { MiletoMediaPlayer } from './MiletoMediaPlayer';
 
 // ─── Tipos (espelho do fileExplorerController) ────────────────────────────
 
@@ -1196,7 +1198,7 @@ export const FileExplorer = () => {
 
                                                     {/* Player de áudio inline */}
                                                     {f.type === 'audio' && (
-                                                        <audio controls src={ABSOLUTE_URL(f.publicUrl)} className="h-7 w-40 shrink-0" preload="none" />
+                                                        <AudioPlayer src={ABSOLUTE_URL(f.publicUrl)} compact className="w-44 shrink-0" />
                                                     )}
 
                                                     {/* Ações do item (hover) */}
@@ -1329,7 +1331,7 @@ export const FileExplorer = () => {
                                                             <span className="text-xs text-foreground truncate" title={f.name}>{f.name}</span>
                                                         )}
                                                         {f.type === 'audio' && (
-                                                            <audio controls src={ABSOLUTE_URL(f.publicUrl)} className="h-6 w-full" preload="none" />
+                                                            <AudioPlayer src={ABSOLUTE_URL(f.publicUrl)} compact className="w-full" />
                                                         )}
                                                         {f.size && (
                                                             <span className="text-[9px] text-brand-muted font-mono">{formatSize(f.size)}</span>
@@ -1381,7 +1383,24 @@ export const FileExplorer = () => {
             )}
 
             {preview && (
-                <PreviewModal file={preview} onClose={() => setPreview(null)} />
+                <PreviewModal
+                    file={preview}
+                    onClose={() => setPreview(null)}
+                    resolveDownloadSource={scope === 'shared'
+                        ? async () => {
+                            const fresh = await gatewayApi.sharedAssetDownload(preview.id);
+                            return { src: fresh.url, fileName: fresh.name || preview.name };
+                        }
+                        : async () => {
+                            const query = new URLSearchParams();
+                            if (preview.id) query.set('id', preview.id);
+                            if (preview.relPath) query.set('relPath', preview.relPath);
+                            return {
+                                src: `${API}/api/files/download?${query.toString()}`,
+                                fileName: preview.name,
+                            };
+                        }}
+                />
             )}
 
             {dialog?.kind === 'createFolder' && (
@@ -1865,9 +1884,10 @@ const FolderMoveCopyDialog = ({
 interface PreviewProps {
     file: FileEntry;
     onClose: () => void;
+    resolveDownloadSource?: () => Promise<{ src: string; fileName?: string }>;
 }
 
-const PreviewModal = ({ file, onClose }: PreviewProps) => {
+const PreviewModal = ({ file, onClose, resolveDownloadSource }: PreviewProps) => {
     return (
         <div
             className="fixed inset-0 z-100 flex items-center justify-center bg-black/90 backdrop-blur-md p-4"
@@ -1881,11 +1901,12 @@ const PreviewModal = ({ file, onClose }: PreviewProps) => {
                     </button>
                 </div>
                 {file.type === 'video' ? (
-                    <video
+                    <MiletoMediaPlayer
                         src={ABSOLUTE_URL(file.publicUrl)}
-                        controls
+                        title={file.name}
+                        downloadName={file.name}
+                        resolveDownloadSource={resolveDownloadSource}
                         autoPlay
-                        className="w-full max-h-[80vh] rounded-2xl bg-black"
                     />
                 ) : (
                     <img

@@ -74,7 +74,7 @@ test('migra somente o preset legado exato para a configuracao rapida v4', () => 
     assert.deepEqual(preserved.ai, custom.ai);
 });
 
-test('controller faz uma chamada ao gateway, que limita retries, e publica somente timings numericos', () => {
+test('controller faz uma geracao e uma revisao batch, sem chamadas por titulo, e publica somente timings numericos', () => {
     const controller = fs.readFileSync(
         new URL('../../server/src/controllers/aiController.ts', import.meta.url),
         'utf8',
@@ -90,6 +90,8 @@ test('controller faz uma chamada ao gateway, que limita retries, e publica somen
     const gatewayServer = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
 
     assert.match(controller, /maxAttempts:\s*1/);
+    assert.equal(controller.match(/gatewayChat\(token/g)?.length, 2);
+    assert.match(controller, /requestBatch:\s*async \(items\)/);
     assert.doesNotMatch(controller, /maxProviderAttempts/);
     assert.match(controller, /TITLE_GENERATION_PREFLIGHT_TIMEOUT_MS/);
     assert.match(controller, /TITLE_GENERATION_TOTAL_TIMEOUT_MS/);

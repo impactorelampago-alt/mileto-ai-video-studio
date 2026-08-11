@@ -1280,7 +1280,12 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                 <p className="text-sm text-foreground/70">Esta entrega usa HLS e não pode ser reproduzida diretamente neste dispositivo.</p>
                             </div>
                         ) : (
-                            <MiletoMediaPlayer src={preview.url} title={preview.asset.name} />
+                            <MiletoMediaPlayer
+                                src={preview.url}
+                                title={preview.asset.name}
+                                downloadName={preview.asset.name}
+                                onDownload={() => downloadAsset(preview.asset)}
+                            />
                         )}
                     </div>
                 </div>

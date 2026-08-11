@@ -10,6 +10,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from './config.js';
 import { pool, query } from './db.js';
 import { collectSharedDraftAssetIds } from './sharedDraftAssets.js';
+import { sharedDownloadContentDisposition } from './sharedDownloadCapability.js';
 
 const CATEGORIES = ['Imagens', 'Músicas', 'Vídeos', 'Geração por IA'];
 const TRASH_DAYS = 30;
@@ -96,6 +97,17 @@ const signedDownload = (objectKey) =>
     getSignedUrl(requireR2(), new GetObjectCommand({ Bucket: config.r2.bucket, Key: objectKey }), {
         expiresIn: config.r2.downloadUrlTtl,
     });
+
+const signedAttachment = (objectKey, name) =>
+    getSignedUrl(
+        requireR2(),
+        new GetObjectCommand({
+            Bucket: config.r2.bucket,
+            Key: objectKey,
+            ResponseContentDisposition: sharedDownloadContentDisposition(name),
+        }),
+        { expiresIn: config.r2.downloadUrlTtl },
+    );
 
 const mapItem = async (row) => ({
     id: row.id,
@@ -381,6 +393,18 @@ export const getItem = async (req, res) => {
     const row = await getAccessibleItem(orgIdOf(req), req.params.assetId);
     if (!row) return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
     res.json({ ok: true, item: await mapItem(row) });
+};
+
+export const getItemDownload = async (req, res) => {
+    const row = await getAccessibleItem(orgIdOf(req), req.params.assetId);
+    if (!row) return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
+    res.json({
+        ok: true,
+        download: {
+            url: await signedAttachment(row.object_key, row.name),
+            name: row.name,
+        },
+    });
 };
 
 export const renameItem = async (req, res) => {

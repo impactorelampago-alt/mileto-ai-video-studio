@@ -783,6 +783,33 @@ export const copyItem = async (req: Request, res: Response) => {
     }
 };
 
+// GET /api/files/download?id=<uuid>&relPath=<caminho>
+// O player roda em outra origem (file:// no instalavel e :5173 em DEV), entao
+// o atributo HTML `download` sozinho nao e confiavel. Este endpoint mantem a
+// resolucao confinada em FILES_ROOT e forca Content-Disposition: attachment.
+export const downloadItem = (req: Request, res: Response) => {
+    try {
+        const id = typeof req.query.id === 'string' ? req.query.id : '';
+        const requestedRelPath = typeof req.query.relPath === 'string' ? req.query.relPath : '';
+        if (!id && !requestedRelPath) {
+            return res.status(400).json({ ok: false, message: 'Informe o arquivo que deseja baixar.' });
+        }
+
+        const entry = readIndex().find((item) =>
+            (id && item.id === id) || (requestedRelPath && item.relPath === requestedRelPath)
+        );
+        const filePath = existingEntryPath(entry, requestedRelPath);
+        if (!filePath) {
+            return res.status(404).json({ ok: false, message: 'Arquivo local nao encontrado.' });
+        }
+
+        res.setHeader('Cache-Control', 'private, no-store');
+        return res.download(filePath, entry?.name || path.basename(filePath));
+    } catch (error: unknown) {
+        return res.status(400).json({ ok: false, message: errMsg(error) });
+    }
+};
+
 // DELETE /api/files/item  { id }
 export const deleteItem = (req: Request, res: Response) => {
     try {

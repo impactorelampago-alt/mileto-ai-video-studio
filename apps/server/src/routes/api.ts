@@ -111,6 +111,7 @@ router.post('/files/preview-source', fileExplorerController.preparePreviewSource
 router.patch('/files/rename', fileExplorerController.renameItem);
 router.post('/files/move', fileExplorerController.moveItem);
 router.post('/files/copy', fileExplorerController.copyItem);
+router.get('/files/download', fileExplorerController.downloadItem);
 router.delete('/files/item', fileExplorerController.deleteItem);
 
 // Ambiente Compartilhado: o servidor local calcula o SHA-256 por streaming e

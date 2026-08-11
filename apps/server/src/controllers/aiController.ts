@@ -44,6 +44,12 @@ import {
     runResilientTitleGeneration,
     titleGenerationDiagnostic,
 } from '../services/titleGenerationResilience';
+import {
+    preserveTitlesAcrossEditorialReflow,
+    resolveTitleEditorialStrategy,
+    runTitleEditorialReview,
+    TITLE_EDITORIAL_REVIEW_SYSTEM_PROMPT,
+} from '../services/titleEditorialReview';
 import { storeAiGeneratedMedia } from './fileExplorerController';
 
 const titleExtractionPrompt = (config: TitleGeneratorConfig) => {
@@ -470,6 +476,7 @@ export const generateTitles = async (req: Request, res: Response) => {
         configuration: 0,
         generation: 0,
         formatting: 0,
+        editorialReview: 0,
         total: 0,
     };
     const elapsedMs = (startedAt: number) => Math.max(0, Date.now() - startedAt);
@@ -764,6 +771,7 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 semanticRoles,
             }] : [];
         });
+        const generatedTextById = new Map<string, string>();
         const generatedTitles = mappedTitleCandidates
             .filter(({ trigger, literal, compact }: any) => {
                 const key = normalizeTitleWord(compact?.text);
@@ -812,8 +820,10 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 const colors = resolveTitleColors(titleType.color || trigger.color, effectiveBrandPalette, occurrence);
                 const resolvedStartSec = visualLiteral?.startSec ?? displayLiteral?.startSec ?? literal.startSec;
                 const semanticRoles = semanticRolesForTitle(trigger.id, resolvedStartSec, timelineDurationSec);
+                const id = uuidv4();
+                generatedTextById.set(id, fittedText);
                 return [{
-                    id: uuidv4(),
+                    id,
                     text: visualText,
                     sourceText: visualCompact.sourceText,
                     qualifierText: visualCompact.qualifierText,
@@ -837,11 +847,75 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             });
 
         const timelineCandidates = fitTitlesToTimeline(generatedTitles, timelineDurationSec);
-        const semanticSelection = selectTitlesForSemanticCoverage(timelineCandidates, titleConfig.maxTitles);
-        const finalTitles = fitTitlesToTimeline(
-            preventTitleOverlaps(semanticSelection.titles),
-            timelineDurationSec,
+        // Esta funcao e o pipeline comprovado anterior a revisao editorial. Ela
+        // permanece intacta e nomeada para o rollback produzir o mesmo resultado.
+        const runLegacyFinalTitleStrategy = () => {
+            const selection = selectTitlesForSemanticCoverage(timelineCandidates, titleConfig.maxTitles);
+            return fitTitlesToTimeline(
+                preventTitleOverlaps(selection.titles),
+                timelineDurationSec,
+            );
+        };
+        const legacyFinalTitles = runLegacyFinalTitleStrategy();
+        timingsMs.formatting = elapsedMs(formattingStartedAt);
+        const configuredEditorialStrategy = resolveTitleEditorialStrategy(
+            process.env.MILETO_TITLE_EDITORIAL_STRATEGY || titleConfig.pipeline,
         );
+        phase = 'editorial_review';
+        const editorialReviewStartedAt = Date.now();
+        // Switch reversivel: MILETO_TITLE_EDITORIAL_STRATEGY=legacy ignora a nova
+        // camada sem alterar prompt, candidatos, modelos visuais ou selecao antiga.
+        let editorialResult = await runTitleEditorialReview({
+            strategy: resilientGeneration.source === 'ai' ? configuredEditorialStrategy : 'legacy-v4',
+            legacyFinalTitles,
+            generatedTextById,
+            captionSegments: captions.segments,
+            spokenWords,
+            format: videoFormat,
+            requestBatch: async (items) => {
+                const review = await gatewayChat(token, {
+                    messages: [{
+                        role: 'user',
+                        content: JSON.stringify({ format: videoFormat, titles: items }),
+                    }],
+                    system: TITLE_EDITORIAL_REVIEW_SYSTEM_PROMPT,
+                    json: true,
+                    model: titleConfig.reviewer.model,
+                    maxOutputTokens: titleConfig.reviewer.maxOutputTokens,
+                    locale: 'pt-BR',
+                }, requestController.signal, titleConfig.reviewer.timeoutMs);
+                return parseGatewayJson(review.text);
+            },
+        });
+        timingsMs.editorialReview = elapsedMs(editorialReviewStartedAt);
+        if (requestController.signal.aborted) {
+            throw new GatewayHttpError(499, 'A geracao de titulos foi cancelada pelo cliente.');
+        }
+        const legacyTitlesById = new Map(legacyFinalTitles.map((title) => [title.id, title]));
+        const reviewedTimelineTitles = editorialResult.correctedCount
+            ? editorialResult.titles.map((title) => {
+                const legacy = legacyTitlesById.get(title.id);
+                if (legacy?.startSec === title.startSec) return title;
+                return {
+                    ...title,
+                    semanticRoles: semanticRolesForTitle(title.triggerId, title.startSec, timelineDurationSec),
+                };
+            })
+            : legacyFinalTitles;
+        const reviewedFinalTitles = editorialResult.correctedCount
+            ? fitTitlesToTimeline(preventTitleOverlaps(reviewedTimelineTitles), timelineDurationSec)
+            : legacyFinalTitles;
+        const atomicReflow = preserveTitlesAcrossEditorialReflow(legacyFinalTitles, reviewedFinalTitles);
+        if (editorialResult.correctedCount && !atomicReflow.accepted) {
+            editorialResult = {
+                ...editorialResult,
+                titles: legacyFinalTitles,
+                strategy: 'legacy-v4',
+                correctedCount: 0,
+                fallbackToLegacy: true,
+            };
+        }
+        const finalTitles = atomicReflow.titles;
         const semanticCoverage = semanticCoverageForTitles(semanticEvidence, finalTitles);
         const semanticRoleLabels = {
             hook: 'gancho',
@@ -872,7 +946,6 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 message: AUTOMATIC_TITLES_UNAVAILABLE_WARNING,
             }] : []),
         ];
-        timingsMs.formatting = elapsedMs(formattingStartedAt);
         timingsMs.total = elapsedMs(requestStartedAt);
         const metrics = {
             rawCandidateCount: titleCandidates.length,
@@ -881,6 +954,9 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             acceptedCount: finalTitles.length,
             droppedOutOfBoundsOrInvisible: generatedTitles.length - timelineCandidates.length,
             droppedByCoverageLimitOrOverlap: Math.max(0, timelineCandidates.length - finalTitles.length),
+            editorialReviewedCount: editorialResult.reviewedCount,
+            editorialCorrectedCount: editorialResult.correctedCount,
+            editorialFallbackToLegacy: editorialResult.fallbackToLegacy ? 1 : 0,
         };
         const responseSource = finalTitles.length ? resilientGeneration.source : 'none';
         console.info('[title-generation]', JSON.stringify({
@@ -901,6 +977,15 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             semanticCoverage,
             metrics,
             timingsMs: { ...timingsMs },
+            editorialReview: {
+                configuredStrategy: configuredEditorialStrategy,
+                appliedStrategy: editorialResult.strategy,
+                model: editorialResult.attempted ? titleConfig.reviewer.model : undefined,
+                attempted: editorialResult.attempted,
+                reviewedCount: editorialResult.reviewedCount,
+                correctedCount: editorialResult.correctedCount,
+                fallbackToLegacy: editorialResult.fallbackToLegacy,
+            },
             ...(warnings.length ? { warnings } : {}),
             ...(warning ? { warning } : {}),
             ...(resilientGeneration.diagnostic ? { diagnostic: resilientGeneration.diagnostic } : {}),

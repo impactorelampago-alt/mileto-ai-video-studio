@@ -504,6 +504,7 @@ app.patch('/shared/files/rename', authed, asyncHandler(shared.renameItem));
 app.post('/shared/files/move', authed, asyncHandler(shared.moveItem));
 app.post('/shared/files/copy', authed, asyncHandler(shared.copyItem));
 app.get('/shared/files/item/:assetId', authed, asyncHandler(shared.getItem));
+app.post('/shared/files/item/:assetId/download-url', authed, asyncHandler(shared.getItemDownload));
 app.delete('/shared/files/item/:assetId', authed, asyncHandler(shared.trashItem));
 app.post('/shared/files/item/:assetId/restore', authed, asyncHandler(shared.restoreItem));
 app.get('/shared/drafts', authed, asyncHandler(shared.listDrafts));

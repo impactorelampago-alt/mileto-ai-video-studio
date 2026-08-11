@@ -106,11 +106,17 @@ export interface AiTitleTriggerRule {
 }
 export interface AiTitleGeneratorConfig {
     version: number;
+    pipeline: 'legacy-v4' | 'reviewed-v1';
     ai: {
         provider: 'openai' | 'gemini';
         model: string;
         reasoning: 'rapido' | 'equilibrado' | 'profundo';
         maxOutputTokens: number;
+    };
+    reviewer: {
+        model: 'gpt-4.1-nano';
+        maxOutputTokens: number;
+        timeoutMs: number;
     };
     extractionPrompt: string;
     maxTitles: number;
@@ -757,6 +763,14 @@ export const gatewayApi = {
             `/shared/files/item/${encodeURIComponent(id)}`
         );
         return result.item;
+    },
+
+    async sharedAssetDownload(id: string): Promise<{ url: string; name: string }> {
+        const result = await gatewayFetch<{ ok: boolean; download: { url: string; name: string } }>(
+            `/shared/files/item/${encodeURIComponent(id)}/download-url`,
+            { method: 'POST' }
+        );
+        return result.download;
     },
 
     async sharedDraft(id: string): Promise<{ ok: boolean; data: Record<string, unknown> }> {

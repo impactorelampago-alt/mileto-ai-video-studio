@@ -1,121 +1,180 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { Play, Pause, Volume2, VolumeX } from 'lucide-react';
-import { cn } from '../lib/utils';
+import React, { useEffect, useRef, useState } from 'react';
+import { Pause, Play, Volume2, VolumeX } from 'lucide-react';
 import { toast } from 'sonner';
+import { cn } from '../lib/utils';
+import { MediaRange } from './MediaRange';
 
 interface AudioPlayerProps {
     src: string;
     className?: string;
+    compact?: boolean;
 }
 
-export const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, className }) => {
+const formatTime = (time: number) => {
+    if (!Number.isFinite(time) || time < 0) return '0:00';
+    const minutes = Math.floor(time / 60);
+    const seconds = Math.floor(time % 60);
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+};
+
+export const AudioPlayer: React.FC<AudioPlayerProps> = ({ src, className, compact = false }) => {
     const audioRef = useRef<HTMLAudioElement>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
     const [isMuted, setIsMuted] = useState(false);
+    const [volume, setVolume] = useState(0.8);
+    const [waiting, setWaiting] = useState(!compact);
+    const [failed, setFailed] = useState(false);
 
     useEffect(() => {
         const audio = audioRef.current;
         if (!audio) return;
 
-        const setAudioData = () => {
-            setDuration(audio.duration);
-            setCurrentTime(audio.currentTime);
-        };
-
-        const setAudioTime = () => setCurrentTime(audio.currentTime);
-        const handleEnded = () => setIsPlaying(false);
-
-        audio.addEventListener('loadeddata', setAudioData);
-        audio.addEventListener('timeupdate', setAudioTime);
-        audio.addEventListener('ended', handleEnded);
-
-        // Uma nova síntese pode chegar enquanto o player ainda mantém o buffer
-        // anterior. Recarregar explicitamente garante que o play use o novo MP3.
+        // A new synthesis can arrive while the element still has the previous
+        // buffer. Reloading explicitly guarantees that play uses the new MP3.
         audio.pause();
         setIsPlaying(false);
         setCurrentTime(0);
         setDuration(0);
+        // Listas podem conter dezenas de faixas. No modo compacto, nao fazemos
+        // prefetch de todas elas; o estado de carregamento comeca no primeiro play.
+        setWaiting(!compact);
+        setFailed(false);
         audio.load();
+    }, [compact, src]);
 
-        return () => {
-            audio.removeEventListener('loadeddata', setAudioData);
-            audio.removeEventListener('timeupdate', setAudioTime);
-            audio.removeEventListener('ended', handleEnded);
-        };
-    }, [src]);
+    useEffect(() => {
+        if (audioRef.current) audioRef.current.volume = volume;
+    }, [volume]);
 
     const togglePlay = async () => {
         const audio = audioRef.current;
-        if (!audio) return;
-        if (isPlaying) {
+        if (!audio || failed) return;
+        if (!audio.paused) {
             audio.pause();
-            setIsPlaying(false);
-        } else {
-            try {
-                await audio.play();
-                setIsPlaying(true);
-            } catch (error) {
-                setIsPlaying(false);
-                console.error('Audio playback failed:', error);
-                toast.error('Não foi possível reproduzir este áudio. Selecione a música novamente.');
-            }
+            return;
+        }
+        try {
+            setWaiting(true);
+            if (audio.ended) audio.currentTime = 0;
+            await audio.play();
+        } catch (error) {
+            console.error('Audio playback failed:', error);
+            toast.error('Não foi possível reproduzir este áudio. Selecione a música novamente.');
         }
     };
 
     const toggleMute = () => {
         const audio = audioRef.current;
         if (!audio) return;
-        audio.muted = !isMuted;
-        setIsMuted(!isMuted);
-    };
-
-    const formatTime = (time: number) => {
-        const minutes = Math.floor(time / 60);
-        const seconds = Math.floor(time % 60);
-        return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-    };
-
-    const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const audio = audioRef.current;
-        if (!audio) return;
-        const time = parseFloat(e.target.value);
-        audio.currentTime = time;
-        setCurrentTime(time);
+        const next = !isMuted;
+        audio.muted = next;
+        setIsMuted(next);
     };
 
     return (
-        <div className={cn('bg-slate-800 rounded-lg p-3 flex items-center gap-3', className)}>
-            <audio ref={audioRef} src={src} preload="metadata" />
+        <div
+            className={cn(
+                'flex min-w-0 items-center rounded-xl border border-white/8 bg-black/20',
+                compact ? 'gap-1.5 p-1.5' : 'gap-3 p-3',
+                className,
+            )}
+        >
+            <audio
+                ref={audioRef}
+                src={src}
+                preload={compact ? 'none' : 'metadata'}
+                onLoadedMetadata={(event) => {
+                    const nextDuration = event.currentTarget.duration;
+                    setDuration(Number.isFinite(nextDuration) ? nextDuration : 0);
+                    setCurrentTime(event.currentTarget.currentTime);
+                    setWaiting(false);
+                }}
+                onDurationChange={(event) => {
+                    const nextDuration = event.currentTarget.duration;
+                    if (Number.isFinite(nextDuration)) setDuration(nextDuration);
+                }}
+                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                onEnded={() => setIsPlaying(false)}
+                onWaiting={() => setWaiting(true)}
+                onCanPlay={() => setWaiting(false)}
+                onPlaying={() => setWaiting(false)}
+                onError={() => {
+                    setWaiting(false);
+                    setFailed(true);
+                }}
+            />
 
             <button
+                type="button"
                 onClick={() => void togglePlay()}
-                className="w-8 h-8 rounded-full bg-primary hover:bg-primary-hover text-slate-950 flex items-center justify-center transition-colors flex-shrink-0"
+                disabled={failed}
+                aria-label={failed ? 'Áudio indisponível' : isPlaying ? 'Pausar' : 'Reproduzir'}
+                className={cn(
+                    'flex shrink-0 items-center justify-center rounded-full bg-primary text-slate-950 transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-45',
+                    compact ? 'h-7 w-7' : 'h-8 w-8',
+                )}
             >
-                {isPlaying ? (
-                    <Pause className="w-4 h-4 fill-current" />
+                {waiting && !isPlaying ? (
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-950/30 border-t-slate-950" />
+                ) : isPlaying ? (
+                    <Pause className="h-4 w-4 fill-current" />
                 ) : (
-                    <Play className="w-4 h-4 fill-current ml-0.5" />
+                    <Play className="ml-0.5 h-4 w-4 fill-current" />
                 )}
             </button>
 
-            <span className="text-xs text-slate-400 font-mono w-10 text-right">{formatTime(currentTime)}</span>
+            {!compact && <span className="w-10 text-right font-mono text-xs text-slate-400">{formatTime(currentTime)}</span>}
 
-            <input
-                type="range"
-                min="0"
+            <MediaRange
+                min={0}
                 max={duration || 0}
                 value={currentTime}
-                onChange={handleSeek}
-                className="flex-1 h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full"
+                onChange={(event) => {
+                    const next = Number(event.target.value);
+                    if (audioRef.current) audioRef.current.currentTime = next;
+                    setCurrentTime(next);
+                }}
+                label="Posição do áudio"
+                compact={compact}
+                disabled={!duration || failed}
+                className="min-w-8 flex-1"
             />
 
-            <span className="text-xs text-slate-500 font-mono w-10">{formatTime(duration)}</span>
+            {!compact && <span className="w-10 font-mono text-xs text-slate-500">{formatTime(duration)}</span>}
 
-            <button onClick={toggleMute} className="text-slate-400 hover:text-foreground transition-colors">
-                {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            <button
+                type="button"
+                onClick={toggleMute}
+                aria-label={isMuted ? 'Ativar som' : 'Silenciar'}
+                className="shrink-0 text-slate-400 transition-colors hover:text-foreground"
+            >
+                {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
             </button>
+
+            {!compact && (
+                <MediaRange
+                    min={0}
+                    max={1}
+                    value={isMuted ? 0 : volume}
+                    onChange={(event) => {
+                        const next = Number(event.target.value);
+                        const audio = audioRef.current;
+                        setVolume(next);
+                        setIsMuted(next === 0);
+                        if (audio) {
+                            audio.volume = next;
+                            audio.muted = next === 0;
+                        }
+                    }}
+                    label="Volume"
+                    compact
+                    className="hidden w-20 sm:flex"
+                />
+            )}
         </div>
     );
 };

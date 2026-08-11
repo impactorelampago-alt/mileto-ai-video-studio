@@ -83,11 +83,18 @@ const titleType = (styleId, name, fontFamily, layout, animationId = 'pop', custo
 
 export const DEFAULT_TITLE_GENERATOR_CONFIG = {
     version: 4,
+    // Permite rollback remoto imediato sem trocar o desktop nem tocar no gerador v4.
+    pipeline: 'reviewed-v1',
     ai: {
         provider: 'openai',
         model: 'gpt-5-mini',
         reasoning: 'rapido',
         maxOutputTokens: 1400,
+    },
+    reviewer: {
+        model: 'gpt-4.1-nano',
+        maxOutputTokens: 512,
+        timeoutMs: 8000,
     },
     extractionPrompt: 'Detecte fatos explícitos da narração e transforme cada um em uma etiqueta visual curta. Preserve separadamente o trecho literal completo usado como evidência. Priorize substantivos, nomes próprios, valores e ações concretas; remova artigos, possessivos e conectores sem valor visual. Nunca invente texto, preço, benefício, bônus, urgência ou localização.',
     maxTitles: 8,
@@ -359,6 +366,11 @@ export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERA
     }
     return {
         version: 4,
+        pipeline: base.pipeline === 'legacy-v4'
+            ? 'legacy-v4'
+            : ['legacy-v4', 'reviewed-v1'].includes(String(source.pipeline))
+                ? String(source.pipeline)
+                : base.pipeline || DEFAULT_TITLE_GENERATOR_CONFIG.pipeline,
         ai: {
             provider: ['openai', 'gemini'].includes(String(source.ai?.provider))
                 ? String(source.ai.provider)
@@ -374,11 +386,38 @@ export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERA
                 32768
             )),
         },
+        reviewer: {
+            // reviewed-v1 possui um unico revisor aprovado: barato, rapido e sem reasoning.
+            model: DEFAULT_TITLE_GENERATOR_CONFIG.reviewer.model,
+            maxOutputTokens: Math.round(number(
+                source.reviewer?.maxOutputTokens,
+                base.reviewer?.maxOutputTokens || DEFAULT_TITLE_GENERATOR_CONFIG.reviewer.maxOutputTokens,
+                512,
+                1200
+            )),
+            timeoutMs: Math.round(number(
+                source.reviewer?.timeoutMs,
+                base.reviewer?.timeoutMs || DEFAULT_TITLE_GENERATOR_CONFIG.reviewer.timeoutMs,
+                3000,
+                15000
+            )),
+        },
         extractionPrompt: text(source.extractionPrompt, base.extractionPrompt, 12000),
         maxTitles: Math.round(number(source.maxTitles, base.maxTitles, 1, 12)),
         triggers,
     };
 };
+
+/**
+ * O editor da organizacao recebe a config efetiva. Durante o kill switch ela vem
+ * como legacy-v4, mas isso nao pode cristalizar no override ao salvar um layout.
+ * A escolha de pipeline pertence exclusivamente ao global; o org salva apenas a
+ * configuracao editorial que voltara a reviewed-v1 quando o switch for liberado.
+ */
+export const normalizeStoredOrgTitleGeneratorConfig = (input, globalConfig) => ({
+    ...normalizeTitleGeneratorConfig(input, { ...globalConfig, pipeline: 'reviewed-v1' }),
+    pipeline: 'reviewed-v1',
+});
 
 export const getOrgAgentPrompt = async (orgId, agentId) => {
     if (!orgId || !AGENT_IDS.has(agentId)) return null;
@@ -434,8 +473,9 @@ export const getOrgTitleGeneratorConfig = async (orgId) => {
     const global = await getGlobalTitleGeneratorConfig();
     const row = (await query('SELECT config, updated_at FROM org_title_generator_settings WHERE org_id = $1', [orgId])).rows[0];
     if (!row) return { config: clone(global.config), defaultConfig: global.config, usesDefault: true, updatedAt: global.updatedAt };
+    const storedOrgConfig = normalizeStoredOrgTitleGeneratorConfig(row.config, global.config);
     return {
-        config: normalizeTitleGeneratorConfig(row.config, global.config),
+        config: normalizeTitleGeneratorConfig(storedOrgConfig, global.config),
         defaultConfig: global.config,
         usesDefault: false,
         updatedAt: row.updated_at,
@@ -448,14 +488,19 @@ export const setOrgTitleGeneratorConfig = async (orgId, input, actorId) => {
         return getOrgTitleGeneratorConfig(orgId);
     }
     const global = await getGlobalTitleGeneratorConfig();
-    const config = normalizeTitleGeneratorConfig(input, global.config);
+    const storedConfig = normalizeStoredOrgTitleGeneratorConfig(input, global.config);
     const row = (await query(
         `INSERT INTO org_title_generator_settings (org_id, config, updated_by)
          VALUES ($1,$2,$3)
          ON CONFLICT (org_id) DO UPDATE
          SET config = EXCLUDED.config, updated_by = EXCLUDED.updated_by, updated_at = now()
          RETURNING updated_at`,
-        [orgId, config, actorId || null]
+        [orgId, storedConfig, actorId || null]
     )).rows[0];
-    return { config, defaultConfig: global.config, usesDefault: false, updatedAt: row.updated_at };
+    return {
+        config: normalizeTitleGeneratorConfig(storedConfig, global.config),
+        defaultConfig: global.config,
+        usesDefault: false,
+        updatedAt: row.updated_at,
+    };
 };

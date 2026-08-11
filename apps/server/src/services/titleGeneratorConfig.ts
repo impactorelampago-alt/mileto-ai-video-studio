@@ -45,11 +45,18 @@ export type TitleTriggerRule = {
 
 export type TitleGeneratorConfig = {
     version: number;
+    /** Rollback remoto: legacy-v4 executa exatamente o pipeline anterior. */
+    pipeline: 'legacy-v4' | 'reviewed-v1';
     ai: {
         provider: 'openai' | 'gemini';
         model: string;
         reasoning: 'rapido' | 'equilibrado' | 'profundo';
         maxOutputTokens: number;
+    };
+    reviewer: {
+        model: 'gpt-4.1-nano';
+        maxOutputTokens: number;
+        timeoutMs: number;
     };
     extractionPrompt: string;
     maxTitles: number;
@@ -122,11 +129,17 @@ const titleType = (
  */
 export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
     version: 4,
+    pipeline: 'reviewed-v1',
     ai: {
         provider: 'openai',
         model: 'gpt-5-mini',
         reasoning: 'rapido',
         maxOutputTokens: 1400,
+    },
+    reviewer: {
+        model: 'gpt-4.1-nano',
+        maxOutputTokens: 512,
+        timeoutMs: 8000,
     },
     extractionPrompt: 'Detecte fatos explícitos da narração e transforme cada um em uma etiqueta visual curta. Preserve separadamente o trecho literal completo usado como evidência. Priorize substantivos, nomes próprios, valores e ações concretas; remova artigos, possessivos e conectores sem valor visual. Nunca invente texto, preço, benefício, bônus, urgência ou localização.',
     maxTitles: 8,
@@ -282,7 +295,7 @@ const normalizeLayouts = (input: unknown, fallback: Record<VideoFormat, TitleLay
     })) as Record<VideoFormat, TitleLayout>;
 };
 
-const normalizeConfig = (input: unknown): TitleGeneratorConfig => {
+export const normalizeTitleGeneratorConfig = (input: unknown): TitleGeneratorConfig => {
     const source = input && typeof input === 'object' ? input as Partial<TitleGeneratorConfig> : {};
     const sourceTriggers = Array.isArray(source.triggers) ? source.triggers.slice(0, 30) : [];
     if (!sourceTriggers.length) return structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
@@ -343,8 +356,10 @@ const normalizeConfig = (input: unknown): TitleGeneratorConfig => {
         && String(source.ai?.reasoning || 'equilibrado') === 'equilibrado'
         && Number(source.ai?.maxOutputTokens ?? 4096) === 4096;
     const ai = usesLegacyAiPreset ? DEFAULT_TITLE_GENERATOR_CONFIG.ai : source.ai;
+    const reviewer = source.reviewer || DEFAULT_TITLE_GENERATOR_CONFIG.reviewer;
     return {
         version: Math.max(4, Math.round(numberInRange(source.version, 4, 2, 100))),
+        pipeline: source.pipeline === 'legacy-v4' ? 'legacy-v4' : 'reviewed-v1',
         ai: {
             provider: ['openai', 'gemini'].includes(String(ai?.provider))
                 ? ai?.provider as 'openai' | 'gemini'
@@ -358,6 +373,22 @@ const normalizeConfig = (input: unknown): TitleGeneratorConfig => {
                 DEFAULT_TITLE_GENERATOR_CONFIG.ai.maxOutputTokens,
                 512,
                 32768
+            )),
+        },
+        reviewer: {
+            // reviewed-v1 nao aceita escalada remota para modelos mais caros/lentos.
+            model: DEFAULT_TITLE_GENERATOR_CONFIG.reviewer.model,
+            maxOutputTokens: Math.round(numberInRange(
+                reviewer?.maxOutputTokens,
+                DEFAULT_TITLE_GENERATOR_CONFIG.reviewer.maxOutputTokens,
+                512,
+                1200,
+            )),
+            timeoutMs: Math.round(numberInRange(
+                reviewer?.timeoutMs,
+                DEFAULT_TITLE_GENERATOR_CONFIG.reviewer.timeoutMs,
+                3000,
+                15000,
             )),
         },
         extractionPrompt: text(source.extractionPrompt, DEFAULT_TITLE_GENERATOR_CONFIG.extractionPrompt, 12000),
@@ -392,7 +423,7 @@ export const loadEffectiveTitleGeneratorConfig = async (
             { signal },
             remainingTimeoutMs(),
         );
-        return { config: normalizeConfig(effective.config), source: effective.source || 'organization' };
+        return { config: normalizeTitleGeneratorConfig(effective.config), source: effective.source || 'organization' };
     } catch (error) {
         if (!(error instanceof GatewayHttpError) || error.status !== 404) throw error;
     }
@@ -407,7 +438,7 @@ export const loadEffectiveTitleGeneratorConfig = async (
             remainingTimeoutMs(),
         );
         return {
-            config: normalizeConfig(account.config),
+            config: normalizeTitleGeneratorConfig(account.config),
             source: account.usesDefault ? 'global' : 'organization',
         };
     } catch (error) {

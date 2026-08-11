@@ -104,7 +104,9 @@ export const titleGeneratorEditorToConfig = (
     triggers: TitleTriggerEditor[]
 ): AiTitleGeneratorConfig => ({
     ...base,
-    version: 3,
+    // Mantem pipeline/reviewer recebidos do gateway; o editor visual nao pode
+    // desativar a revisao nem apagar o rollback remoto ao salvar os modelos.
+    version: Math.max(4, Number(base.version) || 4),
     triggers: triggers.map((trigger) => ({
         id: trigger.id,
         name: trigger.name,
