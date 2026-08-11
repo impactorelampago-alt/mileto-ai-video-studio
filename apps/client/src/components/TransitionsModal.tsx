@@ -419,7 +419,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                 // Limpar seletor se for a atual
                 if (currentTransition?.id === t.id) {
                     if (isGlobal) {
-                        updateAdData({ globalTransition: null });
+                        updateAdData({ globalTransition: null, transitionPath: undefined });
                     } else if (targetTakeId) {
                         setMediaTakes((prev) =>
                             prev.map((take) => {
@@ -675,9 +675,12 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
 
         if (isGlobal) {
             if (adData.globalTransition?.id === t.id) {
-                updateAdData({ globalTransition: null });
+                updateAdData({ globalTransition: null, transitionPath: undefined });
             } else {
-                updateAdData({ globalTransition: transitionToApply });
+                updateAdData({
+                    globalTransition: transitionToApply,
+                    transitionPath: transitionToApply.filePath || undefined,
+                });
             }
         } else if (targetTakeId) {
             setMediaTakes((prev) =>

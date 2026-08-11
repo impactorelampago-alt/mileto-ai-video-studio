@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
 import { toast } from 'sonner';
-import type { AdData, MediaTake, CaptionStyle, ApiKeys, MusicTrack, CustomVoice } from '../types';
+import type { AdData, MediaTake, CaptionStyle, ApiKeys, MusicTrack, CustomVoice, TransitionAsset } from '../types';
 import { DEFAULT_VIDEO_ENHANCEMENT, normalizeVideoEnhancement } from '../lib/videoEnhancement';
 import { gatewayApi, type SharedAsset } from '../lib/gateway';
 import { localAuthHeaders } from '../lib/serverAuth';
@@ -22,6 +22,7 @@ import {
     withSystemMusicTracks,
 } from '../lib/systemMusic';
 import { refreshSharedAudioSourceUrl } from '../lib/sharedMediaRecovery';
+import { isIncludedTransition } from '../lib/transitionExportRecovery';
 
 export const SHOW_DEBUG_FEATURES = false;
 
@@ -437,10 +438,12 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         sourceUrl?: string | null;
         backendPath?: string | null;
         name: string;
-        parent: 'Músicas' | 'Imagens' | 'Vídeos';
+        parent: 'Músicas' | 'Imagens' | 'Vídeos' | 'Vídeos/Transições';
+        mimeType?: string;
+        preventDuplicate?: boolean;
         visibility?: 'library' | 'project';
     }): Promise<SharedAsset> => {
-        const cacheKey = `${input.visibility || 'library'}:${input.backendPath || input.sourceUrl || ''}`;
+        const cacheKey = `${input.visibility || 'library'}:${input.parent}:${input.backendPath || input.sourceUrl || ''}`;
         const cached = sharedAssetCacheRef.current.get(cacheKey);
         if (cached) return cached;
 
@@ -491,6 +494,49 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     }) => {
         const nextAd = serializeAdDataForDraft(payload.adData);
 
+        const syncTransition = async (
+            transition: TransitionAsset | null | undefined,
+        ): Promise<TransitionAsset | null> => {
+            if (!transition) return null;
+
+            // O caminho absoluto só existe no computador que selecionou o efeito.
+            // IDs/identityCode dos efeitos incluídos são estáveis entre instalações.
+            const portableTransition: TransitionAsset = {
+                ...transition,
+                filePath: '',
+            };
+            if (isIncludedTransition(transition)) return portableTransition;
+
+            const sharedAssetId = String(transition.sharedAssetId || '').trim();
+            if (sharedAssetId) {
+                return {
+                    ...portableTransition,
+                    scope: 'shared',
+                    sharedAssetId,
+                };
+            }
+
+            if (!isLocalMedia(transition.publicUrl, transition.filePath)) {
+                return portableTransition;
+            }
+
+            const entry = await importLocalAsset({
+                sourceUrl: transition.publicUrl,
+                backendPath: transition.filePath,
+                name: transition.originalName || fileNameFrom(transition.publicUrl, 'transicao.mp4'),
+                parent: 'Vídeos/Transições',
+                mimeType: /\.mov$/i.test(transition.originalName || '') ? 'video/quicktime' : 'video/mp4',
+                preventDuplicate: true,
+            });
+            return {
+                ...portableTransition,
+                id: `shared:${entry.id}`,
+                scope: 'shared',
+                sharedAssetId: entry.id,
+                publicUrl: entry.publicUrl,
+            };
+        };
+
         const syncAudio = async (
             urlKey: 'narrationAudioUrl' | 'musicAudioUrl' | 'masterAudioUrl',
             idKey: 'sharedNarrationAssetId' | 'sharedMusicAssetId' | 'sharedMasterAssetId',
@@ -532,9 +578,20 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             nextAd.sharedMusicAssetId = undefined;
         }
         nextAd.narrationAudioPath = null;
+        // transitionPath era um atalho para o FFmpeg local e jamais é portátil.
+        // A identidade persistida fica somente em globalTransition.
+        nextAd.transitionPath = undefined;
+        nextAd.globalTransition = await syncTransition(nextAd.globalTransition);
 
         if (nextAd.frameOverlay && nextAd.frameOverlay.externalMedia?.source !== 'mileto_ops') {
-            const frame = nextAd.frameOverlay;
+            let frame = nextAd.frameOverlay;
+            if (frame.transition?.asset) {
+                const portableAsset = await syncTransition(frame.transition.asset);
+                frame = portableAsset
+                    ? { ...frame, transition: { ...frame.transition, asset: portableAsset } }
+                    : frame;
+                nextAd.frameOverlay = frame;
+            }
             const sourceUrl = frame.fileUrl || frame.url;
             if (isLocalMedia(sourceUrl, frame.backendPath)) {
                 const entry = await importLocalAsset({
@@ -556,11 +613,20 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
 
         const nextTakes = await Promise.all(payload.mediaTakes.map(async (take) => {
             const serializableTake = serializeTakeForDraft(take);
+            const portableTransitionAsset = serializableTake.transition?.asset
+                ? await syncTransition(serializableTake.transition.asset)
+                : null;
+            const portableTake = portableTransitionAsset
+                ? {
+                    ...serializableTake,
+                    transition: { ...serializableTake.transition!, asset: portableTransitionAsset },
+                }
+                : serializableTake;
             // Ativos do Ops permanecem referências externas. Copiá-los para o R2
             // do AI Video exige uma ação futura, separada e explícita do usuário.
-            if (take.externalMedia?.source === 'mileto_ops') return serializableTake;
+            if (take.externalMedia?.source === 'mileto_ops') return portableTake;
             const sourceUrl = take.fileUrl || take.url;
-            if (!isLocalMedia(sourceUrl, take.backendPath)) return serializableTake;
+            if (!isLocalMedia(sourceUrl, take.backendPath)) return portableTake;
             const entry = await importLocalAsset({
                 sourceUrl,
                 backendPath: take.backendPath,
@@ -568,7 +634,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 parent: take.type === 'image' ? 'Imagens' : 'Vídeos',
             });
             return {
-                ...serializableTake,
+                ...portableTake,
                 sharedAssetId: entry.id,
                 url: entry.publicUrl,
                 fileUrl: entry.publicUrl,
@@ -587,9 +653,38 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
 
     const hydrateSharedPayload = React.useCallback(async (data: LoadedDraftData): Promise<LoadedDraftData> => {
         const nextAd = data.adData ? { ...data.adData } : undefined;
-        const nextTakes = Array.isArray(data.mediaTakes) ? data.mediaTakes.map((take) => ({ ...take })) : [];
+        if (nextAd) {
+            nextAd.transitionPath = undefined;
+            if (nextAd.globalTransition) {
+                nextAd.globalTransition = { ...nextAd.globalTransition, filePath: '' };
+            }
+        }
+        const nextTakes = Array.isArray(data.mediaTakes)
+            ? data.mediaTakes.map((take) => ({
+                ...take,
+                ...(take.transition?.asset
+                    ? {
+                        transition: {
+                            ...take.transition,
+                            asset: { ...take.transition.asset, filePath: '' },
+                        },
+                    }
+                    : {}),
+            }))
+            : [];
         const frameOverlay = nextAd?.frameOverlay
-            ? { ...nextAd.frameOverlay, trim: { ...nextAd.frameOverlay.trim } }
+            ? {
+                ...nextAd.frameOverlay,
+                trim: { ...nextAd.frameOverlay.trim },
+                ...(nextAd.frameOverlay.transition?.asset
+                    ? {
+                        transition: {
+                            ...nextAd.frameOverlay.transition,
+                            asset: { ...nextAd.frameOverlay.transition.asset, filePath: '' },
+                        },
+                    }
+                    : {}),
+            }
             : undefined;
         if (nextAd && frameOverlay) nextAd.frameOverlay = frameOverlay;
         const hydrationTakes = frameOverlay ? [...nextTakes, frameOverlay] : nextTakes;
@@ -610,6 +705,10 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         if (nextAd?.sharedMusicAssetId) ids.add(nextAd.sharedMusicAssetId);
         if (legacySharedMusicId) ids.add(legacySharedMusicId);
         if (nextAd?.sharedMasterAssetId) ids.add(nextAd.sharedMasterAssetId);
+        if (nextAd?.globalTransition?.sharedAssetId) ids.add(nextAd.globalTransition.sharedAssetId);
+        for (const take of hydrationTakes) {
+            if (take.transition?.asset.sharedAssetId) ids.add(take.transition.asset.sharedAssetId);
+        }
 
         const assets = new Map<string, SharedAsset>();
         await Promise.all([...ids].map(async (id) => {
@@ -627,6 +726,18 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 take.proxyUrl = asset.publicUrl;
             }
         }
+        const refreshTransition = (transition: TransitionAsset | null | undefined) => {
+            if (!transition) return;
+            transition.filePath = '';
+            const sharedAssetId = String(transition.sharedAssetId || '').trim();
+            if (!sharedAssetId) return;
+            transition.scope = 'shared';
+            transition.sharedAssetId = sharedAssetId;
+            const asset = assets.get(sharedAssetId);
+            if (asset) transition.publicUrl = asset.publicUrl;
+        };
+        refreshTransition(nextAd?.globalTransition);
+        for (const take of hydrationTakes) refreshTransition(take.transition?.asset);
         const hasOpsReferences = hydrationTakes.some(
             (take) => take.externalMedia?.source === 'mileto_ops' && Boolean(take.externalMedia.referenceId)
         );

@@ -83,6 +83,27 @@ test('preserva o CTA do segundo caso real dentro dos 20,662750 segundos', () => 
     assert.deepEqual(Array.from(result.coverage.missing), []);
 });
 
+test('não reaproveita advertência histórica quando a cobertura atual já foi corrigida', () => {
+    const result = validateTitlesForExport([
+        title({
+            id: 'hook-fixed', text: 'VEJA DE PERTO', startSec: 0.5, durationSec: 2,
+            semanticRoles: ['hook'],
+        }),
+    ], 10, {
+        ...aiSummary,
+        titleCount: 1,
+        semanticCoverage: { required: ['hook'], covered: [], missing: ['hook'] },
+        warnings: [{
+            code: 'title_semantic_coverage_missing',
+            message: 'Cobertura de títulos incompleta: gancho.',
+            missingRoles: ['hook'],
+        }],
+    });
+
+    assert.deepEqual(Array.from(result.coverage.missing), []);
+    assert.equal(result.warnings.some((warning) => warning.code === 'title_semantic_coverage_missing'), false);
+});
+
 test('remove título fora do MP4, título invisível e item desativado', () => {
     const result = validateTitlesForExport([
         title({ id: 'outside', text: 'FORA', startSec: 20.1, durationSec: 2, semanticRoles: ['cta'] }),

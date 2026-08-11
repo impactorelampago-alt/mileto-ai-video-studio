@@ -133,6 +133,10 @@ export const validateTitlesForExport = (
         });
     }
     for (const warning of summary?.warnings || []) {
+        // A cobertura semântica é recalculada acima depois de remover títulos
+        // inativos/fora da timeline. Reaproveitar esse aviso histórico pode acusar
+        // uma lacuna que o usuário já corrigiu manualmente.
+        if (warning.code === 'title_semantic_coverage_missing') continue;
         if (!warning.code || warnings.some((current) => current.code === warning.code)) continue;
         warnings.push({
             code: warning.code,

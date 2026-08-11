@@ -9,6 +9,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from './config.js';
 import { pool, query } from './db.js';
+import { collectSharedDraftAssetIds } from './sharedDraftAssets.js';
 
 const CATEGORIES = ['Imagens', 'Músicas', 'Vídeos', 'Geração por IA'];
 const TRASH_DAYS = 30;
@@ -522,14 +523,7 @@ export const saveDraft = async (req, res) => {
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
         return res.status(400).json({ ok: false, message: 'Conteúdo do rascunho inválido.' });
     }
-    const referencedIds = new Set();
-    for (const take of Array.isArray(data.mediaTakes) ? data.mediaTakes : []) {
-        if (take?.sharedAssetId) referencedIds.add(String(take.sharedAssetId));
-    }
-    for (const key of ['sharedNarrationAssetId', 'sharedMusicAssetId', 'sharedMasterAssetId']) {
-        if (data.adData?.[key]) referencedIds.add(String(data.adData[key]));
-    }
-    const assetIds = [...referencedIds].filter((id) => /^[0-9a-f-]{36}$/i.test(id));
+    const assetIds = collectSharedDraftAssetIds(data);
 
     const client = await pool.connect();
     try {

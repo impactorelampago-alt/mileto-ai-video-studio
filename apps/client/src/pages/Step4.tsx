@@ -1638,7 +1638,7 @@ export const Step4 = () => {
                         onClose={() => setShowExportModal(false)}
                         mediaTakes={mediaTakes}
                         masterAudioUrl={adData.masterAudioUrl || adData.narrationAudioUrl || undefined}
-                        transitionPath={adData.transitionPath || adData.globalTransition?.filePath}
+                        transitionPath={adData.globalTransition?.filePath || undefined}
                         transitionRotation={adData.transitionRotation ?? 0}
                     />
                 )}

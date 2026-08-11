@@ -53,9 +53,9 @@ test('fila, leitura, presença, claim, revisão e PATCH preservam delegação, a
     }
 });
 
-test('heartbeat usa versão 1.4.32, campo oficial mode e job atual', () => {
+test('heartbeat usa versão 1.4.33, campo oficial mode e job atual', () => {
     const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
-    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.32'/);
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.33'/);
     assert.match(coordinator, /mode: modeRef\.current/);
     assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
     assert.match(coordinator, /resolvePersistedJob\(persisted\)/);

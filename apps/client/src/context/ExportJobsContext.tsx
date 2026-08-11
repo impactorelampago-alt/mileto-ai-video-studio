@@ -15,6 +15,7 @@ import {
     refreshSharedTakeForExport,
     safeExportMediaName,
 } from '../lib/sharedMediaRecovery';
+import { resolveTransitionPathForExport } from '../lib/transitionExportRecovery';
 import {
     exportWarningSummary,
     titleOriginForExport,
@@ -138,8 +139,8 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
             }
             const titleWarning = exportWarningSummary(titleIntegrity.warnings);
             if (titleWarning) {
-                toast.warning('A exportação continuará com advertências de títulos.', {
-                    description: titleWarning,
+                toast.warning('O vídeo será exportado normalmente.', {
+                    description: `Sugestão opcional de títulos: ${titleWarning}`,
                     duration: 8_000,
                 });
             }
@@ -308,6 +309,9 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                 temporaryExportPaths = [finishResult.videoPath, finishResult.audioPath, tempFinalPath];
 
                 updateProgress(70, 'Montando takes, efeitos e áudio');
+                const resolvedTransitionPath = await resolveTransitionPathForExport(
+                    activeExport.adData.globalTransition,
+                );
                 const response = await fetch(`${API_BASE_URL}/api/video/export-hybrid`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -330,7 +334,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                                 sharpness: resolveTakeSharpness(take, activeExport.adData.videoEnhancement),
                             },
                         })),
-                        transitionPath: activeExport.transitionPath,
+                        transitionPath: resolvedTransitionPath,
                         transitionRotation: activeExport.transitionRotation,
                         audioPath: finishResult.audioPath,
                         overlayPath: finishResult.videoPath,
