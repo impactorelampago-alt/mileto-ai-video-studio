@@ -13,7 +13,6 @@ const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '../..
 const FRAMES_DIR = path.join(BASE_DATA_PATH, 'frame_cache'); // Reusing the naming convention from index.ts
 const VIDEOS_DIR = path.join(BASE_DATA_PATH, 'videos');
 const TEMP_DIR = path.join(BASE_DATA_PATH, 'temp');
-const MAX_TAKE_FRAME_PAD_SEC = 0.25;
 
 // ─── FFmpeg Path Configuration ───
 // Detect if we are running in an Electron bundle and use the included binaries
@@ -280,17 +279,27 @@ const ffprobeStreamDuration = (stream: Record<string, unknown>): number | null =
     return null;
 };
 
-/** Medição estruturada usada como barreira obrigatória antes da entrega do MP4. */
-export const probeMediaDurations = (filePath: string): Promise<MediaDurationProbe> =>
+/**
+ * Medição estruturada de streams. A saída final conta todos os quadros;
+ * probes de fonte podem omitir essa varredura cara e usar duração/FPS.
+ */
+export const probeMediaDurations = (
+    filePath: string,
+    options: { countFrames?: boolean; timeoutMs?: number } = {},
+): Promise<MediaDurationProbe> =>
     new Promise((resolve, reject) => {
+        const countFrames = options.countFrames !== false;
+        const timeoutMs = Number.isFinite(options.timeoutMs)
+            ? Math.min(120_000, Math.max(1_000, Number(options.timeoutMs)))
+            : undefined;
         execFile(resolveFfprobeExe(), [
             '-v', 'error',
-            '-count_frames',
+            ...(countFrames ? ['-count_frames'] : []),
             '-show_entries',
             'stream=codec_type,duration,duration_ts,time_base,avg_frame_rate,r_frame_rate,nb_frames,nb_read_frames:format=duration',
             '-of', 'json',
             filePath,
-        ], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+        ], { windowsHide: true, maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs }, (error, stdout) => {
             if (error) return reject(error);
             try {
                 const data = JSON.parse(String(stdout || '{}')) as {
@@ -322,6 +331,69 @@ export const probeMediaDurations = (filePath: string): Promise<MediaDurationProb
             }
         });
     });
+
+/**
+ * Confere, por decodificacao real, se a cauda que contem o fim do corte existe.
+ * O seek limita o trabalho a tres segundos, inclusive para fontes remotas ou
+ * arquivos longos. A duracao declarada continua no resultado, mas nunca pode
+ * aumentar a cobertura observada pelo decoder.
+ */
+export const probeTakeSourceDurations = async (
+    filePath: string,
+    input: { startSec: unknown; endSec: unknown; timeoutMs?: number },
+): Promise<MediaDurationProbe> => {
+    const startSec = Math.max(0, Number(input.startSec) || 0);
+    const endSec = Number(input.endSec);
+    if (!Number.isFinite(endSec) || endSec <= startSec) {
+        throw new Error('render_take_source_probe_invalid_interval');
+    }
+
+    const timeoutMs = Math.min(30_000, Math.max(3_000, Number(input.timeoutMs) || 15_000));
+    const metadata = await probeMediaDurations(filePath, { countFrames: false, timeoutMs });
+    if (!metadata.hasVideo) return metadata;
+
+    const tailStartSec = Math.max(startSec, endSec - 3);
+    const tailDurationSec = endSec - tailStartSec;
+    const decodedTailDurationSec = await new Promise<number>((resolve, reject) => {
+        execFile(resolveFfmpegExe(), [
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-nostats',
+            '-progress', 'pipe:1',
+            '-ss', tailStartSec.toFixed(9),
+            '-i', filePath,
+            '-map', '0:v:0',
+            '-an',
+            '-t', tailDurationSec.toFixed(9),
+            '-threads', '1',
+            '-f', 'null',
+            '-',
+        ], {
+            windowsHide: true,
+            maxBuffer: 2 * 1024 * 1024,
+            timeout: timeoutMs,
+        }, (error, stdout) => {
+            if (error) return reject(error);
+            const progress = String(stdout || '');
+            const matches = [...progress.matchAll(/^out_time_us=(\d+)$/gm)];
+            const lastMicros = matches.length ? Number(matches[matches.length - 1][1]) : 0;
+            resolve(Number.isFinite(lastMicros) && lastMicros > 0 ? lastMicros / 1_000_000 : 0);
+        });
+    });
+
+    const decodedCoverageEndSec = decodedTailDurationSec > 0
+        ? Math.min(endSec, tailStartSec + decodedTailDurationSec)
+        : 0;
+    const declaredVideoDurationSec = metadata.videoDurationSec;
+    const verifiedVideoDurationSec = declaredVideoDurationSec == null
+        ? decodedCoverageEndSec
+        : Math.min(declaredVideoDurationSec, decodedCoverageEndSec);
+
+    return {
+        ...metadata,
+        videoDurationSec: verifiedVideoDurationSec > 0 ? verifiedVideoDurationSec : null,
+    };
+};
 
 export const extractFrames = (sourceId: string, filePath: string, count = 10): Promise<string[]> => {
     const outputDir = path.join(FRAMES_DIR, sourceId);
@@ -453,6 +525,9 @@ export interface HybridTake {
     file_path: string;
     start: number;
     end: number;
+    originalDurationSeconds?: number;
+    /** Deficit da fonte aprovado pelo preflight; nunca aceitar este valor direto do cliente. */
+    approvedSourceGapSeconds?: number;
     speed?: string | number;
     objectFit?: 'cover' | 'contain';
     motionEffect?: {
@@ -481,6 +556,46 @@ export interface HybridParams {
     targetH?: number;
     outputFps?: number;
 }
+
+const mappedTakeTimeAt = (take: HybridTake, elapsedInputSec: number): number => {
+    const rawDuration = Math.max(0, Number(take.end) - Number(take.start));
+    if (!(rawDuration > 0)) return 0;
+    const elapsed = Math.min(rawDuration, Math.max(0, elapsedInputSec));
+    if (typeof take.speed === 'number' && Number.isFinite(take.speed) && take.speed > 0) {
+        return elapsed / take.speed;
+    }
+    const ratio = elapsed / rawDuration;
+    if (take.speed === 'fast_in_slow_out') {
+        return (rawDuration / 1.5) * Math.log(1.93 / (1.93 - 1.5 * ratio));
+    }
+    if (take.speed === 'slow_in_fast_out') {
+        return (rawDuration / 1.5) * Math.log((0.43 + 1.5 * ratio) / 0.43);
+    }
+    if (take.speed === 'swoosh') {
+        return (rawDuration / 2.104) * (Math.atan(3.507 * (ratio - 0.5)) + 1.052);
+    }
+    return elapsed;
+};
+
+/** Reserva somente a cauda aprovada pelo preflight, mais a margem normal de mux. */
+export const approvedTakePadFrameBudget = (
+    take: HybridTake,
+    takeFrameCount: number,
+    outputFpsValue: unknown,
+): number => {
+    if (take.type !== 'video' || takeFrameCount <= 0) return 0;
+    const outputFps = normalizeRenderFps(outputFpsValue);
+    const rawDuration = Math.max(0, Number(take.end) - Number(take.start));
+    const requestedGap = Math.max(0, Number(take.approvedSourceGapSeconds) || 0);
+    // Defesa em profundidade: reaplica 1 s/5%, mesmo para chamadas internas.
+    const approvedGap = Math.min(requestedGap, 1, rawDuration * 0.05);
+    const normalMarginFrames = Math.ceil(Math.max(0.1, 2 / outputFps) * outputFps - 1e-9);
+    const mappedTailSec = approvedGap > 0
+        ? Math.max(0, mappedTakeTimeAt(take, rawDuration) - mappedTakeTimeAt(take, rawDuration - approvedGap))
+        : 0;
+    const recoveryFrames = Math.ceil(mappedTailSec * outputFps - 1e-9);
+    return Math.min(takeFrameCount, normalMarginFrames + Math.max(0, recoveryFrames));
+};
 
 export const buildHybridVideo = async (params: HybridParams): Promise<string> => {
     // ─── Resolução-alvo: usar a que o cliente já usou para capturar o overlay,
@@ -775,12 +890,14 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             }
             const enhancementStr = enhancementFilters.length ? `,${enhancementFilters.join(',')}` : '';
 
-            // `trim` apenas remove excesso; ele não cria os poucos quadros que
-            // podem faltar quando o container termina depois da stream de vídeo.
-            // O limite corrige essa margem de mux/timebase sem mascarar uma fonte
-            // severamente truncada com um congelamento longo.
-            const framePadDuration = Math.min(frameLockedDuration, MAX_TAKE_FRAME_PAD_SEC);
-            const frameContract = `,tpad=stop_mode=clone:stop_duration=${framePadDuration.toFixed(9)},trim=end_frame=${takeFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`;
+            // A cobertura real da fonte já foi aprovada no preflight. A partir
+            // daqui cada take cumpre exatamente seu contrato de quadros, inclusive
+            // para containers cuja stream visual termina poucos quadros antes.
+            const takePadFrameBudget = approvedTakePadFrameBudget(take, takeFrameCount, outputFps);
+            const boundedTakePad = takePadFrameBudget > 0
+                ? `,tpad=stop_mode=clone:stop=${takePadFrameBudget}`
+                : '';
+            const frameContract = `${boundedTakePad},trim=end_frame=${takeFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`;
             filterGraph += `[${index}:v]${sourceTimelineStr}${scaleStr}${motionStr}${enhancementStr}${frameContract}[v${index}];`;
             concatInputs.push(`[v${index}]`);
         });
@@ -840,15 +957,15 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         // (por exemplo, por arredondamento da narração ou por um corte visual
         // ligeiramente curto aceito pelo preflight). Complete somente essa cauda
         // contratual depois de montar takes e transições. Fazer isso por contagem
-        // preserva o último quadro e não mascara uma stream de origem truncada:
-        // o tpad individual acima ainda é limitado a MAX_TAKE_FRAME_PAD_SEC.
+        // preserva o último quadro. Uma stream truncada não chega a esta fase:
+        // a cobertura real de cada fonte foi verificada no preflight do controller.
         if (expectedFrameCount) {
-            const contractualTailFrames = Math.max(0, expectedFrameCount - framePlan.totalFrameCount);
             const timelineVideo = '[timelineVideo]';
-            const tailPad = contractualTailFrames > 0
+            const contractualTailFrames = Math.max(0, expectedFrameCount - framePlan.totalFrameCount);
+            const contractualTailPad = contractualTailFrames > 0
                 ? `tpad=stop_mode=clone:stop=${contractualTailFrames},`
                 : '';
-            filterGraph += `${currentBase}${tailPad}trim=end_frame=${expectedFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)${timelineVideo};`;
+            filterGraph += `${currentBase}${contractualTailPad}trim=end_frame=${expectedFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)${timelineVideo};`;
             currentBase = timelineVideo;
         }
 
@@ -860,12 +977,11 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             : `,fps=${outputFps}:start_time=0,setpts=PTS-STARTPTS`;
         filterGraph += `[${overlayIdx}:v]scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=decrease,pad=${TARGET_W}:${TARGET_H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,colorchannelmixer=aa=1.0${overlayTimelineContract}[alphaT];`;
         const finalTimelineContract = expectedFrameCount
-            ? `,tpad=stop_mode=clone:stop_duration=${(1 / outputFps).toFixed(9)},trim=end_frame=${expectedFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`
+            ? `,tpad=stop_mode=clone:stop=1,trim=end_frame=${expectedFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`
             : ',setpts=PTS-STARTPTS';
-        // O framesync de overlay pode encerrar no PTS do último quadro, antes
-        // do intervalo de exibição dele. Uma única reserva de quadro fecha esse
-        // intervalo; o trim por contagem impede que ela alongue a timeline e a
-        // validação ffprobe continua recusando qualquer déficit maior.
+        // O framesync do overlay pode encerrar no PTS do último quadro. Sustentar
+        // e cortar pela contagem contratada fecha esse intervalo sem alongar a
+        // timeline; a validação final continua exigindo igualdade exata.
         filterGraph += `${currentBase}[alphaT]overlay=eof_action=pass:shortest=0,fps=${outputFps}${finalTimelineContract}[finalVideo]`;
         if (expectedDuration) {
             filterGraph += `;[${audioIdx}:a]aresample=async=1:first_pts=0,apad,atrim=duration=${expectedDuration.toFixed(9)},asetpts=PTS-STARTPTS[finalAudio]`;

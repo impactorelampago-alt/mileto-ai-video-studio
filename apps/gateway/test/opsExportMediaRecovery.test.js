@@ -157,7 +157,7 @@ test('merge da fonte local preserva todos os cortes e efeitos do snapshot', () =
     }
 });
 
-test('merge rejeita troca de tipo e vídeo que não cobre o trim salvo', () => {
+test('merge rejeita troca de tipo, mas delega cobertura visual ao preflight canônico', () => {
     const take = baseTake('invalid-source');
     assert.throws(
         () => mergeOpsTakeWithCacheSource(
@@ -167,24 +167,16 @@ test('merge rejeita troca de tipo e vídeo que não cobre o trim salvo', () => {
         ),
         (error) => error?.code === 'ops_source_type_mismatch',
     );
-    assert.throws(
-        () => mergeOpsTakeWithCacheSource(
-            take,
-            { ...localSource('invalid-source'), type: 'video', duration: 6.69 },
-            take.externalMedia,
-        ),
-        (error) => error?.code === 'ops_source_trim_out_of_bounds',
-    );
-
-    const withinTolerance = mergeOpsTakeWithCacheSource(
+    const shorterVisualStream = mergeOpsTakeWithCacheSource(
         take,
-        { ...localSource('invalid-source'), type: 'video', duration: 6.72 },
+        { ...localSource('invalid-source'), type: 'video', duration: 6.2 },
         take.externalMedia,
     );
     assert.deepEqual(
-        JSON.parse(JSON.stringify(withinTolerance.trim)),
+        JSON.parse(JSON.stringify(shorterVisualStream.trim)),
         JSON.parse(JSON.stringify(take.trim)),
     );
+    assert.equal(shorterVisualStream.originalDurationSeconds, take.originalDurationSeconds);
 });
 
 test('export reabre o cache e nunca cai para URL assinada', async () => {

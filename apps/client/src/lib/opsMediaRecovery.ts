@@ -162,8 +162,6 @@ const absoluteLocalUrl = (url?: string | null) => {
     return /^https?:\/\//i.test(url) ? url : `${API_BASE_URL}${url.startsWith('/') ? url : `/${url}`}`;
 };
 
-const OPS_SOURCE_DURATION_TOLERANCE_SECONDS = 0.05;
-
 const validateRecoveredOpsSource = (take: MediaTake, source: RestoredOpsCacheSource) => {
     const recoveredType = String(source.type || '').trim();
     if (recoveredType && recoveredType !== take.type) {
@@ -176,7 +174,6 @@ const validateRecoveredOpsSource = (take: MediaTake, source: RestoredOpsCacheSou
 
     if (take.type !== 'video') return;
     const recoveredDuration = Number(source.duration);
-    const trimEnd = Number(take.trim?.end);
     if (!Number.isFinite(recoveredDuration) || recoveredDuration <= 0) {
         throw new GatewayError(
             422,
@@ -184,16 +181,10 @@ const validateRecoveredOpsSource = (take: MediaTake, source: RestoredOpsCacheSou
             'ops_source_duration_invalid',
         );
     }
-    if (
-        Number.isFinite(trimEnd) &&
-        trimEnd > recoveredDuration + OPS_SOURCE_DURATION_TOLERANCE_SECONDS
-    ) {
-        throw new GatewayError(
-            422,
-            'O vídeo recuperado pelo Mileto Ops não cobre mais o corte salvo neste projeto.',
-            'ops_source_trim_out_of_bounds',
-        );
-    }
+    // A duração anunciada pelo contêiner pode divergir da stream visual (por
+    // exemplo, em 29,97 fps ou quando o áudio é ligeiramente mais longo). O
+    // preflight canônico do servidor sonda a stream real e decide se a cauda pode
+    // ser completada com segurança ou se a fonte está truncada.
 };
 
 export const mergeOpsTakeWithCacheSource = (

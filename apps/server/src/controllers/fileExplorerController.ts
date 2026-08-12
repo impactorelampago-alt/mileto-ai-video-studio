@@ -12,6 +12,9 @@ import { safeResolve } from '../utils/safePath';
 const execFileAsync = promisify(execFile);
 const FFPROBE_BIN = process.env.FFPROBE_PATH || 'ffprobe';
 const FFMPEG_BIN = process.env.FFMPEG_PATH || 'ffmpeg';
+const MEDIA_PROBE_TIMEOUT_MS = Math.max(1_000, Number(process.env.MEDIA_PROBE_TIMEOUT_MS) || 15_000);
+const MAX_DURATION_MIGRATIONS_PER_LIST = 3;
+const DURATION_PROBE_RETRY_MS = 30 * 60 * 1_000;
 
 export const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 
@@ -21,6 +24,11 @@ const INDEX_JSON = path.join(BASE_DATA_PATH, 'data/files_index.json');
 const PROJECTS_DIR = path.join(BASE_DATA_PATH, 'data/projects');
 export const PREVIEW_CACHE_ROOT = path.join(BASE_DATA_PATH, 'preview-cache');
 const previewJobs = new Map<string, Promise<string>>();
+type DurationMeasurement = {
+    durationSec: number;
+    durationSource: NonNullable<FileEntry['durationSource']>;
+};
+const mediaDurationJobs = new Map<string, Promise<DurationMeasurement | undefined>>();
 
 // Categorias padrão (pastas raiz fixas).
 export const CATEGORIES = ['Músicas', 'Imagens', 'Vídeos'] as const;
@@ -45,6 +53,9 @@ export interface FileEntry {
     filePath: string; // absoluto
     type: 'audio' | 'image' | 'video';
     durationSec?: number;
+    durationSource?: 'visual-stream' | 'format';
+    durationProbeFingerprint?: string;
+    durationProbeAttemptedAt?: string;
     createdAt: string;
     aiGeneration?: {
         conversationId?: string;
@@ -149,17 +160,173 @@ function sanitizeName(name: string): string {
     return cleaned.slice(0, 120);
 }
 
-async function getMediaDuration(filePath: string): Promise<number | undefined> {
+function parsePositiveNumber(value: unknown): number | null {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function parseRate(value: unknown): number | null {
+    const raw = String(value ?? '').trim();
+    if (!raw || raw === '0/0' || raw === 'N/A') return null;
+    const [numeratorRaw, denominatorRaw] = raw.split('/');
+    const numerator = Number(numeratorRaw);
+    const denominator = denominatorRaw === undefined ? 1 : Number(denominatorRaw);
+    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return null;
+    const rate = numerator / denominator;
+    return Number.isFinite(rate) && rate > 0 ? rate : null;
+}
+
+function visualDurationFromStream(stream: Record<string, unknown> | undefined): number | null {
+    if (!stream) return null;
+    const directDuration = parsePositiveNumber(stream.duration);
+    if (directDuration) return directDuration;
+
+    const durationTicks = parsePositiveNumber(stream.duration_ts);
+    const timeBase = parseRate(stream.time_base);
+    if (durationTicks && timeBase) {
+        const duration = durationTicks * timeBase;
+        if (Number.isFinite(duration) && duration > 0) return duration;
+    }
+
+    const frames = parsePositiveNumber(stream.nb_read_frames) || parsePositiveNumber(stream.nb_frames);
+    const fps = parseRate(stream.avg_frame_rate) || parseRate(stream.r_frame_rate);
+    if (frames && fps) {
+        const duration = frames / fps;
+        if (Number.isFinite(duration) && duration > 0) return duration;
+    }
+    return null;
+}
+
+async function probeVisualStreamDuration(filePath: string): Promise<number | undefined> {
+    const showEntries = 'stream=duration,duration_ts,time_base,nb_frames,nb_read_frames,avg_frame_rate,r_frame_rate';
+    const runProbe = async (countFrames: boolean): Promise<number | null> => {
+        const { stdout } = await execFileAsync(FFPROBE_BIN, [
+            '-v', 'error',
+            ...(countFrames ? ['-count_frames'] : []),
+            '-select_streams', 'v:0',
+            '-show_entries', showEntries,
+            '-of', 'json',
+            filePath,
+        ], {
+            timeout: MEDIA_PROBE_TIMEOUT_MS,
+            maxBuffer: 1024 * 1024,
+            windowsHide: true,
+        });
+        const parsed = JSON.parse(String(stdout)) as { streams?: Array<Record<string, unknown>> };
+        return visualDurationFromStream(parsed.streams?.[0]);
+    };
+
+    try {
+        const metadataDuration = await runProbe(false);
+        if (metadataDuration) return metadataDuration;
+        // Alguns containers (por exemplo NUT/streams legadas) não expõem
+        // duration nem nb_frames. Nesses casos contamos quadros, ainda com timeout.
+        return (await runProbe(true)) || undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+async function probeMediaDuration(
+    filePath: string,
+    mediaType: FileEntry['type'],
+): Promise<DurationMeasurement | undefined> {
+    if (mediaType === 'video') {
+        const durationSec = await probeVisualStreamDuration(filePath);
+        return durationSec ? { durationSec, durationSource: 'visual-stream' } : undefined;
+    }
+    if (mediaType !== 'audio') return undefined;
     try {
         const { stdout } = await execFileAsync(FFPROBE_BIN, [
             '-v', 'error', '-show_entries', 'format=duration',
             '-of', 'default=noprint_wrappers=1:nokey=1', filePath,
-        ]);
-        const dur = parseFloat(String(stdout).trim());
-        return isNaN(dur) ? undefined : dur;
+        ], {
+            timeout: MEDIA_PROBE_TIMEOUT_MS,
+            maxBuffer: 1024 * 1024,
+            windowsHide: true,
+        });
+        const durationSec = parsePositiveNumber(String(stdout).trim());
+        return durationSec ? { durationSec, durationSource: 'format' } : undefined;
     } catch {
         return undefined;
     }
+}
+
+function fingerprintFromStat(stat: fs.Stats): string {
+    return `${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+}
+
+async function getFileFingerprint(filePath: string): Promise<string> {
+    try {
+        return fingerprintFromStat(await fs.promises.stat(filePath));
+    } catch {
+        return 'missing';
+    }
+}
+
+async function getMediaDuration(
+    filePath: string,
+    mediaType: FileEntry['type'],
+): Promise<DurationMeasurement | undefined> {
+    const fingerprint = await getFileFingerprint(filePath);
+    const key = `${mediaType}\0${path.resolve(filePath)}\0${fingerprint}`;
+    let job = mediaDurationJobs.get(key);
+    if (!job) {
+        job = probeMediaDuration(filePath, mediaType).finally(() => mediaDurationJobs.delete(key));
+        mediaDurationJobs.set(key, job);
+    }
+    return job;
+}
+
+function persistDurationProbeResults(
+    results: Array<{
+        id?: string;
+        relPath: string;
+        fingerprint: string;
+        attemptedAt: string;
+        measurement?: DurationMeasurement;
+    }>
+): void {
+    if (results.length === 0) return;
+    const index = readIndex();
+    let changed = false;
+    for (const result of results) {
+        // Quando há id ele é autoritativo; não atualize outra entrada que
+        // por acaso reutilize o relPath de uma fotografia antiga do índice.
+        const entry = result.id
+            ? index.find((candidate) => candidate.id === result.id)
+            : index.find((candidate) => candidate.relPath === result.relPath);
+        if (!entry) continue;
+        if (
+            entry.durationProbeFingerprint !== result.fingerprint
+            || entry.durationProbeAttemptedAt !== result.attemptedAt
+        ) {
+            entry.durationProbeFingerprint = result.fingerprint;
+            entry.durationProbeAttemptedAt = result.attemptedAt;
+            changed = true;
+        }
+        if (
+            result.measurement
+            && (entry.durationSec !== result.measurement.durationSec
+                || entry.durationSource !== result.measurement.durationSource)
+        ) {
+            entry.durationSec = result.measurement.durationSec;
+            entry.durationSource = result.measurement.durationSource;
+            changed = true;
+        }
+    }
+    if (changed) writeIndex(index);
+}
+
+async function mapWithConcurrency<T>(items: T[], limit: number, worker: (item: T) => Promise<void>): Promise<void> {
+    let cursor = 0;
+    const run = async () => {
+        while (cursor < items.length) {
+            const item = items[cursor++];
+            await worker(item);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
 }
 
 /** Registra um arquivo no índice (usado por upload/copy/migração). */
@@ -182,7 +349,19 @@ export async function registerFile(
         ...extra,
     };
     if (entry.type === 'audio' || entry.type === 'video') {
-        entry.durationSec = await getMediaDuration(filePath);
+        if (entry.type === 'video') {
+            // A duração copiada em `extra` pode ser a do container/arquivo de
+            // origem. Só publique uma duração de vídeo medida nesta stream visual.
+            delete entry.durationSec;
+            delete entry.durationSource;
+        }
+        const measurement = await getMediaDuration(filePath, entry.type);
+        entry.durationProbeFingerprint = await getFileFingerprint(filePath);
+        entry.durationProbeAttemptedAt = new Date().toISOString();
+        if (measurement) {
+            entry.durationSec = measurement.durationSec;
+            entry.durationSource = measurement.durationSource;
+        }
     }
     const index = readIndex();
     index.push(entry);
@@ -358,7 +537,7 @@ async function getVideoCodec(filePath: string): Promise<string> {
         const { stdout } = await execFileAsync(FFPROBE_BIN, [
             '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name,pix_fmt',
             '-of', 'default=noprint_wrappers=1:nokey=0', filePath,
-        ]);
+        ], { timeout: MEDIA_PROBE_TIMEOUT_MS, maxBuffer: 1024 * 1024, windowsHide: true });
         return String(stdout).toLowerCase();
     } catch {
         return '';
@@ -383,7 +562,14 @@ export const preparePreviewSource = async (req: Request, res: Response) => {
         }
 
         const codec = await getVideoCodec(sourcePath);
-        const durationSec = await getMediaDuration(sourcePath);
+        const measurement = await getMediaDuration(sourcePath, 'video');
+        const durationSec = measurement?.durationSec;
+        persistDurationProbeResults([{
+                relPath,
+                fingerprint: await getFileFingerprint(sourcePath),
+                attemptedAt: new Date().toISOString(),
+                measurement,
+        }]);
         // H.264 8-bit é reproduzido nativamente; não desperdiçar espaço.
         if (codec.includes('codec_name=h264') && !codec.includes('10le') && !codec.includes('12le')) {
             return res.json({ ok: true, publicUrl: toPublicUrl(relPath), durationSec, transcoded: false });
@@ -440,7 +626,7 @@ interface FileNode {
 }
 
 // GET /api/files/list?path=Músicas
-export const listItems = (req: Request, res: Response) => {
+export const listItems = async (req: Request, res: Response) => {
     try {
         const rel = (req.query.path as string) || '';
         const dir = rel ? safeResolve(FILES_ROOT, rel) : FILES_ROOT;
@@ -454,6 +640,12 @@ export const listItems = (req: Request, res: Response) => {
         const index = readIndex();
         const byRel = new Map(index.map((e) => [e.relPath.split(path.sep).join('/'), e]));
         let indexChanged = false;
+        const durationReprobes: Array<{
+            entry: FileEntry;
+            responseEntry: FileEntry & { size: number };
+            fullPath: string;
+            fingerprint: string;
+        }> = [];
 
         const folders: Array<{ name: string; relPath: string }> = [];
         const files: Array<FileEntry & { size: number }> = [];
@@ -463,8 +655,27 @@ export const listItems = (req: Request, res: Response) => {
                 folders.push({ name: entry.name, relPath: childRel });
             } else if (entry.isFile()) {
                 const full = path.join(dir, entry.name);
-                const meta = byRel.get(childRel);
-                const size = fs.statSync(full).size;
+                const stat = fs.statSync(full);
+                const size = stat.size;
+                const fingerprint = fingerprintFromStat(stat);
+                let meta = byRel.get(childRel);
+                if (!meta) {
+                    // Arquivos colados manualmente ganham identidade estável no
+                    // primeiro avistamento, inclusive antes do probe de duração.
+                    meta = {
+                        id: uuidv4(),
+                        category: tryCategory(entry.name),
+                        name: entry.name,
+                        relPath: childRel,
+                        publicUrl: toPublicUrl(childRel),
+                        filePath: full,
+                        type: tryType(entry.name),
+                        createdAt: (stat.birthtimeMs > 0 ? stat.birthtime : stat.mtime).toISOString(),
+                    };
+                    index.push(meta);
+                    byRel.set(childRel, meta);
+                    indexChanged = true;
+                }
                 if (meta) {
                     // O diretório de dados muda entre modo local, instalável e
                     // atualizações. O relPath é estável; o caminho absoluto salvo
@@ -475,18 +686,62 @@ export const listItems = (req: Request, res: Response) => {
                         meta.publicUrl = toPublicUrl(childRel);
                         indexChanged = true;
                     }
-                    files.push({ ...meta, filePath: full, relPath: childRel, publicUrl: toPublicUrl(childRel), size });
-                } else {
-                    // Arquivo no disco sem entrada no índice (ex: colado manualmente).
-                    files.push({
-                        id: '', category: tryCategory(entry.name), name: entry.name,
-                        relPath: childRel, publicUrl: toPublicUrl(childRel), filePath: full,
-                        type: tryType(entry.name), size, createdAt: new Date(0).toISOString(),
-                    });
+                    const responseEntry = { ...meta, filePath: full, relPath: childRel, publicUrl: toPublicUrl(childRel), size };
+                    const durationFingerprintChanged = meta.durationProbeFingerprint !== fingerprint;
+                    if (
+                        responseEntry.type === 'video'
+                        && (responseEntry.durationSource !== 'visual-stream' || durationFingerprintChanged)
+                    ) {
+                        // Uma duração legada pode ser a do container (ou do áudio),
+                        // portanto não deve alimentar o trim enquanto não for migrada.
+                        delete responseEntry.durationSec;
+                    }
+                    files.push(responseEntry);
+                    const expectedSource = responseEntry.type === 'video'
+                        ? 'visual-stream'
+                        : responseEntry.type === 'audio' ? 'format' : undefined;
+                    const lastAttemptMs = Date.parse(meta.durationProbeAttemptedAt || '');
+                    const recentlyAttempted = meta.durationProbeFingerprint === fingerprint
+                        && Number.isFinite(lastAttemptMs)
+                        && Date.now() - lastAttemptMs < DURATION_PROBE_RETRY_MS;
+                    if (
+                        expectedSource
+                        && (responseEntry.durationSource !== expectedSource || durationFingerprintChanged)
+                        && !recentlyAttempted
+                    ) {
+                        durationReprobes.push({ entry: meta, responseEntry, fullPath: full, fingerprint });
+                    }
                 }
             }
         }
+        // Grave entradas manuais antes do await para que uma falha/timeout no
+        // ffprobe não as transforme novamente em anônimas na próxima listagem.
         if (indexChanged) writeIndex(index);
+        const durationResults: Parameters<typeof persistDurationProbeResults>[0] = [];
+        // Migração incremental: uma pasta com dezenas de arquivos legados não
+        // deve bloquear a listagem em dezenas de probes.
+        await mapWithConcurrency(
+            durationReprobes.slice(0, MAX_DURATION_MIGRATIONS_PER_LIST),
+            2,
+            async ({ entry, responseEntry, fullPath, fingerprint }) => {
+                const attemptedAt = new Date().toISOString();
+                const measurement = await getMediaDuration(fullPath, responseEntry.type);
+                if (measurement) {
+                    responseEntry.durationSec = measurement.durationSec;
+                    responseEntry.durationSource = measurement.durationSource;
+                }
+                durationResults.push({
+                    id: entry.id,
+                    relPath: responseEntry.relPath,
+                    fingerprint,
+                    attemptedAt,
+                    measurement,
+                });
+            }
+        );
+        // Releia o índice somente depois dos probes; assim um upload concorrente não
+        // é apagado por uma fotografia antiga mantida durante uma operação assíncrona.
+        persistDurationProbeResults(durationResults);
         res.json({ ok: true, folders, files });
     } catch (error: unknown) {
         res.status(500).json({ ok: false, message: errMsg(error) });

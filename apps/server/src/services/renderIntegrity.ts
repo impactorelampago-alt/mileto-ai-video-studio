@@ -22,6 +22,8 @@ export interface RenderIntegrityIssue {
     actual?: number;
     delta?: number;
     tolerance?: number;
+    takeIndex?: number;
+    takeId?: string;
 }
 
 export interface RenderIntegrityDiagnostics {
@@ -48,6 +50,19 @@ type TimelineTake = {
     speed?: unknown;
 };
 
+export type TakeSourceCoverageStatus = 'covered' | 'recoverable' | 'truncated';
+export type TakeSourceRecovery = 'none' | 'normal_gap' | 'full_clip';
+
+export interface TakeSourceCoverageResult {
+    status: TakeSourceCoverageStatus;
+    recovery: TakeSourceRecovery;
+    requestedEndSec: number;
+    actualVideoDurationSec?: number;
+    gapSec: number;
+    toleranceSec: number;
+    issue?: RenderIntegrityIssue;
+}
+
 const finitePositive = (value: unknown): number | null => {
     const numeric = Number(value);
     return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
@@ -73,6 +88,109 @@ export const renderDurationTolerance = (fps: unknown): number =>
 /** A stream visual pode divergir no máximo dois quadros da duração pedida. */
 export const renderVideoDurationTolerance = (fps: unknown): number =>
     roundDiagnostic(2 / normalizeRenderFps(fps));
+
+/**
+ * Confere se a stream visual realmente alcança o fim do corte solicitado.
+ *
+ * Containers de celular podem declarar alguns quadros a mais que a stream de
+ * vídeo. Essa diferença é recuperável quando está dentro da margem normal. Um
+ * arquivo completo também pode ter uma cauda curta (por exemplo, áudio de 22 s
+ * e vídeo de 21,5 s); nesse caso aceitamos no máximo 1 s e 5% do clipe. Cortes
+ * arbitrários ou fontes de fato truncadas falham antes de iniciar o FFmpeg.
+ */
+export const analyzeTakeSourceCoverage = (input: {
+    takeIndex: number;
+    takeId?: unknown;
+    start: unknown;
+    end: unknown;
+    originalDurationSeconds?: unknown;
+    sourceProbe: MediaDurationProbe;
+    probeFailed?: boolean;
+    outputFps: unknown;
+}): TakeSourceCoverageResult => {
+    const takeIndex = Math.max(0, Math.floor(Number(input.takeIndex) || 0));
+    const rawTakeId = typeof input.takeId === 'string' ? input.takeId.trim() : '';
+    // IDs normais são UUIDs/tokens. Nunca ecoar um valor que se pareça com
+    // caminho, URL ou outro identificador privado vindo do cliente.
+    const takeId = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(rawTakeId)
+        ? rawTakeId
+        : `take-${takeIndex + 1}`;
+    const start = Number(input.start);
+    const end = Number(input.end);
+    const requestedEnd = Number.isFinite(end) && end > 0 ? end : 0;
+    const actualDuration = input.sourceProbe.videoDurationSec;
+    const actual = actualDuration != null && Number.isFinite(actualDuration) && actualDuration > 0
+        ? actualDuration
+        : null;
+    const tolerance = renderDurationTolerance(input.outputFps);
+    const gap = actual && requestedEnd > 0
+        ? Math.max(0, requestedEnd - actual)
+        : Math.max(0, requestedEnd);
+
+    const result = (
+        status: TakeSourceCoverageStatus,
+        recovery: TakeSourceRecovery,
+        issue?: RenderIntegrityIssue,
+    ): TakeSourceCoverageResult => ({
+        status,
+        recovery,
+        requestedEndSec: roundDiagnostic(requestedEnd),
+        actualVideoDurationSec: safeDiagnosticNumber(actual),
+        gapSec: roundDiagnostic(gap),
+        toleranceSec: tolerance,
+        issue,
+    });
+
+    if (input.probeFailed) {
+        return result('truncated', 'none', {
+            code: 'render_take_source_probe_failed',
+            message: `Não foi possível verificar o take ${takeIndex + 1} antes da exportação. Tente novamente.`,
+            stream: 'video',
+            takeIndex,
+            takeId,
+        });
+    }
+
+    const streamIsUsable = input.sourceProbe.hasVideo
+        && actual != null
+        && Number.isFinite(start)
+        && start >= 0
+        && actual > start;
+    if (streamIsUsable && gap <= 0) return result('covered', 'none');
+    if (streamIsUsable && gap <= tolerance) return result('recoverable', 'normal_gap');
+
+    const originalDuration = finitePositive(input.originalDurationSeconds);
+    const formatDuration = input.sourceProbe.formatDurationSec;
+    const originalMatchesFullClip = originalDuration != null
+        && Math.abs(originalDuration - requestedEnd) <= tolerance;
+    const legacyFullClip = originalDuration == null
+        && Number.isFinite(start)
+        && Math.abs(start) <= 1e-6
+        && formatDuration != null
+        && Number.isFinite(formatDuration)
+        && Math.abs(formatDuration - requestedEnd) <= tolerance;
+    const withinFullClipRecovery = streamIsUsable
+        && requestedEnd > 0
+        && gap <= 1
+        && Number.isFinite(start)
+        && requestedEnd > start
+        && gap / (requestedEnd - start) <= 0.05
+        && (originalMatchesFullClip || legacyFullClip);
+    if (withinFullClipRecovery) return result('recoverable', 'full_clip');
+
+    const issue: RenderIntegrityIssue = {
+        code: 'render_take_source_truncated',
+        message: `O take ${takeIndex + 1} termina antes do corte planejado. Selecione novamente o vídeo original ou ajuste o fim do corte.`,
+        stream: 'video',
+        expected: safeDiagnosticNumber(requestedEnd),
+        actual: safeDiagnosticNumber(actual),
+        delta: actual == null ? undefined : roundDiagnostic(actual - requestedEnd),
+        tolerance,
+        takeIndex,
+        takeId,
+    };
+    return result('truncated', 'none', issue);
+};
 
 export const takeTimelineDuration = (take: TimelineTake): number => {
     const start = Number(take.start);
@@ -168,6 +286,7 @@ export const validateRenderPreflight = (input: {
     outputFps: unknown;
     invalidTakeCount?: unknown;
     unrepresentableTakeCount?: unknown;
+    takeSourceIssues?: RenderIntegrityIssue[];
 }): RenderIntegrityDiagnostics => {
     const expected = finitePositive(input.expectedDurationSec) || 0;
     const planned = finitePositive(input.plannedVideoDurationSec) || 0;
@@ -175,6 +294,12 @@ export const validateRenderPreflight = (input: {
     const tolerance = renderDurationTolerance(fps);
     const audioDuration = input.audioProbe.audioDurationSec;
     const issues: RenderIntegrityIssue[] = [];
+
+    if (Array.isArray(input.takeSourceIssues)) {
+        issues.push(...input.takeSourceIssues.filter((issue) =>
+            issue?.code === 'render_take_source_truncated'
+            || issue?.code === 'render_take_source_probe_failed'));
+    }
 
     const invalidTakeCount = Math.max(0, Math.floor(Number(input.invalidTakeCount) || 0));
     if (invalidTakeCount > 0) {
@@ -387,7 +512,9 @@ export class RenderIntegrityError extends Error {
         super(firstIssue?.message || 'A validação de integridade do render falhou.');
         this.name = 'RenderIntegrityError';
         this.code = firstIssue?.code || 'render_integrity_failed';
-        this.retryable = this.code === 'render_probe_failed' || this.code === 'render_output_missing';
+        this.retryable = this.code === 'render_probe_failed'
+            || this.code === 'render_take_source_probe_failed'
+            || this.code === 'render_output_missing';
         this.status = this.retryable ? 503 : 422;
     }
 }

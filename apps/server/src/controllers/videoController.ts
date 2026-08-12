@@ -5,6 +5,7 @@ import {
     muxVideoAudio,
     getVideoEncoderArgs,
     probeMediaDurations,
+    probeTakeSourceDurations,
 } from '../services/ffmpeg';
 import path from 'path';
 import os from 'os';
@@ -12,6 +13,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import { isWithinRoots } from '../utils/safePath';
 import {
+    analyzeTakeSourceCoverage,
     assertRenderIntegrity,
     logRenderIntegrity,
     normalizeRenderFps,
@@ -297,6 +299,60 @@ export const exportHybrid = async (req: Request, res: Response) => {
         const unrepresentableTakeCount = framePlan.unrepresentableTakeIndices
             .filter((index) => takeDurations[index] > 0)
             .length;
+
+        // Mede somente os metadados das fontes (sem contar todos os quadros) e
+        // valida o fim real de cada corte antes de gastar tempo com o render.
+        // A análise nunca inclui caminhos locais nos diagnósticos devolvidos.
+        const sourceCoverageResults: Array<ReturnType<typeof analyzeTakeSourceCoverage> | null> =
+            Array.from({ length: takes.length }, () => null);
+        let nextSourceProbeIndex = 0;
+        const probeSource = async () => {
+            while (nextSourceProbeIndex < takes.length) {
+                const takeIndex = nextSourceProbeIndex++;
+                const take = takes[takeIndex] as any;
+                if (take?.type !== 'video') continue;
+                let sourceProbe;
+                let probeFailed = false;
+                try {
+                    // Além dos metadados, decodifica somente a cauda do corte. Isso
+                    // impede que uma stream truncada, mas com duração declarada,
+                    // seja transformada silenciosamente em um congelamento longo.
+                    sourceProbe = await probeTakeSourceDurations(take.file_path, {
+                        startSec: take.start,
+                        endSec: take.end,
+                        timeoutMs: 15_000,
+                    });
+                } catch {
+                    probeFailed = true;
+                    sourceProbe = {
+                        formatDurationSec: null,
+                        videoDurationSec: null,
+                        audioDurationSec: null,
+                        videoFps: null,
+                        videoFrameCount: null,
+                        hasVideo: false,
+                        hasAudio: false,
+                    };
+                }
+                sourceCoverageResults[takeIndex] = analyzeTakeSourceCoverage({
+                    takeIndex,
+                    takeId: take.id,
+                    start: take.start,
+                    end: take.end,
+                    originalDurationSeconds: take.originalDurationSeconds,
+                    sourceProbe,
+                    probeFailed,
+                    outputFps: safeOutputFps,
+                });
+            }
+        };
+        await Promise.all(Array.from(
+            { length: Math.min(4, Math.max(1, takes.length)) },
+            () => probeSource(),
+        ));
+        const takeSourceIssues = sourceCoverageResults
+            .map((result) => result?.issue)
+            .filter((issue): issue is NonNullable<typeof issue> => Boolean(issue));
         let audioProbe;
         try {
             audioProbe = await probeMediaDurations(audioPath);
@@ -312,13 +368,24 @@ export const exportHybrid = async (req: Request, res: Response) => {
             outputFps: safeOutputFps,
             invalidTakeCount,
             unrepresentableTakeCount,
+            takeSourceIssues,
         });
         logRenderIntegrity('preflight_checked', preflightDiagnostics);
         assertRenderIntegrity(preflightDiagnostics);
 
+        // Sobrescreva qualquer budget vindo do renderer: somente o déficit que o
+        // probe canônico acabou de aprovar pode alimentar o tpad do FFmpeg.
+        const renderTakes = takes.map((take: any, takeIndex: number) => ({
+            ...take,
+            approvedSourceGapSeconds:
+                sourceCoverageResults[takeIndex]?.status === 'recoverable'
+                    ? sourceCoverageResults[takeIndex]?.gapSec || 0
+                    : 0,
+        }));
+
         // Call our shiny new C++ bridge implementation
         const exportedPath = await buildHybridVideo({
-            takes,
+            takes: renderTakes,
             transitionPath,
             transitionRotation,
             audioPath,

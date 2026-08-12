@@ -18,9 +18,12 @@ import {
 import { resolveTransitionPathForExport } from '../lib/transitionExportRecovery';
 import {
     exportWarningSummary,
+    formatServerRenderFailure,
+    sanitizeServerRenderDiagnostics,
     titleOriginForExport,
     validateTitlesForExport,
     type ExportResultDiagnostics,
+    type PersistedRenderFailure,
     type ServerRenderDiagnostics,
 } from '../lib/exportIntegrity';
 
@@ -319,6 +322,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                         takes: preparedMediaTakes.map((take) => ({
                             id: take.id,
                             type: take.type,
+                            originalDurationSeconds: take.originalDurationSeconds,
                             file_path: take.sharedAssetId
                                 ? take.fileUrl
                                 : take.externalMedia?.source === 'mileto_ops'
@@ -356,10 +360,32 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                     diagnostics?: ServerRenderDiagnostics;
                 };
                 if (!response.ok || !result.ok) {
-                    if (result.diagnostics) {
-                        updateClientJob(activeExport.jobId, { renderDiagnostics: result.diagnostics });
+                    const diagnostics = sanitizeServerRenderDiagnostics(
+                        result.diagnostics || result.renderDiagnostics,
+                    );
+                    const message = formatServerRenderFailure(result.code, result.message, diagnostics);
+                    if (diagnostics) {
+                        updateClientJob(activeExport.jobId, { renderDiagnostics: diagnostics });
+                        try {
+                            const failure: PersistedRenderFailure = {
+                                projectId: activeExport.projectId,
+                                exportJobId: activeExport.jobId,
+                                sourceJobId: activeExport.sourceJobId,
+                                code: result.code || diagnostics.issues[0]?.code || 'render_failed',
+                                message,
+                                diagnostics,
+                                failedAt: new Date().toISOString(),
+                            };
+                            localStorage.setItem(
+                                `mileto:render-failure:${activeExport.projectId}`,
+                                JSON.stringify(failure),
+                            );
+                        } catch {
+                            // O diagnóstico continua disponível na Activity quando o
+                            // armazenamento local estiver indisponível.
+                        }
                     }
-                    throw new Error(`${result.code || 'render_failed'}: ${result.message || 'Falha ao montar o vídeo final.'}`);
+                    throw new Error(message);
                 }
                 const renderDiagnostics = result.renderDiagnostics;
                 if (renderDiagnostics?.status !== 'passed') {

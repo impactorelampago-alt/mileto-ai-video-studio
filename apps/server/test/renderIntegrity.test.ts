@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    analyzeTakeSourceCoverage,
     normalizeRenderFps,
     planTimelineFrames,
     plannedTimelineDuration,
+    RenderIntegrityError,
     renderDurationTolerance,
     validateRenderedOutput,
     validateRenderPreflight,
@@ -30,6 +32,16 @@ const outputProbe = (duration: number, fps: number): MediaDurationProbe => ({
     hasAudio: true,
 });
 
+const sourceVideoProbe = (videoDuration: number | null, formatDuration: number | null): MediaDurationProbe => ({
+    formatDurationSec: formatDuration,
+    videoDurationSec: videoDuration,
+    audioDurationSec: formatDuration,
+    videoFps: 29.97,
+    videoFrameCount: null,
+    hasVideo: videoDuration != null,
+    hasAudio: formatDuration != null,
+});
+
 test('aceita e preserva as cadências suportadas 24, 25, 30 e 60 fps', () => {
     for (const fps of [24, 25, 30, 60]) {
         assert.equal(normalizeRenderFps(fps), fps);
@@ -44,6 +56,116 @@ test('calcula a duração visual planejada considerando velocidade uniforme', ()
         { start: 1, end: 4, speed: 2 },
         { start: 0, end: 1.25, speed: 'zoom-only' },
     ]), 4.75);
+});
+
+test('aceita cauda recuperável de clipe completo sem confundir com corte arbitrário', () => {
+    const coverage = analyzeTakeSourceCoverage({
+        takeIndex: 0,
+        takeId: 'take-completo',
+        start: 0,
+        end: 22,
+        originalDurationSeconds: 22,
+        sourceProbe: sourceVideoProbe(21.5, 22),
+        outputFps: 30,
+    });
+
+    assert.equal(coverage.status, 'recoverable');
+    assert.equal(coverage.recovery, 'full_clip');
+    assert.equal(coverage.gapSec, 0.5);
+    assert.equal(coverage.issue, undefined);
+});
+
+test('aceita margem normal de mux e o legado somente quando o container representa o clipe inteiro', () => {
+    const normalGap = analyzeTakeSourceCoverage({
+        takeIndex: 0,
+        start: 4,
+        end: 10,
+        sourceProbe: sourceVideoProbe(9.94, 12),
+        outputFps: 30,
+    });
+    assert.equal(normalGap.status, 'recoverable');
+    assert.equal(normalGap.recovery, 'normal_gap');
+
+    const legacyFullClip = analyzeTakeSourceCoverage({
+        takeIndex: 1,
+        start: 0,
+        end: 22,
+        sourceProbe: sourceVideoProbe(21.5, 22),
+        outputFps: 30,
+    });
+    assert.equal(legacyFullClip.status, 'recoverable');
+    assert.equal(legacyFullClip.recovery, 'full_clip');
+});
+
+test('recusa fonte truncada antes do render com diagnóstico seguro do take', () => {
+    const coverage = analyzeTakeSourceCoverage({
+        takeIndex: 3,
+        takeId: 'take-truncado',
+        start: 0,
+        end: 1.2,
+        originalDurationSeconds: 1.2,
+        sourceProbe: sourceVideoProbe(0.5, 1.2),
+        outputFps: 30,
+    });
+
+    assert.equal(coverage.status, 'truncated');
+    assert.equal(coverage.issue?.code, 'render_take_source_truncated');
+    assert.equal(coverage.issue?.takeIndex, 3);
+    assert.equal(coverage.issue?.takeId, 'take-truncado');
+    assert.match(coverage.issue?.message || '', /take 4/i);
+    assert.doesNotMatch(JSON.stringify(coverage), /[A-Z]:\\|file_path|AppData/i);
+
+    const diagnostics = validateRenderPreflight({
+        expectedDurationSec: 1.2,
+        plannedVideoDurationSec: 1.2,
+        audioProbe: audioProbe(1.2),
+        outputFps: 30,
+        takeSourceIssues: coverage.issue ? [coverage.issue] : [],
+    });
+    assert.equal(diagnostics.status, 'failed');
+    assert.equal(diagnostics.stage, 'preflight');
+    assert.equal(diagnostics.issues[0]?.code, 'render_take_source_truncated');
+});
+
+test('limita recuperação pela duração do corte, não pela duração total da fonte', () => {
+    const coverage = analyzeTakeSourceCoverage({
+        takeIndex: 0,
+        start: 20,
+        end: 22,
+        originalDurationSeconds: 22,
+        sourceProbe: sourceVideoProbe(21.5, 22),
+        outputFps: 30,
+    });
+
+    assert.equal(coverage.status, 'truncated');
+    assert.equal(coverage.issue?.code, 'render_take_source_truncated');
+});
+
+test('falha de probe da fonte é temporária e não acusa truncamento', () => {
+    const coverage = analyzeTakeSourceCoverage({
+        takeIndex: 2,
+        takeId: 'C:\\Users\\Pessoa\\video.mp4',
+        start: 0,
+        end: 10,
+        sourceProbe: sourceVideoProbe(null, null),
+        probeFailed: true,
+        outputFps: 30,
+    });
+    assert.equal(coverage.issue?.code, 'render_take_source_probe_failed');
+    assert.equal(coverage.issue?.takeId, 'take-3');
+
+    const diagnostics = validateRenderPreflight({
+        expectedDurationSec: 10,
+        plannedVideoDurationSec: 10,
+        audioProbe: audioProbe(10),
+        outputFps: 30,
+        takeSourceIssues: coverage.issue ? [coverage.issue] : [],
+    });
+    const error = new RenderIntegrityError(diagnostics);
+    assert.equal(error.code, 'render_take_source_probe_failed');
+    assert.equal(error.retryable, true);
+    assert.equal(error.status, 503);
+    assert.doesNotMatch(error.message, /truncad|caminho|AppData/i);
 });
 
 test('pré-validação permite reserva visual e áudio alinhado', () => {

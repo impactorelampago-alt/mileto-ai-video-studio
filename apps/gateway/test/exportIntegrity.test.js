@@ -24,7 +24,12 @@ const runtimeModule = { exports: {} };
 vm.runInNewContext(`(function(exports,module,require){${compiled}\n})`, {
     console,
 })(runtimeModule.exports, runtimeModule, require);
-const { titleOriginForExport, validateTitlesForExport } = runtimeModule.exports;
+const {
+    formatServerRenderFailure,
+    sanitizeServerRenderDiagnostics,
+    titleOriginForExport,
+    validateTitlesForExport,
+} = runtimeModule.exports;
 const exportJobsSource = fs.readFileSync(
     path.resolve(__dirname, '../../client/src/context/ExportJobsContext.tsx'),
     'utf8',
@@ -147,4 +152,86 @@ test('diagnóstico local não é anexado ao contrato de upload do Ops', () => {
     const responseRead = exportJobsSource.indexOf('const responseText = await response.text()', opsDelivery);
     const uploadBlock = exportJobsSource.slice(opsDelivery, responseRead);
     assert.doesNotMatch(uploadBlock, /renderResult|renderDiagnostics|sourceJobId/);
+});
+
+test('envia a duração original de cada take ao render híbrido', () => {
+    const hybridRequest = exportJobsSource.indexOf('/api/video/export-hybrid');
+    const hybridResponse = exportJobsSource.indexOf('const result = await response.json()', hybridRequest);
+    const requestBlock = exportJobsSource.slice(hybridRequest, hybridResponse);
+    assert.match(requestBlock, /originalDurationSeconds:\s*take\.originalDurationSeconds/);
+});
+
+test('formata o primeiro issue com take e medidas e remove campos desconhecidos', () => {
+    const diagnostics = sanitizeServerRenderDiagnostics({
+        status: 'failed',
+        stage: 'preflight',
+        expectedDurationSec: 22,
+        expectedFps: 30,
+        durationToleranceSec: 0.1,
+        videoDurationToleranceSec: 0.066667,
+        frameTolerance: 0,
+        command: 'ffmpeg -i C:/Users/Victoria/video.mp4',
+        issues: [{
+            code: 'render_take_source_duration_short',
+            message: 'A fonte termina antes do corte planejado.',
+            takeIndex: 0,
+            takeId: 'take-square',
+            expected: 22,
+            actual: 21.4,
+            delta: -0.6,
+            tolerance: 0.066667,
+            filePath: 'C:/Users/Victoria/video.mp4',
+        }],
+    });
+
+    assert.ok(diagnostics);
+    assert.equal(diagnostics.command, undefined);
+    assert.equal(diagnostics.issues[0].filePath, undefined);
+    assert.equal(diagnostics.issues[0].takeIndex, 0);
+    assert.equal(diagnostics.issues[0].actual, 21.4);
+    const message = formatServerRenderFailure('render_failed', 'Falha genérica.', diagnostics);
+    assert.match(message, /^render_take_source_duration_short: Take 1 \(take-square\):/);
+    assert.match(message, /Esperado 22s; encontrado 21\.4s\./);
+    assert.match(message, /Ajuste o corte final desse take/);
+    assert.doesNotMatch(message, /C:\/Users|ffmpeg/);
+});
+
+test('persiste o diagnóstico da falha antes da limpeza e o mantém na Activity', () => {
+    const failureGate = exportJobsSource.indexOf('if (!response.ok || !result.ok)');
+    const persistence = exportJobsSource.indexOf(
+        '`mileto:render-failure:${activeExport.projectId}`',
+        failureGate,
+    );
+    const formatting = exportJobsSource.indexOf('formatServerRenderFailure(', failureGate);
+    const activityDiagnostics = exportJobsSource.indexOf(
+        'updateClientJob(activeExport.jobId, { renderDiagnostics: diagnostics })',
+        failureGate,
+    );
+    const catchBlock = exportJobsSource.indexOf('} catch (error) {', failureGate);
+    const failureCleanup = exportJobsSource.indexOf("ipcRenderer.invoke('export-cleanup'", catchBlock);
+    assert.ok(failureGate > 0);
+    assert.ok(formatting > failureGate && formatting < persistence);
+    assert.ok(activityDiagnostics > failureGate && activityDiagnostics < persistence);
+    assert.ok(persistence > failureGate && persistence < failureCleanup);
+});
+
+test('falha temporária de probe orienta nova tentativa sem acusar corte ou arquivo saudável', () => {
+    const diagnostics = sanitizeServerRenderDiagnostics({
+        status: 'failed',
+        stage: 'preflight',
+        expectedDurationSec: 22,
+        expectedFps: 30,
+        durationToleranceSec: 0.1,
+        videoDurationToleranceSec: 0.066667,
+        frameTolerance: 0,
+        issues: [{
+            code: 'render_take_source_probe_failed',
+            message: 'Não foi possível verificar o take 1 antes da exportação. Tente novamente.',
+            takeIndex: 0,
+        }],
+    });
+
+    const message = formatServerRenderFailure(undefined, undefined, diagnostics);
+    assert.match(message, /Tente exportar novamente/);
+    assert.doesNotMatch(message, /Ajuste o corte final/);
 });
