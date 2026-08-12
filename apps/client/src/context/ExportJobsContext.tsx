@@ -10,6 +10,12 @@ import { localAuthHeaders } from '../lib/serverAuth';
 import { resolveTakeEnhancement, resolveTakeSharpness } from '../lib/videoEnhancement';
 import { narrationSourceKey } from '../lib/narrationState';
 import { prepareOpsTakeForExport } from '../lib/opsMediaRecovery';
+import { gatewayApi } from '../lib/gateway';
+import {
+    invalidateOpsBrandDirectoryCache,
+    opsViewContextIdentity,
+    resolveOpsProjectBrand,
+} from '../lib/opsProjectBrand';
 import {
     refreshSharedMasterAudioForExport,
     refreshSharedTakeForExport,
@@ -460,9 +466,34 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                     if (!activeExport.opsMetadata) {
                         throw new Error('ops_export_metadata_missing: Revise o título e a descrição antes de enviar ao Mileto Ops.');
                     }
+                    // O contextId expira em poucos minutos. O render pode durar mais do
+                    // que isso, portanto a resolução do modal nunca pode ser reutilizada.
+                    invalidateOpsBrandDirectoryCache();
+                    const resolvedDestination = await resolveOpsProjectBrand(activeExport.adData.opsCompany);
+                    if (!resolvedDestination.required || !resolvedDestination.company || !resolvedDestination.context) {
+                        throw new Error('ops_export_destination_unavailable: A empresa da etapa 1 não está disponível no Mileto Ops.');
+                    }
+                    if (
+                        !activeExport.adData.opsCompany?.viewContextIdentity
+                        || opsViewContextIdentity(resolvedDestination.context) !== activeExport.adData.opsCompany.viewContextIdentity
+                    ) {
+                        throw new Error('ops_export_context_mismatch: A visão autorizada não corresponde à seleção feita na etapa 1.');
+                    }
+                    if (resolvedDestination.company.id !== activeExport.destination.companyId) {
+                        throw new Error('ops_export_company_mismatch: O destino não corresponde à empresa selecionada na etapa 1.');
+                    }
+                    if (activeExport.destination.opsFolderId) {
+                        const freshFolders = (await gatewayApi.opsFolders(
+                            resolvedDestination.company.id,
+                            resolvedDestination.context.contextId,
+                        )).data;
+                        if (!freshFolders.some((folder) => folder.id === activeExport.destination.opsFolderId)) {
+                            throw new Error('ops_export_folder_unavailable: A pasta escolhida não está mais disponível nesta empresa.');
+                        }
+                    }
                     const response = await fetch(`${API_BASE_URL}/api/ops/exports/upload`, {
                         method: 'POST',
-                        headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json', ...(activeExport.destination.viewContextId ? { 'X-Ops-View-Context': activeExport.destination.viewContextId } : {}) },
+                        headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json', 'X-Ops-View-Context': resolvedDestination.context.contextId },
                         body: JSON.stringify({
                             sourcePath,
                             fileName,

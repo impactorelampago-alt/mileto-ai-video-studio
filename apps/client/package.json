@@ -10,6 +10,7 @@
         "dev": "vite",
         "build": "tsc -b && vite build",
         "make": "cd ../server && npm run build:bundle && cd ../client && vite build && electron-builder build --win",
+        "test": "node --experimental-strip-types --test \"test/**/*.test.mjs\"",
         "lint": "eslint .",
         "preview": "vite preview",
         "electron:dev": "concurrently \"vite --port 5173 --strictPort\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\""

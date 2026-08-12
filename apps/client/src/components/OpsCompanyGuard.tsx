@@ -28,13 +28,27 @@ export const OpsCompanyGuard = ({ children }: { children: ReactNode }) => {
                 return;
             }
             if (resolved.required && resolved.company && resolved.context) {
+                const storedCompany = adData.opsCompany;
+                const resolvedContextIdentity = opsViewContextIdentity(resolved.context);
+                if (
+                    !storedCompany
+                    || resolved.company.id !== storedCompany.id
+                    || resolvedContextIdentity !== storedCompany.viewContextIdentity
+                ) {
+                    setBlocked(true);
+                    if (!warnedRef.current) {
+                        warnedRef.current = true;
+                        toast.warning('A visão ou a empresa selecionada não está mais disponível. Confirme novamente na etapa 1.');
+                    }
+                    return;
+                }
                 const currentAdData = adDataRef.current;
                 const nextAdData = {
                     ...currentAdData,
                     opsCompany: {
                         id: resolved.company.id,
                         name: opsProjectCompanyName(resolved.company),
-                        viewContextIdentity: opsViewContextIdentity(resolved.context),
+                        viewContextIdentity: resolvedContextIdentity,
                         viewContextLabel: resolved.context.label,
                     },
                     brandPalette: resolved.palette,

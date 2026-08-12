@@ -953,6 +953,14 @@ export const OpsVideoJobCoordinator = () => {
                 persisted = updatePersistedOpsVideoJob({ resume: { projectPrepared: true } }) || persisted;
             }
 
+            // Projetos retomados podem guardar a identidade de um contexto já expirado
+            // ou anterior. O job atual acabou de ser autorizado em `queued.context`;
+            // mantenha a empresa e a identidade desse contexto fresco no snapshot exportado.
+            adData = {
+                ...adData,
+                opsCompany: readiness.initialAdData.opsCompany,
+            };
+
             await patch('export', OPS_VIDEO_PROGRESS.export.start, 'Renderizando a versao final e preparando o envio ao Ops.');
             const metadata = await prepareOpsExportMetadata(job.projectId, adData, finalTakes.length);
             let uploadIdempotencyKey = requiresFreshRender

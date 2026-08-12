@@ -8,11 +8,20 @@ import type { MediaTake } from '../types';
 import { useWizard } from '../context/WizardContext';
 import { useExportJobs, type OpsExportMetadata } from '../context/ExportJobsContext';
 import { API_BASE_URL } from '../lib/apiBase';
-import { gatewayApi, type OpsCompany, type OpsFolder, type OpsViewContext } from '../lib/gateway';
-import { OpsViewContextPicker } from './OpsViewContextPicker';
+import { gatewayApi, type OpsCompany, type OpsFolder } from '../lib/gateway';
 import { localAuthHeaders } from '../lib/serverAuth';
-import { bindTitlesToBrandPalette, resolveOpsProjectBrand } from '../lib/opsProjectBrand';
+import {
+    bindTitlesToBrandPalette,
+    loadOpsBrandDirectory,
+    opsViewContextIdentity,
+    resolveOpsProjectBrand,
+} from '../lib/opsProjectBrand';
 import { narrationSourceKey } from '../lib/narrationState';
+import {
+    findDefaultOpsExportFolder,
+    findProjectOpsExportCompany,
+    OPS_EXPORT_DEFAULT_FOLDER_NAME,
+} from '../lib/opsExportDestination';
 
 type DestinationKind = 'local' | 'shared' | 'ops';
 type FolderOption = { label: string; value: string };
@@ -96,15 +105,20 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
     const [fps, setFps] = useState(30);
     const [starting, setStarting] = useState(false);
     const [errorMsg, setErrorMsg] = useState('');
-    const [destinationKind, setDestinationKind] = useState<DestinationKind>('local');
+    const [destinationKind, setDestinationKind] = useState<DestinationKind>(() => adData.opsCompany?.id ? 'ops' : 'local');
     const [libraryFolders, setLibraryFolders] = useState<FolderOption[]>([]);
     const [destinationFolder, setDestinationFolder] = useState('Vídeos');
     const [companies, setCompanies] = useState<OpsCompany[]>([]);
     const [opsCompanyId, setOpsCompanyId] = useState('');
     const [opsFolders, setOpsFolders] = useState<OpsFolder[]>([]);
     const [opsFolderId, setOpsFolderId] = useState('');
+    const [opsFoldersLoading, setOpsFoldersLoading] = useState(false);
+    const [opsFoldersReady, setOpsFoldersReady] = useState(false);
+    const [opsFoldersError, setOpsFoldersError] = useState('');
+    const [opsDefaultFolderMissing, setOpsDefaultFolderMissing] = useState(false);
+    const [opsCompanyError, setOpsCompanyError] = useState('');
     const [opsViewContextId, setOpsViewContextId] = useState<string | null>(null);
-    const [opsContexts, setOpsContexts] = useState<OpsViewContext[]>([]);
+    const [opsViewContextLabel, setOpsViewContextLabel] = useState('');
     const [opsContextLoading, setOpsContextLoading] = useState(false);
     const [opsMetadata, setOpsMetadata] = useState<OpsExportMetadata | null>(null);
     const [opsMetadataLoading, setOpsMetadataLoading] = useState(false);
@@ -191,50 +205,86 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
     }, [destinationKind]);
 
     useEffect(() => {
-        if (destinationKind !== 'ops') return;
+        if (destinationKind !== 'ops') {
+            setOpsFoldersReady(false);
+            setOpsFoldersLoading(false);
+            return;
+        }
         let cancelled = false;
         setOpsContextLoading(true);
+        setOpsCompanyError('');
+        setCompanies([]);
+        setOpsCompanyId('');
+        setOpsViewContextId(null);
+        setOpsViewContextLabel(adData.opsCompany?.viewContextLabel || '');
         void (async () => {
             try {
-                const contexts = await gatewayApi.opsViewContexts();
-                const context = contexts.data.contexts.find((item) => item.contextId === contexts.data.defaultContextId) || contexts.data.contexts[0];
+                const directory = await loadOpsBrandDirectory(adData.opsCompany);
+                const context = directory.context;
                 if (cancelled) return;
-                setOpsContexts(contexts.data.contexts);
-                setOpsViewContextId(context?.contextId || null);
-                const response = await gatewayApi.opsCompanies('', context?.contextId);
+                const storedContextIdentity = adData.opsCompany?.viewContextIdentity || '';
+                const exactContext = context
+                    && storedContextIdentity
+                    && opsViewContextIdentity(context) === storedContextIdentity
+                    ? context
+                    : null;
+                setOpsViewContextId(exactContext?.contextId || null);
+                setOpsViewContextLabel(exactContext?.label || adData.opsCompany?.viewContextLabel || 'Minha conta');
+                setCompanies(directory.companies);
+
+                const projectCompanyId = adData.opsCompany?.id || '';
+                const projectCompany = exactContext
+                    ? findProjectOpsExportCompany(directory.companies, projectCompanyId)
+                    : null;
+                setOpsCompanyId(projectCompany?.id || '');
+
+                if (!projectCompanyId) {
+                    setOpsCompanyError('Selecione a empresa do projeto na etapa 1 antes de exportar para o Mileto Ops.');
+                } else if (!exactContext) {
+                    setOpsCompanyError('A visão do Mileto Ops selecionada na etapa 1 não está mais disponível. Volte à etapa 1 e confirme a empresa novamente.');
+                } else if (!projectCompany) {
+                    setOpsCompanyError(`A empresa selecionada na etapa 1 (${adData.opsCompany?.name || 'empresa do projeto'}) não está disponível nesta visão do Mileto Ops.`);
+                }
+            } catch (error) {
                 if (cancelled) return;
-                setCompanies(response.data);
-                setOpsCompanyId((current) => response.data.some((company) => company.id === current) ? current : (response.data[0]?.id || ''));
-            } catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Não foi possível carregar as empresas do Mileto Ops.'); }
+                setCompanies([]);
+                setOpsCompanyId('');
+                setOpsViewContextId(null);
+                setOpsCompanyError(error instanceof Error ? error.message : 'Não foi possível carregar a empresa do Mileto Ops.');
+            }
             finally { if (!cancelled) setOpsContextLoading(false); }
         })();
         return () => { cancelled = true; };
-    }, [destinationKind]);
-
-    const handleOpsContextChange = useCallback(async (contextId: string) => {
-        setOpsViewContextId(contextId);
-        setOpsContextLoading(true);
-        setOpsCompanyId('');
-        setOpsFolderId('');
-        setOpsFolders([]);
-        setErrorMsg('');
-        try {
-            const response = await gatewayApi.opsCompanies('', contextId);
-            setCompanies(response.data);
-            setOpsCompanyId(response.data[0]?.id || '');
-        } catch (error) {
-            setCompanies([]);
-            setErrorMsg(error instanceof Error ? error.message : 'Não foi possível carregar as empresas desta visão.');
-        } finally {
-            setOpsContextLoading(false);
-        }
-    }, []);
+    }, [adData.opsCompany?.id, adData.opsCompany?.name, adData.opsCompany?.viewContextIdentity, destinationKind]);
 
     useEffect(() => {
-        if (destinationKind !== 'ops' || !opsCompanyId) return;
+        if (destinationKind !== 'ops') return;
+        setOpsFolders([]);
+        setOpsFolderId('');
+        setOpsFoldersError('');
+        setOpsDefaultFolderMissing(false);
+        setOpsFoldersLoading(false);
+        setOpsFoldersReady(false);
+        if (!opsCompanyId) return;
+        let cancelled = false;
+        setOpsFoldersLoading(true);
         void gatewayApi.opsFolders(opsCompanyId, opsViewContextId).then((response) => {
-            setOpsFolders(response.data); setOpsFolderId((current) => current || response.data[0]?.id || '');
-        }).catch((error) => setErrorMsg(error instanceof Error ? error.message : 'Não foi possível carregar as pastas da empresa.'));
+            if (cancelled) return;
+            const defaultFolder = findDefaultOpsExportFolder(response.data);
+            setOpsFolders(response.data);
+            setOpsDefaultFolderMissing(!defaultFolder);
+            setOpsFolderId((current) => response.data.some((folder) => folder.id === current)
+                ? current
+                : (defaultFolder?.id || ''));
+            setOpsFoldersReady(true);
+        }).catch((error) => {
+            if (cancelled) return;
+            const message = error instanceof Error ? error.message : 'Não foi possível carregar as pastas da empresa.';
+            setOpsFoldersError(message);
+        }).finally(() => {
+            if (!cancelled) setOpsFoldersLoading(false);
+        });
+        return () => { cancelled = true; };
     }, [destinationKind, opsCompanyId, opsViewContextId]);
 
     const prepareOpsMetadata = useCallback(async (revision?: Pick<OpsExportMetadata, 'title' | 'description'>) => {
@@ -310,6 +360,26 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         if (destinationKind === 'ops' && !opsCompanyId) {
             setStarting(false);
             setErrorMsg('Selecione a empresa de destino no Mileto Ops.');
+            return;
+        }
+        if (destinationKind === 'ops' && opsFoldersLoading) {
+            setStarting(false);
+            setErrorMsg('Aguarde o carregamento da pasta padrão do Mileto Ops.');
+            return;
+        }
+        if (destinationKind === 'ops' && opsFoldersError) {
+            setStarting(false);
+            setErrorMsg(opsFoldersError);
+            return;
+        }
+        if (destinationKind === 'ops' && !opsFoldersReady) {
+            setStarting(false);
+            setErrorMsg('Aguarde a confirmação da pasta padrão do Mileto Ops.');
+            return;
+        }
+        if (destinationKind === 'ops' && opsDefaultFolderMissing && !opsFolderId) {
+            setStarting(false);
+            setErrorMsg(`A pasta padrão ${OPS_EXPORT_DEFAULT_FOLDER_NAME} não está disponível nesta empresa.`);
             return;
         }
         let exportOpsMetadata = opsMetadata;
@@ -406,7 +476,11 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         destinationFolder,
         destinationKind,
         opsCompanyId,
+        opsDefaultFolderMissing,
         opsFolderId,
+        opsFoldersError,
+        opsFoldersLoading,
+        opsFoldersReady,
         opsMetadata,
         opsMetadataLoading,
         opsViewContextId,
@@ -424,6 +498,24 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
 
     const selectedOpsCompany = companies.find((company) => company.id === opsCompanyId);
     const selectedOpsFolder = opsFolders.find((folder) => folder.id === opsFolderId);
+    const selectedDefaultOpsFolder = findDefaultOpsExportFolder(opsFolders);
+    const opsDestinationError = destinationKind === 'ops'
+        ? opsCompanyError
+            || opsFoldersError
+            || (opsDefaultFolderMissing && !opsFolderId
+                ? `A pasta padrão ${OPS_EXPORT_DEFAULT_FOLDER_NAME} não está disponível ou está duplicada nesta empresa.`
+                : '')
+        : '';
+    const visibleErrorMsg = opsDestinationError || errorMsg;
+    const opsDestinationHelp = opsFoldersLoading
+        ? 'Confirmando a pasta padrão da empresa no Mileto Ops.'
+        : selectedOpsFolder && selectedOpsFolder.id === selectedDefaultOpsFolder?.id
+          ? `A empresa da etapa 1 e a pasta ${OPS_EXPORT_DEFAULT_FOLDER_NAME} foram selecionadas automaticamente.`
+          : selectedOpsFolder
+            ? `A empresa vem da etapa 1; a pasta ${selectedOpsFolder.name} foi escolhida manualmente.`
+            : opsDefaultFolderMissing
+              ? `A pasta padrão ${OPS_EXPORT_DEFAULT_FOLDER_NAME} não está disponível. Selecione outra pasta explicitamente.`
+              : 'A empresa definida na etapa 1 será usada no envio ao Mileto Ops.';
 
     return createPortal(
         <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md">
@@ -484,22 +576,20 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                             <div className="space-y-2.5">
                                 <div className="rounded-2xl border border-violet-400/15 bg-violet-500/[0.045] p-3">
                                     <span className="mb-2 block text-[9px] font-black uppercase tracking-[0.16em] text-violet-300">
-                                        Visualizar conteúdo como
+                                        Destino definido na etapa 1
                                     </span>
-                                    <OpsViewContextPicker
-                                        contexts={opsContexts}
-                                        value={opsViewContextId}
-                                        onChange={(contextId) => void handleOpsContextChange(contextId)}
-                                        loading={opsContextLoading}
-                                    />
+                                    <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/35 px-3 py-3">
+                                        {opsContextLoading ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-brand-accent" /> : <Building2 className="h-4 w-4 shrink-0 text-brand-accent" />}
+                                        <div className="min-w-0">
+                                            <strong className="block truncate text-xs text-foreground">{selectedOpsCompany?.name || selectedOpsCompany?.nome || adData.opsCompany?.name || 'Empresa não selecionada'}</strong>
+                                            <span className="block truncate text-[10px] text-brand-muted">{opsViewContextLabel || 'Contexto do projeto'} · para trocar, volte à etapa 1</span>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <PremiumSelect value={opsCompanyId} placeholder="Selecionar empresa" searchable searchPlaceholder="Buscar empresa..." options={companies.map((company) => ({ value: company.id, label: company.name || company.nome || 'Empresa sem nome' }))} onChange={(value) => { setOpsCompanyId(value); setOpsFolderId(''); }} />
-                                    <PremiumSelect value={opsFolderId} placeholder="Pasta raiz" searchable searchPlaceholder="Buscar pasta..." options={[{ value: '', label: 'Pasta raiz' }, ...opsFolders.map((folder) => ({ value: folder.id, label: folder.name }))]} onChange={setOpsFolderId} />
-                                </div>
+                                <PremiumSelect value={opsFolderId} placeholder={opsFoldersLoading ? 'Carregando pasta padrão...' : 'Selecionar pasta'} searchable searchPlaceholder="Buscar pasta..." options={[{ value: '', label: 'Pasta raiz' }, ...opsFolders.map((folder) => ({ value: folder.id, label: folder.name }))]} onChange={(value) => { setOpsFolderId(value); setErrorMsg(''); }} />
                             </div>
                         ) : <PremiumSelect value={destinationFolder} placeholder="Selecionar pasta" searchable searchPlaceholder="Buscar pasta..." options={libraryFolders} onChange={setDestinationFolder} />}
-                        <p className="text-[11px] text-brand-muted">{destinationKind === 'local' ? 'O MP4 será salvo diretamente na biblioteca deste programa.' : destinationKind === 'shared' ? 'O MP4 será enviado para a pasta compartilhada da equipe.' : 'Escolha a empresa e a pasta que receberão o vídeo no Mileto Ops.'}</p>
+                        <p className="text-[11px] text-brand-muted">{destinationKind === 'local' ? 'O MP4 será salvo diretamente na biblioteca deste programa.' : destinationKind === 'shared' ? 'O MP4 será enviado para a pasta compartilhada da equipe.' : opsDestinationHelp}</p>
                     </div>
 
                     {destinationKind === 'ops' && (
@@ -580,9 +670,9 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                         </span>
                     </div>
 
-                    {errorMsg && (
+                    {visibleErrorMsg && (
                         <div className="flex items-start gap-3 rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-xs font-semibold text-red-300">
-                            <XCircle className="mt-0.5 h-4 w-4 shrink-0" /> {errorMsg}
+                            <XCircle className="mt-0.5 h-4 w-4 shrink-0" /> {visibleErrorMsg}
                         </div>
                     )}
 
@@ -602,7 +692,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                     </button>
                     <button
                         onClick={() => void handleExport()}
-                        disabled={starting || isExporting}
+                        disabled={starting || isExporting || (destinationKind === 'ops' && (!opsCompanyId || !opsFoldersReady || (opsDefaultFolderMissing && !opsFolderId)))}
                         className="flex items-center gap-3 rounded-xl bg-linear-to-r from-brand-lime to-brand-accent px-8 py-3.5 text-xs font-black uppercase tracking-widest text-[#0a0f12] transition hover:shadow-[0_0_25px_rgba(0,230,118,0.4)] disabled:opacity-45"
                     >
                         {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
