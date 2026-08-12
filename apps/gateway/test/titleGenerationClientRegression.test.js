@@ -35,6 +35,7 @@ const loadWorkflow = (fetchImpl) => {
     const dependencyMocks = {
         './apiBase': { API_BASE_URL: 'http://local.test' },
         './audioAutoFit': { backgroundTrimEndForNarration: () => undefined },
+        './captionStyleMigration': { normalizeHydratedCaptionStyle: (style) => style },
         './captionCurrency': { repairCaptionCurrencySegments: (segments) => segments },
         './gateway': { gatewayApi: {} },
         './narrationState': {

@@ -3,18 +3,19 @@ import { useWizard } from '../context/WizardContext';
 import { Check, ChevronDown, PaintBucket, Search, Settings2, Type } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { CaptionStyle } from '../types';
+import { HACKER_MATRIX_PRESET_REVISION } from '../lib/captionStyleMigration';
 
-type Preset = { id: string; name: string; s: Partial<CaptionStyle> };
+type Preset = { id: string; name: string; revision: number; s: Partial<CaptionStyle> };
 
 const PRESETS: Preset[] = [
-    { id: 'yellow-impact', name: 'Amarelo Impacto', s: { activeColor: '#FFFF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Anton', fontSize: 42, textCase: 'uppercase' } },
-    { id: 'flix', name: 'Estilo Flix', s: { activeColor: '#E50914', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Bebas Neue', fontSize: 46, textCase: 'uppercase' } },
-    { id: 'cyan-clean', name: 'Cyan Clean', s: { activeColor: '#00D1FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Inter', fontSize: 38, textCase: 'uppercase' } },
-    { id: 'cinematic-gold', name: 'Cinematic Gold', s: { activeColor: '#FFD700', baseColor: '#F5F5F5', strokeColor: '#1A1A1A', strokeWidth: 1, fontFamily: 'Playfair Display', fontSize: 50, textCase: 'uppercase' } },
-    { id: 'cyberpunk', name: 'Cyberpunk', s: { activeColor: '#FF00FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Impact', fontSize: 44, textCase: 'uppercase' } },
-    { id: 'hacker-matrix', name: 'Hacker Matrix', s: { activeColor: '#00E676', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Montserrat', fontSize: 16, verticalPosition: 23, textCase: 'uppercase' } },
-    { id: 'minimal', name: 'Minimalista', s: { activeColor: '#FFFFFF', baseColor: '#A0A0A0', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Roboto', fontSize: 32, textCase: 'uppercase' } },
-    { id: 'youtuber-kids', name: 'Youtuber Kids', s: { activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Comic Sans MS', fontSize: 40, textCase: 'uppercase' } },
+    { id: 'yellow-impact', name: 'Amarelo Impacto', revision: 1, s: { activeColor: '#FFFF00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Anton', fontSize: 42, textCase: 'uppercase' } },
+    { id: 'flix', name: 'Estilo Flix', revision: 1, s: { activeColor: '#E50914', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Bebas Neue', fontSize: 46, textCase: 'uppercase' } },
+    { id: 'cyan-clean', name: 'Cyan Clean', revision: 1, s: { activeColor: '#00D1FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Inter', fontSize: 38, textCase: 'uppercase' } },
+    { id: 'cinematic-gold', name: 'Cinematic Gold', revision: 1, s: { activeColor: '#FFD700', baseColor: '#F5F5F5', strokeColor: '#1A1A1A', strokeWidth: 1, fontFamily: 'Playfair Display', fontSize: 50, textCase: 'uppercase' } },
+    { id: 'cyberpunk', name: 'Cyberpunk', revision: 1, s: { activeColor: '#FF00FF', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Impact', fontSize: 44, textCase: 'uppercase' } },
+    { id: 'hacker-matrix', name: 'Hacker Matrix', revision: HACKER_MATRIX_PRESET_REVISION, s: { activeColor: '#00E676', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Montserrat', fontSize: 16, verticalPosition: 23, textCase: 'uppercase' } },
+    { id: 'minimal', name: 'Minimalista', revision: 1, s: { activeColor: '#FFFFFF', baseColor: '#A0A0A0', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Roboto', fontSize: 32, textCase: 'uppercase' } },
+    { id: 'youtuber-kids', name: 'Youtuber Kids', revision: 1, s: { activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Comic Sans MS', fontSize: 40, textCase: 'uppercase' } },
 ];
 
 const FONTS = ['Poppins', 'Roboto', 'Inter', 'Impact', 'Montserrat', 'Anton', 'Bebas Neue', 'Playfair Display', 'Comic Sans MS'];
@@ -232,6 +233,7 @@ export const CaptionStudio: React.FC = () => {
                                         updateStyle({
                                             id: p.id,
                                             name: p.name,
+                                            presetRevision: p.revision,
                                             ...p.s,
                                             ...(p.id === 'hacker-matrix' && adData.brandPalette?.primary
                                                 ? { activeColor: adData.brandPalette.primary }

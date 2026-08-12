@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useExportJobs } from '../context/ExportJobsContext';
 import { createDefaultAdData, DEFAULT_CAPTION_STYLE } from '../context/WizardContext';
+import { normalizeHydratedCaptionStyle } from '../lib/captionStyleMigration';
 import {
     GatewayError,
     gatewayApi,
@@ -793,7 +794,7 @@ export const OpsVideoJobCoordinator = () => {
                 showLocalProgress('titles', OPS_VIDEO_PROGRESS.titles.end, 'Restaurando o projeto salvo e renovando as URLs dos takes.');
                 adData = { ...savedProject.adData, frameOverlay };
                 titleWarning = savedProject.adData.titleGenerationSummary?.warning || null;
-                captionStyle = savedProject.captionStyle;
+                captionStyle = normalizeHydratedCaptionStyle(savedProject.captionStyle);
                 selectedMusicId = savedProject.selectedMusicId;
                 finalTakes = await hydratePreparedTakes(
                     savedProject.mediaTakes,

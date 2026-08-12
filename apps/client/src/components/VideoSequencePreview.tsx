@@ -961,6 +961,17 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     setCurrentTimeInTake((prev) => {
                         const next = prev + checkInterval / 1000;
                         if (next >= duration) {
+                            const master = audioMasterRef.current;
+                            const isLastTake = currentTakeIndex >= takes.length - 1;
+                            const hasAudibleTail = Boolean(
+                                isLastTake &&
+                                masterAudioUrl &&
+                                master &&
+                                !master.ended &&
+                                Number.isFinite(master.currentTime) &&
+                                master.currentTime < totalDuration - 0.02
+                            );
+                            if (hasAudibleTail) return duration;
                             advanceTrack();
                             return 0;
                         }
@@ -1157,6 +1168,35 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     setCurrentTakeIndex(nextIndex);
                     setCurrentTimeInTake(0);
                 } else {
+                    // A linha visual pode ser alguns segundos menor que a narração
+                    // (por exemplo, quando o texto é refeito depois dos cortes). O
+                    // áudio mestre é o relógio autoritativo do anúncio: segure o
+                    // último quadro até a fala terminar, sem voltar ao primeiro take.
+                    const master = audioMasterRef.current;
+                    const hasAudibleTail = Boolean(
+                        masterAudioUrl &&
+                        master &&
+                        !master.ended &&
+                        Number.isFinite(master.currentTime) &&
+                        master.currentTime < totalDuration - 0.02
+                    );
+                    if (hasAudibleTail) {
+                        const finalDuration = currentTake
+                            ? Math.max(0, currentTake.trim.end - currentTake.trim.start)
+                            : 0;
+                        const finalVideo = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+                        if (finalVideo && currentTake?.type === 'video') {
+                            finalVideo.pause();
+                            const frameInset = Math.min(1 / 30, finalDuration / 2);
+                            const finalFrameTime = Math.max(currentTake.trim.start, currentTake.trim.end - frameInset);
+                            if (Math.abs(finalVideo.currentTime - finalFrameTime) > 0.005) {
+                                finalVideo.currentTime = finalFrameTime;
+                            }
+                        }
+                        setCurrentTimeInTake(finalDuration);
+                        return;
+                    }
+
                     // Truly done
                     stopAll();
                     setCurrentTakeIndex(0); // Reset to start
@@ -1242,7 +1282,10 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 const targetGlobalTime = percentage * totalDuration;
 
                 let accumulated = 0;
-                let targetTakeIndex = 0;
+                // Se o tempo pedido ultrapassar a soma visual, o fallback abaixo
+                // deve manter o último quadro. Começar em zero fazia esse fallback
+                // ser inalcançável e levava o seek ao primeiro take na cauda do áudio.
+                let targetTakeIndex = takes.length;
                 let targetTimeInTake = 0;
 
                 for (let i = 0; i < takes.length; i++) {
@@ -1357,7 +1400,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 const targetGlobalTime = Math.max(0, Math.min(globalTime, totalDuration));
 
                 let accumulated = 0;
-                let targetTakeIndex = 0;
+                // A narração pode ultrapassar a soma visual. Nesse intervalo,
+                // a captura precisa congelar o último quadro, não voltar ao take 0.
+                let targetTakeIndex = takes.length;
                 let targetTimeInTake = 0;
 
                 for (let i = 0; i < takes.length; i++) {

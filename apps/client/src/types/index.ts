@@ -445,6 +445,8 @@ export interface AdData {
 export interface CaptionStyle {
     id: string;
     name: string;
+    /** Revisao do preset aplicada; permite migrar defaults sem sobrescrever ajustes posteriores. */
+    presetRevision?: number;
     previewClass: string; // Tailwind class string for preview
     fontFamily?: string; // e.g. 'Impact', 'Montserrat', 'Bebas Neue'
     fontSize: number;

@@ -5,6 +5,7 @@ import { DEFAULT_VIDEO_ENHANCEMENT, normalizeVideoEnhancement } from '../lib/vid
 import { gatewayApi, type SharedAsset } from '../lib/gateway';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { API_BASE_URL } from '../lib/apiBase';
+import { HACKER_MATRIX_PRESET_REVISION, normalizeHydratedCaptionStyle } from '../lib/captionStyleMigration';
 import { canonicalSystemVoiceId, DEFAULT_SYSTEM_VOICE } from '../lib/systemVoices';
 import {
     invalidateOpsCompanyContext,
@@ -196,6 +197,7 @@ const defaultAdData: AdData = {
 export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
     id: 'hacker-matrix',
     name: 'Hacker Matrix',
+    presetRevision: HACKER_MATRIX_PRESET_REVISION,
     previewClass: '',
     fontFamily: 'Montserrat',
     fontSize: 16,
@@ -1023,7 +1025,9 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 ...data,
                 adData: { ...mergeAdData(data.adData), title },
                 mediaTakes: Array.isArray(data.mediaTakes) ? data.mediaTakes : [],
-                captionStyle: data.captionStyle ?? null,
+                captionStyle: Object.prototype.hasOwnProperty.call(data, 'captionStyle')
+                    ? normalizeHydratedCaptionStyle(data.captionStyle ?? null)
+                    : { ...DEFAULT_CAPTION_STYLE },
                 selectedMusicId: data.selectedMusicId ?? null,
                 updatedAt: new Date().toISOString(),
                 exported: !!data.exported,
@@ -1044,9 +1048,10 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         setDraftTitle(title);
         if (data.adData) setAdData(mergeAdData({ ...data.adData, title }));
         setMediaTakes(Array.isArray(data.mediaTakes) ? data.mediaTakes : []);
-        if (Object.prototype.hasOwnProperty.call(data, 'captionStyle')) {
-            setCaptionStyle(data.captionStyle ?? null);
-        }
+        const nextCaptionStyle = Object.prototype.hasOwnProperty.call(data, 'captionStyle')
+            ? normalizeHydratedCaptionStyle(data.captionStyle ?? null)
+            : { ...DEFAULT_CAPTION_STYLE };
+        setCaptionStyle(nextCaptionStyle);
         setSelectedMusicIdState(data.selectedMusicId ?? null);
     }, [invalidatePendingMusicSelection]);
 
@@ -1162,7 +1167,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         const title = snapshot.title.trim();
         const nextCaptionStyle = snapshot.captionStyle === undefined
             ? { ...DEFAULT_CAPTION_STYLE }
-            : snapshot.captionStyle;
+            : normalizeHydratedCaptionStyle(snapshot.captionStyle);
         const nextMusicId = snapshot.selectedMusicId === undefined
             ? SYSTEM_MUSIC_IDS.batida
             : snapshot.selectedMusicId;

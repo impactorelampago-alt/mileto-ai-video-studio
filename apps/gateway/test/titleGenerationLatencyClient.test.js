@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const clientPath = (relative) => path.resolve(__dirname, '../../client/src', relative);
 const defaultDependencyMocks = {
     './audioAutoFit': { backgroundTrimEndForNarration: () => undefined },
+    './captionStyleMigration': { normalizeHydratedCaptionStyle: (style) => style },
 };
 
 const compileClientModule = (relative) => {

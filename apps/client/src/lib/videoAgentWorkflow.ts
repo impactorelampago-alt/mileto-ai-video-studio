@@ -17,6 +17,7 @@ import type {
     TitleGenerationTimings,
     TitleHook,
 } from '../types';
+import { normalizeHydratedCaptionStyle } from './captionStyleMigration';
 import type { OpsExportMetadata } from '../context/ExportJobsContext';
 
 type ApiEnvelope<T> = {
@@ -706,7 +707,7 @@ export const loadAutomatedProject = async (projectId: string): Promise<Automated
     return {
         adData: data.adData,
         mediaTakes: data.mediaTakes,
-        captionStyle: data.captionStyle || { ...DEFAULT_AUTOMATED_CAPTION_STYLE },
+        captionStyle: normalizeHydratedCaptionStyle(data.captionStyle) || { ...DEFAULT_AUTOMATED_CAPTION_STYLE },
         selectedMusicId: data.selectedMusicId || null,
         exported: Boolean(data.exported),
         title: String(data.title || data.adData.title || '').trim(),
