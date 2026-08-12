@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { validateRenderedOutput } from '../src/services/renderIntegrity';
+import { expectedTimelineFrameCount, validateRenderedOutput } from '../src/services/renderIntegrity';
 
 const ffmpegPath = path.resolve(__dirname, '../../client/resources/bin/ffmpeg.exe');
 const ffprobePath = path.resolve(__dirname, '../../client/resources/bin/ffprobe.exe');
@@ -306,6 +306,70 @@ test('imagem sustentada e take acelerado com zoom preservam a timeline', {
         const diagnostics = validateRenderedOutput({ expectedDurationSec: duration, media: probe, outputFps: 25 });
         assert.equal(diagnostics.status, 'passed', JSON.stringify(diagnostics.issues));
         assert.equal(probe.videoFrameCount, 30, JSON.stringify(probe));
+    } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('completa a cauda contratual quando o áudio excede um único take por poucos quadros', {
+    skip: !hasBundledBinaries,
+    timeout: 120_000,
+}, async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-render-audio-tail-'));
+    try {
+        const { buildHybridVideo, probeMediaDurations } = require('../src/services/ffmpeg');
+        const visualDuration = 1;
+        const expectedDuration = 1.05;
+        const outputFps = 30;
+        const sourcePath = makeVideo(directory, 'single-take.mp4', outputFps, visualDuration);
+        const audioPath = makeAudio(directory, expectedDuration);
+        // A CTA nasce somente na cauda que excede o take. Assim, contar 32
+        // quadros não basta: o último precisa preservar também o overlay final.
+        const overlayPath = makeOverlay(directory, 'tail-cta-overlay.mov', expectedDuration, visualDuration);
+        const outputPath = path.join(directory, 'render-audio-tail.mp4');
+
+        await buildHybridVideo({
+            takes: [{
+                id: 'single-take',
+                type: 'video',
+                file_path: sourcePath,
+                start: 0,
+                end: visualDuration,
+                speed: 1,
+            }],
+            audioPath,
+            overlayPath,
+            outputPath,
+            duration: expectedDuration,
+            targetW: 160,
+            targetH: 90,
+            outputFps,
+        });
+
+        const probe = await probeMediaDurations(outputPath);
+        const diagnostics = validateRenderedOutput({
+            expectedDurationSec: expectedDuration,
+            media: probe,
+            outputFps,
+        });
+        const expectedFrames = expectedTimelineFrameCount(expectedDuration, outputFps);
+
+        assert.equal(expectedFrames, 32);
+        assert.equal(probe.videoFrameCount, expectedFrames, JSON.stringify(probe));
+        assert.equal(diagnostics.actualVideoFrameCount, expectedFrames, JSON.stringify(diagnostics));
+        assert.equal(diagnostics.status, 'passed', JSON.stringify(diagnostics.issues));
+
+        const finalFrameIndex = expectedFrames - 1;
+        const duringTailCta = pixelAtFrame(outputPath, finalFrameIndex, 80, 44);
+        const duringTailCaption = pixelAtFrame(outputPath, finalFrameIndex, 20, 74);
+        assert.ok(
+            duringTailCta[1] > duringTailCta[0] + 40 && duringTailCta[1] > duringTailCta[2] + 40,
+            `CTA da cauda deveria ser verde no quadro ${finalFrameIndex}, RGB=${[...duringTailCta].join(',')}`,
+        );
+        assert.ok(
+            duringTailCaption[1] > 80 && duringTailCaption[2] > 80,
+            `Legenda da cauda deveria permanecer ciano no quadro ${finalFrameIndex}, RGB=${[...duringTailCaption].join(',')}`,
+        );
     } finally {
         fs.rmSync(directory, { recursive: true, force: true });
     }

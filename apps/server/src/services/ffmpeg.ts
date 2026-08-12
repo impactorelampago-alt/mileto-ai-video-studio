@@ -547,6 +547,9 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
     return new Promise((resolve, reject) => {
         const { takes, transitionPath, transitionRotation = 0, audioPath, overlayPath, outputPath, duration } = params;
         const expectedDuration = Number(duration) > 0 ? Number(duration) : null;
+        const expectedFrameCount = expectedDuration
+            ? expectedTimelineFrameCount(expectedDuration, outputFps)
+            : null;
 
         let actualOverlayInput = overlayPath;
         let tempOverlayDir = '';
@@ -833,15 +836,31 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             }
         }
 
+        // A mixagem mestre pode terminar poucos quadros depois da soma dos takes
+        // (por exemplo, por arredondamento da narração ou por um corte visual
+        // ligeiramente curto aceito pelo preflight). Complete somente essa cauda
+        // contratual depois de montar takes e transições. Fazer isso por contagem
+        // preserva o último quadro e não mascara uma stream de origem truncada:
+        // o tpad individual acima ainda é limitado a MAX_TAKE_FRAME_PAD_SEC.
+        if (expectedFrameCount) {
+            const contractualTailFrames = Math.max(0, expectedFrameCount - framePlan.totalFrameCount);
+            const timelineVideo = '[timelineVideo]';
+            const tailPad = contractualTailFrames > 0
+                ? `tpad=stop_mode=clone:stop=${contractualTailFrames},`
+                : '';
+            filterGraph += `${currentBase}${tailPad}trim=end_frame=${expectedFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)${timelineVideo};`;
+            currentBase = timelineVideo;
+        }
+
         // Overlay do Título Transparente — preserva o aspect ratio do PNG capturado.
         // Se o overlay foi gravado no mesmo TARGET, o scale é no-op. Caso contrário,
         // encaixa (decrease) e preenche com transparente, evitando deformação das legendas.
-        const overlayTimelineContract = expectedDuration
-            ? `,fps=${outputFps}:start_time=0,trim=duration=${expectedDuration.toFixed(9)},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`
+        const overlayTimelineContract = expectedFrameCount
+            ? `,fps=${outputFps}:start_time=0,trim=end_frame=${expectedFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`
             : `,fps=${outputFps}:start_time=0,setpts=PTS-STARTPTS`;
         filterGraph += `[${overlayIdx}:v]scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=decrease,pad=${TARGET_W}:${TARGET_H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,colorchannelmixer=aa=1.0${overlayTimelineContract}[alphaT];`;
-        const finalTimelineContract = expectedDuration
-            ? `,tpad=stop_mode=clone:stop_duration=${(1 / outputFps).toFixed(9)},trim=end_frame=${expectedTimelineFrameCount(expectedDuration, outputFps)},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`
+        const finalTimelineContract = expectedFrameCount
+            ? `,tpad=stop_mode=clone:stop_duration=${(1 / outputFps).toFixed(9)},trim=end_frame=${expectedFrameCount},settb=expr=1/${outputFps},setpts=N/(${outputFps}*TB)`
             : ',setpts=PTS-STARTPTS';
         // O framesync de overlay pode encerrar no PTS do último quadro, antes
         // do intervalo de exibição dele. Uma única reserva de quadro fecha esse
