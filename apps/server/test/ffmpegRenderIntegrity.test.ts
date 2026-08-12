@@ -506,6 +506,49 @@ test('fonte 30000/1001 em projeto 1:1 sem título preserva contrato exato em 30 
     }
 });
 
+test('duração fracionária não perde o último quadro por corte redundante do muxer', {
+    skip: !hasBundledBinaries,
+    timeout: 120_000,
+}, async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-render-fractional-tail-'));
+    try {
+        const { buildHybridVideo, probeMediaDurations } = require('../src/services/ffmpeg');
+        const duration = 22.18;
+        const outputFps = 30;
+        const sourcePath = makeVideoWithFrames(directory, 'source-2997.mp4', '30000/1001', 666);
+        const audioPath = makeAudio(directory, duration);
+        const overlayPath = makeOverlay(directory, 'transparent-overlay.mov', duration);
+        const outputPath = path.join(directory, 'render-fractional-tail.mp4');
+
+        await buildHybridVideo({
+            takes: [{
+                id: 'fractional-tail',
+                type: 'video',
+                file_path: sourcePath,
+                start: 0,
+                end: duration,
+                originalDurationSeconds: duration,
+                speed: 1,
+            }],
+            audioPath,
+            overlayPath,
+            outputPath,
+            duration,
+            targetW: 160,
+            targetH: 160,
+            outputFps,
+        });
+
+        const probe = await probeMediaDurations(outputPath);
+        const diagnostics = validateRenderedOutput({ expectedDurationSec: duration, media: probe, outputFps });
+        assert.equal(expectedTimelineFrameCount(duration, outputFps), 666);
+        assert.equal(probe.videoFrameCount, 666, JSON.stringify(probe));
+        assert.equal(diagnostics.status, 'passed', JSON.stringify(diagnostics));
+    } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+    }
+});
+
 test('não envia uma fonte de 1,2 s truncada em 0,5 s ao render', {
     skip: !hasBundledBinaries,
     timeout: 120_000,

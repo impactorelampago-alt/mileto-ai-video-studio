@@ -1013,8 +1013,10 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
         args.push('-movflags', '+faststart');
 
         if (expectedDuration) {
-            args.push('-t', expectedDuration.toFixed(9));
-            console.log(`[FFmpeg Hybrid Direct] Duração contratada em ${expectedDuration}s.`);
+            // Vídeo e áudio já foram fechados pelos filtros em contagem/duração
+            // exatas. Um `-t` adicional em uma duração que não cai na grade de
+            // frames (ex.: 22,18 s a 30 fps) remove o último quadro válido.
+            console.log(`[FFmpeg Hybrid Direct] Duração contratada pelos filtros em ${expectedDuration}s.`);
         }
 
         args.push(outputPath);
