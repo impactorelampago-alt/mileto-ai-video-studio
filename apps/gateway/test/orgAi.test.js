@@ -109,15 +109,16 @@ test('permite gatilho e tipo customizados sem misturar configuracao global', () 
         'scarcity', 'region', 'cta', 'price', 'benefit', 'product', 'differentiator', 'audience',
     ]);
     assert.ok(!DEFAULT_TITLE_GENERATOR_CONFIG.triggers.some((trigger) => trigger.id === 'hook'));
+    // O padrão de fábrica atual vem da configuração real da agência: modelos de
+    // marca usam a paleta da empresa ('brand') e os CTAs mantêm cor fixa.
     const defaultTypes = DEFAULT_TITLE_GENERATOR_CONFIG.triggers.flatMap((trigger) => trigger.titleTypes);
-    assert.ok(defaultTypes.every((type) => type.color?.mode === 'fixed'));
-    assert.deepEqual(
-        defaultTypes.find((type) => type.styleId === 'premium-urgency-pulse').color,
-        { mode: 'fixed', paletteSlot: 'primary', primary: '#FF3B30', secondary: '#FFFFFF' }
-    );
-    assert.deepEqual(
-        defaultTypes.find((type) => type.styleId === 'cta-whatsapp').color,
-        { mode: 'fixed', paletteSlot: 'primary', primary: '#A3E635', secondary: '#FFFFFF' }
+    assert.ok(defaultTypes.every((type) => ['brand', 'fixed'].includes(type.color?.mode)));
+    assert.equal(defaultTypes.find((type) => type.styleId === 'premium-urgency-pulse').color.mode, 'brand');
+    assert.equal(defaultTypes.find((type) => type.styleId === 'cta-whatsapp').color.mode, 'fixed');
+    assert.equal(
+        DEFAULT_TITLE_GENERATOR_CONFIG.triggers.find((trigger) => trigger.id === 'region')
+            .titleTypes.find((type) => type.styleId === 'loc-pin-viagem').color.paletteSlot,
+        'primary'
     );
 });
 

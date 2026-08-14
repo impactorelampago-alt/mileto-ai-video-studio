@@ -389,10 +389,11 @@ test('timings do servidor aceitam apenas numeros finitos e nunca persistem texto
 });
 
 test('job retomado reutiliza empresa validada com a paleta fresca do pre-claim', () => {
+    // Normaliza CRLF para o literal multilinha casar em checkouts Windows.
     const coordinator = fs.readFileSync(
         clientPath('components/OpsVideoJobCoordinator.tsx'),
         'utf8',
-    );
+    ).replace(/\r\n/g, '\n');
     const resolvedBrandStart = coordinator.indexOf('resolvedBrand: {');
     const resolvedBrandEnd = coordinator.indexOf('},\n                            onProgress:', resolvedBrandStart);
     const resolvedBrandBlock = coordinator.slice(resolvedBrandStart, resolvedBrandEnd);

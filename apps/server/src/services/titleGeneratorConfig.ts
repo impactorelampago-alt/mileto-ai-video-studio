@@ -87,187 +87,1070 @@ const color = (value: unknown, fallback: string) => {
     return HEX_COLOR.test(normalized) ? normalized.toLowerCase() : fallback;
 };
 
-const layouts = (portraitY: number, landscapeY: number, scale = 1, width = 78): Record<VideoFormat, TitleLayout> => ({
-    '9:16': { posX: 50, posY: portraitY, scale, scaleX: 1, scaleY: 1, textBoxWidthPct: width },
-    '16:9': { posX: 50, posY: landscapeY, scale: scale * 0.9, scaleX: 1, scaleY: 1, textBoxWidthPct: Math.min(width, 64) },
-    '4:5': { posX: 50, posY: portraitY, scale: scale * 0.95, scaleX: 1, scaleY: 1, textBoxWidthPct: Math.min(width, 74) },
-    '1:1': { posX: 50, posY: landscapeY, scale: scale * 0.92, scaleX: 1, scaleY: 1, textBoxWidthPct: Math.min(width, 70) },
-});
-
-const brandColor = (paletteSlot: TitleColorRule['paletteSlot'] = 'rotate'): TitleColorRule => ({
-    mode: 'brand',
-    paletteSlot,
-    primary: '#00e676',
-    secondary: '#07110d',
-});
-
-const fixedColor = (primary: string, secondary: string): TitleColorRule => ({
-    mode: 'fixed',
-    paletteSlot: 'primary',
-    primary,
-    secondary,
-});
-
-const titleType = (
-    styleId: string,
-    name: string,
-    fontFamily: string,
-    layout: Record<VideoFormat, TitleLayout>,
-    animationId: TitleTypeRule['animationId'],
-    titleColor: TitleColorRule
-): TitleTypeRule => ({
-    id: styleId,
-    name,
-    styleId,
-    fontFamily,
-    durationSec: 2.5,
-    animationId,
-    color: titleColor,
-    layouts: layout,
-});
-
 /**
  * Compatibilidade local para instalações cujo gateway ainda não publicou a rota
  * efetiva da organização. A configuração salva no gateway sempre tem prioridade.
  */
+// Padrão de fábrica gravado a partir da configuração real da agência
+// (2026-08-14). Regenerar via captura do gerador; não editar na mão.
 export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
-    version: 5,
-    pipeline: 'reviewed-v1',
-    ai: {
-        provider: 'openai',
-        model: 'gpt-5-mini',
-        reasoning: 'rapido',
-        maxOutputTokens: 1400,
+    "version": 5,
+    "pipeline": "reviewed-v1",
+    "ai": {
+        "provider": "openai",
+        "model": "gpt-5-mini",
+        "reasoning": "rapido",
+        "maxOutputTokens": 1400
     },
-    reviewer: {
-        model: 'gpt-4.1-nano',
-        maxOutputTokens: 512,
-        timeoutMs: 8000,
+    "reviewer": {
+        "model": "gpt-4.1-nano",
+        "maxOutputTokens": 512,
+        "timeoutMs": 8000
     },
-    extractionPrompt: 'Detecte fatos explícitos da narração e transforme cada um em uma etiqueta visual curta. Preserve separadamente o trecho literal completo usado como evidência. Priorize substantivos, nomes próprios, valores e ações concretas; remova artigos, possessivos e conectores sem valor visual. Nunca invente texto, preço, benefício, bônus, urgência ou localização.',
-    maxTitles: 8,
-    triggers: [
+    "extractionPrompt": "Selecione apenas trechos literais da narração que aumentem retenção, clareza ou conversão. Nunca invente texto, oferta, prova, urgência ou localização.",
+    "maxTitles": 8,
+    "triggers": [
         {
-            id: 'scarcity',
-            name: 'Escassez e urgência',
-            enabled: true,
-            maxWords: 3,
-            maxOccurrences: 3,
-            instructions: 'Prazo, quantidade, vagas, lote ou estoque limitado somente quando forem pronunciados explicitamente.',
-            examples: ['Somente até sábado', 'Últimas 8 unidades', '3 vagas'],
-            sample: 'SOMENTE ATÉ SÁBADO',
-            color: brandColor('primary'),
-            titleTypes: [
-                titleType('premium-urgency-pulse', 'Urgency Pulse', 'Anton', layouts(34, 30, 0.95, 76), 'pop', fixedColor('#ff3b30', '#ffffff')),
-                titleType('premium-coupon-ticket', 'Coupon Ticket', 'Space Grotesk', layouts(38, 34, 0.9, 74), 'slide', fixedColor('#7cff6b', '#101510')),
+            "id": "scarcity",
+            "name": "Escassez e urgência",
+            "enabled": true,
+            "maxWords": 3,
+            "maxOccurrences": 3,
+            "instructions": "Prazo, quantidade, vagas, lote ou estoque limitado.",
+            "examples": [
+                "Somente até sábado",
+                "Últimas 8 unidades",
+                "3 vagas"
             ],
+            "sample": "SOMENTE ATÉ SÁBADO",
+            "color": {
+                "mode": "brand",
+                "paletteSlot": "primary",
+                "primary": "#00e676",
+                "secondary": "#07110d"
+            },
+            "titleTypes": [
+                {
+                    "id": "premium-sale-spotlight",
+                    "name": "Sale Spotlight",
+                    "styleId": "premium-sale-spotlight",
+                    "fontFamily": "Archivo Black",
+                    "durationSec": 2.5,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#1de6d2",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 50.98039215686275,
+                            "posY": 52.93441413430607,
+                            "scale": 0.62,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 99.08370229812354
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                },
+                {
+                    "id": "premium-urgency-pulse",
+                    "name": "Urgency Pulse",
+                    "styleId": "premium-urgency-pulse",
+                    "fontFamily": "Anton",
+                    "durationSec": 2.5,
+                    "animationId": "slide",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#ff3b30",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 52.47888808566699,
+                            "posY": 58.775142261535855,
+                            "scale": 0.6037742372951541,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 141.21884686492245
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                },
+                {
+                    "id": "premium-swiss-modern",
+                    "name": "Swiss Modern",
+                    "styleId": "premium-swiss-modern",
+                    "fontFamily": "DM Sans",
+                    "durationSec": 2.5,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#ff4d36",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 50.534150562795475,
+                            "posY": 55.81249102424173,
+                            "scale": 0.664590240385214,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 88.54185114906177
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                }
+            ]
         },
         {
-            id: 'region',
-            name: 'Região',
-            enabled: true,
-            maxWords: 3,
-            maxOccurrences: 3,
-            instructions: 'Cidade, estado, país, bairro, região ou área atendida. Nunca invente nem repita a localização.',
-            examples: ['Casimiro de Abreu', 'Rio de Janeiro', 'Todo o Brasil'],
-            sample: 'CASIMIRO DE ABREU',
-            color: brandColor('tertiary'),
-            titleTypes: [
-                titleType('loc-pin-viagem', 'Pin de Viagem', 'Inter', layouts(62, 68, 0.78, 62), 'fade', fixedColor('#00e676', '#ffffff')),
-                titleType('loc-minimal-urbano', 'Localização Minimalista', 'Inter', layouts(68, 72, 0.72, 60), 'fade', fixedColor('#00e676', '#ffffff')),
+            "id": "region",
+            "name": "Região",
+            "enabled": true,
+            "maxWords": 3,
+            "maxOccurrences": 3,
+            "instructions": "Cidade, bairro, região ou endereço. Nunca invente e não repita a localização.",
+            "examples": [
+                "Casimiro de Abreu",
+                "Rio de Janeiro",
+                "Todo o Brasil"
             ],
+            "sample": "CASIMIRO DE ABREU",
+            "color": {
+                "mode": "brand",
+                "paletteSlot": "primary",
+                "primary": "#00e676",
+                "secondary": "#07110d"
+            },
+            "titleTypes": [
+                {
+                    "id": "loc-pin-viagem",
+                    "name": "Pin de Viagem",
+                    "styleId": "loc-pin-viagem",
+                    "fontFamily": "Inter",
+                    "durationSec": 2,
+                    "animationId": "fade",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "primary",
+                        "primary": "#00e676",
+                        "secondary": "#07110d"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 50,
+                            "posY": 62,
+                            "scale": 0.4053595161837049,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 209.14742242749654
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 68,
+                            "scale": 0.7020000000000001,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 62
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 62,
+                            "scale": 0.741,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 62
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 68,
+                            "scale": 0.7176,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 62
+                        }
+                    }
+                },
+                {
+                    "id": "loc-minimal-urbano",
+                    "name": "Minimalista",
+                    "styleId": "loc-minimal-urbano",
+                    "fontFamily": "Inter",
+                    "durationSec": 2.5,
+                    "animationId": "fade",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#00e676",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 50.811757896343984,
+                            "posY": 60.84627577837776,
+                            "scale": 0.4385280868955116,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 217.1215292574055
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                }
+            ]
         },
         {
-            id: 'cta',
-            name: 'CTA',
-            enabled: true,
-            maxWords: 3,
-            maxOccurrences: 3,
-            instructions: 'Clique, chame, agende, compre, aproveite, garanta, acesse, reserve ou outra ação explicitamente pronunciada.',
-            examples: ['Clique no botão', 'Chame no WhatsApp', 'Saiba mais'],
-            sample: 'CLIQUE NO BOTÃO',
-            color: brandColor('primary'),
-            titleTypes: [
-                titleType('cta-whatsapp', 'Balão WhatsApp', 'Inter', layouts(58, 64, 0.72, 52), 'pop', fixedColor('#a3e635', '#ffffff')),
-                titleType('cta-tap', 'Botão de Clique', 'Poppins', layouts(60, 66, 0.72, 52), 'pop', fixedColor('#a3e635', '#ffffff')),
+            "id": "cta",
+            "name": "CTA",
+            "enabled": true,
+            "maxWords": 3,
+            "maxOccurrences": 3,
+            "instructions": "Clique, chame, agende, compre, visite ou outra ação explicitamente pronunciada.",
+            "examples": [
+                "Clique no botão",
+                "Chame no WhatsApp",
+                "Saiba mais"
             ],
+            "sample": "CLIQUE NO BOTÃO",
+            "color": {
+                "mode": "fixed",
+                "paletteSlot": "primary",
+                "primary": "#54a812",
+                "secondary": "#ffffff"
+            },
+            "titleTypes": [
+                {
+                    "id": "cta-search",
+                    "name": "Barra de Busca",
+                    "styleId": "cta-search",
+                    "fontFamily": "Inter",
+                    "durationSec": 2.5,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "fixed",
+                        "paletteSlot": "rotate",
+                        "primary": "#a3e635",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 50.08513525192631,
+                            "posY": 60.372415347343505,
+                            "scale": 0.5560661992005274,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 188.15426636902976
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                },
+                {
+                    "id": "cta-whatsapp",
+                    "name": "Balão WhatsApp",
+                    "styleId": "cta-whatsapp",
+                    "fontFamily": "Inter",
+                    "durationSec": 2,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "fixed",
+                        "paletteSlot": "primary",
+                        "primary": "#54a812",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 48.66402847944558,
+                            "posY": 60.34424474618289,
+                            "scale": 0.5760709613455434,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 154.98317094618716
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 62,
+                            "scale": 0.648,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 50
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6839999999999999,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 50
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 62,
+                            "scale": 0.6624,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 50
+                        }
+                    }
+                }
+            ]
         },
         {
-            id: 'price',
-            name: 'Preço',
-            enabled: true,
-            maxWords: 3,
-            maxOccurrences: 3,
-            instructions: 'Valor, desconto, parcela, condição de pagamento ou economia somente quando forem ditos.',
-            examples: ['R$ 199', '12x sem juros', '50% OFF'],
-            sample: 'R$ 199',
-            color: brandColor('secondary'),
-            titleTypes: [
-                titleType('premium-price-tag', 'Price Tag Pro', 'League Spartan', layouts(40, 34, 0.95, 76), 'pop', fixedColor('#ffb800', '#111318')),
-                titleType('premium-sale-spotlight', 'Sale Spotlight', 'Archivo Black', layouts(38, 32, 0.95, 76), 'pop', fixedColor('#ff2d55', '#ffffff')),
+            "id": "price",
+            "name": "Preço",
+            "enabled": true,
+            "maxWords": 3,
+            "maxOccurrences": 3,
+            "instructions": "Preço, condição, bônus, prazo ou urgência somente quando forem ditos explicitamente.",
+            "examples": [
+                "R$ 199",
+                "12x sem juros",
+                "50% OFF"
             ],
+            "sample": "R$ 199",
+            "color": {
+                "mode": "brand",
+                "paletteSlot": "secondary",
+                "primary": "#00e676",
+                "secondary": "#07110d"
+            },
+            "titleTypes": [
+                {
+                    "id": "premium-price-tag",
+                    "name": "Price Tag Pro",
+                    "styleId": "premium-price-tag",
+                    "fontFamily": "League Spartan",
+                    "durationSec": 2.5,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#ffb800",
+                        "secondary": "#111318"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 86.16871384650499,
+                            "posY": 52.98928653492647,
+                            "scale": 0.8802814746958338,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 78.51838423309633
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                },
+                {
+                    "id": "premium-coupon-ticket",
+                    "name": "Coupon Ticket",
+                    "styleId": "premium-coupon-ticket",
+                    "fontFamily": "Space Grotesk",
+                    "durationSec": 2.5,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#7cff6b",
+                        "secondary": "#101510"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 48.45154934217438,
+                            "posY": 53.90726238097921,
+                            "scale": 0.8578738447442549,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 78
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                },
+                {
+                    "id": "premium-benefit-badge",
+                    "name": "Benefit Badge",
+                    "styleId": "premium-benefit-badge",
+                    "fontFamily": "DM Sans",
+                    "durationSec": 2.5,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#00d084",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 48.73033384094682,
+                            "posY": 57.684939996619526,
+                            "scale": 0.7225521699762051,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 90.00287011726232
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                }
+            ]
         },
         {
-            id: 'benefit',
-            name: 'Benefício / bônus',
-            enabled: true,
-            maxWords: 4,
-            maxOccurrences: 3,
-            instructions: 'Benefício concreto, bônus, transformação, diferenciador ou prova realmente pronunciada.',
-            examples: ['Exame por nossa conta', 'Bônus incluso', 'Entrega grátis'],
-            sample: 'EXAME POR NOSSA CONTA',
-            color: brandColor('rotate'),
-            titleTypes: [
-                titleType('premium-benefit-badge', 'Benefit Badge', 'DM Sans', layouts(32, 28, 0.92, 76), 'fade', fixedColor('#00d084', '#ffffff')),
-                titleType('premium-product-launch', 'Product Launch', 'Space Grotesk', layouts(34, 30, 0.92, 76), 'slide', fixedColor('#8b5cff', '#ffffff')),
+            "id": "benefit",
+            "name": "Benefício / bônus",
+            "enabled": true,
+            "maxWords": 4,
+            "maxOccurrences": 3,
+            "instructions": "Benefício concreto, transformação, diferenciador ou prova realmente pronunciada.",
+            "examples": [
+                "Exame por nossa conta",
+                "Bônus incluso",
+                "Entrega grátis"
             ],
+            "sample": "EXAME POR NOSSA CONTA",
+            "color": {
+                "mode": "brand",
+                "paletteSlot": "rotate",
+                "primary": "#00e676",
+                "secondary": "#07110d"
+            },
+            "titleTypes": [
+                {
+                    "id": "premium-urgency-pulse",
+                    "name": "Urgency Pulse",
+                    "styleId": "premium-urgency-pulse",
+                    "fontFamily": "Anton",
+                    "durationSec": 2.5,
+                    "animationId": "fade",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#ff3b30",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 35.98660737081291,
+                            "posY": 10.016381990567673,
+                            "scale": 0.4743447340979309,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 141.39948458953492
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                },
+                {
+                    "id": "premium-coupon-ticket",
+                    "name": "Coupon Ticket",
+                    "styleId": "premium-coupon-ticket",
+                    "fontFamily": "Space Grotesk",
+                    "durationSec": 2.5,
+                    "animationId": "slide",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#7cff6b",
+                        "secondary": "#101510"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 50,
+                            "posY": 55.18029184742802,
+                            "scale": 0.62,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 100
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                }
+            ]
         },
         {
-            id: 'product',
-            name: 'Produto / oferta central',
-            enabled: true,
-            maxWords: 5,
-            maxOccurrences: 3,
-            instructions: 'Produto, serviço ou oferta central explicitamente apresentados, sem confundir com preço ou urgência.',
-            examples: ['Óculos completo', 'Armação mais lentes', 'Consultoria personalizada'],
-            sample: 'ÓCULOS COMPLETO',
-            color: brandColor('primary'),
-            titleTypes: [
-                titleType('premium-product-launch', 'Product Launch', 'Space Grotesk', layouts(34, 30, 0.92, 76), 'slide', fixedColor('#8b5cff', '#ffffff')),
-                titleType('premium-creator-caption', 'Creator Caption', 'DM Sans', layouts(36, 32, 0.9, 74), 'fade', fixedColor('#00c2ff', '#ffffff')),
+            "id": "product",
+            "name": "Produto / oferta central",
+            "enabled": true,
+            "maxWords": 5,
+            "maxOccurrences": 3,
+            "instructions": "Produto, serviço ou oferta central explicitamente apresentados, sem confundir com preço ou urgência.",
+            "examples": [
+                "Óculos completo",
+                "Armação mais lentes",
+                "Consultoria personalizada"
             ],
+            "sample": "ÓCULOS COMPLETO",
+            "color": {
+                "mode": "brand",
+                "paletteSlot": "primary",
+                "primary": "#00e676",
+                "secondary": "#07110d"
+            },
+            "titleTypes": [
+                {
+                    "id": "premium-creator-caption",
+                    "name": "Creator Caption",
+                    "styleId": "premium-creator-caption",
+                    "fontFamily": "DM Sans",
+                    "durationSec": 2.5,
+                    "animationId": "fade",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "primary",
+                        "primary": "#00c2ff",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 50.93608356104471,
+                            "posY": 55.07427978515625,
+                            "scale": 0.6872157725532092,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 120.99436820201296
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 32,
+                            "scale": 0.81,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 36,
+                            "scale": 0.855,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 32,
+                            "scale": 0.8280000000000001,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                },
+                {
+                    "id": "premium-product-launch",
+                    "name": "Product Launch",
+                    "styleId": "premium-product-launch",
+                    "fontFamily": "Space Grotesk",
+                    "durationSec": 2.5,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#32f5c5",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 50.816993464052274,
+                            "posY": 50.447377373190484,
+                            "scale": 0.62,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 92.26250449578946
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                }
+            ]
         },
         {
-            id: 'differentiator',
-            name: 'Diferencial / prova',
-            enabled: true,
-            maxWords: 5,
-            maxOccurrences: 3,
-            instructions: 'Qualidade, mecanismo, personalização, garantia ou prova concreta realmente pronunciada.',
-            examples: ['Do seu jeito', 'Atendimento personalizado', 'Qualidade comprovada'],
-            sample: 'DO SEU JEITO',
-            color: brandColor('rotate'),
-            titleTypes: [
-                titleType('premium-benefit-badge', 'Benefit Badge', 'DM Sans', layouts(32, 28, 0.92, 76), 'fade', fixedColor('#00d084', '#ffffff')),
-                titleType('premium-outline-echo', 'Outline Echo', 'Archivo Black', layouts(36, 32, 0.9, 76), 'fade', fixedColor('#8b5cff', '#ffffff')),
+            "id": "differentiator",
+            "name": "Diferencial / prova",
+            "enabled": true,
+            "maxWords": 5,
+            "maxOccurrences": 3,
+            "instructions": "Qualidade, mecanismo, personalização, garantia ou prova concreta realmente pronunciada.",
+            "examples": [
+                "Do seu jeito",
+                "Atendimento personalizado",
+                "Qualidade comprovada"
             ],
+            "sample": "DO SEU JEITO",
+            "color": {
+                "mode": "brand",
+                "paletteSlot": "rotate",
+                "primary": "#00e676",
+                "secondary": "#07110d"
+            },
+            "titleTypes": [
+                {
+                    "id": "premium-benefit-badge",
+                    "name": "Benefit Badge",
+                    "styleId": "premium-benefit-badge",
+                    "fontFamily": "DM Sans",
+                    "durationSec": 2.5,
+                    "animationId": "fade",
+                    "color": {
+                        "mode": "fixed",
+                        "paletteSlot": "primary",
+                        "primary": "#00d084",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 49.545878694015244,
+                            "posY": 61.06196324965533,
+                            "scale": 0.430581593096737,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 147.41935566102174
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 28,
+                            "scale": 0.8280000000000001,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 32,
+                            "scale": 0.874,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 28,
+                            "scale": 0.8464,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                }
+            ]
         },
         {
-            id: 'audience',
-            name: 'Público / necessidade',
-            enabled: true,
-            maxWords: 5,
-            maxOccurrences: 3,
-            instructions: 'Público, necessidade ou problema explícito ao qual a oferta responde. Não deduza perfis não mencionados.',
-            examples: ['Para quem precisa', 'Seu segundo óculos', 'Quem busca economia'],
-            sample: 'PARA QUEM PRECISA',
-            color: brandColor('secondary'),
-            titleTypes: [
-                titleType('premium-split-block', 'Split Block', 'Anton', layouts(36, 32, 0.9, 76), 'slide', fixedColor('#00d9b5', '#ffffff')),
-                titleType('premium-kinetic-punch', 'Kinetic Punch', 'Archivo Black', layouts(34, 30, 0.92, 78), 'pop', fixedColor('#c8ff26', '#ffffff')),
+            "id": "audience",
+            "name": "Público / necessidade",
+            "enabled": true,
+            "maxWords": 5,
+            "maxOccurrences": 3,
+            "instructions": "Público, necessidade ou problema explícito ao qual a oferta responde. Não deduza perfis não mencionados.",
+            "examples": [
+                "Para quem precisa",
+                "Seu segundo óculos",
+                "Quem busca economia"
             ],
-        },
-    ],
+            "sample": "PARA QUEM PRECISA",
+            "color": {
+                "mode": "brand",
+                "paletteSlot": "secondary",
+                "primary": "#00e676",
+                "secondary": "#07110d"
+            },
+            "titleTypes": [
+                {
+                    "id": "premium-kinetic-punch",
+                    "name": "Kinetic Punch",
+                    "styleId": "premium-kinetic-punch",
+                    "fontFamily": "Archivo Black",
+                    "durationSec": 2.5,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "primary",
+                        "primary": "#c8ff26",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 48.85963988459967,
+                            "posY": 52.2708475449506,
+                            "scale": 0.6509019058088261,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 120.30161620696266
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 30,
+                            "scale": 0.8280000000000001,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 34,
+                            "scale": 0.874,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 30,
+                            "scale": 0.8464,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                },
+                {
+                    "id": "premium-split-block",
+                    "name": "Split Block",
+                    "styleId": "premium-split-block",
+                    "fontFamily": "Anton",
+                    "durationSec": 2.5,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "brand",
+                        "paletteSlot": "rotate",
+                        "primary": "#d7a7ff",
+                        "secondary": "#fff9f0"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.62,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 78
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                },
+                {
+                    "id": "premium-magazine-stack",
+                    "name": "Magazine Stack",
+                    "styleId": "premium-magazine-stack",
+                    "fontFamily": "Bebas Neue",
+                    "durationSec": 2.5,
+                    "animationId": "pop",
+                    "color": {
+                        "mode": "fixed",
+                        "paletteSlot": "rotate",
+                        "primary": "#ff5a6f",
+                        "secondary": "#ffffff"
+                    },
+                    "layouts": {
+                        "9:16": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.62,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 78
+                        },
+                        "16:9": {
+                            "posX": 50,
+                            "posY": 50,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 64
+                        },
+                        "4:5": {
+                            "posX": 50,
+                            "posY": 55,
+                            "scale": 0.6,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 74
+                        },
+                        "1:1": {
+                            "posX": 50,
+                            "posY": 52,
+                            "scale": 0.58,
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "textBoxWidthPct": 70
+                        }
+                    }
+                }
+            ]
+        }
+    ]
 };
 
 const normalizeColorRule = (input: unknown, fallback: TitleColorRule): TitleColorRule => {

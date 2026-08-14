@@ -185,9 +185,11 @@ test('regenerar legendas remove títulos e o resumo pertencente à geração ant
 
 test('Step 3 invalida explicitamente o resumo ao substituir as legendas', () => {
     const step3 = readClient('pages/Step3.tsx');
-    const saveStart = step3.indexOf('updateAdData({', step3.indexOf('// Save segments to state'));
-    const saveEnd = step3.indexOf('});', saveStart);
+    // O fluxo atual monta o patch nomeado captionsOnlyPatch e o aplica adiante.
+    const saveStart = step3.indexOf('const captionsOnlyPatch = {');
+    const saveEnd = step3.indexOf('};', saveStart);
     const saveBlock = step3.slice(saveStart, saveEnd);
+    assert.match(step3, /updateAdData\(captionsOnlyPatch\)/);
 
     assert.ok(saveStart > 0 && saveEnd > saveStart);
     assert.match(saveBlock, /dynamicTitles:\s*\[\]/);

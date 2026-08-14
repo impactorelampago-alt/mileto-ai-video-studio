@@ -12,11 +12,12 @@ import {
 } from '../src/opsConnectionRecovery.js';
 import { parseOpsOAuthError } from '../src/opsOAuthError.js';
 
+// Normaliza CRLF: literais multilinha com \n puro precisam casar em checkouts Windows.
 const integrationUi = readFileSync(
     new URL('../../client/src/components/OpsIntegrationSection.tsx', import.meta.url),
     'utf8'
-);
-const integrationSource = readFileSync(new URL('../src/opsIntegration.js', import.meta.url), 'utf8');
+).replace(/\r\n/g, '\n');
+const integrationSource = readFileSync(new URL('../src/opsIntegration.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 test('quedas temporárias preservam a conexão persistente', () => {
     for (const error of [

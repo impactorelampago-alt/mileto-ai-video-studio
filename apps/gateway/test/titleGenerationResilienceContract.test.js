@@ -21,7 +21,8 @@ test('endpoint registra diagnóstico seguro, repete transitórios e usa fallback
 
 test('cliente faz uma requisicao de IA e solicita explicitamente o modo local como fallback', () => {
     assert.doesNotMatch(workflow, /CLIENT_TITLE_GENERATION_ATTEMPTS/);
-    assert.match(workflow, /primaryData\s*=\s*await request\('ai'\)/);
+    // O modo exact-plan (títulos confirmados no chat) desvia da IA; 'ai' segue primário.
+    assert.match(workflow, /primaryData\s*=\s*await request\(exactPlanMaterialization \? 'exact-plan' : 'ai'\)/);
     assert.match(workflow, /fallbackData\s*=\s*await request\('local'\)/);
     assert.match(workflow, /dynamicTitles:\s*\[\]/);
 });
