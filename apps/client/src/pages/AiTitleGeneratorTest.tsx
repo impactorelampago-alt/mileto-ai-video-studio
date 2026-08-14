@@ -486,7 +486,10 @@ const configToPrototype = (config: AiTitleGeneratorConfig, format: TitleVideoFor
                 scale: layout.scale,
                 scaleX: layout.scaleX,
                 scaleY: layout.scaleY,
-                textBoxWidthPct: layout.textBoxWidthPct,
+                // Sem largura definida o estilo cairia no regime "sem caixa"
+                // (piso de largura própria, ex.: 330px), que a geração real nunca
+                // usa — o servidor sempre materializa com uma caixa numérica.
+                textBoxWidthPct: layout.textBoxWidthPct ?? 78,
             }];
         })),
     })).map((trigger) => migrateDefaultTriggerCopy(trigger as TriggerPrototype)) as TriggerPrototype[];
@@ -819,7 +822,10 @@ export const AiTitleGeneratorTest = () => {
               scale: activeSettings.scale,
               scaleX: activeSettings.scaleX,
               scaleY: activeSettings.scaleY,
-              textBoxWidthPct: activeSettings.textBoxWidthPct,
+              // O preview precisa renderizar no MESMO regime do título gerado:
+              // sempre com caixa. Sem isto, um rascunho antigo sem o campo fazia
+              // o preview parecer ~40% maior do que o vídeo real.
+              textBoxWidthPct: activeSettings.textBoxWidthPct ?? 78,
               maxWords: selectedTrigger.maxWords,
               styleId: activeModel.id,
               primaryColor: previewColors[0],
