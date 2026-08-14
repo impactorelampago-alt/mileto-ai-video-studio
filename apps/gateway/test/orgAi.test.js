@@ -7,6 +7,9 @@ process.env.ADMIN_PASSWORD ||= 'test-admin-password';
 
 const {
     DEFAULT_TITLE_GENERATOR_CONFIG,
+    MAX_TITLES_PER_TRIGGER,
+    MIN_USABLE_TITLE_TRIGGERS,
+    assertMinimumUsableTitleTriggers,
     normalizeOrgAgentPromptValue,
     normalizeTitleGeneratorConfig,
 } = await import('../src/orgAi.js');
@@ -132,7 +135,7 @@ test('migra gatilhos v1, remove gancho e valida modelo e animacao reais', () => 
     v1.triggers[1].titleTypes[0].styleId = 'modelo-inexistente';
     v1.triggers[1].titleTypes[0].animationId = 'rodopia';
     const result = normalizeTitleGeneratorConfig(v1);
-    assert.equal(result.version, 4);
+    assert.equal(result.version, 5);
     assert.ok(!result.triggers.some((trigger) => trigger.id === 'hook'));
     assert.ok(result.triggers.some((trigger) => trigger.id === 'region'));
     assert.ok(result.triggers.some((trigger) => trigger.id === 'price'));
@@ -146,10 +149,43 @@ test('migra gatilhos v1, remove gancho e valida modelo e animacao reais', () => 
     assert.equal(regionType.animationId, 'fade');
 });
 
-test('recusa configuracao sem gatilho ativo', () => {
+test('recusa configuracao com menos de quatro gatilhos ativos', () => {
     const input = structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
     input.triggers.forEach((trigger) => { trigger.enabled = false; });
-    assert.throws(() => normalizeTitleGeneratorConfig(input), /pelo menos um gatilho/i);
+    assert.throws(() => normalizeTitleGeneratorConfig(input), /pelo menos 4 gatilhos ativos/i);
+});
+
+test('v5 limita cada gatilho a tres titulos e exige quatro gatilhos utilizaveis', () => {
+    assert.equal(DEFAULT_TITLE_GENERATOR_CONFIG.version, 5);
+    assert.ok(DEFAULT_TITLE_GENERATOR_CONFIG.triggers.every((trigger) =>
+        trigger.maxOccurrences === MAX_TITLES_PER_TRIGGER
+    ));
+
+    const input = structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
+    input.triggers[0].maxOccurrences = 99;
+    assert.equal(
+        normalizeTitleGeneratorConfig(input).triggers[0].maxOccurrences,
+        MAX_TITLES_PER_TRIGGER,
+    );
+
+    const invalid = structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
+    invalid.triggers = invalid.triggers.slice(0, MIN_USABLE_TITLE_TRIGGERS - 1);
+    assert.throws(() => normalizeTitleGeneratorConfig(invalid), /pelo menos 4 gatilhos ativos/i);
+    assert.throws(() => assertMinimumUsableTitleTriggers(invalid), /pelo menos 4 gatilhos ativos/i);
+});
+
+test('leitura de configuracao v4 incompleta se recupera sem liberar gravacao invalida', () => {
+    const legacy = structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
+    legacy.version = 4;
+    legacy.triggers = legacy.triggers.slice(0, 2);
+    legacy.triggers[0].maxOccurrences = 1;
+    legacy.triggers[1].enabled = false;
+
+    const healed = normalizeTitleGeneratorConfig(legacy);
+    assert.equal(healed.version, 5);
+    assert.ok(healed.triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length).length >= 4);
+    assert.ok(healed.triggers.every((trigger) => trigger.maxOccurrences <= MAX_TITLES_PER_TRIGGER));
+    assert.throws(() => assertMinimumUsableTitleTriggers(legacy), /pelo menos 4 gatilhos ativos/i);
 });
 
 test('normaliza a IA exclusiva do gerador de titulos sem depender dos agentes do chat', () => {

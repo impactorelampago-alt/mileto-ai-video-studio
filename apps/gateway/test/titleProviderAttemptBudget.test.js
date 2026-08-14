@@ -57,7 +57,7 @@ test('migra somente o preset legado exato para o default rápido v4', () => {
     };
 
     const migrated = normalizeTitleGeneratorConfig(legacy);
-    assert.equal(migrated.version, 4);
+    assert.equal(migrated.version, 5);
     assert.deepEqual(migrated.ai, {
         provider: 'openai',
         model: 'gpt-5-mini',

@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 import FormData from 'form-data';
 import { Request } from 'express';
+import type { NarratorVoiceContext } from './narratorVoiceContext';
 
 /**
  * Cliente do GATEWAY na nuvem (api.miletoaivideo.com.br).
@@ -151,6 +152,8 @@ export interface GatewayChatPayload {
     json?: boolean;
     maxOutputTokens?: number;
     agentId?: 'director' | 'prompt_sales' | 'image_director' | 'video_director';
+    /** Contexto editorial efêmero; nunca é salvo junto das mensagens. */
+    voiceContext?: NarratorVoiceContext;
 }
 
 export const gatewayChat = async (

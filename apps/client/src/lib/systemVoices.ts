@@ -10,6 +10,8 @@ import {
 
 export interface SystemVoice {
     id: string;
+    /** Chave editorial segura para contexto de IA; nunca é o reference ID do provedor. */
+    catalogKey: string;
     name: string;
     desc: string;
     provider: TtsProvider;
@@ -36,6 +38,7 @@ const createPreset = (
 export const SYSTEM_VOICES: SystemVoice[] = [
     {
         id: 'd7cdad0d54464bcfade4be58791c6f3d',
+        catalogKey: 'mv-system-01',
         name: 'Padrão Masculina',
         desc: 'Voz marcante, vendas',
         provider: 'fishAudio',
@@ -43,6 +46,7 @@ export const SYSTEM_VOICES: SystemVoice[] = [
     },
     {
         id: '64ea557cd80c4fb99a96b209763f4ec9',
+        catalogKey: 'mv-system-02',
         name: 'Padrão Feminina',
         desc: 'Voz clara, explicativa',
         provider: 'fishAudio',
@@ -50,6 +54,7 @@ export const SYSTEM_VOICES: SystemVoice[] = [
     },
     {
         id: 'fffaeef680cf41cdaff2c65d8cdd8650',
+        catalogKey: 'mv-system-03',
         name: 'Rodeio',
         desc: 'Locução animada, eventos',
         provider: 'fishAudio',
@@ -57,6 +62,7 @@ export const SYSTEM_VOICES: SystemVoice[] = [
     },
     {
         id: '5c7c62ef7fc545908c8de8feab76a272',
+        catalogKey: 'mv-system-04',
         name: 'Locutor Rádio',
         desc: 'Locução de rádio, impacto',
         provider: 'fishAudio',

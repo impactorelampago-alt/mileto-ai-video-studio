@@ -63,6 +63,9 @@ export type TitleGeneratorConfig = {
     triggers: TitleTriggerRule[];
 };
 
+export const MIN_USABLE_TITLE_TRIGGERS = 4;
+export const MAX_TITLES_PER_TRIGGER = 3;
+
 const formats: VideoFormat[] = ['9:16', '16:9', '4:5', '1:1'];
 const animations = new Set<TitleTypeRule['animationId']>(['pop', 'fade', 'slide', 'blink', 'none']);
 const colorModes = new Set<TitleColorRule['mode']>(['brand', 'fixed']);
@@ -128,7 +131,7 @@ const titleType = (
  * efetiva da organização. A configuração salva no gateway sempre tem prioridade.
  */
 export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
-    version: 4,
+    version: 5,
     pipeline: 'reviewed-v1',
     ai: {
         provider: 'openai',
@@ -149,7 +152,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             name: 'Escassez e urgência',
             enabled: true,
             maxWords: 3,
-            maxOccurrences: 2,
+            maxOccurrences: 3,
             instructions: 'Prazo, quantidade, vagas, lote ou estoque limitado somente quando forem pronunciados explicitamente.',
             examples: ['Somente até sábado', 'Últimas 8 unidades', '3 vagas'],
             sample: 'SOMENTE ATÉ SÁBADO',
@@ -164,7 +167,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             name: 'Região',
             enabled: true,
             maxWords: 3,
-            maxOccurrences: 1,
+            maxOccurrences: 3,
             instructions: 'Cidade, estado, país, bairro, região ou área atendida. Nunca invente nem repita a localização.',
             examples: ['Casimiro de Abreu', 'Rio de Janeiro', 'Todo o Brasil'],
             sample: 'CASIMIRO DE ABREU',
@@ -179,7 +182,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             name: 'CTA',
             enabled: true,
             maxWords: 3,
-            maxOccurrences: 1,
+            maxOccurrences: 3,
             instructions: 'Clique, chame, agende, compre, aproveite, garanta, acesse, reserve ou outra ação explicitamente pronunciada.',
             examples: ['Clique no botão', 'Chame no WhatsApp', 'Saiba mais'],
             sample: 'CLIQUE NO BOTÃO',
@@ -194,7 +197,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             name: 'Preço',
             enabled: true,
             maxWords: 3,
-            maxOccurrences: 2,
+            maxOccurrences: 3,
             instructions: 'Valor, desconto, parcela, condição de pagamento ou economia somente quando forem ditos.',
             examples: ['R$ 199', '12x sem juros', '50% OFF'],
             sample: 'R$ 199',
@@ -209,7 +212,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             name: 'Benefício / bônus',
             enabled: true,
             maxWords: 4,
-            maxOccurrences: 2,
+            maxOccurrences: 3,
             instructions: 'Benefício concreto, bônus, transformação, diferenciador ou prova realmente pronunciada.',
             examples: ['Exame por nossa conta', 'Bônus incluso', 'Entrega grátis'],
             sample: 'EXAME POR NOSSA CONTA',
@@ -224,7 +227,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             name: 'Produto / oferta central',
             enabled: true,
             maxWords: 5,
-            maxOccurrences: 1,
+            maxOccurrences: 3,
             instructions: 'Produto, serviço ou oferta central explicitamente apresentados, sem confundir com preço ou urgência.',
             examples: ['Óculos completo', 'Armação mais lentes', 'Consultoria personalizada'],
             sample: 'ÓCULOS COMPLETO',
@@ -239,7 +242,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             name: 'Diferencial / prova',
             enabled: true,
             maxWords: 5,
-            maxOccurrences: 1,
+            maxOccurrences: 3,
             instructions: 'Qualidade, mecanismo, personalização, garantia ou prova concreta realmente pronunciada.',
             examples: ['Do seu jeito', 'Atendimento personalizado', 'Qualidade comprovada'],
             sample: 'DO SEU JEITO',
@@ -254,7 +257,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
             name: 'Público / necessidade',
             enabled: true,
             maxWords: 5,
-            maxOccurrences: 1,
+            maxOccurrences: 3,
             instructions: 'Público, necessidade ou problema explícito ao qual a oferta responde. Não deduza perfis não mencionados.',
             examples: ['Para quem precisa', 'Seu segundo óculos', 'Quem busca economia'],
             sample: 'PARA QUEM PRECISA',
@@ -295,15 +298,49 @@ const normalizeLayouts = (input: unknown, fallback: Record<VideoFormat, TitleLay
     })) as Record<VideoFormat, TitleLayout>;
 };
 
+const sourceTriggerIsUsable = (trigger: Partial<TitleTriggerRule> | undefined) => Boolean(
+    trigger
+    && trigger.enabled !== false
+    && Array.isArray(trigger.titleTypes)
+    && trigger.titleTypes.length
+);
+
 export const normalizeTitleGeneratorConfig = (input: unknown): TitleGeneratorConfig => {
     const source = input && typeof input === 'object' ? input as Partial<TitleGeneratorConfig> : {};
-    const sourceTriggers = Array.isArray(source.triggers) ? source.triggers.slice(0, 30) : [];
+    const sourceVersion = Number(source.version || 2);
+    const sourceTriggers = Array.isArray(source.triggers)
+        ? structuredClone(source.triggers.slice(0, 30))
+        : [];
     if (!sourceTriggers.length) return structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
 
-    if (Number(source.version || 2) < 3) {
+    if (sourceVersion < 3) {
         const presentIds = new Set(sourceTriggers.map((trigger) => String(trigger?.id || '')));
         for (const fallback of DEFAULT_TITLE_GENERATOR_CONFIG.triggers) {
             if (!presentIds.has(fallback.id)) sourceTriggers.push(structuredClone(fallback));
+        }
+    }
+
+    if (sourceVersion < 5) {
+        sourceTriggers.forEach((trigger) => {
+            trigger.maxOccurrences = MAX_TITLES_PER_TRIGGER;
+            if (trigger.enabled !== false && (!Array.isArray(trigger.titleTypes) || !trigger.titleTypes.length)) {
+                const fallback = DEFAULT_TITLE_GENERATOR_CONFIG.triggers.find((candidate) => candidate.id === trigger.id);
+                if (fallback) trigger.titleTypes = structuredClone(fallback.titleTypes);
+                else trigger.enabled = false;
+            }
+        });
+        for (const fallback of DEFAULT_TITLE_GENERATOR_CONFIG.triggers) {
+            if (sourceTriggers.filter(sourceTriggerIsUsable).length >= MIN_USABLE_TITLE_TRIGGERS) break;
+            const existing = sourceTriggers.find((trigger) => trigger.id === fallback.id);
+            if (existing) {
+                existing.enabled = true;
+                existing.maxOccurrences = MAX_TITLES_PER_TRIGGER;
+                if (!Array.isArray(existing.titleTypes) || !existing.titleTypes.length) {
+                    existing.titleTypes = structuredClone(fallback.titleTypes);
+                }
+            } else {
+                sourceTriggers.push(structuredClone(fallback));
+            }
         }
     }
 
@@ -337,7 +374,12 @@ export const normalizeTitleGeneratorConfig = (input: unknown): TitleGeneratorCon
             name: text(trigger.name, fallback.name, 80),
             enabled: trigger.enabled === undefined ? fallback.enabled : Boolean(trigger.enabled),
             maxWords: Math.round(numberInRange(trigger.maxWords, legacyMaxWords || fallback.maxWords || 3, 1, 12)),
-            maxOccurrences: Math.round(numberInRange(trigger.maxOccurrences, fallback.maxOccurrences, 1, 6)),
+            maxOccurrences: Math.round(numberInRange(
+                trigger.maxOccurrences,
+                fallback.maxOccurrences,
+                1,
+                MAX_TITLES_PER_TRIGGER,
+            )),
             instructions: text(trigger.instructions, fallback.instructions, 3000),
             examples: (Array.isArray(trigger.examples) ? trigger.examples : fallback.examples)
                 .map((example) => text(example, '', 120)).filter(Boolean).slice(0, 8),
@@ -348,8 +390,9 @@ export const normalizeTitleGeneratorConfig = (input: unknown): TitleGeneratorCon
     });
 
     const usable = triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length);
-    if (!usable.length) return structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
-    const sourceVersion = Number(source.version || 3);
+    if (usable.length < MIN_USABLE_TITLE_TRIGGERS) {
+        throw new Error(`Mantenha pelo menos ${MIN_USABLE_TITLE_TRIGGERS} gatilhos ativos, cada um com ao menos um modelo de título.`);
+    }
     const usesLegacyAiPreset = sourceVersion < 4
         && String(source.ai?.provider || 'openai') === 'openai'
         && String(source.ai?.model || 'gpt-5-mini') === 'gpt-5-mini'
@@ -358,7 +401,7 @@ export const normalizeTitleGeneratorConfig = (input: unknown): TitleGeneratorCon
     const ai = usesLegacyAiPreset ? DEFAULT_TITLE_GENERATOR_CONFIG.ai : source.ai;
     const reviewer = source.reviewer || DEFAULT_TITLE_GENERATOR_CONFIG.reviewer;
     return {
-        version: Math.max(4, Math.round(numberInRange(source.version, 4, 2, 100))),
+        version: Math.max(5, Math.round(numberInRange(source.version, 5, 2, 100))),
         pipeline: source.pipeline === 'legacy-v4' ? 'legacy-v4' : 'reviewed-v1',
         ai: {
             provider: ['openai', 'gemini'].includes(String(ai?.provider))

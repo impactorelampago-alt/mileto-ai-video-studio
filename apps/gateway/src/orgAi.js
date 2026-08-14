@@ -10,6 +10,8 @@ export const PALETTE_SLOTS = ['rotate', 'primary', 'secondary', 'tertiary'];
 const AGENT_IDS = new Set(AGENT_DEFINITIONS.map((agent) => agent.id));
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 const TITLE_GENERATOR_SETTING_KEY = 'title_generator_config';
+export const MIN_USABLE_TITLE_TRIGGERS = 4;
+export const MAX_TITLES_PER_TRIGGER = 3;
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const text = (value, fallback = '', max = 12000) => {
@@ -46,31 +48,31 @@ const LEGACY_TITLE_GENERATOR_CONFIG = {
     maxTitles: 8,
     triggers: [
         {
-            id: 'hook', name: 'Gancho', enabled: true, maxOccurrences: 2,
+            id: 'hook', name: 'Gancho', enabled: true, maxOccurrences: 3,
             instructions: 'Abertura, quebra de padrão, pergunta forte ou promessa sustentada pela narração.',
             color: brandColor('primary'),
             titleTypes: [{ id: 'impacto', name: 'Impacto', styleId: 'premium-kinetic-punch', fontFamily: 'Anton', durationSec: 2, color: null, layouts: layouts(26, 24, 1, 82) }],
         },
         {
-            id: 'benefit', name: 'Benefício', enabled: true, maxOccurrences: 2,
+            id: 'benefit', name: 'Benefício', enabled: true, maxOccurrences: 3,
             instructions: 'Benefício concreto, transformação, diferenciador ou prova realmente pronunciada.',
             color: brandColor('rotate'),
             titleTypes: [{ id: 'beneficio', name: 'Selo de benefício', styleId: 'premium-benefit-badge', fontFamily: 'Poppins', durationSec: 2, color: null, layouts: layouts(32, 28, 0.92, 76) }],
         },
         {
-            id: 'offer', name: 'Oferta', enabled: true, maxOccurrences: 2,
+            id: 'offer', name: 'Oferta', enabled: true, maxOccurrences: 3,
             instructions: 'Preço, condição, bônus, prazo ou urgência somente quando forem ditos explicitamente.',
             color: brandColor('secondary'),
             titleTypes: [{ id: 'oferta', name: 'Oferta em destaque', styleId: 'premium-sale-spotlight', fontFamily: 'Poppins', durationSec: 2, color: null, layouts: layouts(38, 32, 0.95, 76) }],
         },
         {
-            id: 'local', name: 'Localização', enabled: true, maxOccurrences: 1,
+            id: 'local', name: 'Localização', enabled: true, maxOccurrences: 3,
             instructions: 'Cidade, bairro, região ou endereço. Nunca invente e não repita a localização.',
             color: brandColor('tertiary'),
             titleTypes: [{ id: 'pin', name: 'Pin de local', styleId: 'loc-pin-viagem', fontFamily: 'Poppins', durationSec: 2, color: null, layouts: layouts(62, 68, 0.78, 62) }],
         },
         {
-            id: 'cta', name: 'Chamada para ação', enabled: true, maxOccurrences: 1,
+            id: 'cta', name: 'Chamada para ação', enabled: true, maxOccurrences: 3,
             instructions: 'Clique, chame, agende, compre, aproveite, garanta, acesse, reserve ou outra ação explicitamente pronunciada.',
             color: { mode: 'fixed', paletteSlot: 'primary', primary: '#54a812', secondary: '#ffffff' },
             titleTypes: [{ id: 'whatsapp', name: 'WhatsApp', styleId: 'cta-whatsapp', fontFamily: 'Poppins', durationSec: 2, color: null, layouts: layouts(55, 62, 0.72, 50) }],
@@ -83,7 +85,7 @@ const titleType = (styleId, name, fontFamily, layout, animationId = 'pop', custo
 });
 
 export const DEFAULT_TITLE_GENERATOR_CONFIG = {
-    version: 4,
+    version: 5,
     // Permite rollback remoto imediato sem trocar o desktop nem tocar no gerador v4.
     pipeline: 'reviewed-v1',
     ai: {
@@ -101,7 +103,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
     maxTitles: 8,
     triggers: [
         {
-            id: 'scarcity', name: 'Escassez e urgência', enabled: true, maxOccurrences: 2,
+            id: 'scarcity', name: 'Escassez e urgência', enabled: true, maxOccurrences: 3,
             maxWords: 3,
             instructions: 'Prazo, quantidade, vagas, lote ou estoque limitado somente quando forem pronunciados explicitamente.',
             examples: ['Somente até sábado', 'Últimas 8 unidades', '3 vagas'], sample: 'SOMENTE ATÉ SÁBADO', color: brandColor('primary'),
@@ -111,7 +113,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
             ],
         },
         {
-            id: 'region', name: 'Região', enabled: true, maxOccurrences: 1,
+            id: 'region', name: 'Região', enabled: true, maxOccurrences: 3,
             maxWords: 3,
             instructions: 'Cidade, estado, país, bairro, região ou área atendida. Nunca invente nem repita a localização.',
             examples: ['Casimiro de Abreu', 'Rio de Janeiro', 'Todo o Brasil'], sample: 'CASIMIRO DE ABREU', color: brandColor('tertiary'),
@@ -121,7 +123,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
             ],
         },
         {
-            id: 'cta', name: 'CTA', enabled: true, maxOccurrences: 1,
+            id: 'cta', name: 'CTA', enabled: true, maxOccurrences: 3,
             maxWords: 3,
             instructions: 'Clique, chame, agende, compre, aproveite, garanta, acesse, reserve ou outra ação explicitamente pronunciada.',
             examples: ['Clique no botão', 'Chame no WhatsApp', 'Saiba mais'], sample: 'CLIQUE NO BOTÃO', color: brandColor('primary'),
@@ -131,7 +133,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
             ],
         },
         {
-            id: 'price', name: 'Preço', enabled: true, maxOccurrences: 2,
+            id: 'price', name: 'Preço', enabled: true, maxOccurrences: 3,
             maxWords: 3,
             instructions: 'Valor, desconto, parcela, condição de pagamento ou economia somente quando forem ditos.',
             examples: ['R$ 199', '12x sem juros', '50% OFF'], sample: 'R$ 199', color: brandColor('secondary'),
@@ -141,7 +143,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
             ],
         },
         {
-            id: 'benefit', name: 'Benefício / bônus', enabled: true, maxOccurrences: 2,
+            id: 'benefit', name: 'Benefício / bônus', enabled: true, maxOccurrences: 3,
             maxWords: 4,
             instructions: 'Benefício concreto, bônus, transformação, diferenciador ou prova realmente pronunciada.',
             examples: ['Exame por nossa conta', 'Bônus incluso', 'Entrega grátis'], sample: 'EXAME POR NOSSA CONTA', color: brandColor('rotate'),
@@ -151,7 +153,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
             ],
         },
         {
-            id: 'product', name: 'Produto / oferta central', enabled: true, maxOccurrences: 1,
+            id: 'product', name: 'Produto / oferta central', enabled: true, maxOccurrences: 3,
             maxWords: 5,
             instructions: 'Produto, serviço ou oferta central explicitamente apresentados, sem confundir com preço ou urgência.',
             examples: ['Óculos completo', 'Armação mais lentes', 'Consultoria personalizada'], sample: 'ÓCULOS COMPLETO', color: brandColor('primary'),
@@ -161,7 +163,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
             ],
         },
         {
-            id: 'differentiator', name: 'Diferencial / prova', enabled: true, maxOccurrences: 1,
+            id: 'differentiator', name: 'Diferencial / prova', enabled: true, maxOccurrences: 3,
             maxWords: 5,
             instructions: 'Qualidade, mecanismo, personalização, garantia ou prova concreta realmente pronunciada.',
             examples: ['Do seu jeito', 'Atendimento personalizado', 'Qualidade comprovada'], sample: 'DO SEU JEITO', color: brandColor('rotate'),
@@ -171,7 +173,7 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG = {
             ],
         },
         {
-            id: 'audience', name: 'Público / necessidade', enabled: true, maxOccurrences: 1,
+            id: 'audience', name: 'Público / necessidade', enabled: true, maxOccurrences: 3,
             maxWords: 5,
             instructions: 'Público, necessidade ou problema explícito ao qual a oferta responde. Não deduza perfis não mencionados.',
             examples: ['Para quem precisa', 'Seu segundo óculos', 'Quem busca economia'], sample: 'PARA QUEM PRECISA', color: brandColor('secondary'),
@@ -217,6 +219,26 @@ const normalizeTriggerCopy = (value) => String(value || '')
     .replace(/\s+/g, ' ')
     .trim()
     .toLocaleUpperCase('pt-BR');
+
+const sourceTriggerIsUsable = (trigger) => Boolean(
+    trigger
+    && trigger.enabled !== false
+    && Array.isArray(trigger.titleTypes)
+    && trigger.titleTypes.length
+);
+
+export const countUsableTitleTriggers = (input) => {
+    const triggers = Array.isArray(input?.triggers) ? input.triggers : [];
+    return triggers.filter(sourceTriggerIsUsable).length;
+};
+
+export const assertMinimumUsableTitleTriggers = (input) => {
+    const count = countUsableTitleTriggers(input);
+    if (count < MIN_USABLE_TITLE_TRIGGERS) {
+        throw new Error(`Mantenha pelo menos ${MIN_USABLE_TITLE_TRIGGERS} gatilhos ativos, cada um com ao menos um modelo de título.`);
+    }
+    return input;
+};
 
 export const normalizeTitleColor = (input, fallback = brandColor()) => {
     const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
@@ -276,7 +298,12 @@ const normalizeTrigger = (input, fallback, index) => {
         name: text(source.name, fallback?.name || `Gatilho ${index + 1}`, 80),
         enabled: source.enabled === undefined ? Boolean(fallback.enabled) : Boolean(source.enabled),
         maxWords: Math.round(number(source.maxWords, legacyMaxWords || fallback.maxWords || 3, 1, 12)),
-        maxOccurrences: Math.round(number(source.maxOccurrences, fallback.maxOccurrences || 1, 1, 6)),
+        maxOccurrences: Math.round(number(
+            source.maxOccurrences,
+            fallback.maxOccurrences || MAX_TITLES_PER_TRIGGER,
+            1,
+            MAX_TITLES_PER_TRIGGER,
+        )),
         instructions: text(source.instructions, fallback.instructions, 3000),
         examples: (Array.isArray(source.examples) ? source.examples : fallback.examples || [])
             .map((example) => text(example, '', 80)).filter(Boolean).slice(0, 8),
@@ -347,9 +374,47 @@ const migrateV3Config = (input) => {
     };
 };
 
+/**
+ * A v5 consolida o limite editorial de tres titulos por gatilho. Configuracoes
+ * antigas incompletas sao recuperadas somente durante a leitura; gravacoes
+ * novas passam pela validacao explicita dos setters abaixo.
+ */
+const migrateV4Config = (input) => {
+    const source = migrateV3Config(input);
+    if (Number(source.version) >= 5) return source;
+
+    const triggers = (Array.isArray(source.triggers) ? source.triggers : [])
+        .map((trigger) => {
+            const next = clone(trigger);
+            next.maxOccurrences = MAX_TITLES_PER_TRIGGER;
+            if (next.enabled !== false && (!Array.isArray(next.titleTypes) || !next.titleTypes.length)) {
+                const fallback = DEFAULT_TITLE_GENERATOR_CONFIG.triggers.find((candidate) => candidate.id === next.id);
+                if (fallback) next.titleTypes = clone(fallback.titleTypes);
+                else next.enabled = false;
+            }
+            return next;
+        });
+
+    for (const fallback of DEFAULT_TITLE_GENERATOR_CONFIG.triggers) {
+        if (triggers.filter(sourceTriggerIsUsable).length >= MIN_USABLE_TITLE_TRIGGERS) break;
+        const existing = triggers.find((trigger) => trigger.id === fallback.id);
+        if (existing) {
+            existing.enabled = true;
+            existing.maxOccurrences = MAX_TITLES_PER_TRIGGER;
+            if (!Array.isArray(existing.titleTypes) || !existing.titleTypes.length) {
+                existing.titleTypes = clone(fallback.titleTypes);
+            }
+        } else {
+            triggers.push(clone(fallback));
+        }
+    }
+
+    return { ...source, version: 5, triggers };
+};
+
 export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERATOR_CONFIG) => {
     const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-    const source = migrateV3Config(raw);
+    const source = migrateV4Config(raw);
     const sourceTriggers = Array.isArray(source.triggers) && source.triggers.length ? source.triggers.slice(0, 30) : base.triggers;
     const triggers = sourceTriggers.map((item, index) => normalizeTrigger(
         item,
@@ -361,7 +426,10 @@ export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERA
         if (seen.has(trigger.id)) trigger.id = `${trigger.id}-${index + 1}`;
         seen.add(trigger.id);
     });
-    if (!triggers.some((trigger) => trigger.enabled)) throw new Error('Ative pelo menos um gatilho de título.');
+    const usableTriggerCount = triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length).length;
+    if (usableTriggerCount < MIN_USABLE_TITLE_TRIGGERS) {
+        throw new Error(`Mantenha pelo menos ${MIN_USABLE_TITLE_TRIGGERS} gatilhos ativos, cada um com ao menos um modelo de título.`);
+    }
     if (triggers.some((trigger) => trigger.enabled && !trigger.titleTypes.length)) {
         throw new Error('Todo gatilho ativo precisa ter pelo menos um modelo de título.');
     }
@@ -383,7 +451,7 @@ export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERA
             model: base.ai?.model || DEFAULT_TITLE_GENERATOR_CONFIG.ai.model,
         };
     return {
-        version: 4,
+        version: 5,
         pipeline: base.pipeline === 'legacy-v4'
             ? 'legacy-v4'
             : ['legacy-v4', 'reviewed-v1'].includes(String(source.pipeline))
@@ -497,6 +565,7 @@ export const getGlobalTitleGeneratorConfig = async () => {
 };
 
 export const setGlobalTitleGeneratorConfig = async (input) => {
+    assertMinimumUsableTitleTriggers(input);
     assertTitleGeneratorAiSelection(input);
     const config = normalizeTitleGeneratorConfig(input);
     const row = (await query(
@@ -531,6 +600,7 @@ export const setOrgTitleGeneratorConfig = async (orgId, input, actorId) => {
         await query('DELETE FROM org_title_generator_settings WHERE org_id = $1', [orgId]);
         return getOrgTitleGeneratorConfig(orgId);
     }
+    assertMinimumUsableTitleTriggers(input);
     const global = await getGlobalTitleGeneratorConfig();
     const storedConfig = normalizeStoredOrgTitleGeneratorConfig(input, global.config);
     const row = (await query(

@@ -48,6 +48,18 @@ import {
     LocalApiError,
 } from '../lib/videoAgentWorkflow';
 import { MediaSourceModal } from '../components/MediaSourceModal';
+import { TitleAssistantDialog } from '../components/TitleAssistantDialog';
+import {
+    captureTitleAssistantSnapshot,
+    cloneTitleAssistantTitles,
+    createTitleAssistantProposal,
+    restoreTitleAssistantSnapshot,
+    titleAssistantCommitPatch,
+    updateTitleAssistantDraft,
+    type TitleAssistantProposal,
+    type TitleAssistantSnapshot,
+} from '../lib/titleAssistantTransaction';
+import { titlePlanningNarrationKey } from '../lib/titlePlanning';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -212,16 +224,25 @@ export const Step4 = () => {
     const [isFramePickerOpen, setIsFramePickerOpen] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
     const [titleGenerationProgress, setTitleGenerationProgress] = useState('');
+    const [isTitleAssistantOpen, setIsTitleAssistantOpen] = useState(false);
+    const [titleAssistantProposal, setTitleAssistantProposal] = useState<TitleAssistantProposal | null>(null);
+    const [titleAssistantDraft, setTitleAssistantDraft] = useState<TitleHook[]>([]);
+    const [titleAssistantInstruction, setTitleAssistantInstruction] = useState('');
+    const [titleAssistantError, setTitleAssistantError] = useState<string>();
+    const [lastAppliedTitleSnapshot, setLastAppliedTitleSnapshot] = useState<TitleAssistantSnapshot | null>(null);
     const previewRef = useRef<VideoSequencePreviewRef>(null);
     const titleGenerationAbortRef = useRef<AbortController | null>(null);
 
     const currentSourceKey = narrationSourceKey(adData);
     useEffect(() => () => titleGenerationAbortRef.current?.abort(), [currentSourceKey]);
     const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
-    const titles = (adData.captions?.segments?.length && !currentCaptions)
+    const persistedTitles = (adData.captions?.segments?.length && !currentCaptions)
         || (adData.dynamicTitlesSourceKey && adData.dynamicTitlesSourceKey !== currentSourceKey)
         ? EMPTY_TITLES
         : adData.dynamicTitles || EMPTY_TITLES;
+    const titles = isTitleAssistantOpen && titleAssistantProposal
+        ? titleAssistantDraft
+        : persistedTitles;
     const orderedTitles = useMemo(
         () => titles
             .map((title, originalIndex) => ({ title, originalIndex }))
@@ -307,6 +328,11 @@ export const Step4 = () => {
     }, []);
 
     useEffect(() => {
+        // Proposals shown by the title assistant are transactional drafts. They
+        // must never leak into the project's regular undo/redo history before
+        // the user explicitly applies them.
+        if (isTitleAssistantOpen) return;
+
         const history = titleHistoryRef.current;
         const previous = titleStateRef.current;
         titleStateRef.current = titles;
@@ -321,7 +347,7 @@ export const Step4 = () => {
         history.redo = [];
         if (history.timer) clearTimeout(history.timer);
         history.timer = setTimeout(flushPendingTitleHistory, 450);
-    }, [cloneTitles, flushPendingTitleHistory, titles]);
+    }, [cloneTitles, flushPendingTitleHistory, isTitleAssistantOpen, titles]);
 
     useEffect(
         () => () => {
@@ -397,7 +423,23 @@ export const Step4 = () => {
         titleGenerationAbortRef.current.abort();
     }, []);
 
-    const handleGenerateTitles = async () => {
+    const closeTitleAssistant = useCallback(() => {
+        titleGenerationAbortRef.current?.abort();
+        titleGenerationAbortRef.current = null;
+        setIsGenerating(false);
+        setTitleGenerationProgress('');
+        setIsTitleAssistantOpen(false);
+        setTitleAssistantProposal(null);
+        setTitleAssistantDraft([]);
+        setTitleAssistantInstruction('');
+        setTitleAssistantError(undefined);
+    }, []);
+
+    const runTitleAssistantGeneration = async (options: {
+        instruction?: string;
+        baseTitles?: TitleHook[];
+        initial?: boolean;
+    } = {}) => {
         if (titleGenerationAbortRef.current || isGenerating) return;
         if (!currentCaptions?.segments?.length) {
             toast.error(adData.captions?.segments?.length
@@ -409,42 +451,47 @@ export const Step4 = () => {
         const controller = new AbortController();
         titleGenerationAbortRef.current = controller;
         setIsGenerating(true);
-        setTitleGenerationProgress('Preparando geração…');
-        const toastId = toast.loading('Preparando geração de títulos…');
+        setIsTitleAssistantOpen(true);
+        setTitleAssistantError(undefined);
+        setTitleGenerationProgress(options.instruction ? 'Ajustando propostas…' : 'Preparando geração…');
+        if (options.initial) {
+            setTitleAssistantProposal(null);
+            setTitleAssistantDraft([]);
+            setTitleAssistantInstruction('');
+        }
 
         try {
-            const result = await generateAutomaticTitlesResilient(adData, {
+            const narrationPlanIsCurrent = adData.plannedTitlesNarrationKey ===
+                titlePlanningNarrationKey(adData.narrationPlainText);
+            const generationInput: typeof adData = {
+                ...adData,
+                plannedTitles: narrationPlanIsCurrent ? adData.plannedTitles : undefined,
+                plannedTitlesNarrationKey: narrationPlanIsCurrent ? adData.plannedTitlesNarrationKey : undefined,
+            };
+            const result = await generateAutomaticTitlesResilient(generationInput, {
                 signal: controller.signal,
+                refinementInstruction: options.instruction,
+                baseTitles: options.baseTitles?.map((title) => ({
+                    text: title.text,
+                    sourceText: title.sourceText,
+                    triggerId: title.triggerId,
+                    selected: title.isActive,
+                })),
                 onProgress: (progress) => {
                     if (titleGenerationAbortRef.current !== controller) return;
                     setTitleGenerationProgress(progress.message);
-                    toast.loading(progress.message, { id: toastId });
                 },
             });
             if (controller.signal.aborted) throw new DOMException('Operação cancelada.', 'AbortError');
 
-            const generated = result.adData;
-            const finalTitles = generated.dynamicTitles || [];
-            updateAdData({
-                brandPalette: generated.brandPalette,
-                brandPaletteUpdatedAt: generated.brandPaletteUpdatedAt,
-                dynamicTitles: finalTitles,
-                dynamicTitlesSourceKey: generated.dynamicTitlesSourceKey,
-                titleGenerationSummary: generated.titleGenerationSummary,
-            });
-            setSelectedTitleId(null);
-            if (finalTitles.length) {
-                const sourceLabel = result.source === 'local' ? 'fallback local' : 'IA';
-                toast.success(`${finalTitles.length} título(s) gerado(s) por ${sourceLabel}.`, {
-                    id: toastId,
-                    description: result.warning,
-                });
-            } else {
-                toast.warning(result.warning || 'O vídeo pode continuar sem títulos automáticos.', { id: toastId });
-            }
+            const proposal = createTitleAssistantProposal(result, currentSourceKey);
+            setTitleAssistantProposal(proposal);
+            setTitleAssistantDraft(cloneTitleAssistantTitles(proposal.titles));
+            setTitleAssistantInstruction('');
+            setSelectedTitleId(proposal.titles[0]?.id ?? null);
         } catch (error: unknown) {
             if (isTitleGenerationAbortError(error) || controller.signal.aborted) {
-                toast.info('Geração de títulos cancelada.', { id: toastId });
+                if (isTitleAssistantOpen) setTitleAssistantError(undefined);
             } else {
                 const safeError = error instanceof LocalApiError
                     ? {
@@ -460,11 +507,10 @@ export const Step4 = () => {
                 console.error('[title-generation]', {
                     ...safeError,
                 });
-                toast.error(
+                setTitleAssistantError(
                     error instanceof LocalApiError
                         ? error.message
-                        : 'Erro ao comunicar com a inteligência artificial',
-                    { id: toastId },
+                        : 'Não foi possível criar os títulos agora. Tente novamente.'
                 );
             }
         } finally {
@@ -474,6 +520,40 @@ export const Step4 = () => {
                 setTitleGenerationProgress('');
             }
         }
+    };
+
+    const handleGenerateTitles = () => runTitleAssistantGeneration({ initial: true });
+
+    const handleRefineTitleAssistant = () => {
+        const instruction = titleAssistantInstruction.trim();
+        if (!instruction || !titleAssistantProposal) return;
+        void runTitleAssistantGeneration({ instruction, baseTitles: titleAssistantDraft });
+    };
+
+    const handleChangeTitleAssistantDraft = (id: string, updates: Partial<TitleHook>) => {
+        setTitleAssistantDraft((current) => updateTitleAssistantDraft(current, id, updates));
+    };
+
+    const handleApplyTitleAssistant = () => {
+        if (!titleAssistantProposal || !titleAssistantDraft.some((title) => title.isActive)) return;
+        if (titleAssistantProposal.sourceKey !== currentSourceKey) {
+            setTitleAssistantError('A narração ou as legendas mudaram. Gere os títulos novamente antes de aplicar.');
+            return;
+        }
+        setLastAppliedTitleSnapshot(captureTitleAssistantSnapshot(adData));
+        updateAdData(titleAssistantCommitPatch(titleAssistantProposal, titleAssistantDraft));
+        setSelectedTitleId(titleAssistantDraft.find((title) => title.isActive)?.id ?? null);
+        const count = titleAssistantDraft.filter((title) => title.isActive).length;
+        closeTitleAssistant();
+        toast.success(`${count} título${count === 1 ? '' : 's'} aplicado${count === 1 ? '' : 's'} ao projeto.`);
+    };
+
+    const handleUndoLastTitleApplication = () => {
+        if (!lastAppliedTitleSnapshot) return;
+        updateAdData(restoreTitleAssistantSnapshot(lastAppliedTitleSnapshot));
+        setLastAppliedTitleSnapshot(null);
+        setSelectedTitleId(null);
+        toast.success('Aplicação de títulos desfeita.');
     };
 
     const handleTargetTime = useCallback((time: number) => {
@@ -658,6 +738,15 @@ export const Step4 = () => {
                         <p className="-mt-1 text-center text-[9px] font-semibold text-brand-muted" aria-live="polite">
                             {titleGenerationProgress}
                         </p>
+                    )}
+                    {lastAppliedTitleSnapshot && !isGenerating && !isTitleAssistantOpen && (
+                        <button
+                            type="button"
+                            onClick={handleUndoLastTitleApplication}
+                            className="-mt-1 inline-flex items-center justify-center gap-1.5 text-[9px] font-semibold text-brand-muted transition hover:text-brand-accent"
+                        >
+                            <RotateCcw className="h-3 w-3" /> Desfazer última aplicação
+                        </button>
                     )}
 
                     {adData.frameOverlay && (
@@ -1584,6 +1673,22 @@ export const Step4 = () => {
                     onTakePicked={handleFramePicked}
                 />
             )}
+
+            <TitleAssistantDialog
+                open={isTitleAssistantOpen}
+                busy={isGenerating}
+                progress={titleGenerationProgress}
+                error={titleAssistantError}
+                warning={titleAssistantProposal?.warning}
+                source={titleAssistantProposal?.source}
+                titles={titleAssistantDraft}
+                instruction={titleAssistantInstruction}
+                onInstructionChange={setTitleAssistantInstruction}
+                onChangeTitle={handleChangeTitleAssistantDraft}
+                onRefine={handleRefineTitleAssistant}
+                onApply={handleApplyTitleAssistant}
+                onClose={closeTitleAssistant}
+            />
 
             {/* Footer Navigation */}
             <div className="fixed bottom-0 right-0 left-0 z-40 flex h-16 items-center justify-between border-t border-black/5 bg-background/95 px-5 pr-24 shadow-2xl backdrop-blur-xl dark:border-white/5">

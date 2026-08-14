@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import * as chatService from '../services/chatService';
 import { bearerFrom, gatewayChat, GatewayHttpError } from '../services/gatewayClient';
+import { normalizeNarratorVoiceContext } from '../services/narratorVoiceContext';
 
 const ACTIVE_CHAT_AGENT_ID = chatService.ACTIVE_CHAT_AGENT_ID;
 
@@ -200,6 +201,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     let responseSessionId: string | null = null;
     try {
         const { sessionId, content, model, reasoning, locale } = req.body;
+        const voiceContext = normalizeNarratorVoiceContext(req.body?.voiceContext);
         responseSessionId = typeof sessionId === 'string' ? sessionId : null;
 
         if (!sessionId || !content) {
@@ -259,6 +261,7 @@ export const sendMessage = async (req: Request, res: Response) => {
                 model: model || 'mileto-plus',
                 reasoning,
                 locale: locale || 'pt-BR',
+                ...(voiceContext ? { voiceContext } : {}),
             }, controller.signal);
 
             // Respostas 200 sem conteúdo não são úteis: repetimos uma única vez
@@ -270,6 +273,7 @@ export const sendMessage = async (req: Request, res: Response) => {
                     model: model || 'mileto-plus',
                     reasoning,
                     locale: locale || 'pt-BR',
+                    ...(voiceContext ? { voiceContext } : {}),
                 }, controller.signal);
             }
             if (!result.text?.trim()) {

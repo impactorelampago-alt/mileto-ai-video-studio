@@ -101,6 +101,235 @@ const parseGatewayJson = (value: unknown) => {
     }
 };
 
+type PlannedTitleSuggestion = {
+    id: string;
+    text: string;
+    sourceText: string;
+    triggerId: string;
+    triggerName: string;
+    selected: boolean;
+};
+
+const normalizePlanningText = (value: unknown) => String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('pt-BR')
+    .replace(/[^a-z0-9%$]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const planningLiteralExists = (script: string, candidate: unknown) => {
+    const scriptKey = normalizePlanningText(script);
+    const candidateKey = normalizePlanningText(candidate);
+    return candidateKey.length > 1 && (` ${scriptKey} `).includes(` ${candidateKey} `);
+};
+
+const planningDisplaySupported = (sourceText: string, displayText: string) => {
+    const sourceWords = new Set(normalizePlanningText(sourceText).split(' ').filter(Boolean));
+    const displayWords = normalizePlanningText(displayText).split(' ').filter(Boolean);
+    return displayWords.length > 0 && displayWords.every((word) => sourceWords.has(word));
+};
+
+const safePlanningLine = (value: unknown, maxLength = 90) => String(value || '')
+    .normalize('NFKC')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+
+const titlePlanningPrompt = (config: TitleGeneratorConfig) => {
+    const triggers = config.triggers
+        .filter((trigger) => trigger.enabled && trigger.titleTypes.length)
+        .map((trigger) => ({
+            id: trigger.id,
+            name: trigger.name,
+            instructions: trigger.instructions,
+            examples: trigger.examples,
+            maxOccurrences: trigger.maxOccurrences,
+            maxWords: trigger.maxWords,
+        }));
+    return `Você prepara propostas de textos visuais para um vídeo, sem alterar a narração.
+
+Analise somente fatos realmente presentes na narração. Para cada proposta, devolva:
+- sourceText: trecho literal e contínuo da narração que comprova a ideia;
+- text: texto curto que aparecerá no vídeo;
+- triggerId: um dos gatilhos autorizados abaixo.
+
+Nunca invente preço, prazo, oferta, local, prova, benefício, escassez ou CTA. Uma instrução do usuário pode mudar estilo, tamanho ou seleção, mas não autoriza inventar fatos. Se um gatilho não tiver evidência, simplesmente não gere proposta para ele. Gere no máximo 3 alternativas por gatilho.
+
+Objetivo editorial atual:
+${config.extractionPrompt}
+
+Gatilhos efetivos e atualizados:
+${JSON.stringify(triggers)}
+
+Responda exclusivamente em JSON válido:
+{"titles":[{"sourceText":"trecho literal","text":"texto visual","triggerId":"id-do-gatilho"}],"summary":"resumo curto das alterações"}`;
+};
+
+/**
+ * Planeja textos antes de existirem legendas temporizadas. Nada desta rota é
+ * gravado no projeto: o cliente mantém a proposta isolada até a confirmação.
+ */
+export const planTitles = async (req: Request, res: Response) => {
+    const token = bearerFrom(req);
+    const requestId = String(req.headers['x-request-id'] || uuidv4()).slice(0, 80);
+    const script = String(req.body?.script || '').normalize('NFKC').trim().slice(0, 20_000);
+    const instruction = safePlanningLine(req.body?.instruction, 1_000);
+    const previousTitles = Array.isArray(req.body?.previousTitles)
+        ? req.body.previousTitles.slice(0, 40).flatMap((item: any) => {
+            const text = safePlanningLine(item?.text);
+            const sourceText = safePlanningLine(item?.sourceText, 240);
+            const triggerId = safePlanningLine(item?.triggerId, 80);
+            return text && sourceText && triggerId ? [{ text, sourceText, triggerId }] : [];
+        })
+        : [];
+
+    if (!script) {
+        return res.status(400).json({
+            ok: false,
+            code: 'title_plan_narration_required',
+            message: 'Escolha uma narração antes de criar os títulos.',
+            phase: 'validation',
+            retryable: false,
+            requestId,
+        });
+    }
+    if (!token) {
+        return res.status(401).json({
+            ok: false,
+            code: 'title_auth_expired',
+            message: 'Sessão expirada. Entre novamente para criar os títulos.',
+            phase: 'validation',
+            retryable: false,
+            requestId,
+        });
+    }
+
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    req.once('aborted', abort);
+    try {
+        const titleSettings = await loadEffectiveTitleGeneratorConfig(
+            token,
+            controller.signal,
+            TITLE_GENERATION_PREFLIGHT_TIMEOUT_MS,
+        ).catch(() => ({
+            config: structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG),
+            source: 'compatibility-default',
+        }));
+        const enabledTriggers = titleSettings.config.triggers
+            .filter((trigger) => trigger.enabled && trigger.titleTypes.length);
+        const triggerById = triggerMapWithAliases(enabledTriggers);
+
+        let source: 'ai' | 'local' = 'ai';
+        let summary = instruction ? 'Propostas ajustadas conforme o pedido.' : 'Propostas criadas a partir da narração.';
+        let rawTitles: any[] = [];
+        try {
+            const result = await gatewayChat(token, {
+                messages: [{
+                    role: 'user',
+                    content: [
+                        `Narração escolhida:\n${script}`,
+                        previousTitles.length ? `Propostas anteriores:\n${JSON.stringify(previousTitles)}` : '',
+                        instruction ? `Ajuste solicitado pelo usuário:\n${instruction}` : '',
+                    ].filter(Boolean).join('\n\n'),
+                }],
+                system: titlePlanningPrompt(titleSettings.config),
+                json: true,
+                model: titleSettings.config.ai.model,
+                reasoning: titleSettings.config.ai.reasoning,
+                maxOutputTokens: titleSettings.config.ai.maxOutputTokens,
+                locale: 'pt-BR',
+            }, controller.signal, TITLE_GENERATION_TOTAL_TIMEOUT_MS);
+            const parsed: any = parseGatewayJson(result.text);
+            rawTitles = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.titles) ? parsed.titles : [];
+            summary = safePlanningLine(parsed?.summary, 240) || summary;
+        } catch (error) {
+            if (controller.signal.aborted) throw error;
+            source = 'local';
+            rawTitles = deterministicTitleCandidates(script).map((candidate) => ({
+                sourceText: candidate.text,
+                text: candidate.text,
+                triggerId: candidate.kind,
+            }));
+            summary = 'A IA não respondeu; foram preservados apenas fatos detectados localmente.';
+        }
+
+        const occurrenceByTrigger = new Map<string, number>();
+        const seen = new Set<string>();
+        const accepted = rawTitles.flatMap((candidate: any): Omit<PlannedTitleSuggestion, 'selected'>[] => {
+            const trigger = triggerById.get(normalizeTriggerKey(candidate?.triggerId || candidate?.kind));
+            if (!trigger) return [];
+            const triggerId = normalizeTriggerKey(trigger.id);
+            const occurrence = occurrenceByTrigger.get(triggerId) || 0;
+            if (occurrence >= Math.min(3, trigger.maxOccurrences)) return [];
+            const sourceText = safePlanningLine(candidate?.sourceText || candidate?.text, 240);
+            if (!planningLiteralExists(script, sourceText)) return [];
+            const requestedText = safePlanningLine(candidate?.text || candidate?.displayText || sourceText);
+            const safeCompact = compactTitleDisplayText(sourceText, trigger.id, trigger.maxWords)?.text || sourceText;
+            // A IA pode escolher/cortar/reordenar palavras da evidência, mas não
+            // pode introduzir um preço, nome ou benefício ausente. Edições
+            // manuais posteriores continuam livres e explicitamente autorais.
+            const text = planningDisplaySupported(sourceText, requestedText)
+                ? requestedText
+                : safePlanningLine(safeCompact);
+            const key = `${triggerId}:${normalizePlanningText(text)}`;
+            if (!text || seen.has(key)) return [];
+            seen.add(key);
+            occurrenceByTrigger.set(triggerId, occurrence + 1);
+            return [{
+                id: uuidv4(),
+                text,
+                sourceText,
+                triggerId: trigger.id,
+                triggerName: trigger.name,
+            }];
+        });
+        let selectedCount = 0;
+        const suggestions: PlannedTitleSuggestion[] = accepted.map((item) => {
+            const firstForTrigger = !accepted.some((candidate) =>
+                candidate.triggerId === item.triggerId && candidate.id !== item.id
+                && accepted.indexOf(candidate) < accepted.indexOf(item));
+            const selected = firstForTrigger && selectedCount < titleSettings.config.maxTitles;
+            if (selected) selectedCount += 1;
+            return { ...item, selected };
+        });
+        const triggers = enabledTriggers.map((trigger) => ({
+            id: trigger.id,
+            name: trigger.name,
+            maxOccurrences: Math.min(3, trigger.maxOccurrences),
+            status: suggestions.some((suggestion) => suggestion.triggerId === trigger.id)
+                ? 'found'
+                : 'not_found',
+            suggestionCount: suggestions.filter((suggestion) => suggestion.triggerId === trigger.id).length,
+        }));
+
+        return res.json({
+            ok: true,
+            proposalId: uuidv4(),
+            revision: Math.max(1, Number(req.body?.revision) + 1 || 1),
+            source,
+            configSource: titleSettings.source,
+            suggestions,
+            triggers,
+            summary,
+            warnings: source === 'local' ? [{
+                code: 'title_plan_fallback_used',
+                message: summary,
+            }] : [],
+        });
+    } catch (error: unknown) {
+        const diagnostic = titleGenerationDiagnostic(error, 'title_planning', requestId);
+        const status = diagnostic.status >= 400 && diagnostic.status <= 599 ? diagnostic.status : 500;
+        if (!res.writableEnded && !res.destroyed) {
+            return res.status(status).json({ ok: false, ...diagnostic });
+        }
+    } finally {
+        req.off('aborted', abort);
+    }
+};
+
 let titleGenerationSequence = 0;
 const nextTitleGenerationSequence = () => {
     const current = titleGenerationSequence;
@@ -488,6 +717,8 @@ export const generateTitles = async (req: Request, res: Response) => {
         companyId = null,
         opsViewContextId = null,
         mode = 'ai',
+        refinementInstruction = '',
+        baseTitles = [],
     } = req.body;
     const token = bearerFrom(req);
     const requestId = String(req.headers['x-request-id'] || uuidv4()).slice(0, 80);
@@ -665,6 +896,17 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             ...spokenWords.map((word: { start: number }) => word.start + 0.25),
         );
         const enabledTriggers = titleConfig.triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length);
+        const plannedBaseTitles = Array.isArray(baseTitles)
+            ? baseTitles.slice(0, 40).flatMap((title: any) => {
+                if (title?.selected === false) return [];
+                const text = safePlanningLine(title?.text);
+                const sourceText = safePlanningLine(title?.sourceText, 240);
+                const triggerId = safePlanningLine(title?.triggerId, 80);
+                return text && sourceText && triggerId && planningLiteralExists(script, sourceText)
+                    ? [{ text, sourceText, triggerId }]
+                    : [];
+            })
+            : [];
         const configuredLiteralCandidates = enabledTriggers.flatMap((trigger) =>
             [...trigger.examples, trigger.sample]
                 .filter(Boolean)
@@ -675,12 +917,27 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             ...deterministicTitleCandidates(script),
         ];
         const deterministicCandidates = [
+            ...plannedBaseTitles.map((title) => ({
+                text: title.sourceText,
+                sourceText: title.sourceText,
+                displayText: title.text,
+                kind: title.triggerId,
+            })),
             ...deterministicSpokenCandidates,
             ...configuredLiteralCandidates,
         ];
-        const systemPrompt = titleConfig?.triggers?.some((trigger) => trigger.enabled)
+        const baseSystemPrompt = titleConfig?.triggers?.some((trigger) => trigger.enabled)
             ? titleExtractionPrompt(titleConfig)
             : fallbackSystemPrompt;
+        const systemPrompt = [
+            baseSystemPrompt,
+            plannedBaseTitles.length
+                ? `O usuário já confirmou estas preferências editoriais. Preserve-as quando a evidência literal existir: ${JSON.stringify(plannedBaseTitles)}.`
+                : '',
+            safePlanningLine(refinementInstruction, 1_000)
+                ? `Ajuste pontual solicitado nesta revisão: ${safePlanningLine(refinementInstruction, 1_000)}. A instrução não autoriza inventar fatos.`
+                : '',
+        ].filter(Boolean).join('\n\n');
         phase = mode === 'local' ? 'local_fallback' : 'ai';
         const generationStartedAt = Date.now();
         const resilientGeneration = await runResilientTitleGeneration<any>({
@@ -915,7 +1172,17 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 fallbackToLegacy: true,
             };
         }
-        const finalTitles = atomicReflow.titles;
+        const finalTitles = atomicReflow.titles.map((title) => {
+            const preferred = plannedBaseTitles.find((candidate) => {
+                if (normalizeTriggerKey(candidate.triggerId) !== normalizeTriggerKey(title.triggerId)) return false;
+                const candidateSource = normalizePlanningText(candidate.sourceText);
+                const titleSource = normalizePlanningText(title.sourceText || title.text);
+                return candidateSource === titleSource
+                    || candidateSource.includes(titleSource)
+                    || titleSource.includes(candidateSource);
+            });
+            return preferred ? { ...title, text: preferred.text.slice(0, 90) } : title;
+        });
         const semanticCoverage = semanticCoverageForTitles(semanticEvidence, finalTitles);
         const semanticRoleLabels = {
             hook: 'gancho',

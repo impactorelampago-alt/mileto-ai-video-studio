@@ -1,6 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import type { AdData, MediaTake, CaptionStyle, ApiKeys, MusicTrack, CustomVoice, TransitionAsset } from '../types';
+import {
+    isRecommendableVoiceDescription,
+    migrateCustomVoices,
+    NARRATOR_SELECTED_VOICE_STORAGE_KEY,
+    normalizeCustomVoiceForStorage,
+} from '../lib/narratorVoiceContext';
 import { DEFAULT_VIDEO_ENHANCEMENT, normalizeVideoEnhancement } from '../lib/videoEnhancement';
 import { gatewayApi, type SharedAsset } from '../lib/gateway';
 import { localAuthHeaders } from '../lib/serverAuth';
@@ -100,7 +106,6 @@ interface WizardContextType {
     customVoices: CustomVoice[];
     addCustomVoice: (voice: CustomVoice) => void;
     removeCustomVoice: (id: string) => void;
-    renameCustomVoice: (id: string, newName: string) => void;
     updateCustomVoice: (id: string, voice: CustomVoice) => void;
 
     isDebugMode: boolean;
@@ -381,17 +386,27 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     const [customVoices, setCustomVoices] = useState<CustomVoice[]>(() => {
         try {
             const stored = localStorage.getItem('mileto_custom_voices');
-            const parsed: CustomVoice[] = stored ? JSON.parse(stored) : [];
-            // Vozes salvas antes do suporte multi-provedor são todas da Fish Audio.
-            return parsed.map((v) => ({ ...v, provider: v.provider ?? 'fishAudio' }));
+            const parsed: unknown = stored ? JSON.parse(stored) : [];
+            const migrated = migrateCustomVoices(parsed);
+            // A migração só adiciona metadados editoriais. ID e preset reais
+            // permanecem intactos para não quebrar sínteses e projetos antigos.
+            if (migrated.changed) {
+                localStorage.setItem('mileto_custom_voices', JSON.stringify(migrated.voices));
+            }
+            return migrated.voices;
         } catch {
             return [];
         }
     });
 
     const addCustomVoice = (voice: CustomVoice) => {
+        if (!isRecommendableVoiceDescription(voice.description)) {
+            toast.error('Toda nova voz precisa de uma descrição para recomendações.');
+            return;
+        }
+        const normalized = normalizeCustomVoiceForStorage(voice);
         setCustomVoices((prev) => {
-            const updated = [...prev, voice];
+            const updated = [...prev, normalized];
             localStorage.setItem('mileto_custom_voices', JSON.stringify(updated));
             return updated;
         });
@@ -407,21 +422,37 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         });
     };
 
-    const renameCustomVoice = (id: string, newName: string) => {
+    const updateCustomVoice = (id: string, voice: CustomVoice) => {
+        if (!isRecommendableVoiceDescription(voice.description)) {
+            toast.error('Preencha a descrição da voz antes de salvar a edição.');
+            return;
+        }
+        const previous = customVoices.find((current) => current.id === id);
+        const normalized = normalizeCustomVoiceForStorage({
+            ...voice,
+            catalogKey: voice.catalogKey || previous?.catalogKey,
+        });
         setCustomVoices((prev) => {
-            const updated = prev.map((v) => (v.id === id ? { ...v, name: newName } : v));
+            const updated = prev.map((current) => current.id === id
+                ? normalized
+                : current);
             localStorage.setItem('mileto_custom_voices', JSON.stringify(updated));
             return updated;
         });
     };
 
-    const updateCustomVoice = (id: string, voice: CustomVoice) => {
-        setCustomVoices((prev) => {
-            const updated = prev.map((current) => current.id === id ? voice : current);
-            localStorage.setItem('mileto_custom_voices', JSON.stringify(updated));
-            return updated;
-        });
-    };
+    useEffect(() => {
+        try {
+            if (adData.selectedVoiceId) {
+                localStorage.setItem(NARRATOR_SELECTED_VOICE_STORAGE_KEY, adData.selectedVoiceId);
+            } else {
+                localStorage.removeItem(NARRATOR_SELECTED_VOICE_STORAGE_KEY);
+            }
+        } catch {
+            // A voz selecionada continua no estado do projeto; apenas o contexto
+            // editorial do Chat fica sem essa marca quando o storage falha.
+        }
+    }, [adData.selectedVoiceId]);
 
     // ── Persistence ────────────────────────────────────────────────
     // Refs espelham o estado mais recente — evita closures stale quando
@@ -1582,7 +1613,6 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             customVoices,
             addCustomVoice,
             removeCustomVoice,
-            renameCustomVoice,
             updateCustomVoice,
             isDebugMode,
             setIsDebugMode,
@@ -1616,7 +1646,6 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             customVoices,
             addCustomVoice,
             removeCustomVoice,
-            renameCustomVoice,
             updateCustomVoice,
             isDebugMode,
             setIsDebugMode,

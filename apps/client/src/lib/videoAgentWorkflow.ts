@@ -260,6 +260,15 @@ export interface AutomaticTitleGenerationOptions {
     resolvedBrand?: ResolvedOpsProjectBrand;
     aiDeadlineMs?: number;
     localFallbackDeadlineMs?: number;
+    /** Pedido pontual do diÃ¡logo temporÃ¡rio da etapa 4. */
+    refinementInstruction?: string;
+    /** Escolhas confirmadas anteriormente no Chat ou na revisÃ£o atual. */
+    baseTitles?: Array<{
+        text: string;
+        sourceText?: string;
+        triggerId?: string;
+        selected?: boolean;
+    }>;
     onProgress?: (progress: TitleGenerationProgress) => void;
 }
 
@@ -447,6 +456,13 @@ export const generateAutomaticTitlesResilient = async (
                         companyId,
                         opsViewContextId,
                         mode,
+                        refinementInstruction: String(options.refinementInstruction || '').slice(0, 1_000),
+                        baseTitles: (options.baseTitles || input.plannedTitles || []).slice(0, 40).map((title) => ({
+                            text: String(title.text || '').slice(0, 90),
+                            sourceText: String(title.sourceText || '').slice(0, 240),
+                            triggerId: String(title.triggerId || '').slice(0, 80),
+                            selected: title.selected !== false,
+                        })),
                     }),
                     signal,
                 });

@@ -85,20 +85,27 @@ const chatSource = readFileSync(
     'utf8',
 );
 
-test('o card final tem identidade e acoes proprias sem aceitar HTML do modelo', () => {
+test('o card final tem somente as duas acoes aprovadas e nao oferece copia', () => {
     assert.match(chatSource, /data-mileto-narration-card="final"/);
     assert.match(chatSource, /aria-label="Narração pronta"/);
     assert.match(chatSource, />\s*Narração pronta\s*</);
-    assert.match(chatSource, /data-narration-action="copy"/);
-    assert.match(chatSource, /data-narration-action="apply"/);
-    assert.match(chatSource, /> Aplicar ao projeto\s*</);
-    assert.match(chatSource, /Direções de voz/);
+    const cardSource = chatSource.slice(
+        chatSource.indexOf('const NarrationCard ='),
+        chatSource.indexOf('interface StructuredAgentResponseProps'),
+    );
+    const actions = [...cardSource.matchAll(/data-narration-action="([^"]+)"/g)]
+        .map((match) => match[1]);
+
+    assert.deepEqual(actions, ['apply', 'apply-and-create-titles']);
+    assert.match(cardSource, />\s*Aplicar narração\s*</);
+    assert.match(cardSource, />\s*<Wand2[^>]*\/>\s*Aplicar e criar títulos\s*</);
+    assert.doesNotMatch(cardSource, /data-narration-action="copy"|>\s*Copiar\s*</i);
     assert.doesNotMatch(chatSource, /dangerouslySetInnerHTML/);
 });
 
 test('o renderer consulta o contrato final antes do card e preserva chat comum', () => {
     assert.match(chatSource, /const delivery = parseChatNarrationDelivery\(content\);/);
-    assert.match(chatSource, /if \(delivery\) \{\s*return <NarrationCard/);
+    assert.match(chatSource, /if \(delivery\) \{\s*return \(\s*<NarrationCard/);
     assert.match(chatSource, /if \(!result\) return <RichChatText content=\{stripMarkers\(content\)\}/);
     assert.doesNotMatch(chatSource, />\s*Usar no projeto\s*</);
 });

@@ -216,7 +216,7 @@ test('advertências finais chegam por message e pelo renderResult revisionado do
 
 test('Step 4 impede geração concorrente, oferece cancelamento e não registra AxiosError completo', () => {
     const step4 = readClient('pages/Step4.tsx');
-    const generationStart = step4.indexOf('const handleGenerateTitles');
+    const generationStart = step4.indexOf('const runTitleAssistantGeneration');
     const generationEnd = step4.indexOf('const handleTargetTime', generationStart);
     const generationBlock = step4.slice(generationStart, generationEnd);
     const buttonStart = step4.indexOf('onClick={isGenerating ? cancelTitleGeneration : handleGenerateTitles}');

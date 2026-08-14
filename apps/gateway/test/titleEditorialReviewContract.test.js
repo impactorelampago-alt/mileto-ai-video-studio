@@ -67,7 +67,7 @@ test('editor visual preserva pipeline/reviewer e controller faz uma unica revisa
     const controller = read('../../server/src/controllers/aiController.ts');
     const review = read('../../server/src/services/titleEditorialReview.ts');
 
-    assert.match(editor, /\.\.\.base,[\s\S]*version:\s*Math\.max\(4/);
+    assert.match(editor, /\.\.\.base,[\s\S]*version:\s*Math\.max\(5/);
     assert.doesNotMatch(editor, /version:\s*3/);
     assert.match(controller, /const legacyFinalTitles = runLegacyFinalTitleStrategy\(\)/);
     assert.match(controller, /runTitleEditorialReview\(\{/);

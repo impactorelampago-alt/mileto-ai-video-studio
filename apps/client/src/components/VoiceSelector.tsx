@@ -8,6 +8,10 @@ import { effectiveSystemVoicePreset, saveSystemVoicePreset, SYSTEM_VOICES, SYSTE
 import { DEFAULT_PRESET_AUDIO_CONFIG, SYSTEM_MUSIC_TRACKS } from '../lib/systemMusic';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { invalidatedNarrationDerivatives } from '../lib/narrationState';
+import {
+    createCustomVoiceCatalogKey,
+    isRecommendableVoiceDescription,
+} from '../lib/narratorVoiceContext';
 
 // No v1, o catálogo da ElevenLabs e a clonagem por gravação ficam ocultos: a IA
 // é fornecida pelo Mileto (sem BYOK) e essas duas voltam numa versão futura.
@@ -47,6 +51,7 @@ export const VoiceSelector = () => {
     // Custom Voice State
     const [addMode, setAddMode] = useState<AddMode>('none');
     const [newVoiceName, setNewVoiceName] = useState('');
+    const [newVoiceDescription, setNewVoiceDescription] = useState('');
     const [newVoiceId, setNewVoiceId] = useState('');
     const [newVoiceProvider, setNewVoiceProvider] = useState<TtsProvider>('fishAudio');
     const [newVoiceSpeed, setNewVoiceSpeed] = useState(1);
@@ -59,6 +64,8 @@ export const VoiceSelector = () => {
         originalId: string;
         id: string;
         name: string;
+        description: string;
+        catalogKey?: string;
         provider: TtsProvider;
         isSystem: boolean;
         preset: VoicePreset;
@@ -135,6 +142,7 @@ export const VoiceSelector = () => {
 
     const resetAddForm = () => {
         setNewVoiceName('');
+        setNewVoiceDescription('');
         setNewVoiceId('');
         setNewVoiceSpeed(1);
         setNewVoiceVolume(0);
@@ -143,7 +151,15 @@ export const VoiceSelector = () => {
         setAddMode('none');
     };
 
-    const openPresetEditor = (e: React.SyntheticEvent, voice: { id: string; name: string; provider?: TtsProvider; preset?: VoicePreset }, isSystem: boolean) => {
+    const openPresetEditor = (e: React.SyntheticEvent, voice: {
+        id: string;
+        name: string;
+        desc?: string;
+        description?: string;
+        catalogKey?: string;
+        provider?: TtsProvider;
+        preset?: VoicePreset;
+    }, isSystem: boolean) => {
         e.stopPropagation();
         const source = (isSystem ? effectiveSystemVoicePreset(voice.id) : voice.preset) || {
             voiceSettings: { ...DEFAULT_VOICE_SETTINGS },
@@ -157,6 +173,8 @@ export const VoiceSelector = () => {
             originalId: voice.id,
             id: voice.id,
             name: voice.name,
+            description: isSystem ? (voice.desc || '') : (voice.description || ''),
+            catalogKey: isSystem ? undefined : voice.catalogKey,
             provider: voice.provider ?? 'fishAudio',
             isSystem,
             preset: {
@@ -174,8 +192,13 @@ export const VoiceSelector = () => {
         if (!presetEditor) return;
         const id = presetEditor.id.trim();
         const name = presetEditor.name.trim();
+        const description = presetEditor.description.trim();
         if (!id || !name) {
             toast.error('Informe o nome e o ID da voz.');
+            return;
+        }
+        if (!presetEditor.isSystem && !isRecommendableVoiceDescription(description)) {
+            toast.error('Descreva em pelo menos 8 caracteres como essa voz soa ou quando deve ser usada.');
             return;
         }
         if (!presetEditor.isSystem && id !== presetEditor.originalId && (
@@ -191,7 +214,9 @@ export const VoiceSelector = () => {
             const nextVoice: CustomVoice = {
                 id,
                 name,
-                description: 'Voz Personalizada',
+                description,
+                catalogKey: presetEditor.catalogKey || createCustomVoiceCatalogKey(),
+                recommendationStatus: 'ready',
                 provider: presetEditor.provider,
                 preset: presetEditor.preset,
             };
@@ -220,10 +245,16 @@ export const VoiceSelector = () => {
 
     const handleSaveCustomVoice = () => {
         if (!newVoiceId || !newVoiceName) return;
+        if (!isRecommendableVoiceDescription(newVoiceDescription)) {
+            toast.error('Descreva em pelo menos 8 caracteres como essa voz soa ou quando deve ser usada.');
+            return;
+        }
         addCustomVoice({
             id: newVoiceId,
             name: newVoiceName,
-            description: 'Voz Personalizada',
+            description: newVoiceDescription.trim(),
+            catalogKey: createCustomVoiceCatalogKey(),
+            recommendationStatus: 'ready',
             provider: newVoiceProvider,
             preset: {
                 voiceSettings: {
@@ -414,12 +445,22 @@ export const VoiceSelector = () => {
                                             <span className="inline-block px-2 py-0.5 rounded-full text-[9px] uppercase tracking-widest font-bold bg-brand-accent/10 text-brand-accent border border-brand-accent/20">
                                                 Personalizada
                                             </span>
+                                            {voice.recommendationStatus === 'description_required' && (
+                                                <span className="inline-block rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-300">
+                                                    Descrição pendente
+                                                </span>
+                                            )}
                                             {presetMusicName(voice.preset?.musicTrackId) && (
                                                 <span className="text-[9px] font-semibold text-brand-accent/80">
                                                     + {presetMusicName(voice.preset?.musicTrackId)}
                                                 </span>
                                             )}
                                         </div>
+                                        <p className="mt-2 line-clamp-2 text-[10px] leading-relaxed text-brand-muted">
+                                            {voice.recommendationStatus === 'description_required'
+                                                ? 'Edite esta voz e descreva seu estilo para o Narrador poder recomendá-la.'
+                                                : voice.description}
+                                        </p>
                                     </div>
                                 </div>
 
@@ -508,6 +549,22 @@ export const VoiceSelector = () => {
                                     className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-[10px] normal-case text-foreground outline-none focus:border-brand-accent/60 disabled:cursor-not-allowed disabled:opacity-45"
                                 />
                             </label>
+                            {!presetEditor.isSystem && (
+                                <label className="space-y-1.5 text-[9px] font-bold uppercase tracking-wider text-brand-muted sm:col-span-2">
+                                    <span className="flex items-center justify-between gap-3">
+                                        <span>Descrição para recomendações</span>
+                                        <span className="normal-case tracking-normal text-brand-muted/70">obrigatória</span>
+                                    </span>
+                                    <textarea
+                                        value={presetEditor.description}
+                                        maxLength={240}
+                                        rows={2}
+                                        placeholder="Ex.: voz jovem, descontraída e enérgica para vídeos promocionais."
+                                        onChange={(event) => setPresetEditor((current) => current ? { ...current, description: event.target.value } : current)}
+                                        className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2.5 text-xs font-normal normal-case text-foreground outline-none focus:border-brand-accent/60"
+                                    />
+                                </label>
+                            )}
                             <label className="space-y-1.5 text-[9px] font-bold uppercase tracking-wider text-brand-muted">
                                 <span className="flex justify-between"><span>Velocidade</span><b className="text-foreground">{presetEditor.preset.voiceSettings.speed.toFixed(2)}x</b></span>
                                 <input
@@ -645,6 +702,14 @@ export const VoiceSelector = () => {
                             value={newVoiceName}
                             onChange={(e) => setNewVoiceName(e.target.value)}
                         />
+                        <textarea
+                            placeholder="Descreva como a voz soa e quando usá-la (obrigatório)"
+                            className="w-full resize-none rounded-lg border border-black/10 bg-background px-3 py-2 text-xs text-foreground outline-none transition-all placeholder:text-foreground/40 focus:border-brand-accent focus:ring-1 focus:ring-brand-accent dark:border-white/10"
+                            value={newVoiceDescription}
+                            maxLength={240}
+                            rows={2}
+                            onChange={(e) => setNewVoiceDescription(e.target.value)}
+                        />
                         <input
                             type="text"
                             placeholder={
@@ -742,7 +807,7 @@ export const VoiceSelector = () => {
                         </div>
                         <button
                             onClick={handleSaveCustomVoice}
-                            disabled={!newVoiceId || !newVoiceName}
+                            disabled={!newVoiceId || !newVoiceName || !isRecommendableVoiceDescription(newVoiceDescription)}
                             className="w-full py-2 text-[11px] font-bold uppercase tracking-wider rounded-lg bg-brand-accent text-[#0a0f12] hover:bg-brand-accent/90 disabled:opacity-50 transition-all shadow-sm"
                         >
                             Salvar Voz

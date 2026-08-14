@@ -18,7 +18,6 @@ import {
     User,
     FolderOpen,
     GripVertical,
-    Copy,
     Check,
     Wand2,
     Target,
@@ -32,8 +31,11 @@ import {
 import { cn } from '../../lib/utils';
 import * as chatApi from '../../lib/chatApi';
 import { useWizard } from '../../context/WizardContext';
-import { ChatAgentId, ChatFolder, ChatSession, ChatMessage } from '../../types';
+import { AdData, ChatAgentId, ChatFolder, ChatSession, ChatMessage } from '../../types';
 import { narrationContractFromChatScript } from '../../lib/narrationContract';
+import { invalidatedNarrationDerivatives } from '../../lib/narrationState';
+import { planNarrationTitles, titlePlanningNarrationKey, type TitlePlanningProposal } from '../../lib/titlePlanning';
+import { ChatTitleProposal } from './ChatTitleProposal';
 import {
     extractChatNarration as extractScript,
     extractChatNarrationTitle as extractProjectTitle,
@@ -185,19 +187,17 @@ const NarrationText = ({ narration }: { narration: string }) => {
 
 interface NarrationCardProps {
     content: string;
-    copied: boolean;
-    onCopy: () => void;
     onApply: () => void;
+    onApplyAndCreateTitles: () => void;
+    titlePlanningNode?: React.ReactNode;
 }
 
-const NarrationCard = ({ content, copied, onCopy, onApply }: NarrationCardProps) => {
+const NarrationCard = ({ content, onApply, onApplyAndCreateTitles, titlePlanningNode }: NarrationCardProps) => {
     const delivery = parseChatNarrationDelivery(content);
     if (!delivery) return null;
 
     const directionTags = extractFishDirectionTags(delivery.narration);
     const uniqueDirections = uniqueFishDirectionTags(delivery.narration);
-    const visibleDirections = uniqueDirections.slice(0, 6);
-    const hiddenDirections = uniqueDirections.length - visibleDirections.length;
     const directionLabel = `${directionTags.length} ${directionTags.length === 1 ? 'direção' : 'direções'}`;
 
     return (
@@ -211,95 +211,70 @@ const NarrationCard = ({ content, copied, onCopy, onApply }: NarrationCardProps)
             <section
                 data-mileto-narration-card="final"
                 aria-label="Narração pronta"
-                className="relative overflow-hidden rounded-3xl border border-brand-lime/35 bg-brand-card shadow-[0_20px_60px_rgba(0,0,0,.22),0_0_38px_rgba(0,230,118,.08)]"
+                className="overflow-hidden rounded-2xl border border-black/10 bg-brand-card/80 dark:border-white/10"
             >
-                <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-linear-to-br from-brand-lime/15 via-brand-accent/[.055] to-transparent" />
-
-                <header className="relative flex flex-wrap items-start justify-between gap-3 border-b border-brand-lime/15 px-4 py-4">
-                    <div className="flex min-w-0 items-start gap-3">
-                        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-brand-lime/25 bg-brand-lime/12 text-brand-lime shadow-[0_0_24px_rgba(0,230,118,.10)]">
-                            <FileText className="h-5 w-5" />
-                        </span>
-                        <div className="min-w-0">
-                            <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[.2em] text-brand-lime">
-                                <span className="h-1.5 w-1.5 rounded-full bg-brand-lime shadow-[0_0_8px_rgba(0,230,118,.8)]" />
-                                Narração pronta
-                            </div>
-                            <h4 className="mt-1.5 text-[14px] font-black leading-tight text-foreground">
-                                {delivery.title}
-                            </h4>
+                <header className="flex items-start justify-between gap-3 border-b border-black/5 px-4 py-3 dark:border-white/5">
+                    <div className="min-w-0">
+                        <div className="text-[9px] font-bold uppercase tracking-[.16em] text-brand-accent">
+                            Narração pronta
                         </div>
+                        <h4 className="mt-1 truncate text-[13px] font-semibold text-foreground">
+                            {delivery.title}
+                        </h4>
                     </div>
 
                     <span className={cn(
-                        'shrink-0 rounded-full border px-2.5 py-1 text-[8px] font-black uppercase tracking-wider',
+                        'shrink-0 rounded-full border px-2 py-1 text-[8px] font-semibold',
                         directionTags.length > 0
-                            ? 'border-cyan-500/25 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300'
+                            ? 'border-cyan-500/20 bg-cyan-500/[.06] text-cyan-700 dark:text-cyan-300'
                             : 'border-black/10 bg-black/[.035] text-brand-muted dark:border-white/10 dark:bg-white/[.035]'
                     )}>
-                        {directionTags.length > 0 ? `Fish Audio · ${directionLabel}` : 'Texto limpo'}
+                        {directionTags.length > 0 ? `Fish Audio · ${directionLabel}` : 'Sem direções'}
                     </span>
                 </header>
 
-                <div className="relative px-4 py-4">
-                    <div className="mb-2 text-[8px] font-black uppercase tracking-[.18em] text-brand-muted">
-                        Texto da narração
-                    </div>
+                <div className="px-4 py-3.5">
                     <div className="whitespace-pre-wrap text-[13px] leading-6 text-foreground/95">
                         <NarrationText narration={delivery.narration} />
                     </div>
                 </div>
 
-                {visibleDirections.length > 0 && (
-                    <div className="border-t border-cyan-500/10 bg-cyan-500/[.025] px-4 py-3">
-                        <div className="mb-2 text-[8px] font-black uppercase tracking-[.17em] text-cyan-700/75 dark:text-cyan-300/70">
-                            Direções de voz
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                            {visibleDirections.map((tag) => (
-                                <span
-                                    key={tag}
-                                    className="rounded-lg border border-cyan-500/20 bg-cyan-500/[.08] px-2 py-1 font-mono text-[9px] font-bold text-cyan-700 dark:text-cyan-300"
-                                >
+                {uniqueDirections.length > 0 && (
+                    <details className="border-t border-black/5 px-4 py-2.5 text-[10px] dark:border-white/5">
+                        <summary className="cursor-pointer select-none text-brand-muted hover:text-foreground">
+                            Ver {directionLabel}
+                        </summary>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                            {uniqueDirections.map((tag) => (
+                                <span key={tag} className="rounded-md border border-cyan-500/15 px-1.5 py-1 font-mono text-[9px] text-cyan-700 dark:text-cyan-300">
                                     {tag}
                                 </span>
                             ))}
-                            {hiddenDirections > 0 && (
-                                <span className="rounded-lg border border-cyan-500/15 px-2 py-1 text-[9px] font-bold text-cyan-700/75 dark:text-cyan-300/70">
-                                    +{hiddenDirections}
-                                </span>
-                            )}
                         </div>
-                    </div>
+                    </details>
                 )}
 
-                <footer className="grid grid-cols-2 gap-2 border-t border-brand-lime/15 bg-black/[.025] p-3 dark:bg-black/10">
-                    <button
-                        type="button"
-                        data-narration-action="copy"
-                        onClick={onCopy}
-                        className={cn(
-                            'inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border px-3 text-[9px] font-black uppercase tracking-wider transition',
-                            copied
-                                ? 'border-brand-lime/35 bg-brand-lime/10 text-brand-lime'
-                                : 'border-black/10 bg-black/[.025] text-foreground/75 hover:border-brand-lime/30 hover:text-brand-lime dark:border-white/10 dark:bg-white/[.025]'
-                        )}
-                        title="Copiar somente o texto da narração"
-                    >
-                        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                        {copied ? 'Copiado' : 'Copiar'}
-                    </button>
+                <footer className="flex flex-wrap justify-end gap-2 border-t border-black/5 p-3 dark:border-white/5">
                     <button
                         type="button"
                         data-narration-action="apply"
                         onClick={onApply}
-                        className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-brand-lime px-3 text-[9px] font-black uppercase tracking-wider text-[#07110d] shadow-[0_8px_24px_rgba(0,230,118,.13)] transition hover:brightness-110 active:translate-y-px"
-                        title="Aplicar este título e esta narração ao projeto"
+                        className="inline-flex h-9 items-center justify-center rounded-xl border border-black/10 px-3 text-[10px] font-semibold text-foreground transition hover:border-brand-accent/35 dark:border-white/10"
                     >
-                        <Wand2 className="h-3.5 w-3.5" /> Aplicar ao projeto
+                        Aplicar narração
+                    </button>
+                    <button
+                        type="button"
+                        data-narration-action="apply-and-create-titles"
+                        onClick={onApplyAndCreateTitles}
+                        className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-brand-accent px-3 text-[10px] font-bold text-[#07110d] transition hover:brightness-105"
+                    >
+                        <Wand2 className="h-3.5 w-3.5" /> Aplicar e criar títulos
                     </button>
                 </footer>
             </section>
+
+            {titlePlanningNode}
 
             {delivery.after && (
                 <div className="rounded-xl border border-black/5 bg-black/[.025] px-3 py-2 dark:border-white/5 dark:bg-white/[.025]">
@@ -313,15 +288,22 @@ const NarrationCard = ({ content, copied, onCopy, onApply }: NarrationCardProps)
 
 interface StructuredAgentResponseProps {
     content: string;
-    copied: boolean;
-    onCopy: () => void;
     onApply: () => void;
+    onApplyAndCreateTitles: () => void;
+    titlePlanningNode?: React.ReactNode;
 }
 
-const StructuredAgentResponse = ({ content, copied, onCopy, onApply }: StructuredAgentResponseProps) => {
+const StructuredAgentResponse = ({ content, onApply, onApplyAndCreateTitles, titlePlanningNode }: StructuredAgentResponseProps) => {
     const delivery = parseChatNarrationDelivery(content);
     if (delivery) {
-        return <NarrationCard content={content} copied={copied} onCopy={onCopy} onApply={onApply} />;
+        return (
+            <NarrationCard
+                content={content}
+                onApply={onApply}
+                onApplyAndCreateTitles={onApplyAndCreateTitles}
+                titlePlanningNode={titlePlanningNode}
+            />
+        );
     }
 
     const result = parseStructuredResult(content);
@@ -414,7 +396,12 @@ export const ChatMileto: React.FC = () => {
 
     const navigate = useNavigate();
     const { adData, updateAdData } = useWizard();
-    const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+    const [titlePlans, setTitlePlans] = useState<Record<string, {
+        proposal?: TitlePlanningProposal;
+        instruction: string;
+        busy: boolean;
+        error?: string;
+    }>>({});
 
     useEffect(() => {
         try {
@@ -455,18 +442,8 @@ export const ChatMileto: React.FC = () => {
         }, 0);
     }, []);
 
-    // Copia SÓ o roteiro (o bloco entre os "---" que a IA marca), não o texto de
-    // explicação nem o "Aviso" — é o que o usuário quer levar pra narração.
-    const handleCopyMessage = useCallback((msg: ChatMessage) => {
-        navigator.clipboard.writeText(extractScript(msg.content)).then(() => {
-            setCopiedMsgId(msg.id);
-            setTimeout(() => setCopiedMsgId((cur) => (cur === msg.id ? null : cur)), 1500);
-        });
-    }, []);
-
-    // Aplica o ROTEIRO da resposta direto na narração e leva o usuário pra lá.
-    const handleUseAsScript = useCallback(
-        (msg: ChatMessage) => {
+    const narrationPatchFromMessage = useCallback(
+        (msg: ChatMessage): Partial<AdData> => {
             const script = extractScript(msg.content);
             const title = extractProjectTitle(msg.content);
             const result = parseStructuredResult(msg.content);
@@ -480,17 +457,112 @@ export const ChatMileto: React.FC = () => {
                 || result?.directionMode === 'clean'
                 ? result.directionMode
                 : null;
-            updateAdData({
+            return {
+                ...invalidatedNarrationDerivatives(),
                 title,
                 ...narrationContractFromChatScript(adData, script, explicitMode),
                 isNarrationGenerated: false,
-            });
+                plannedTitles: undefined,
+                plannedTitlesNarrationKey: undefined,
+            };
+        },
+        [adData]
+    );
+
+    const handleUseAsScript = useCallback(
+        (msg: ChatMessage) => {
+            updateAdData(narrationPatchFromMessage(msg));
             setIsOpen(false);
             navigate('/wizard/step/1');
-            toast.success('Título e roteiro aplicados ao projeto! ✨');
+            toast.success('Narração aplicada ao projeto.');
         },
-        [adData, navigate, updateAdData]
+        [navigate, narrationPatchFromMessage, updateAdData]
     );
+
+    const handleApplyAndCreateTitles = useCallback(async (msg: ChatMessage) => {
+        const patch = narrationPatchFromMessage(msg);
+        const nextAdData = { ...adData, ...patch } as AdData;
+        updateAdData(patch);
+        setTitlePlans((current) => ({
+            ...current,
+            [msg.id]: { instruction: '', busy: true },
+        }));
+        try {
+            const proposal = await planNarrationTitles({ script: nextAdData.narrationPlainText });
+            setTitlePlans((current) => ({
+                ...current,
+                [msg.id]: { proposal, instruction: '', busy: false },
+            }));
+            toast.success('Narração aplicada. Agora revise os títulos sugeridos.');
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Não foi possível criar os títulos.';
+            setTitlePlans((current) => ({
+                ...current,
+                [msg.id]: { instruction: '', busy: false, error: message },
+            }));
+            toast.error(message);
+        }
+    }, [adData, narrationPatchFromMessage, updateAdData]);
+
+    const updateTitlePlan = useCallback((messageId: string, updater: (proposal: TitlePlanningProposal) => TitlePlanningProposal) => {
+        setTitlePlans((current) => {
+            const state = current[messageId];
+            if (!state?.proposal) return current;
+            return { ...current, [messageId]: { ...state, proposal: updater(state.proposal) } };
+        });
+    }, []);
+
+    const handleRefineTitlePlan = useCallback(async (msg: ChatMessage) => {
+        const state = titlePlans[msg.id];
+        if (!state?.proposal || !state.instruction.trim() || state.busy) return;
+        setTitlePlans((current) => ({
+            ...current,
+            [msg.id]: { ...state, busy: true, error: undefined },
+        }));
+        try {
+            const proposal = await planNarrationTitles({
+                script: extractScript(msg.content),
+                instruction: state.instruction,
+                previousTitles: state.proposal.suggestions,
+                revision: state.proposal.revision,
+            });
+            setTitlePlans((current) => ({
+                ...current,
+                [msg.id]: { proposal, instruction: '', busy: false },
+            }));
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Não foi possível ajustar os títulos.';
+            setTitlePlans((current) => ({
+                ...current,
+                [msg.id]: { ...state, busy: false, error: message },
+            }));
+        }
+    }, [titlePlans]);
+
+    const handleApplyTitlePlan = useCallback((msg: ChatMessage) => {
+        const proposal = titlePlans[msg.id]?.proposal;
+        if (!proposal) return;
+        const selected = proposal.suggestions
+            .filter((suggestion) => suggestion.selected && suggestion.text.trim())
+            .map((suggestion) => ({ ...suggestion, text: suggestion.text.trim() }));
+        if (!selected.length) {
+            toast.warning('Selecione pelo menos um título.');
+            return;
+        }
+        const nextAdData = { ...adData, ...narrationPatchFromMessage(msg) } as AdData;
+        if (
+            titlePlanningNarrationKey(adData.narrationPlainText) !==
+            titlePlanningNarrationKey(nextAdData.narrationPlainText)
+        ) {
+            toast.warning('A narração do projeto mudou. Gere novamente as sugestões para evitar títulos desatualizados.');
+            return;
+        }
+        updateAdData({
+            plannedTitles: selected,
+            plannedTitlesNarrationKey: titlePlanningNarrationKey(nextAdData.narrationPlainText),
+        });
+        toast.success(`${selected.length} título${selected.length === 1 ? '' : 's'} aplicado${selected.length === 1 ? '' : 's'} ao projeto.`);
+    }, [adData, narrationPatchFromMessage, titlePlans, updateAdData]);
 
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -1443,9 +1515,42 @@ export const ChatMileto: React.FC = () => {
                                         ? (
                                             <StructuredAgentResponse
                                                 content={msg.content}
-                                                copied={copiedMsgId === msg.id}
-                                                onCopy={() => handleCopyMessage(msg)}
                                                 onApply={() => handleUseAsScript(msg)}
+                                                onApplyAndCreateTitles={() => handleApplyAndCreateTitles(msg)}
+                                                titlePlanningNode={titlePlans[msg.id]?.proposal ? (
+                                                    <ChatTitleProposal
+                                                        proposal={titlePlans[msg.id].proposal!}
+                                                        busy={titlePlans[msg.id].busy}
+                                                        error={titlePlans[msg.id].error}
+                                                        instruction={titlePlans[msg.id].instruction}
+                                                        onInstructionChange={(instruction) => setTitlePlans((current) => ({
+                                                            ...current,
+                                                            [msg.id]: { ...(current[msg.id] || { busy: false }), instruction },
+                                                        }))}
+                                                        onRefine={() => handleRefineTitlePlan(msg)}
+                                                        onToggle={(id) => updateTitlePlan(msg.id, (proposal) => ({
+                                                            ...proposal,
+                                                            suggestions: proposal.suggestions.map((item) =>
+                                                                item.id === id ? { ...item, selected: !item.selected } : item
+                                                            ),
+                                                        }))}
+                                                        onEdit={(id, text) => updateTitlePlan(msg.id, (proposal) => ({
+                                                            ...proposal,
+                                                            suggestions: proposal.suggestions.map((item) =>
+                                                                item.id === id ? { ...item, text: text.slice(0, 90) } : item
+                                                            ),
+                                                        }))}
+                                                        onApply={() => handleApplyTitlePlan(msg)}
+                                                    />
+                                                ) : titlePlans[msg.id]?.busy ? (
+                                                    <div className="mt-3 rounded-xl border border-black/10 px-3 py-3 text-[11px] text-brand-muted dark:border-white/10">
+                                                        Analisando os gatilhos configurados e preparando os títulos…
+                                                    </div>
+                                                ) : titlePlans[msg.id]?.error ? (
+                                                    <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[.04] px-3 py-3 text-[11px] text-red-400">
+                                                        {titlePlans[msg.id].error}
+                                                    </div>
+                                                ) : undefined}
                                             />
                                         )
                                         : <div className="whitespace-pre-wrap">{msg.content}</div>}

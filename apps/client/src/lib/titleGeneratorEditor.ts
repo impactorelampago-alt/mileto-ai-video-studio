@@ -85,7 +85,9 @@ export const titleGeneratorConfigToEditor = (config: AiTitleGeneratorConfig): Ti
         sample: trigger.sample || trigger.name.toLocaleUpperCase('pt-BR'),
         enabled: trigger.enabled,
         maxWords: trigger.maxWords || Math.max(3, ...trigger.titleTypes.map((type) => type.maxWords || 3)),
-        maxOccurrences: trigger.maxOccurrences,
+        maxOccurrences: Number(config.version) < 5
+            ? 3
+            : Math.max(1, Math.min(3, Math.round(Number(trigger.maxOccurrences) || 3))),
         color: trigger.color,
         models: Object.fromEntries(trigger.titleTypes
             .filter((type) => !!titleModelById(type.styleId))
@@ -106,13 +108,13 @@ export const titleGeneratorEditorToConfig = (
     ...base,
     // Mantem pipeline/reviewer recebidos do gateway; o editor visual nao pode
     // desativar a revisao nem apagar o rollback remoto ao salvar os modelos.
-    version: Math.max(4, Number(base.version) || 4),
+    version: Math.max(5, Number(base.version) || 5),
     triggers: triggers.map((trigger) => ({
         id: trigger.id,
         name: trigger.name,
         enabled: trigger.enabled,
         maxWords: trigger.maxWords,
-        maxOccurrences: trigger.maxOccurrences,
+        maxOccurrences: Math.max(1, Math.min(3, Math.round(Number(trigger.maxOccurrences) || 3))),
         instructions: trigger.hint,
         examples: trigger.examples,
         sample: trigger.sample,
@@ -142,7 +144,7 @@ export const newCustomTriggerEditor = (name: string): TitleTriggerEditor => ({
     sample: name.toLocaleUpperCase('pt-BR'),
     enabled: true,
     maxWords: 3,
-    maxOccurrences: 1,
+    maxOccurrences: 3,
     color: { mode: 'brand', paletteSlot: 'rotate', primary: '#00e676', secondary: '#07110d' },
     models: {},
 });

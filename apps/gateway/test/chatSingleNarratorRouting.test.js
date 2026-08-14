@@ -17,7 +17,7 @@ test('chat normal não injeta contrato legado nem fallback do Diretor', () => {
     assert.doesNotMatch(serverSource, /CHAT_SCRIPT_OUTPUT_CONTRACT/);
     assert.doesNotMatch(serverSource, /getSystemPrompt/);
     assert.match(serverSource, /const systemPrompt = hasCustomSystem[\s\S]*\? system[\s\S]*: selectedAgent\.systemPrompt/);
-    assert.match(serverSource, /const fullMessages = systemPrompt[\s\S]*\? \[\{ role: 'system', content: systemPrompt \}, \.\.\.conversationMessages\][\s\S]*: conversationMessages/);
+    assert.match(serverSource, /const effectiveSystemPrompt = \[systemPrompt, privateVoiceContext\][\s\S]*const fullMessages = effectiveSystemPrompt[\s\S]*content: effectiveSystemPrompt[\s\S]*: conversationMessages/);
     assert.doesNotMatch(serverSource, /selectedAgent\?\.systemPrompt\s*\|\|\s*\(await getSystemPrompt/);
 });
 

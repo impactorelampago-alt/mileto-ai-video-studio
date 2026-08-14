@@ -12,6 +12,7 @@ import { userRequestedCleanNarration } from './narrationDirection.js';
 import { estimateUnits, priceOf, reserve, settle, release, getBalance } from './meter.js';
 import { resolveTier, resolveAgent } from './settings.js';
 import { agentRequiresStrictJsonOutput } from './agentDefaults.js';
+import { composeNarratorVoiceContext } from './narratorVoiceContext.js';
 import * as admin from './admin.js';
 import * as account from './account.js';
 import * as shared from './shared.js';
@@ -248,6 +249,7 @@ app.post(
             locale = 'pt-BR',
             system,
             json,
+            voiceContext,
             maxOutputTokens: requestedMaxOutputTokens,
         } = req.body || {};
         if (!Array.isArray(messages) || !messages.length) {
@@ -289,8 +291,12 @@ app.post(
         const systemPrompt = hasCustomSystem
             ? system
             : selectedAgent.systemPrompt;
-        const fullMessages = systemPrompt
-            ? [{ role: 'system', content: systemPrompt }, ...conversationMessages]
+        const privateVoiceContext = selectedAgent?.id === 'prompt_sales'
+            ? composeNarratorVoiceContext(voiceContext)
+            : '';
+        const effectiveSystemPrompt = [systemPrompt, privateVoiceContext].filter(Boolean).join('\n\n');
+        const fullMessages = effectiveSystemPrompt
+            ? [{ role: 'system', content: effectiveSystemPrompt }, ...conversationMessages]
             : conversationMessages;
         // Preserva apenas a intenção explícita "sem tags" para quando o usuário
         // aplicar um roteiro ao projeto. O texto da resposta continua bruto: não

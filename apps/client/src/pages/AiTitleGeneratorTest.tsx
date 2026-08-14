@@ -61,6 +61,8 @@ type PrototypeTitleModel = TitleModelDefinition;
 const TITLE_PREVIEW_CAPTION_STORAGE_KEY = 'mileto_ai_title_preview_caption_v1';
 const TITLE_GENERATOR_DRAFT_STORAGE_PREFIX = 'mileto_ai_title_generator_draft_v1';
 const TITLE_PREVIEW_IMAGE_SRC = `${import.meta.env.BASE_URL}title-preview-store.webp`;
+const MIN_USABLE_TITLE_TRIGGERS = 4;
+const MAX_TITLES_PER_TRIGGER = 3;
 
 interface StoredTitleGeneratorDraft {
     version: 1;
@@ -123,6 +125,10 @@ interface TriggerPrototype {
     models: Record<string, ModelSettings>;
 }
 
+const isUsableTrigger = (trigger: TriggerPrototype) => Boolean(
+    trigger.enabled && Object.values(trigger.models).some((model) => model.enabled)
+);
+
 const makeInitialOpenLibraries = (): Record<TitleLibrary, boolean> => ({
     'Call to Action (CTA)': false,
     'Biblioteca Premium': true,
@@ -156,7 +162,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
         id: 'scarcity',
         enabled: true,
         maxWords: 3,
-        maxOccurrences: 2,
+        maxOccurrences: 3,
         color: { mode: 'brand', paletteSlot: 'primary', primary: '#00e676', secondary: '#07110d' },
         name: 'Escassez e urgência',
         hint: 'Prazo, quantidade, vagas, lote ou estoque limitado.',
@@ -168,7 +174,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
         id: 'region',
         enabled: true,
         maxWords: 3,
-        maxOccurrences: 1,
+        maxOccurrences: 3,
         color: { mode: 'brand', paletteSlot: 'tertiary', primary: '#00e676', secondary: '#07110d' },
         name: 'Região',
         hint: 'Cidade, estado, país, bairro ou área atendida.',
@@ -180,7 +186,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
         id: 'cta',
         enabled: true,
         maxWords: 3,
-        maxOccurrences: 1,
+        maxOccurrences: 3,
         color: { mode: 'brand', paletteSlot: 'primary', primary: '#00e676', secondary: '#07110d' },
         name: 'CTA',
         hint: 'Ação esperada depois que a pessoa assistir ao trecho.',
@@ -192,7 +198,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
         id: 'price',
         enabled: true,
         maxWords: 3,
-        maxOccurrences: 2,
+        maxOccurrences: 3,
         color: { mode: 'brand', paletteSlot: 'secondary', primary: '#00e676', secondary: '#07110d' },
         name: 'Preço',
         hint: 'Valor, desconto, parcela, condição ou economia.',
@@ -204,7 +210,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
         id: 'benefit',
         enabled: true,
         maxWords: 4,
-        maxOccurrences: 2,
+        maxOccurrences: 3,
         color: { mode: 'brand', paletteSlot: 'rotate', primary: '#00e676', secondary: '#07110d' },
         name: 'Benefício / bônus',
         hint: 'Benefício concreto, bônus, transformação ou diferencial dito na narração.',
@@ -216,7 +222,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
         id: 'product',
         enabled: true,
         maxWords: 5,
-        maxOccurrences: 1,
+        maxOccurrences: 3,
         color: { mode: 'brand', paletteSlot: 'primary', primary: '#00e676', secondary: '#07110d' },
         name: 'Produto / oferta central',
         hint: 'Produto, serviço ou oferta central explicitamente apresentados, sem confundir com preço ou urgência.',
@@ -228,7 +234,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
         id: 'differentiator',
         enabled: true,
         maxWords: 5,
-        maxOccurrences: 1,
+        maxOccurrences: 3,
         color: { mode: 'brand', paletteSlot: 'rotate', primary: '#00e676', secondary: '#07110d' },
         name: 'Diferencial / prova',
         hint: 'Qualidade, mecanismo, personalização, garantia ou prova concreta realmente pronunciada.',
@@ -240,7 +246,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
         id: 'audience',
         enabled: true,
         maxWords: 5,
-        maxOccurrences: 1,
+        maxOccurrences: 3,
         color: { mode: 'brand', paletteSlot: 'secondary', primary: '#00e676', secondary: '#07110d' },
         name: 'Público / necessidade',
         hint: 'Público, necessidade ou problema explícito ao qual a oferta responde. Não deduza perfis não mencionados.',
@@ -469,7 +475,7 @@ const PreviewCompanySelect = ({
 };
 
 const configToPrototype = (config: AiTitleGeneratorConfig, format: TitleVideoFormat): TriggerPrototype[] => {
-    const editor = titleGeneratorConfigToEditor(config).map((trigger) => ({
+    let editor = titleGeneratorConfigToEditor(config).map((trigger) => ({
         ...trigger,
         models: Object.fromEntries(Object.entries(trigger.models).map(([modelId, settings]) => {
             const layout = settings.layouts[format] || settings.layouts['9:16'];
@@ -484,6 +490,28 @@ const configToPrototype = (config: AiTitleGeneratorConfig, format: TitleVideoFor
             }];
         })),
     })).map((trigger) => migrateDefaultTriggerCopy(trigger as TriggerPrototype)) as TriggerPrototype[];
+
+    if (Number(config.version) < 5) {
+        editor = editor.map((trigger) => ({ ...trigger, maxOccurrences: MAX_TITLES_PER_TRIGGER }));
+        const defaults = makeInitialTriggers();
+        for (const fallback of defaults) {
+            if (editor.filter(isUsableTrigger).length >= MIN_USABLE_TITLE_TRIGGERS) break;
+            const index = editor.findIndex((trigger) => trigger.id === fallback.id);
+            if (index >= 0) {
+                const current = editor[index];
+                editor[index] = {
+                    ...current,
+                    enabled: true,
+                    maxOccurrences: MAX_TITLES_PER_TRIGGER,
+                    models: Object.values(current.models).some((model) => model.enabled)
+                        ? current.models
+                        : fallback.models,
+                };
+            } else {
+                editor.push(fallback);
+            }
+        }
+    }
 
     const needsIdMigration = Number(config.version) < 2 || editor.some((trigger) => ['hook', 'offer', 'local'].includes(trigger.id));
     const needsTriggerMigration = Number(config.version) < 3;
@@ -708,6 +736,11 @@ export const AiTitleGeneratorTest = () => {
             toast.error(`Marque pelo menos um modelo para ${invalid.name}.`);
             return;
         }
+        const usableCount = snapshot.filter(isUsableTrigger).length;
+        if (usableCount < MIN_USABLE_TITLE_TRIGGERS) {
+            toast.error(`Mantenha pelo menos ${MIN_USABLE_TITLE_TRIGGERS} gatilhos ativos com um modelo marcado.`);
+            return;
+        }
         setSaving(true);
         try {
             // O ref recebe cada movimento no mesmo instante; o clique nunca salva
@@ -801,6 +834,11 @@ export const AiTitleGeneratorTest = () => {
     };
 
     const toggleModel = (model: PrototypeTitleModel, enabled: boolean) => {
+        const selectedEnabledCount = Object.values(selectedTrigger.models).filter((settings) => settings.enabled).length;
+        if (!enabled && selectedTrigger.enabled && selectedEnabledCount <= 1) {
+            toast.warning('Todo gatilho ativo precisa manter pelo menos um modelo de título.');
+            return;
+        }
         commitTriggers((current) => current.map((trigger) => {
             if (trigger.id !== selectedTrigger.id) return trigger;
             return {
@@ -881,7 +919,7 @@ export const AiTitleGeneratorTest = () => {
             id: `custom-${generateId()}`,
             enabled: true,
             maxWords: 3,
-            maxOccurrences: 1,
+            maxOccurrences: MAX_TITLES_PER_TRIGGER,
             color: { mode: 'brand', paletteSlot: 'rotate', primary: '#00e676', secondary: '#07110d' },
             name,
             hint: 'Gatilho personalizado da sua agência.',
@@ -893,6 +931,18 @@ export const AiTitleGeneratorTest = () => {
         setNewTriggerName('');
         setIsCreatingTrigger(false);
         selectTrigger(trigger);
+    };
+
+    const deleteSelectedCustomTrigger = () => {
+        if (!selectedTrigger.id.startsWith('custom-')) return;
+        const remaining = triggersRef.current.filter((item) => item.id !== selectedTrigger.id);
+        if (remaining.filter(isUsableTrigger).length < MIN_USABLE_TITLE_TRIGGERS) {
+            toast.warning(`O Gerador de Títulos precisa manter pelo menos ${MIN_USABLE_TITLE_TRIGGERS} gatilhos ativos.`);
+            return;
+        }
+        triggersRef.current = remaining;
+        setTriggers(remaining);
+        selectTrigger(remaining[0]);
     };
 
     const resetPrototype = async () => {
@@ -1097,9 +1147,9 @@ export const AiTitleGeneratorTest = () => {
                                             <label className="block text-[8px] font-bold uppercase tracking-wider text-brand-muted">Exemplos<input value={selectedTrigger.examples.join(', ')} onChange={(event) => patchSelectedTrigger({ examples: event.target.value.split(',').map((item) => item.trim()).filter(Boolean).slice(0, 8) })} className="mt-1 h-9 w-full rounded-lg border border-white/8 bg-black/20 px-2 text-[9px] font-normal normal-case tracking-normal text-foreground outline-none" /></label>
                                             <div className="grid grid-cols-2 gap-2">
                                                 <label className="text-[8px] font-bold uppercase leading-tight tracking-wider text-brand-muted">Máx. palavras por título<input type="number" min={1} max={12} value={selectedTrigger.maxWords} onChange={(event) => patchSelectedTrigger({ maxWords: Math.max(1, Math.min(12, Number(event.target.value) || 1)) })} className="mt-1 h-9 w-full rounded-lg border border-white/8 bg-black/20 px-2 text-xs text-foreground outline-none focus:border-brand-lime/35" /></label>
-                                                <label className="text-[8px] font-bold uppercase leading-tight tracking-wider text-brand-muted">Máx. títulos por gatilho<input type="number" min={1} max={6} value={selectedTrigger.maxOccurrences} onChange={(event) => patchSelectedTrigger({ maxOccurrences: Math.max(1, Math.min(6, Number(event.target.value) || 1)) })} className="mt-1 h-9 w-full rounded-lg border border-white/8 bg-black/20 px-2 text-xs text-foreground outline-none focus:border-brand-lime/35" /></label>
+                                                <label className="text-[8px] font-bold uppercase leading-tight tracking-wider text-brand-muted">Máx. títulos por gatilho<input type="number" min={1} max={MAX_TITLES_PER_TRIGGER} value={selectedTrigger.maxOccurrences} onChange={(event) => patchSelectedTrigger({ maxOccurrences: Math.max(1, Math.min(MAX_TITLES_PER_TRIGGER, Number(event.target.value) || 1)) })} className="mt-1 h-9 w-full rounded-lg border border-white/8 bg-black/20 px-2 text-xs text-foreground outline-none focus:border-brand-lime/35" /></label>
                                             </div>
-                                            {selectedTrigger.id.startsWith('custom-') && <button type="button" onClick={() => { const remaining = triggersRef.current.filter((item) => item.id !== selectedTrigger.id); triggersRef.current = remaining; setTriggers(remaining); selectTrigger(remaining[0]); }} className="text-[8px] font-black uppercase tracking-wider text-red-300 hover:text-red-200">Excluir gatilho personalizado</button>}
+                                            {selectedTrigger.id.startsWith('custom-') && <button type="button" onClick={deleteSelectedCustomTrigger} className="text-[8px] font-black uppercase tracking-wider text-red-300 hover:text-red-200">Excluir gatilho personalizado</button>}
                                         </div>
                                     )}
                                 </article>

@@ -197,6 +197,13 @@ export interface CustomVoice {
     id: string;
     name: string;
     description?: string;
+    /**
+     * Identificador interno e opaco usado em contextos de IA. Nunca corresponde
+     * ao ID real enviado ao provedor de voz.
+     */
+    catalogKey?: string;
+    /** Vozes legadas sem uma descrição útil continuam funcionando no TTS, mas não entram em recomendações. */
+    recommendationStatus?: 'ready' | 'description_required';
     /** Vozes salvas antes do suporte multi-provedor não têm o campo — trata-se como Fish Audio. */
     provider?: TtsProvider;
     /** Ajustes aplicados ao escolher esta voz. Ausente em vozes antigas. */
@@ -392,6 +399,24 @@ export interface TitleHook {
     imageUrl?: string; // URL for uploaded title images
 }
 
+/** Proposta editorial ainda sem tempo/estilo. SÃ³ vira TitleHook apÃ³s confirmaÃ§Ã£o e legendas. */
+export interface TitlePlanningSuggestion {
+    id: string;
+    text: string;
+    sourceText: string;
+    triggerId: string;
+    triggerName: string;
+    selected: boolean;
+}
+
+export interface TitlePlanningTrigger {
+    id: string;
+    name: string;
+    maxOccurrences: number;
+    status: 'found' | 'not_found';
+    suggestionCount: number;
+}
+
 export interface BrandPalette {
     primary: string;
     secondary: string;
@@ -450,6 +475,10 @@ export interface AdData {
     transitionMuted?: boolean;
     transitionPath?: string; // Caminho em disco para injetar via Backend Híbrido
     dynamicTitles?: TitleHook[];
+    /** SugestÃµes confirmadas no Chat antes de existirem legendas temporizadas. */
+    plannedTitles?: TitlePlanningSuggestion[];
+    /** Assinatura da narraÃ§Ã£o que originou plannedTitles. */
+    plannedTitlesNarrationKey?: string;
     /** Assinatura das legendas/narração usadas pela geração automática. */
     dynamicTitlesSourceKey?: string;
     /** Resumo local e sanitizado da geração; nunca contém prompt, token ou resposta bruta. */

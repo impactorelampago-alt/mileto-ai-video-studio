@@ -59,7 +59,7 @@ test('migra somente o preset legado exato para a configuracao rapida v4', () => 
     };
     const migrated = normalizeTitleGeneratorConfig(legacy);
 
-    assert.equal(migrated.version, 4);
+    assert.equal(migrated.version, 5);
     assert.deepEqual(migrated.ai, {
         provider: 'openai',
         model: 'gpt-5-mini',
@@ -70,7 +70,7 @@ test('migra somente o preset legado exato para a configuracao rapida v4', () => 
     const custom = structuredClone(legacy);
     custom.ai.maxOutputTokens = 1800;
     const preserved = normalizeTitleGeneratorConfig(custom);
-    assert.equal(preserved.version, 4);
+    assert.equal(preserved.version, 5);
     assert.deepEqual(preserved.ai, custom.ai);
 });
 
@@ -90,7 +90,8 @@ test('controller faz uma geracao e uma revisao batch, sem chamadas por titulo, e
     const gatewayServer = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
 
     assert.match(controller, /maxAttempts:\s*1/);
-    assert.equal(controller.match(/gatewayChat\(token/g)?.length, 2);
+    // Uma chamada para planejar no diálogo, uma para gerar e uma revisão batch.
+    assert.equal(controller.match(/gatewayChat\(token/g)?.length, 3);
     assert.match(controller, /requestBatch:\s*async \(items\)/);
     assert.doesNotMatch(controller, /maxProviderAttempts/);
     assert.match(controller, /TITLE_GENERATION_PREFLIGHT_TIMEOUT_MS/);

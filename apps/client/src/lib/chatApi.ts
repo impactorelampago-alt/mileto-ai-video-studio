@@ -1,6 +1,8 @@
 import { ChatAgentId, ChatFolder, ChatSession, ChatMessage } from '../types';
 import { API_BASE_URL } from './apiBase';
 import { authStorage } from './authStorage';
+import { SYSTEM_VOICES } from './systemVoices';
+import { readNarratorVoiceContext } from './narratorVoiceContext';
 
 const BASE = `${API_BASE_URL}/api/chat`;
 const ACTIVE_CHAT_AGENT_ID: ChatAgentId = 'prompt_sales';
@@ -143,7 +145,15 @@ export async function sendMessage(
         method: 'POST',
         // Conversas antigas podem ter outro agentId salvo. Isso e somente
         // historico; toda resposta nova e resolvida pelo Narrador.
-        body: JSON.stringify({ sessionId, content, model, reasoning, locale, agentId: ACTIVE_CHAT_AGENT_ID }),
+        body: JSON.stringify({
+            sessionId,
+            content,
+            model,
+            reasoning,
+            locale,
+            agentId: ACTIVE_CHAT_AGENT_ID,
+            voiceContext: readNarratorVoiceContext(SYSTEM_VOICES),
+        }),
         signal,
     });
     return {

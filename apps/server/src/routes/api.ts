@@ -79,6 +79,7 @@ router.post('/stt/generate-captions', sttController.generateCaptions);
 // Video Routes
 router.post('/video/upload', upload.single('video'), videoController.uploadVideo);
 router.post('/video/generate-titles', aiController.generateTitles);
+router.post('/video/plan-titles', aiController.planTitles);
 router.post('/video/mux', videoController.muxFinalExport);
 router.post('/video/export-hybrid', videoController.exportHybrid);
 
