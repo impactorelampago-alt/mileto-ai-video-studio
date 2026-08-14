@@ -557,5 +557,7 @@ export interface ChatMessage {
     agentTier?: 'lite' | 'mileto' | 'ultra';
     /** Metadado tecnico separado da conversa; preserva pedidos como sem tags. */
     narrationDirectionMode?: NarrationDirectionMode;
+    /** Pedido editorial de títulos: aparece no histórico, mas não vira contexto do Narrador. */
+    interactionMode?: 'title_refinement';
     createdAt: string;
 }

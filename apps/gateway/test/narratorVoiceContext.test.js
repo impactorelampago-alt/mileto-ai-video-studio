@@ -43,6 +43,35 @@ test('mantém no máximo uma voz selecionada e limita bloco final a 8 KB', () =>
     assert.ok((prompt.match(/<VOZ /g) || []).length <= 30);
 });
 
+test('orienta sugestão opcional por estilo sem bloquear a criação nem substituir a voz selecionada', () => {
+    const prompt = composeNarratorVoiceContext({
+        version: 1,
+        voices: [
+            {
+                key: 'mv-system-padrao-feminina',
+                name: 'Padrão Feminina',
+                description: 'Voz clara e explicativa',
+                selected: true,
+            },
+            {
+                key: 'mv-system-locutor-radio',
+                name: 'Locutor Rádio',
+                description: 'Locução de rádio com impacto',
+                selected: false,
+            },
+        ],
+    });
+
+    assert.match(prompt, /estilo vocal/);
+    assert.match(prompt, /no máximo uma sugestão breve e opcional/);
+    assert.match(prompt, /nunca deve interromper, bloquear ou adiar a criação solicitada/);
+    assert.match(prompt, /Se uma voz estiver marcada como selecionada, respeite essa escolha/);
+    assert.match(prompt, /não invente vozes, capacidades ou descrições/);
+    assert.match(prompt, /Não reproduza nem serialize o catálogo completo em respostas ou metadados/);
+    assert.match(prompt, /<NOME>Locutor Rádio<\/NOME>/);
+    assert.match(prompt, /<DESCRICAO>Locução de rádio com impacto<\/DESCRICAO>/);
+});
+
 test('gateway injeta catálogo somente no Narrador e fora do histórico', () => {
     const source = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
     assert.match(source, /selectedAgent\?\.id === 'prompt_sales'/);

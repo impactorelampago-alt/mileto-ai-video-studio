@@ -50,6 +50,11 @@ import {
     runTitleEditorialReview,
     TITLE_EDITORIAL_REVIEW_SYSTEM_PROMPT,
 } from '../services/titleEditorialReview';
+import {
+    normalizePlanningText,
+    planningDisplaySupported,
+    planningLiteralExists,
+} from '../services/titlePlanningSafety';
 import { storeAiGeneratedMedia } from './fileExplorerController';
 
 const titleExtractionPrompt = (config: TitleGeneratorConfig) => {
@@ -108,26 +113,6 @@ type PlannedTitleSuggestion = {
     triggerId: string;
     triggerName: string;
     selected: boolean;
-};
-
-const normalizePlanningText = (value: unknown) => String(value || '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLocaleLowerCase('pt-BR')
-    .replace(/[^a-z0-9%$]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const planningLiteralExists = (script: string, candidate: unknown) => {
-    const scriptKey = normalizePlanningText(script);
-    const candidateKey = normalizePlanningText(candidate);
-    return candidateKey.length > 1 && (` ${scriptKey} `).includes(` ${candidateKey} `);
-};
-
-const planningDisplaySupported = (sourceText: string, displayText: string) => {
-    const sourceWords = new Set(normalizePlanningText(sourceText).split(' ').filter(Boolean));
-    const displayWords = normalizePlanningText(displayText).split(' ').filter(Boolean);
-    return displayWords.length > 0 && displayWords.every((word) => sourceWords.has(word));
 };
 
 const safePlanningLine = (value: unknown, maxLength = 90) => String(value || '')
@@ -268,9 +253,10 @@ export const planTitles = async (req: Request, res: Response) => {
             if (!planningLiteralExists(script, sourceText)) return [];
             const requestedText = safePlanningLine(candidate?.text || candidate?.displayText || sourceText);
             const safeCompact = compactTitleDisplayText(sourceText, trigger.id, trigger.maxWords)?.text || sourceText;
-            // A IA pode escolher/cortar/reordenar palavras da evidência, mas não
-            // pode introduzir um preço, nome ou benefício ausente. Edições
-            // manuais posteriores continuam livres e explicitamente autorais.
+            // A IA pode recortar um trecho literal da evidência, mas não pode
+            // reordenar ou recombinar palavras para associar preço, nome ou
+            // benefício ao fato errado. Edições manuais posteriores continuam
+            // livres e explicitamente autorais.
             const text = planningDisplaySupported(sourceText, requestedText)
                 ? requestedText
                 : safePlanningLine(safeCompact);

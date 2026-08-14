@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import {
+    planningDisplaySupported,
+    planningLiteralExists,
+} from '../src/services/titlePlanningSafety';
 
 const controllerSource = readFileSync(
     path.resolve(__dirname, '../src/controllers/aiController.ts'),
@@ -49,25 +53,59 @@ test('nenhum gatilho aceita mais de três propostas', () => {
 });
 
 test('sourceText só é aceito quando corresponde a trecho literal normalizado da narração', () => {
-    assert.match(controllerSource, /const planningLiteralExists = \(script: string, candidate: unknown\) => \{/);
-    assert.match(controllerSource, /const scriptKey = normalizePlanningText\(script\);/);
-    assert.match(controllerSource, /const candidateKey = normalizePlanningText\(candidate\);/);
-    assert.match(
-        controllerSource,
-        /candidateKey\.length > 1 && \(` \$\{scriptKey\} `\)\.includes\(` \$\{candidateKey\} `\)/,
-    );
+    assert.equal(planningLiteralExists(
+        'Atenção, Piracicaba! Óculos a partir de R$ 199.',
+        'piracicaba óculos a partir de r$ 199',
+    ), true);
+    assert.equal(planningLiteralExists(
+        'Atenção, Piracicaba! Óculos a partir de R$ 199.',
+        'Campinas',
+    ), false);
     assert.match(
         controllerSource,
         /const sourceText = safePlanningLine\(candidate\?\.sourceText \|\| candidate\?\.text, 240\);\s*if \(!planningLiteralExists\(script, sourceText\)\) return \[\];/,
     );
 });
 
-test('texto visual da IA não pode introduzir fatos ausentes da evidência literal', () => {
-    assert.match(controllerSource, /const planningDisplaySupported = \(sourceText: string, displayText: string\) => \{/);
-    assert.match(
-        controllerSource,
-        /displayWords\.length > 0 && displayWords\.every\(\(word\) => sourceWords\.has\(word\)\)/,
-    );
+test('texto visual da IA rejeita preço recombinado com outro produto ou benefício', () => {
+    assert.equal(planningDisplaySupported(
+        'Óculos por R$ 199. Exame premium por R$ 499.',
+        'Exame R$ 199',
+    ), false);
+});
+
+test('texto visual da IA rejeita nomes e localidades recombinados', () => {
+    assert.equal(planningDisplaySupported(
+        'Ótica Reis atende Piracicaba. Clínica Visão atende Campinas.',
+        'Clínica Reis Campinas',
+    ), false);
+});
+
+test('texto visual da IA rejeita duplicação de palavras ou valores', () => {
+    assert.equal(planningDisplaySupported('Óculos por R$ 199.', 'R$ R$ 199'), false);
+    assert.equal(planningDisplaySupported('Exame de vista grátis.', 'Exame exame grátis'), false);
+});
+
+test('texto visual da IA aceita recortes literais normalizados usados pelo produto', () => {
+    const validCases = [
+        ['A PARTIR DE R$ 39,90', 'R$ 39,90'],
+        ['ATENÇÃO, PIRACICABA', 'PIRACICABA'],
+        ['O EXAME DE VISTA', 'EXAME DE VISTA'],
+        ['SUA ARMAÇÃO', 'ARMAÇÃO'],
+        ['SOMENTE ATÉ SÁBADO', 'ATÉ SÁBADO'],
+        ['CLIQUE NO BOTÃO', 'clique no botão'],
+    ];
+
+    validCases.forEach(([sourceText, displayText]) => {
+        assert.equal(
+            planningDisplaySupported(sourceText, displayText),
+            true,
+            `esperava aceitar "${displayText}" dentro de "${sourceText}"`,
+        );
+    });
+});
+
+test('texto visual rejeitado continua usando o compactador determinístico', () => {
     assert.match(
         controllerSource,
         /const text = planningDisplaySupported\(sourceText, requestedText\)[\s\S]*\? requestedText[\s\S]*: safePlanningLine\(safeCompact\)/,

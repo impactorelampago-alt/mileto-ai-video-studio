@@ -176,6 +176,39 @@ export const truncateMessagesFrom = async (req: Request, res: Response) => {
     }
 };
 
+export const persistTitleRefinementMessage = async (req: Request, res: Response) => {
+    try {
+        const { sessionId } = req.params;
+        const rawContent = req.body?.content;
+
+        if (typeof rawContent !== 'string') {
+            res.status(400).json({ ok: false, message: 'Content deve ser uma string.' });
+            return;
+        }
+        if (rawContent.length > 1_000) {
+            res.status(400).json({ ok: false, message: 'Content deve ter no máximo 1000 caracteres.' });
+            return;
+        }
+
+        const content = rawContent.trim();
+        if (!content) {
+            res.status(400).json({ ok: false, message: 'Content não pode ficar vazio.' });
+            return;
+        }
+        if (!chatService.getSession(sessionId)) {
+            res.status(404).json({ ok: false, message: 'Conversa não encontrada.' });
+            return;
+        }
+
+        const message = chatService.addMessage(sessionId, 'user', content, {
+            interactionMode: 'title_refinement',
+        });
+        res.status(201).json({ ok: true, message });
+    } catch (err: unknown) {
+        res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'Unknown error' });
+    }
+};
+
 // ─── Send Message & Get AI Response ──────────────────────────────────────────
 
 export const getResponseStatus = async (req: Request, res: Response) => {
@@ -235,18 +268,7 @@ export const sendMessage = async (req: Request, res: Response) => {
 
         // O histórico é local; a persona e a chave ficam no gateway. Mandamos só a
         // conversa (o tier Mileto e o nível de raciocínio o gateway resolve).
-        const history = chatService
-            .getMessages(sessionId)
-            .filter((m) => {
-                if (m.role === 'user') return true;
-                if (m.role !== 'assistant') return false;
-                // Falhas transitórias ficam visíveis no histórico local, mas não
-                // são contexto de negócio e não devem contaminar a próxima tentativa.
-                const content = m.content.trim();
-                return !content.startsWith('❌') && !content.startsWith('⚠️');
-            })
-            .map((m) => ({ role: m.role, content: m.content }));
-        const historyForGateway = history;
+        const historyForGateway = chatService.getNarratorGatewayHistory(sessionId);
 
         let assistantContent = '';
         let assistantAgent: { id: string; label: string; version: number; tier: 'lite' | 'mileto' | 'ultra' } | undefined;

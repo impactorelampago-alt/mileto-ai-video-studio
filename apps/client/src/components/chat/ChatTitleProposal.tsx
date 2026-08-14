@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, CircleDashed, Loader2, RefreshCw, Sparkles } from 'lucide-react';
+import { Check, CircleDashed, LoaderCircle, MessageSquareText, Sparkles } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { TitlePlanningProposal } from '../../lib/titlePlanning';
 
@@ -7,9 +7,9 @@ interface ChatTitleProposalProps {
     proposal: TitlePlanningProposal;
     busy?: boolean;
     error?: string | null;
-    instruction: string;
-    onInstructionChange: (value: string) => void;
-    onRefine: () => void;
+    active: boolean;
+    lastInstruction?: string;
+    onActivate: () => void;
     onToggle: (id: string) => void;
     onEdit: (id: string, value: string) => void;
     onApply: () => void;
@@ -19,9 +19,9 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
     proposal,
     busy = false,
     error,
-    instruction,
-    onInstructionChange,
-    onRefine,
+    active,
+    lastInstruction,
+    onActivate,
     onToggle,
     onEdit,
     onApply,
@@ -57,8 +57,9 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
                         <button
                             type="button"
                             onClick={() => onToggle(item.id)}
+                            disabled={busy}
                             className={cn(
-                                'grid h-5 w-5 shrink-0 place-items-center rounded-md border transition',
+                                'grid h-5 w-5 shrink-0 place-items-center rounded-md border transition disabled:cursor-wait disabled:opacity-50',
                                 item.selected
                                     ? 'border-brand-accent bg-brand-accent text-[#07110d]'
                                     : 'border-black/20 text-transparent dark:border-white/20'
@@ -71,8 +72,9 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
                             <input
                                 value={item.text}
                                 onChange={(event) => onEdit(item.id, event.target.value)}
+                                disabled={busy}
                                 maxLength={90}
-                                className="w-full bg-transparent text-[12px] font-semibold text-foreground outline-none"
+                                className="w-full bg-transparent text-[12px] font-semibold text-foreground outline-none disabled:cursor-wait disabled:opacity-60"
                                 aria-label={`Texto do gatilho ${item.triggerName}`}
                             />
                             <div className="mt-0.5 truncate text-[9px] text-brand-muted">
@@ -117,30 +119,35 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
             </div>
 
             <div className="border-t border-black/5 p-3 dark:border-white/5">
-                <div className="flex gap-2">
-                    <input
-                        value={instruction}
-                        onChange={(event) => onInstructionChange(event.target.value)}
-                        onKeyDown={(event) => {
-                            if (event.key === 'Enter' && !event.shiftKey && instruction.trim() && !busy) {
-                                event.preventDefault();
-                                onRefine();
-                            }
-                        }}
-                        placeholder="Ex.: faltou um CTA; deixe o preço mais direto…"
-                        maxLength={1_000}
-                        className="min-w-0 flex-1 rounded-xl border border-black/10 bg-black/[.02] px-3 py-2 text-[11px] text-foreground outline-none transition focus:border-brand-accent/40 dark:border-white/10 dark:bg-white/[.02]"
-                    />
+                {busy ? (
+                    <div className="flex items-center gap-2 rounded-xl border border-brand-accent/15 bg-brand-accent/[.035] px-3 py-2.5 text-[10px] text-brand-muted">
+                        <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-brand-accent motion-reduce:animate-none" aria-hidden="true" />
+                        Ajuste em andamento no campo principal do chat.
+                    </div>
+                ) : active ? (
+                    <div className="rounded-xl border border-brand-accent/20 bg-brand-accent/[.045] px-3 py-2.5">
+                        <div className="flex items-center gap-2 text-[10px] font-semibold text-brand-accent">
+                            <MessageSquareText className="h-3.5 w-3.5" />
+                            Continue pelo campo principal do chat
+                        </div>
+                        <p className="mt-1 text-[10px] leading-4 text-brand-muted">
+                            Sua próxima mensagem ajustará estes títulos. Para voltar à narração, basta pedir uma nova ou encerrar o modo.
+                        </p>
+                        {lastInstruction && (
+                            <p className="mt-1.5 truncate text-[9px] text-brand-muted" title={lastInstruction}>
+                                Último pedido: “{lastInstruction}”
+                            </p>
+                        )}
+                    </div>
+                ) : (
                     <button
                         type="button"
-                        disabled={busy || !instruction.trim()}
-                        onClick={onRefine}
-                        className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-black/10 px-3 text-[10px] font-semibold text-foreground transition hover:border-brand-accent/35 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10"
+                        onClick={onActivate}
+                        className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-black/10 text-[10px] font-semibold text-foreground transition hover:border-brand-accent/35 hover:text-brand-accent dark:border-white/10"
                     >
-                        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                        Ajustar
+                        <MessageSquareText className="h-3.5 w-3.5" /> Continuar ajustando no chat
                     </button>
-                </div>
+                )}
                 {error && <p className="mt-2 text-[10px] text-red-400">{error}</p>}
                 <button
                     type="button"

@@ -54,7 +54,8 @@ test('a narração é aplicada antes de solicitar títulos e a ação simples n�
         applyAndPlan.indexOf('updateAdData(patch)') < applyAndPlan.indexOf('await planNarrationTitles'),
         'a narração deve ser aplicada antes de iniciar o planejamento',
     );
-    assert.match(applyAndPlan, /script:\s*nextAdData\.narrationPlainText/);
+    assert.match(applyAndPlan, /const script = nextAdData\.narrationPlainText/);
+    assert.match(applyAndPlan, /planNarrationTitles\(\{ script, signal:/);
 });
 
 test('a proposta mostra todos os gatilhos inclusive os não encontrados', () => {

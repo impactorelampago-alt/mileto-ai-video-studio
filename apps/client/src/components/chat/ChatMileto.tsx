@@ -35,7 +35,9 @@ import { AdData, ChatAgentId, ChatFolder, ChatSession, ChatMessage } from '../..
 import { narrationContractFromChatScript } from '../../lib/narrationContract';
 import { invalidatedNarrationDerivatives } from '../../lib/narrationState';
 import { planNarrationTitles, titlePlanningNarrationKey, type TitlePlanningProposal } from '../../lib/titlePlanning';
+import { classifyChatTitleModeIntent } from '../../lib/chatTitleMode';
 import { ChatTitleProposal } from './ChatTitleProposal';
+import { TitlePlanningProgress, type TitlePlanningProgressPhase } from './TitlePlanningProgress';
 import {
     extractChatNarration as extractScript,
     extractChatNarrationTitle as extractProjectTitle,
@@ -53,6 +55,17 @@ interface SavedChatScript {
     content: string;
     createdAt: number;
     updatedAt: number;
+}
+
+interface ChatTitlePlanState {
+    proposal?: TitlePlanningProposal;
+    busy: boolean;
+    error?: string;
+    lastInstruction?: string;
+    phase: TitlePlanningProgressPhase;
+    sessionId: string;
+    script: string;
+    narrationKey: string;
 }
 
 const SAVED_CHAT_SCRIPTS_STORAGE_KEY = 'mileto_chat_saved_scripts_v1';
@@ -190,9 +203,16 @@ interface NarrationCardProps {
     onApply: () => void;
     onApplyAndCreateTitles: () => void;
     titlePlanningNode?: React.ReactNode;
+    actionsDisabled?: boolean;
 }
 
-const NarrationCard = ({ content, onApply, onApplyAndCreateTitles, titlePlanningNode }: NarrationCardProps) => {
+const NarrationCard = ({
+    content,
+    onApply,
+    onApplyAndCreateTitles,
+    titlePlanningNode,
+    actionsDisabled = false,
+}: NarrationCardProps) => {
     const delivery = parseChatNarrationDelivery(content);
     if (!delivery) return null;
 
@@ -259,7 +279,8 @@ const NarrationCard = ({ content, onApply, onApplyAndCreateTitles, titlePlanning
                         type="button"
                         data-narration-action="apply"
                         onClick={onApply}
-                        className="inline-flex h-9 items-center justify-center rounded-xl border border-black/10 px-3 text-[10px] font-semibold text-foreground transition hover:border-brand-accent/35 dark:border-white/10"
+                        disabled={actionsDisabled}
+                        className="inline-flex h-9 items-center justify-center rounded-xl border border-black/10 px-3 text-[10px] font-semibold text-foreground transition hover:border-brand-accent/35 disabled:cursor-wait disabled:opacity-45 dark:border-white/10"
                     >
                         Aplicar narração
                     </button>
@@ -267,7 +288,8 @@ const NarrationCard = ({ content, onApply, onApplyAndCreateTitles, titlePlanning
                         type="button"
                         data-narration-action="apply-and-create-titles"
                         onClick={onApplyAndCreateTitles}
-                        className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-brand-accent px-3 text-[10px] font-bold text-[#07110d] transition hover:brightness-105"
+                        disabled={actionsDisabled}
+                        className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-brand-accent px-3 text-[10px] font-bold text-[#07110d] transition hover:brightness-105 disabled:cursor-wait disabled:opacity-45"
                     >
                         <Wand2 className="h-3.5 w-3.5" /> Aplicar e criar títulos
                     </button>
@@ -291,9 +313,16 @@ interface StructuredAgentResponseProps {
     onApply: () => void;
     onApplyAndCreateTitles: () => void;
     titlePlanningNode?: React.ReactNode;
+    actionsDisabled?: boolean;
 }
 
-const StructuredAgentResponse = ({ content, onApply, onApplyAndCreateTitles, titlePlanningNode }: StructuredAgentResponseProps) => {
+const StructuredAgentResponse = ({
+    content,
+    onApply,
+    onApplyAndCreateTitles,
+    titlePlanningNode,
+    actionsDisabled = false,
+}: StructuredAgentResponseProps) => {
     const delivery = parseChatNarrationDelivery(content);
     if (delivery) {
         return (
@@ -302,6 +331,7 @@ const StructuredAgentResponse = ({ content, onApply, onApplyAndCreateTitles, tit
                 onApply={onApply}
                 onApplyAndCreateTitles={onApplyAndCreateTitles}
                 titlePlanningNode={titlePlanningNode}
+                actionsDisabled={actionsDisabled}
             />
         );
     }
@@ -396,12 +426,40 @@ export const ChatMileto: React.FC = () => {
 
     const navigate = useNavigate();
     const { adData, updateAdData } = useWizard();
-    const [titlePlans, setTitlePlans] = useState<Record<string, {
-        proposal?: TitlePlanningProposal;
-        instruction: string;
-        busy: boolean;
-        error?: string;
-    }>>({});
+    const [titlePlans, setTitlePlans] = useState<Record<string, ChatTitlePlanState>>({});
+    const [activeTitlePlanMessageId, setActiveTitlePlanMessageId] = useState<string | null>(null);
+    const titlePlanAbortControllerRef = useRef<AbortController | null>(null);
+    const activeTitlePlan = activeTitlePlanMessageId
+        ? titlePlans[activeTitlePlanMessageId]
+        : undefined;
+    const isTitleModeActive = Boolean(
+        activeTitlePlanMessageId
+        && activeTitlePlan
+        && activeTitlePlan.sessionId === activeSessionId,
+    );
+
+    const exitTitleMode = useCallback((notify = false) => {
+        titlePlanAbortControllerRef.current?.abort();
+        titlePlanAbortControllerRef.current = null;
+        if (activeTitlePlanMessageId) {
+            setTitlePlans((current) => {
+                const state = current[activeTitlePlanMessageId];
+                if (!state?.busy) return current;
+                return {
+                    ...current,
+                    [activeTitlePlanMessageId]: {
+                        ...state,
+                        busy: false,
+                        error: 'Planejamento interrompido. Você pode iniciar novamente quando quiser.',
+                    },
+                };
+            });
+        }
+        setActiveTitlePlanMessageId(null);
+        setTierMenuOpen(false);
+        setInputText('');
+        if (notify) toast.info('Ajuste de títulos encerrado. O Narrador voltou ao modo normal.');
+    }, [activeTitlePlanMessageId]);
 
     useEffect(() => {
         try {
@@ -471,38 +529,81 @@ export const ChatMileto: React.FC = () => {
 
     const handleUseAsScript = useCallback(
         (msg: ChatMessage) => {
+            if (isLoading) {
+                toast.info('Aguarde a resposta atual terminar antes de aplicar outra narração.');
+                return;
+            }
+            exitTitleMode();
             updateAdData(narrationPatchFromMessage(msg));
             setIsOpen(false);
             navigate('/wizard/step/1');
             toast.success('Narração aplicada ao projeto.');
         },
-        [navigate, narrationPatchFromMessage, updateAdData]
+        [exitTitleMode, isLoading, navigate, narrationPatchFromMessage, updateAdData]
     );
 
     const handleApplyAndCreateTitles = useCallback(async (msg: ChatMessage) => {
+        if (isLoading) {
+            toast.info('Aguarde a resposta atual terminar antes de criar títulos.');
+            return;
+        }
         const patch = narrationPatchFromMessage(msg);
         const nextAdData = { ...adData, ...patch } as AdData;
+        const script = nextAdData.narrationPlainText;
+        exitTitleMode();
+        setEditingMessageId(null);
+        const controller = new AbortController();
+        titlePlanAbortControllerRef.current = controller;
         updateAdData(patch);
+        setActiveTitlePlanMessageId(msg.id);
+        setTierMenuOpen(false);
         setTitlePlans((current) => ({
             ...current,
-            [msg.id]: { instruction: '', busy: true },
+            [msg.id]: {
+                busy: true,
+                phase: 'generating',
+                sessionId: msg.sessionId,
+                script,
+                narrationKey: titlePlanningNarrationKey(script),
+            },
         }));
         try {
-            const proposal = await planNarrationTitles({ script: nextAdData.narrationPlainText });
+            const proposal = await planNarrationTitles({ script, signal: controller.signal });
+            if (titlePlanAbortControllerRef.current !== controller) return;
             setTitlePlans((current) => ({
                 ...current,
-                [msg.id]: { proposal, instruction: '', busy: false },
+                [msg.id]: {
+                    ...current[msg.id],
+                    proposal,
+                    busy: false,
+                    phase: 'generating',
+                    error: undefined,
+                },
             }));
             toast.success('Narração aplicada. Agora revise os títulos sugeridos.');
         } catch (error) {
+            if (controller.signal.aborted) return;
             const message = error instanceof Error ? error.message : 'Não foi possível criar os títulos.';
             setTitlePlans((current) => ({
                 ...current,
-                [msg.id]: { instruction: '', busy: false, error: message },
+                [msg.id]: {
+                    ...(current[msg.id] || {
+                        sessionId: msg.sessionId,
+                        script,
+                        narrationKey: titlePlanningNarrationKey(script),
+                        phase: 'generating' as const,
+                    }),
+                    busy: false,
+                    error: message,
+                },
             }));
             toast.error(message);
+        } finally {
+            if (titlePlanAbortControllerRef.current === controller) {
+                titlePlanAbortControllerRef.current = null;
+            }
         }
-    }, [adData, narrationPatchFromMessage, updateAdData]);
+    }, [adData, exitTitleMode, isLoading, narrationPatchFromMessage, updateAdData]);
 
     const updateTitlePlan = useCallback((messageId: string, updater: (proposal: TitlePlanningProposal) => TitlePlanningProposal) => {
         setTitlePlans((current) => {
@@ -512,32 +613,68 @@ export const ChatMileto: React.FC = () => {
         });
     }, []);
 
-    const handleRefineTitlePlan = useCallback(async (msg: ChatMessage) => {
-        const state = titlePlans[msg.id];
-        if (!state?.proposal || !state.instruction.trim() || state.busy) return;
+    const handleRefineTitlePlan = useCallback(async (messageId: string, rawInstruction: string) => {
+        const state = titlePlans[messageId];
+        const instruction = rawInstruction.trim();
+        if (!state || !instruction || state.busy) return;
+        if (titlePlanningNarrationKey(adData.narrationPlainText) !== state.narrationKey) {
+            const message = 'A narração do projeto mudou. Gere novamente os títulos a partir da narração atual.';
+            setTitlePlans((current) => ({
+                ...current,
+                [messageId]: { ...current[messageId], error: message },
+            }));
+            toast.warning(message);
+            return;
+        }
+        const controller = new AbortController();
+        titlePlanAbortControllerRef.current?.abort();
+        titlePlanAbortControllerRef.current = controller;
         setTitlePlans((current) => ({
             ...current,
-            [msg.id]: { ...state, busy: true, error: undefined },
+            [messageId]: {
+                ...state,
+                busy: true,
+                phase: 'refining',
+                lastInstruction: instruction,
+                error: undefined,
+            },
         }));
         try {
             const proposal = await planNarrationTitles({
-                script: extractScript(msg.content),
-                instruction: state.instruction,
-                previousTitles: state.proposal.suggestions,
-                revision: state.proposal.revision,
+                script: state.script,
+                instruction,
+                previousTitles: state.proposal?.suggestions,
+                revision: state.proposal?.revision,
+                signal: controller.signal,
             });
+            if (titlePlanAbortControllerRef.current !== controller) return;
             setTitlePlans((current) => ({
                 ...current,
-                [msg.id]: { proposal, instruction: '', busy: false },
+                [messageId]: {
+                    ...current[messageId],
+                    proposal,
+                    busy: false,
+                    phase: 'refining',
+                    error: undefined,
+                },
             }));
         } catch (error) {
+            if (controller.signal.aborted) return;
             const message = error instanceof Error ? error.message : 'Não foi possível ajustar os títulos.';
             setTitlePlans((current) => ({
                 ...current,
-                [msg.id]: { ...state, busy: false, error: message },
+                [messageId]: {
+                    ...current[messageId],
+                    busy: false,
+                    error: message,
+                },
             }));
+        } finally {
+            if (titlePlanAbortControllerRef.current === controller) {
+                titlePlanAbortControllerRef.current = null;
+            }
         }
-    }, [titlePlans]);
+    }, [adData.narrationPlainText, titlePlans]);
 
     const handleApplyTitlePlan = useCallback((msg: ChatMessage) => {
         const proposal = titlePlans[msg.id]?.proposal;
@@ -561,8 +698,9 @@ export const ChatMileto: React.FC = () => {
             plannedTitles: selected,
             plannedTitlesNarrationKey: titlePlanningNarrationKey(nextAdData.narrationPlainText),
         });
+        exitTitleMode();
         toast.success(`${selected.length} título${selected.length === 1 ? '' : 's'} aplicado${selected.length === 1 ? '' : 's'} ao projeto.`);
-    }, [adData, narrationPatchFromMessage, titlePlans, updateAdData]);
+    }, [adData, exitTitleMode, narrationPatchFromMessage, titlePlans, updateAdData]);
 
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -624,6 +762,23 @@ export const ChatMileto: React.FC = () => {
     useEffect(() => {
         activeSessionRef.current = activeSessionId;
     }, [activeSessionId]);
+
+    useEffect(() => {
+        if (!activeTitlePlanMessageId || !activeTitlePlan || !activeSessionId) return;
+        if (activeTitlePlan.sessionId !== activeSessionId) {
+            exitTitleMode();
+            return;
+        }
+        if (!messages.some((message) => message.id === activeTitlePlanMessageId)) {
+            exitTitleMode();
+        }
+    }, [
+        activeSessionId,
+        activeTitlePlan,
+        activeTitlePlanMessageId,
+        exitTitleMode,
+        messages,
+    ]);
 
     // ─── Auto-scroll ─────────────────────────────────────────────────────────
     // Caso o painel seja fechado, a resposta continua no servidor. Ao voltar à
@@ -805,9 +960,10 @@ export const ChatMileto: React.FC = () => {
         setMessages([]);
         setInputText('');
         setEditingMessageId(null);
+        exitTitleMode();
         // If creating inside a folder, we'll store the target folder for the next auto-created session
         newChatFolderRef.current = folderId || null;
-    }, []);
+    }, [exitTitleMode]);
 
     const newChatFolderRef = useRef<string | null>(null);
     // Marca a sessão criada dentro do próprio envio, para o efeito de carregar
@@ -816,17 +972,63 @@ export const ChatMileto: React.FC = () => {
 
     const handleEditLastMessage = useCallback((message: ChatMessage) => {
         if (isLoading || message.role !== 'user') return;
+        exitTitleMode();
         setEditingMessageId(message.id);
         setInputText(message.content);
         window.setTimeout(() => {
             textareaRef.current?.focus();
             textareaRef.current?.setSelectionRange(message.content.length, message.content.length);
         }, 0);
-    }, [isLoading]);
+    }, [exitTitleMode, isLoading]);
 
     // Override handleSend to use the folder ref for auto-create
     const handleSendWithFolder = useCallback(async () => {
-        if (!inputText.trim() || isLoading) return;
+        const userContent = inputText.trim();
+        if (!userContent || isLoading || activeTitlePlan?.busy) return;
+
+        if (isTitleModeActive && activeTitlePlanMessageId && activeTitlePlan) {
+            const intent = classifyChatTitleModeIntent(userContent);
+            if (intent === 'exit_title_mode') {
+                setInputText('');
+                exitTitleMode(true);
+                return;
+            }
+            if (intent === 'refine_titles') {
+                const sessionId = activeTitlePlan.sessionId;
+                const tempUserMsg: ChatMessage = {
+                    id: `temp-title-refinement-${Date.now()}`,
+                    sessionId,
+                    role: 'user',
+                    content: userContent,
+                    interactionMode: 'title_refinement',
+                    createdAt: new Date().toISOString(),
+                };
+                setInputText('');
+                setEditingMessageId(null);
+                setMessages((current) => [...current, tempUserMsg]);
+
+                const refinement = handleRefineTitlePlan(activeTitlePlanMessageId, userContent);
+                try {
+                    const persisted = await chatApi.persistTitleRefinementMessage(sessionId, userContent);
+                    if (activeSessionRef.current === sessionId) {
+                        setMessages((current) => current.map((message) => (
+                            message.id === tempUserMsg.id ? persisted : message
+                        )));
+                    }
+                } catch (error) {
+                    console.error('Falha ao persistir o ajuste de títulos:', error);
+                    toast.warning('O ajuste foi enviado, mas não pôde ser salvo no histórico local.');
+                }
+                await refinement;
+                return;
+            }
+
+            if (intent === 'narrator') {
+                // Um pedido explícito de roteiro/narração encerra o contexto de
+                // títulos e segue pelo fluxo normal do Narrador na mesma mensagem.
+                exitTitleMode();
+            }
+        }
 
         let sessionId = activeSessionId;
         let responseBaselineLastMessageId = messages[messages.length - 1]?.id || null;
@@ -856,7 +1058,6 @@ export const ChatMileto: React.FC = () => {
             }
         }
 
-        const userContent = inputText.trim();
         setIsLoading(true);
 
         if (editingMessageId && sessionId) {
@@ -954,7 +1155,19 @@ export const ChatMileto: React.FC = () => {
                 setIsLoading(false);
             }
         }
-    }, [inputText, isLoading, activeSessionId, selectedModel, editingMessageId, messages]);
+    }, [
+        activeSessionId,
+        activeTitlePlan,
+        activeTitlePlanMessageId,
+        editingMessageId,
+        exitTitleMode,
+        handleRefineTitlePlan,
+        inputText,
+        isLoading,
+        isTitleModeActive,
+        messages,
+        selectedModel,
+    ]);
 
     // ─── Inline Folder Creation ──────────────────────────────────────────────
     const handleCreateFolder = useCallback(() => {
@@ -992,12 +1205,13 @@ export const ChatMileto: React.FC = () => {
                     activeSessionRef.current = null;
                     setIsLoading(false);
                     setMessages([]);
+                    exitTitleMode();
                 }
             } catch (err) {
                 console.error(err);
             }
         },
-        [activeSessionId]
+        [activeSessionId, exitTitleMode]
     );
 
     const handleDeleteFolder = useCallback(async (folderId: string) => {
@@ -1026,6 +1240,7 @@ export const ChatMileto: React.FC = () => {
     }, []);
 
     const selectSession = useCallback((session: ChatSession) => {
+        exitTitleMode();
         setActiveSessionId(session.id);
         activeSessionRef.current = session.id;
         setIsLoading(false);
@@ -1033,7 +1248,7 @@ export const ChatMileto: React.FC = () => {
         setEditingMessageId(null);
         setInputText('');
         newChatFolderRef.current = null;
-    }, []);
+    }, [exitTitleMode]);
 
     const toggleFolderExpand = (id: string) => {
         setExpandedFolders((prev) => {
@@ -1132,7 +1347,10 @@ export const ChatMileto: React.FC = () => {
     const windowStyle: React.CSSProperties = isFullscreen
         ? { position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', zIndex: 9999, borderRadius: 0 }
         : { position: 'fixed', top: 0, right: 0, width: '50vw', height: '100vh', zIndex: 9999 };
-    const lastUserMessageId = [...messages].reverse().find((message) => message.role === 'user')?.id;
+    const lastEditableUserMessageId = [...messages]
+        .reverse()
+        .find((message) => message.role === 'user' && message.interactionMode !== 'title_refinement')
+        ?.id;
 
     return (
         <div
@@ -1511,23 +1729,39 @@ export const ChatMileto: React.FC = () => {
                                             {msg.agentLabel || historicalAgentLabel(msg.agentId)}
                                         </div>
                                     )}
+                                    {msg.role === 'user' && msg.interactionMode === 'title_refinement' && (
+                                        <div className="mb-1.5 text-[8px] font-bold uppercase tracking-[.14em] text-brand-accent/80">
+                                            Ajuste de títulos
+                                        </div>
+                                    )}
                                     {msg.role === 'assistant'
                                         ? (
                                             <StructuredAgentResponse
                                                 content={msg.content}
                                                 onApply={() => handleUseAsScript(msg)}
                                                 onApplyAndCreateTitles={() => handleApplyAndCreateTitles(msg)}
+                                                actionsDisabled={isLoading}
                                                 titlePlanningNode={titlePlans[msg.id]?.proposal ? (
                                                     <ChatTitleProposal
                                                         proposal={titlePlans[msg.id].proposal!}
                                                         busy={titlePlans[msg.id].busy}
                                                         error={titlePlans[msg.id].error}
-                                                        instruction={titlePlans[msg.id].instruction}
-                                                        onInstructionChange={(instruction) => setTitlePlans((current) => ({
-                                                            ...current,
-                                                            [msg.id]: { ...(current[msg.id] || { busy: false }), instruction },
-                                                        }))}
-                                                        onRefine={() => handleRefineTitlePlan(msg)}
+                                                        active={isTitleModeActive && activeTitlePlanMessageId === msg.id}
+                                                        lastInstruction={titlePlans[msg.id].lastInstruction}
+                                                        onActivate={() => {
+                                                            if (
+                                                                titlePlanningNarrationKey(adData.narrationPlainText)
+                                                                !== titlePlans[msg.id].narrationKey
+                                                            ) {
+                                                                toast.warning('A narração mudou. Gere uma nova proposta de títulos.');
+                                                                return;
+                                                            }
+                                                            exitTitleMode();
+                                                            setEditingMessageId(null);
+                                                            setActiveTitlePlanMessageId(msg.id);
+                                                            setTierMenuOpen(false);
+                                                            textareaRef.current?.focus();
+                                                        }}
                                                         onToggle={(id) => updateTitlePlan(msg.id, (proposal) => ({
                                                             ...proposal,
                                                             suggestions: proposal.suggestions.map((item) =>
@@ -1543,8 +1777,8 @@ export const ChatMileto: React.FC = () => {
                                                         onApply={() => handleApplyTitlePlan(msg)}
                                                     />
                                                 ) : titlePlans[msg.id]?.busy ? (
-                                                    <div className="mt-3 rounded-xl border border-black/10 px-3 py-3 text-[11px] text-brand-muted dark:border-white/10">
-                                                        Analisando os gatilhos configurados e preparando os títulos…
+                                                    <div className="mt-3 rounded-xl border border-brand-accent/15 bg-brand-accent/[.035] px-3 py-2 text-[10px] text-brand-muted">
+                                                        Planejamento em andamento no campo principal do chat.
                                                     </div>
                                                 ) : titlePlans[msg.id]?.error ? (
                                                     <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[.04] px-3 py-3 text-[11px] text-red-400">
@@ -1555,7 +1789,10 @@ export const ChatMileto: React.FC = () => {
                                         )
                                         : <div className="whitespace-pre-wrap">{msg.content}</div>}
 
-                                    {msg.role === 'user' && msg.id === lastUserMessageId && !isLoading && (
+                                    {msg.role === 'user'
+                                        && msg.interactionMode !== 'title_refinement'
+                                        && msg.id === lastEditableUserMessageId
+                                        && !isLoading && (
                                         <div className="mt-2 flex justify-end border-t border-brand-accent/10 pt-2">
                                             <button
                                                 type="button"
@@ -1606,6 +1843,42 @@ export const ChatMileto: React.FC = () => {
 
                     {/* Input Area */}
                     <div className="bg-brand-card/80 backdrop-blur-xl border-t border-black/5 dark:border-white/5 p-4 z-10 shrink-0">
+                        {isTitleModeActive && activeTitlePlan && (
+                            activeTitlePlan.busy ? (
+                                <div className="mb-2.5 space-y-2">
+                                    <TitlePlanningProgress
+                                        phase={activeTitlePlan.phase === 'generating' ? 'generating' : 'refining'}
+                                    />
+                                    <div className="flex justify-end">
+                                        <button
+                                            type="button"
+                                            onClick={() => exitTitleMode(true)}
+                                            className="rounded-lg border border-black/10 px-2.5 py-1.5 text-[9px] font-bold text-brand-muted transition hover:border-red-400/30 hover:text-red-300 dark:border-white/10"
+                                        >
+                                            Cancelar ajuste
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="mb-2.5 flex items-center justify-between gap-3 rounded-xl border border-brand-accent/20 bg-brand-accent/[.05] px-3 py-2.5">
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2 text-[10px] font-bold text-brand-accent">
+                                            <Target className="h-3.5 w-3.5 shrink-0" /> Ajustando títulos
+                                        </div>
+                                        <p className="mt-0.5 truncate text-[9px] text-brand-muted">
+                                            Escreva normalmente. Um pedido de nova narração muda o contexto automaticamente.
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => exitTitleMode(true)}
+                                        className="shrink-0 rounded-lg border border-black/10 px-2.5 py-1.5 text-[9px] font-bold text-brand-muted transition hover:border-brand-accent/30 hover:text-foreground dark:border-white/10"
+                                    >
+                                        Encerrar
+                                    </button>
+                                </div>
+                            )
+                        )}
                         {editingMessageId && !isLoading && (
                             <div className="mb-2.5 flex items-center justify-between gap-3 rounded-xl border border-brand-accent/25 bg-brand-accent/[.06] px-3 py-2">
                                 <div className="flex min-w-0 items-center gap-2 text-[10px] font-bold text-brand-accent">
@@ -1630,27 +1903,36 @@ export const ChatMileto: React.FC = () => {
                                 value={inputText}
                                 onChange={(e) => setInputText(e.target.value)}
                                 onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && !e.shiftKey && !isLoading) {
+                                    if (e.key === 'Enter' && !e.shiftKey && !isLoading && !activeTitlePlan?.busy) {
                                         e.preventDefault();
                                         handleSendWithFolder();
                                     }
                                 }}
-                                placeholder="Digite sua mensagem para a IA..."
+                                placeholder={isTitleModeActive
+                                    ? 'Diga como quer ajustar os títulos…'
+                                    : 'Digite sua mensagem para a IA…'}
+                                disabled={isTitleModeActive && activeTitlePlan?.busy}
                                 rows={1}
                                 className="flex-1 bg-brand-dark/50 border border-black/10 dark:border-white/10 rounded-xl px-4 py-3 text-[13px] text-foreground placeholder-brand-muted outline-none focus:border-brand-accent/50 focus:bg-brand-dark shadow-inner resize-none custom-scrollbar transition-all"
                             />
                             <button
                                 onClick={isLoading ? stopActiveResponse : handleSendWithFolder}
-                                disabled={!isLoading && !inputText.trim()}
+                                disabled={!isLoading && (!inputText.trim() || Boolean(isTitleModeActive && activeTitlePlan?.busy))}
                                 className={cn(
                                     'p-3 rounded-xl transition-all duration-300 shrink-0 border',
                                     isLoading
                                         ? 'border-red-400/40 bg-red-500/15 text-red-300 shadow-[0_0_15px_rgba(248,113,113,0.15)] hover:bg-red-500/25'
-                                        : inputText.trim()
+                                        : inputText.trim() && !(isTitleModeActive && activeTitlePlan?.busy)
                                         ? 'bg-brand-accent hover:bg-brand-accent/80 hover:scale-105 border-brand-accent text-[#0a0f12] shadow-[0_0_15px_rgba(0,230,118,0.4)]'
                                         : 'bg-black/5 dark:bg-white/5 border-transparent text-brand-muted cursor-not-allowed'
                                 )}
-                                title={isLoading ? 'Parar resposta' : editingMessageId ? 'Salvar edição e refazer resposta' : 'Enviar mensagem'}
+                                title={isLoading
+                                    ? 'Parar resposta'
+                                    : isTitleModeActive
+                                    ? 'Enviar ajuste de títulos'
+                                    : editingMessageId
+                                    ? 'Salvar edição e refazer resposta'
+                                    : 'Enviar mensagem'}
                             >
                                 {isLoading ? (
                                     <Square className="h-4 w-4 fill-current" />
@@ -1661,6 +1943,7 @@ export const ChatMileto: React.FC = () => {
                         </div>
 
                         <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+                            {!isTitleModeActive ? (
                             <div className="relative">
                                 <button
                                     type="button"
@@ -1701,6 +1984,11 @@ export const ChatMileto: React.FC = () => {
                                     </>
                                 )}
                             </div>
+                            ) : (
+                                <span className="inline-flex items-center gap-1.5 rounded-lg border border-brand-accent/20 bg-brand-accent/[.04] px-2.5 py-1.5 text-[9px] font-bold text-brand-accent">
+                                    <Target className="h-3 w-3" /> Modo títulos
+                                </span>
+                            )}
                             <span className="text-[10px] text-brand-muted uppercase tracking-widest font-semibold ml-auto">
                                 Enter ↵
                             </span>

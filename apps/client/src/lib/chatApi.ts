@@ -110,6 +110,20 @@ export async function getMessages(sessionId: string): Promise<ChatMessage[]> {
     return data.messages;
 }
 
+export async function persistTitleRefinementMessage(
+    sessionId: string,
+    content: string,
+): Promise<ChatMessage> {
+    const data = await request<{ ok: true; message: ChatMessage }>(
+        `${BASE}/sessions/${encodeURIComponent(sessionId)}/title-refinement-message`,
+        {
+            method: 'POST',
+            body: JSON.stringify({ content }),
+        },
+    );
+    return data.message;
+}
+
 export async function truncateMessagesFrom(sessionId: string, messageId: string): Promise<ChatMessage[]> {
     const data = await request<{ messages: ChatMessage[] }>(
         `${BASE}/sessions/${sessionId}/messages/from/${messageId}`,

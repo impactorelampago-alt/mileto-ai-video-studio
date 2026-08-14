@@ -30,6 +30,8 @@ export interface ChatMessage {
     agentVersion?: number;
     agentTier?: 'lite' | 'mileto' | 'ultra';
     narrationDirectionMode?: 'automatic' | 'manual' | 'clean';
+    /** Turno editorial persistido, mas fora do contexto enviado ao Narrador. */
+    interactionMode?: 'title_refinement';
     createdAt: string;
 }
 
@@ -218,7 +220,7 @@ export function addMessage(
     sessionId: string,
     role: 'user' | 'assistant' | 'system',
     content: string,
-    metadata: Pick<ChatMessage, 'agentId' | 'agentLabel' | 'agentVersion' | 'agentTier' | 'narrationDirectionMode'> = {}
+    metadata: Pick<ChatMessage, 'agentId' | 'agentLabel' | 'agentVersion' | 'agentTier' | 'narrationDirectionMode' | 'interactionMode'> = {}
 ): ChatMessage {
     const db = readDB();
     const msg: ChatMessage = {
@@ -235,6 +237,23 @@ export function addMessage(
     if (session) session.updatedAt = msg.createdAt;
     writeDB(db);
     return msg;
+}
+
+/**
+ * Monta somente o historico que pode influenciar uma resposta do Narrador.
+ * Ajustes de titulos permanecem visiveis no chat, mas usam outro pipeline.
+ */
+export function getNarratorGatewayHistory(sessionId: string): Array<{ role: 'user' | 'assistant'; content: string }> {
+    return getMessages(sessionId)
+        .filter((message): message is ChatMessage & { role: 'user' | 'assistant' } => {
+            if (message.interactionMode === 'title_refinement') return false;
+            if (message.role === 'user') return true;
+            if (message.role !== 'assistant') return false;
+
+            const content = message.content.trim();
+            return !content.startsWith('❌') && !content.startsWith('⚠️');
+        })
+        .map((message) => ({ role: message.role, content: message.content }));
 }
 
 /**
