@@ -630,21 +630,23 @@ export const AiTitleGeneratorTest = () => {
     // O preview do gerador precisa usar o MESMO palco de 360px do vídeo (Etapa 4),
     // senão a tipografia em px aparenta outro tamanho. Escalamos um palco lógico de
     // 360px por (larguraDoMonitor / 360), idêntico ao VideoSequencePreview.
-    const previewMonitorRef = useRef<HTMLDivElement>(null);
+    // Ref de callback: o monitor só é montado depois que a config carrega, então
+    // um effect que roda apenas no mount da página perderia o elemento e a escala
+    // ficaria travada em 1 (palco 360px "vazando" num monitor de ~310px).
+    const [previewMonitorEl, setPreviewMonitorEl] = useState<HTMLDivElement | null>(null);
     const [overlayPreviewScale, setOverlayPreviewScale] = useState(1);
     useLayoutEffect(() => {
-        const monitor = previewMonitorRef.current;
-        if (!monitor) return;
+        if (!previewMonitorEl) return;
         const sync = () => {
-            const next = monitor.clientWidth / 360;
+            const next = previewMonitorEl.clientWidth / 360;
             if (!Number.isFinite(next) || next <= 0) return;
             setOverlayPreviewScale((current) => (Math.abs(current - next) < 0.001 ? current : next));
         };
         sync();
         const observer = new ResizeObserver(sync);
-        observer.observe(monitor);
+        observer.observe(previewMonitorEl);
         return () => observer.disconnect();
-    }, []);
+    }, [previewMonitorEl]);
     const [showPreviewCaption, setShowPreviewCaption] = useState(initialPreviewCaptionVisibility);
     // O monitor desta tela é fixo em 9:16. Usar silenciosamente o formato do
     // último projeto fazia o editor mostrar uma geometria e salvar em outra.
@@ -1418,7 +1420,7 @@ export const AiTitleGeneratorTest = () => {
                                 <span>{format}</span>
                             </div>
                             <div
-                                ref={previewMonitorRef}
+                                ref={setPreviewMonitorEl}
                                 className="relative aspect-[9/16] w-full overflow-hidden rounded-2xl border border-white/8 bg-[#151b1d]"
                             >
                                 <img
