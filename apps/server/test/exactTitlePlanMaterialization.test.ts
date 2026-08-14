@@ -18,9 +18,9 @@ const spokenWords = [
     { text: 'aqui', start: 5.2 },
 ];
 
-const materialize = (baseTitles: unknown, timelineDurationSec = 8) => materializeExactTitlePlan({
+const materialize = (baseTitles: unknown, timelineDurationSec = 8, words = spokenWords) => materializeExactTitlePlan({
     baseTitles,
-    spokenWords,
+    spokenWords: words,
     titleConfig: structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG),
     format: '9:16',
     brandPalette: {
@@ -60,6 +60,7 @@ test('materializa somente selecionados com cardinalidade, ordem e textos exatos'
     assert.equal(result.requestedCount, 2);
     assert.equal(result.materializedCount, 2);
     assert.equal(result.diagnostics.length, 0);
+    assert.equal(result.approximatedCount, 0);
     assert.deepEqual(result.titles.map(({ id, text, sourceText, triggerId }) => ({
         id,
         text,
@@ -99,43 +100,54 @@ test('atribui timing e estilo deterministicamente a partir de legenda e configur
     assert.deepEqual(first.titles, second.titles);
 });
 
-test('item impossivel retorna diagnostico proprio e nunca finge que foi materializado', () => {
+test('ancoragem tolerante encontra a fala mesmo com ruido de transcricao', () => {
+    // Legenda com grafia do STT: plural cortado (COMPLETO), preco reformatado
+    // "R$ 199,00" quebrado em 199/00 e cidade com troca fonetica.
+    const noisyWords = [
+        { text: 'OCULOS', start: 0.5 },
+        { text: 'COMPLETO', start: 0.9 },
+        { text: 'POR', start: 1.3 },
+        { text: 'R$', start: 1.5 },
+        { text: '199', start: 1.7 },
+        { text: '00', start: 1.8 },
+        { text: 'NA', start: 2.2 },
+        { text: 'OTICA', start: 2.4 },
+    ];
     const result = materialize([{
-        id: 'missing-source',
-        text: 'OFERTA QUE NAO FOI FALADA',
-        sourceText: 'trecho inexistente nas legendas',
+        id: 'product-plan',
+        text: 'ÓCULOS COMPLETOS',
+        sourceText: 'óculos completos por R$ 199 na ótica',
+        triggerId: 'product',
+        selected: true,
+    }], 8, noisyWords);
+
+    assert.equal(result.materializedCount, 1);
+    assert.equal(result.approximatedCount, 0);
+    assert.equal(result.diagnostics.length, 0);
+    assert.equal(result.titles[0].text, 'ÓCULOS COMPLETOS');
+    assert.equal(result.titles[0].startSec, 0.5);
+});
+
+test('titulo confirmado sem evidencia falada literal e posicionado pela ordem, nunca descartado', () => {
+    const result = materialize([{
+        id: 'benefit-plan',
+        text: 'EXAME POR NOSSA CONTA',
+        sourceText: 'o exame é por nossa conta na compra dos óculos',
         triggerId: 'benefit',
         selected: true,
     }]);
 
     assert.equal(result.requestedCount, 1);
-    assert.equal(result.materializedCount, 0);
-    assert.deepEqual(result.titles, []);
-    assert.equal(result.diagnostics.length, 1);
-    assert.equal(result.diagnostics[0].itemId, 'missing-source');
-    assert.equal(result.diagnostics[0].code, 'title_plan_source_not_in_captions');
-    assert.equal(result.diagnostics[0].retryable, false);
-    assert.equal(
-        result.diagnostics[0].message,
-        'A fala de origem do título "OFERTA QUE NAO FOI FALADA" não foi encontrada nas legendas sincronizadas.',
-    );
-    assert.doesNotMatch(result.diagnostics[0].message, /Ã/);
+    assert.equal(result.materializedCount, 1);
+    assert.equal(result.approximatedCount, 1);
+    // Texto sai exatamente como confirmado, sem inventar recorte da legenda.
+    assert.equal(result.titles[0].text, 'EXAME POR NOSSA CONTA');
+    assert.equal(result.titles[0].sourceText, 'o exame é por nossa conta na compra dos óculos');
+    assert.ok(result.titles[0].startSec >= 0);
+    assert.ok(!result.diagnostics.some((item) => item.code === 'title_plan_source_not_in_captions'));
 });
 
-test('fala sem tempo visual suficiente recebe diagnostico de timeline', () => {
-    const result = materialize([{
-        id: 'late-cta',
-        text: 'CLIQUE AQUI',
-        sourceText: 'clique aqui',
-        triggerId: 'cta',
-        selected: true,
-    }], 5.6);
-
-    assert.equal(result.materializedCount, 0);
-    assert.equal(result.diagnostics[0].code, 'title_plan_timeline_unavailable');
-});
-
-test('titulos proximos sao recortados ou diagnosticados sem sobreposicao silenciosa', () => {
+test('titulos confirmados proximos sao espacados e ambos aparecem sem descarte silencioso', () => {
     const result = materialize([
         {
             id: 'first-price',
@@ -154,11 +166,60 @@ test('titulos proximos sao recortados ou diagnosticados sem sobreposicao silenci
     ]);
 
     assert.equal(result.requestedCount, 2);
-    assert.equal(result.materializedCount, 1);
-    assert.deepEqual(result.titles.map((title) => title.id), ['second-price']);
-    assert.equal(result.diagnostics.length, 1);
-    assert.equal(result.diagnostics[0].itemId, 'first-price');
-    assert.equal(result.diagnostics[0].code, 'title_plan_timeline_overlap');
+    assert.equal(result.materializedCount, 2);
+    assert.deepEqual(result.titles.map((title) => title.id), ['first-price', 'second-price']);
+    // Preservam a ordem e nunca se sobrepoem.
+    assert.ok(result.titles[1].startSec >= result.titles[0].startSec + result.titles[0].durationSec);
+    assert.ok(result.titles.every((title) => title.durationSec >= 0.75));
+    assert.equal(result.diagnostics.length, 0);
+});
+
+test('itens estruturalmente invalidos ainda recebem diagnostico proprio', () => {
+    const result = materialize([
+        {
+            id: 'no-source',
+            text: 'SEM FONTE',
+            sourceText: '   ',
+            triggerId: 'price',
+            selected: true,
+        },
+        {
+            id: 'dup',
+            text: 'PRIMEIRO',
+            sourceText: 'a partir de R$ 199',
+            triggerId: 'price',
+            selected: true,
+        },
+        {
+            id: 'dup',
+            text: 'SEGUNDO REPETIDO',
+            sourceText: 'Piracicaba',
+            triggerId: 'region',
+            selected: true,
+        },
+    ]);
+
+    assert.equal(result.requestedCount, 3);
+    const codes = result.diagnostics.map((item) => item.code).sort();
+    assert.deepEqual(codes, ['title_plan_duplicate_id', 'title_plan_field_invalid']);
+    assert.doesNotMatch(result.diagnostics[0].message, /Ã/);
+});
+
+test('timeline fisicamente insuficiente derruba o excedente com diagnostico, sem fingir sucesso', () => {
+    const overload = Array.from({ length: 5 }, (_, index) => ({
+        id: `overload-${index}`,
+        text: `TITULO ${index}`,
+        sourceText: 'Multifocais',
+        triggerId: 'product',
+        selected: true,
+    }));
+    const result = materialize(overload, 2);
+
+    assert.equal(result.requestedCount, 5);
+    assert.ok(result.materializedCount < 5);
+    assert.ok(result.materializedCount >= 1);
+    assert.ok(result.diagnostics.some((item) => item.code === 'title_plan_timeline_unavailable'));
+    assert.ok(result.titles.every((title) => title.durationSec >= 0.75));
 });
 
 test('endpoint desvia o modo exact-plan antes de qualquer geracao por IA', () => {

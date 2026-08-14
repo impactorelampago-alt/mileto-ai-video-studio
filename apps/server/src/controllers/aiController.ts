@@ -1091,6 +1091,7 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                 source: responseSource,
                 requestedCount: materialization.requestedCount,
                 materializedCount: materialization.materializedCount,
+                approximatedCount: materialization.approximatedCount,
                 timingsMs,
             }));
             return res.json({
@@ -1104,6 +1105,7 @@ Responda exclusivamente em JSON válido, nesta estrutura:
                     mode: 'exact-plan',
                     requestedCount: materialization.requestedCount,
                     materializedCount: materialization.materializedCount,
+                    approximatedCount: materialization.approximatedCount,
                     diagnostics: materialization.diagnostics,
                 },
                 metrics: {
