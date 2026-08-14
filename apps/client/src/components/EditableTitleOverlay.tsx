@@ -593,6 +593,13 @@ export const EditableTitleOverlay = ({
                                 ? 'Edite na própria arte · Ctrl+Enter conclui'
                                 : 'Arraste · alças ajustam · +/- tamanho'}
                         </div>
+                        {/* DEBUG TEMPORÁRIO — comparar tamanho do título entre gerador e Etapa 4. Remover depois. */}
+                        <div
+                            data-title-editor-ui="true"
+                            className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-black px-2 py-0.5 text-[9px] font-mono text-yellow-300 shadow-xl ring-1 ring-yellow-400/60"
+                        >
+                            s={(title.scale ?? 1).toFixed(3)} · box={title.textBoxWidthPct ?? '—'} · sg={safeGeometry.scale.toFixed(3)} · {title.styleId || '?'}
+                        </div>
                         {isTextEditing && (
                             <div
                                 data-title-text-editor="true"
