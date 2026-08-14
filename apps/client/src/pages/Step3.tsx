@@ -291,6 +291,11 @@ export const Step3 = () => {
                         'A narração, o plano de títulos ou as legendas mudaram durante o processamento. O resultado antigo foi descartado; gere novamente para usar a versão atual.',
                         { id: toastId, duration: 8_000 },
                     );
+                } else {
+                    // A operação foi abortada ao sair da etapa (unmount) ou por uma
+                    // operação mais nova, e o ref já foi limpo. Sem isto, o
+                    // toast.loading nunca seria resolvido e ficaria preso na tela.
+                    toast.dismiss(toastId);
                 }
                 return;
             }
