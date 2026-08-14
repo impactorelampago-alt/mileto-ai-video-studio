@@ -445,17 +445,21 @@ html {
     animation: locTagEntrance 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
 }
 
-/* A caixa editável encaixa o título inteiro via FitToBox: o conteúdo é medido na
-   largura natural (uma linha lógica) e escalado para preencher a caixa. Por isso
-   os limites de largura fixos de cada estilo são soltos e o texto não reflui. */
-.title-text-box * {
+/* A largura editável reorganiza as linhas sem deformar a tipografia. */
+.title-text-box > * {
+    width: 100%;
+    max-width: 100%;
     min-width: 0 !important;
-    max-width: none !important;
+}
+
+.title-text-box * {
+    min-width: 0;
     box-sizing: border-box;
 }
 
 .title-text-box :is(h1, h2, h3, h4, p, span) {
-    white-space: pre !important;
+    max-width: 100%;
+    white-space: pre-wrap !important;
     overflow-wrap: normal;
     word-break: normal;
     text-overflow: clip;

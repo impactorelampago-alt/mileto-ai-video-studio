@@ -8,7 +8,6 @@ import type {
 import { Move, PencilLine } from 'lucide-react';
 import type { TitleHook } from '../types';
 import { cn } from '../lib/utils';
-import { FitToBox } from './FitToBox';
 
 interface EditableTitleOverlayProps {
     title: TitleHook;
@@ -577,12 +576,7 @@ export const EditableTitleOverlay = ({
                         title.textBoxWidthPct && 'title-text-box w-full'
                     )}
                 >
-                    <FitToBox
-                        active={title.textBoxWidthPct != null}
-                        deps={[title.text, title.textBoxWidthPct, title.fontFamily, title.styleId]}
-                    >
-                        {children}
-                    </FitToBox>
+                    {children}
                 </div>
                 {editingEnabled && selected && (
                     <>
