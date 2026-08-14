@@ -426,6 +426,10 @@ const TITLE_TYPE_WORD_CAPACITY: Record<string, number> = {
     'loc-pin-viagem': 3,
     'loc-minimal-urbano': 3,
     'loc-tag-geo': 3,
+    'loc-boarding-pass': 3,
+    'loc-glass-radar': 3,
+    'loc-editorial-atlas': 3,
+    'loc-neon-marker': 3,
     'cta-whatsapp': 3,
     'cta-tap': 3,
 };

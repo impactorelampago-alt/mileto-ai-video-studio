@@ -100,6 +100,9 @@ import {
     Zap,
     Crown,
     ArrowUpRight,
+    PlaneTakeoff,
+    LocateFixed,
+    Compass,
 } from 'lucide-react';
 
 export const DynamicTitleRenderer: React.FC<Props> = ({
@@ -630,6 +633,161 @@ export const DynamicTitleRenderer: React.FC<Props> = ({
                             className="min-w-0 flex-1 font-bold uppercase tracking-wider"
                             style={{ color: secondary, fontFamily: title.fontFamily || 'Oswald' }}
                         />
+                    </div>
+                </div>
+            );
+
+        case 'loc-boarding-pass':
+            return (
+                <div className={cn('relative w-full', className)} style={motionStyle('right', 0, 0.45)}>
+                    <div className="flex w-full min-w-0 items-stretch overflow-hidden rounded-2xl bg-white/95 shadow-[0_14px_36px_rgba(0,0,0,.45)]">
+                        <div
+                            className="flex shrink-0 flex-col items-center justify-center gap-1.5 px-3 py-3"
+                            style={{ backgroundColor: primary, ...motionStyle('left', 0.08, 0.4) }}
+                        >
+                            <PlaneTakeoff className="h-5 w-5 text-white drop-shadow-sm" strokeWidth={2.25} />
+                            <span className="text-[7px] font-black uppercase tracking-[0.3em] text-white/85 [writing-mode:vertical-rl]">
+                                Destino
+                            </span>
+                        </div>
+                        <div className="min-w-0 flex-1 border-l-2 border-dashed border-black/20 px-4 py-3">
+                            <p className="text-[8px] font-black uppercase tracking-[0.3em]" style={{ color: primary }}>
+                                Você está aqui
+                            </p>
+                            <AutoFitText
+                                text={text}
+                                minFontSize={16}
+                                maxFontSize={52}
+                                targetFill={0.92}
+                                className="mt-0.5 min-w-0 font-bold uppercase leading-none tracking-tight"
+                                style={{ color: '#14181d', fontFamily: fontStack(title.fontFamily || 'Space Grotesk') }}
+                            />
+                            <div
+                                className="mt-2 h-3 origin-left"
+                                style={{
+                                    transform: `scaleX(${lineProgress(0.18)})`,
+                                    backgroundImage: 'repeating-linear-gradient(90deg, #14181d 0 2px, transparent 2px 5px, #14181d 5px 6px, transparent 6px 10px)',
+                                }}
+                            />
+                        </div>
+                    </div>
+                </div>
+            );
+
+        case 'loc-glass-radar':
+            return (
+                <div
+                    className={cn('relative w-full overflow-hidden rounded-full border border-white/20 bg-black/55 shadow-2xl backdrop-blur-xl', className)}
+                    style={motionStyle('pop', 0, 0.48)}
+                >
+                    <div
+                        className="absolute -left-10 -top-14 h-32 w-32 rounded-full blur-3xl"
+                        style={{ backgroundColor: `${primary}66` }}
+                    />
+                    <div className="relative flex w-full min-w-0 items-center gap-3 px-5 py-3">
+                        <div className="relative grid h-11 w-11 shrink-0 place-items-center">
+                            <span className="absolute inset-0 rounded-full border border-white/15" />
+                            <span className="absolute inset-[7px] rounded-full border border-white/15" />
+                            <span
+                                className="absolute inset-0 rounded-full border-2"
+                                style={{
+                                    borderColor: primary,
+                                    opacity: 0.55 - pulse * 0.35,
+                                    transform: `scale(${0.62 + pulse * 0.38})`,
+                                }}
+                            />
+                            <LocateFixed className="relative h-5 w-5" style={{ color: primary }} strokeWidth={2.5} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                            <p className="text-[8px] font-black uppercase tracking-[0.3em] text-white/50">Sua região</p>
+                            <AutoFitText
+                                text={text}
+                                minFontSize={16}
+                                maxFontSize={54}
+                                targetFill={0.9}
+                                className="mt-0.5 min-w-0 font-semibold leading-none tracking-tight"
+                                style={{ color: secondary, fontFamily: fontStack(title.fontFamily || 'Sora') }}
+                            />
+                        </div>
+                    </div>
+                </div>
+            );
+
+        case 'loc-editorial-atlas':
+            return (
+                <div className={cn('relative w-full px-4 py-2 text-center', className)} style={motionStyle('rise', 0, 0.55)}>
+                    <div
+                        className="mx-auto mb-2 h-px origin-center"
+                        style={{ backgroundColor: primary, width: `${lineProgress(0.05) * 72}%` }}
+                    />
+                    <div
+                        className="mb-1.5 flex items-center justify-center gap-2 text-[8px] font-semibold uppercase tracking-[0.45em]"
+                        style={{ color: primary }}
+                    >
+                        <Compass className="h-3.5 w-3.5" /> Atlas · Local
+                    </div>
+                    <AutoFitText
+                        text={text}
+                        minFontSize={20}
+                        maxFontSize={62}
+                        targetFill={0.9}
+                        className="min-w-0 font-semibold italic leading-[1.04]"
+                        style={{
+                            color: secondary,
+                            fontFamily: `"${title.fontFamily || 'Fraunces'}", "Playfair Display", Georgia, serif`,
+                            textShadow: '0 8px 28px rgba(0,0,0,.75)',
+                        }}
+                    />
+                    <div
+                        className="mx-auto mt-2 h-px origin-center"
+                        style={{ backgroundColor: primary, width: `${lineProgress(0.18) * 42}%` }}
+                    />
+                </div>
+            );
+
+        case 'loc-neon-marker':
+            return (
+                <div
+                    className={cn('relative w-full rounded-2xl border-2 bg-black/80 shadow-2xl', className)}
+                    style={{
+                        borderColor: primary,
+                        boxShadow: `0 0 ${14 + pulse * 12}px ${primary}55, inset 0 0 14px ${primary}22`,
+                        ...motionStyle('left', 0, 0.45),
+                    }}
+                >
+                    <div className="flex w-full min-w-0 items-center gap-3 px-4 py-3">
+                        <div className="relative grid h-10 w-10 shrink-0 place-items-center">
+                            <span
+                                className="absolute inset-0 rounded-full border"
+                                style={{
+                                    borderColor: primary,
+                                    opacity: 0.6 - pulse * 0.4,
+                                    transform: `scale(${0.7 + pulse * 0.45})`,
+                                }}
+                            />
+                            <MapPin className="relative h-6 w-6 drop-shadow-[0_0_8px_var(--halo)]" style={{ color: primary, '--halo': `${primary}aa` } as React.CSSProperties} fill={primary} strokeWidth={0} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                            <p className="flex items-center gap-1.5 text-[8px] font-black uppercase tracking-[0.28em] text-white/60">
+                                <Navigation className="h-2.5 w-2.5" style={{ color: primary }} /> Perto de você
+                            </p>
+                            <AutoFitText
+                                text={text}
+                                minFontSize={17}
+                                maxFontSize={56}
+                                targetFill={0.9}
+                                className="mt-0.5 min-w-0 font-bold uppercase leading-none tracking-wider"
+                                style={{
+                                    color: secondary,
+                                    fontFamily: fontStack(title.fontFamily || 'Bebas Neue'),
+                                    textShadow: `0 0 12px ${primary}88`,
+                                }}
+                            />
+                            <div
+                                className="mt-1.5 h-[2px] origin-left rounded-full"
+                                style={{ backgroundColor: primary, transform: `scaleX(${lineProgress(0.15)})` }}
+                            />
+                        </div>
                     </div>
                 </div>
             );

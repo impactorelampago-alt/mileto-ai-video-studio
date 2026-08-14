@@ -51,6 +51,10 @@ export const LOCATION_TITLE_MODELS: TitleModelDefinition[] = [
     { id: 'loc-pin-viagem', name: 'Pin de Viagem', library: 'Localização', group: 'Localização', description: 'Pin visual para cidade ou endereço.', sample: 'SÃO PAULO, SP', primaryColor: '#D83A28', secondaryColor: '#FFFFFF', fontFamily: 'Inter' },
     { id: 'loc-minimal-urbano', name: 'Minimalista', library: 'Localização', group: 'Localização', description: 'Localização limpa e editorial.', sample: 'SÃO PAULO, SP', primaryColor: '#32F5C5', secondaryColor: '#FFFFFF', fontFamily: 'Inter' },
     { id: 'loc-tag-geo', name: 'Tag Geográfica', library: 'Localização', group: 'Localização', description: 'Etiqueta compacta com referência geográfica.', sample: 'SÃO PAULO, SP', primaryColor: '#7C5CFF', secondaryColor: '#FFFFFF', fontFamily: 'Oswald' },
+    { id: 'loc-boarding-pass', name: 'Cartão de Embarque', library: 'Localização', group: 'Localização', description: 'Cartão premium com canhoto picotado e código de barras.', sample: 'SÃO PAULO, SP', primaryColor: '#0E7C66', secondaryColor: '#111318', fontFamily: 'Space Grotesk' },
+    { id: 'loc-glass-radar', name: 'Radar de Vidro', library: 'Localização', group: 'Localização', description: 'Pílula de vidro com radar pulsante de cobertura.', sample: 'SÃO PAULO, SP', primaryColor: '#14E6FF', secondaryColor: '#FFFFFF', fontFamily: 'Sora' },
+    { id: 'loc-editorial-atlas', name: 'Atlas Editorial', library: 'Localização', group: 'Localização', description: 'Serifa elegante com filetes, para marcas sofisticadas.', sample: 'SÃO PAULO, SP', primaryColor: '#E7C27D', secondaryColor: '#FFFFFF', fontFamily: 'Fraunces' },
+    { id: 'loc-neon-marker', name: 'Marcador Neon', library: 'Localização', group: 'Localização', description: 'Chip urbano com pin em halo neon.', sample: 'SÃO PAULO, SP', primaryColor: '#FF4FD8', secondaryColor: '#FFFFFF', fontFamily: 'Bebas Neue' },
 ];
 
 export const IMAGE_TITLE_MODEL: TitleStylePreset = {
@@ -76,7 +80,7 @@ export const TITLE_MODEL_LIBRARIES: TitleModelLibrary[] = [
 export const TITLE_MODEL_LIBRARY_NOTES: Record<TitleModelLibrary, string> = {
     'Call to Action (CTA)': '5 chamadas visuais para conversão',
     'Biblioteca Premium': `${PREMIUM_TITLE_MODELS.length} modelos curados para uso real`,
-    Localização: '3 modelos para cidade, estado ou país',
+    Localização: `${LOCATION_TITLE_MODELS.length} modelos para cidade, estado ou país`,
 };
 
 export const titleModelById = (id?: string | null) => TITLE_MODEL_CATALOG.find((model) => model.id === id);

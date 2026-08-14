@@ -4,8 +4,10 @@ export const TITLE_MODEL_IDS = [
     'premium-urgency-pulse', 'premium-coupon-ticket', 'premium-benefit-badge', 'premium-product-launch',
     'premium-luxury-editorial', 'premium-swiss-modern', 'premium-glass-prism', 'premium-cinema-chapter',
     'premium-magazine-stack', 'premium-chrome-future',
+    'premium-aurora-signal', 'premium-conversion-rail', 'premium-bento-proof', 'premium-velvet-frame',
     'cta-search', 'cta-tap', 'cta-whatsapp', 'cta-shop', 'cta-minimal',
     'loc-pin-viagem', 'loc-minimal-urbano', 'loc-tag-geo',
+    'loc-boarding-pass', 'loc-glass-radar', 'loc-editorial-atlas', 'loc-neon-marker',
 ];
 
 export const TITLE_MODEL_ID_SET = new Set(TITLE_MODEL_IDS);
