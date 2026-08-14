@@ -119,24 +119,6 @@ export const EditableTitleOverlay = ({
     const [editorBox, setEditorBox] = useState({ left: 0, top: 0, width: 100, height: 100 });
     const [editorTextStyle, setEditorTextStyle] = useState<CSSProperties>({});
     const [safeGeometry, setSafeGeometry] = useState({ offsetY: 0, scale: 1 });
-    // DEBUG TEMPORÁRIO — mede o palco (largura lógica e largura na tela) para
-    // comparar gerador × Etapa 4. Remover junto com o medidor amarelo.
-    const [debugStage, setDebugStage] = useState({ logical: 0, scaled: 0 });
-    useLayoutEffect(() => {
-        const stage = rootRef.current?.parentElement;
-        if (!stage) return;
-        const sync = () => setDebugStage((current) => {
-            const next = {
-                logical: stage.clientWidth,
-                scaled: Math.round(stage.getBoundingClientRect().width),
-            };
-            return current.logical === next.logical && current.scaled === next.scaled ? current : next;
-        });
-        sync();
-        const observer = new ResizeObserver(sync);
-        observer.observe(stage);
-        return () => observer.disconnect();
-    }, []);
 
     useLayoutEffect(() => {
         const root = rootRef.current;
@@ -610,19 +592,6 @@ export const EditableTitleOverlay = ({
                             {isTextEditing
                                 ? 'Edite na própria arte · Ctrl+Enter conclui'
                                 : 'Arraste · alças ajustam · +/- tamanho'}
-                        </div>
-                        {/* DEBUG TEMPORÁRIO — comparar tamanho do título entre gerador e Etapa 4. Remover depois. */}
-                        <div
-                            data-title-editor-ui="true"
-                            className="pointer-events-none absolute left-1/2 top-0 -translate-x-1/2 -translate-y-full rounded-lg bg-black px-3 py-2 font-mono font-black text-yellow-300 shadow-2xl ring-2 ring-yellow-400"
-                            style={{ fontSize: '26px', lineHeight: 1.25 }}
-                        >
-                            <div>
-                                s={(title.scale ?? 1).toFixed(2)} sx={(title.scaleX ?? 1).toFixed(2)} box={title.textBoxWidthPct != null ? Math.round(title.textBoxWidthPct) : '—'}
-                            </div>
-                            <div>
-                                sg={safeGeometry.scale.toFixed(2)} y={Math.round(title.posY)} w={debugStage.logical}/{debugStage.scaled}
-                            </div>
                         </div>
                         {isTextEditing && (
                             <div
