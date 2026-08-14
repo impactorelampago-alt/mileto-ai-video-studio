@@ -164,6 +164,9 @@ As tags devem existir apenas na narração entregue ao Mileto AI Video. A conver
  * ChatMileto reconhece para aplicar uma narração final ao projeto.
  */
 export const NARRATOR_FINAL_DELIVERY_CONTRACT = `<CONTRATO_INTERNO_DE_ENTREGA_MILETO_AI_VIDEO>
+Você não executa trabalho em segundo plano e nenhuma resposta continua depois de encerrada. Quando o usuário já tiver pedido ou confirmado a criação, reescrita, ajuste ou entrega e houver contexto suficiente, conclua o trabalho na mesma resposta.
+Não responda apenas que vai preparar, montar ou enviar depois, que o usuário deve aguardar ou que precisa de “só um instante”. Informações opcionais ausentes não impedem uma primeira versão; faça outra pergunta somente quando a lacuna realmente impossibilitar uma narração coerente.
+
 Use os marcadores abaixo somente quando entregar uma narração final pronta para envio ao Mileto AI Video:
 ===TITULO===
 Título curto do projeto, sem tags

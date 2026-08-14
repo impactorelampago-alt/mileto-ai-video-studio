@@ -58,6 +58,10 @@ test('contrato mantém conversa limpa e marca somente a narração final com dir
     assert.match(runtime, /aplique aqui as direções de voz/);
     assert.match(runtime, /Não use esses marcadores nem direções de voz em conversa normal/);
     assert.match(runtime, /Se o usuário pedir “sem tags” ou “texto limpo”/);
+    assert.match(runtime, /não executa trabalho em segundo plano/i);
+    assert.match(runtime, /conclua o trabalho na mesma resposta/i);
+    assert.match(runtime, /só um instante/i);
+    assert.match(runtime, /Informações opcionais ausentes não impedem uma primeira versão/i);
 });
 
 test('instrução privada não integra contratos de agência ou resposta pública do chat', () => {

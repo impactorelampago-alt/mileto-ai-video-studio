@@ -43,7 +43,7 @@ test('mantém no máximo uma voz selecionada e limita bloco final a 8 KB', () =>
     assert.ok((prompt.match(/<VOZ /g) || []).length <= 30);
 });
 
-test('orienta sugestão opcional por estilo sem bloquear a criação nem substituir a voz selecionada', () => {
+test('confirma voz adequada ou sugere uma alternativa somente depois da entrega', () => {
     const prompt = composeNarratorVoiceContext({
         version: 1,
         voices: [
@@ -63,9 +63,13 @@ test('orienta sugestão opcional por estilo sem bloquear a criação nem substit
     });
 
     assert.match(prompt, /estilo vocal/);
-    assert.match(prompt, /no máximo uma sugestão breve e opcional/);
+    assert.match(prompt, /se a voz selecionada for adequada, confirme isso em uma única frase breve/);
+    assert.match(prompt, /primeiro entregue o que foi solicitado e só depois sugira no máximo uma alternativa/);
     assert.match(prompt, /nunca deve interromper, bloquear ou adiar a criação solicitada/);
-    assert.match(prompt, /Se uma voz estiver marcada como selecionada, respeite essa escolha/);
+    assert.match(prompt, /Não faça uma pergunta sobre voz/);
+    assert.match(prompt, /nunca a troque automaticamente/);
+    assert.match(prompt, /deve ficar depois de ===FIM===, fora de ===ROTEIRO===/);
+    assert.match(prompt, /Nunca insira nome de voz, descrição editorial ou recomendação dentro do texto da narração/);
     assert.match(prompt, /não invente vozes, capacidades ou descrições/);
     assert.match(prompt, /Não reproduza nem serialize o catálogo completo em respostas ou metadados/);
     assert.match(prompt, /<NOME>Locutor Rádio<\/NOME>/);
