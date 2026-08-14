@@ -192,15 +192,16 @@ export const Step1 = () => {
             return;
         }
         if (opsCompanyState.required && !adData.opsCompany?.id) {
-            toast.error('Não encontramos uma empresa autorizada no Mileto Ops para este projeto.');
+            toast.error('Escolha a empresa do projeto no topo da etapa 1 antes de avançar.');
             return;
         }
         if (opsCompanyState.required && opsCompanyState.autoSelected && !defaultCompanyNoticeRef.current) {
-            toast.info(`Nenhuma empresa foi escolhida manualmente. Seguiremos com ${adData.opsCompany?.name || 'Impacto Relâmpago'}.`, {
-                description: 'Você pode trocar a empresa no seletor de marca antes de avançar.',
-                duration: 5500,
+            toast.warning(`Você ainda não escolheu a empresa do projeto — estamos usando ${adData.opsCompany?.name || 'a agência'} por padrão.`, {
+                description: 'As cores e a paleta da marca vêm dessa empresa. Confirme a empresa certa no seletor "Empresa do projeto" (topo da etapa 1), ou toque em Próximo de novo para seguir assim mesmo.',
+                duration: 9000,
             });
             defaultCompanyNoticeRef.current = true;
+            return;
         }
         const missing = missingBeforeStep(2, adData, []);
         if (missing.length) toast.warning(pendingWarningText(missing), { duration: 7000 });

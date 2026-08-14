@@ -218,16 +218,38 @@ export const OpsProjectCompanyPicker = ({ onRequirementChange }: Props) => {
     useEffect(() => { void load(); }, [load]);
 
     const chooseContext = async (nextContext: OpsViewContext) => {
+        // A empresa escolhida manualmente não pode ser trocada só por mudar a
+        // visão: ela é preservada quando existe nesta visão e só muda por uma
+        // nova escolha manual.
+        const previousCompanyId = adDataRef.current.opsCompany?.id || null;
+        const previousWasManual = Boolean(previousCompanyId) && !autoSelected;
         setContext(nextContext);
-        updateAdData({ opsCompany: null, brandPalette: null, brandPaletteUpdatedAt: null });
         setLoading(true);
         setError('');
         try {
             const response = await import('../lib/gateway').then(({ gatewayApi }) => gatewayApi.opsCompanies('', nextContext.contextId));
             const available = response.data.filter(isRealOpsCompany);
             setCompanies(available);
-            const fallback = defaultCompany(available, user?.orgName);
-            if (fallback) applyCompanySelection(fallback, nextContext, true);
+            const preserved = previousCompanyId
+                ? available.find((company) => company.id === previousCompanyId)
+                : null;
+            if (preserved) {
+                applyCompanySelection(preserved, nextContext, false);
+            } else if (previousWasManual) {
+                // A empresa escolhida não está disponível nesta visão. Limpamos para
+                // pedir uma nova escolha, sem cair silenciosamente na agência.
+                autoSelectedIdRef.current = null;
+                setAutoSelected(false);
+                updateAdData({ opsCompany: null, brandPalette: null, brandPaletteUpdatedAt: null });
+            } else {
+                const fallback = defaultCompany(available, user?.orgName);
+                if (fallback) applyCompanySelection(fallback, nextContext, true);
+                else {
+                    autoSelectedIdRef.current = null;
+                    setAutoSelected(false);
+                    updateAdData({ opsCompany: null, brandPalette: null, brandPaletteUpdatedAt: null });
+                }
+            }
         } catch (cause) {
             setError(cause instanceof Error ? cause.message : 'Não foi possível trocar o contexto do Ops.');
         } finally {
