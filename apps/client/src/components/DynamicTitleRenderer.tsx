@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { cn } from '../lib/utils';
+import { useFitToBoxActive } from './FitToBox';
 import { API_BASE_URL } from '../lib/apiBase';
 import { titleStylePresetById } from '../lib/titleModelCatalog';
 import { TitleHook } from '../types';
@@ -37,8 +38,12 @@ const AutoFitText: React.FC<AutoFitTextProps> = ({
 }) => {
     const hostRef = useRef<HTMLSpanElement>(null);
     const sampleRef = useRef<HTMLSpanElement>(null);
+    const boxed = useFitToBoxActive();
 
     useLayoutEffect(() => {
+        // Com uma caixa configurada, o FitToBox escala o título inteiro. O ajuste
+        // de fonte aqui é desligado para não encaixar em dobro.
+        if (boxed) return;
         const host = hostRef.current;
         const sample = sampleRef.current;
         if (!host || !sample) return;
@@ -76,7 +81,16 @@ const AutoFitText: React.FC<AutoFitTextProps> = ({
             window.cancelAnimationFrame(animationFrame);
             resizeObserver.disconnect();
         };
-    }, [maxFontSize, minFontSize, targetFill, text]);
+    }, [boxed, maxFontSize, minFontSize, targetFill, text]);
+
+    if (boxed) {
+        // Uma linha em tamanho base determinístico; o FitToBox faz o encaixe.
+        return (
+            <span className={cn('block whitespace-nowrap', className)} style={{ fontSize: maxFontSize, ...style }}>
+                {text}
+            </span>
+        );
+    }
 
     return (
         <span ref={hostRef} className={cn('block min-w-0', className)} style={style}>
