@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
     Building2,
     Captions,
@@ -624,6 +624,24 @@ export const AiTitleGeneratorTest = () => {
     const [previewCompanies, setPreviewCompanies] = useState<OpsCompany[]>([]);
     const [previewCompanyId, setPreviewCompanyId] = useState(adData.opsCompany?.id || '');
     const [previewPalette, setPreviewPalette] = useState<BrandPalette | null>(adData.brandPalette || null);
+    // O preview do gerador precisa usar o MESMO palco de 360px do vídeo (Etapa 4),
+    // senão a tipografia em px aparenta outro tamanho. Escalamos um palco lógico de
+    // 360px por (larguraDoMonitor / 360), idêntico ao VideoSequencePreview.
+    const previewMonitorRef = useRef<HTMLDivElement>(null);
+    const [overlayPreviewScale, setOverlayPreviewScale] = useState(1);
+    useLayoutEffect(() => {
+        const monitor = previewMonitorRef.current;
+        if (!monitor) return;
+        const sync = () => {
+            const next = monitor.clientWidth / 360;
+            if (!Number.isFinite(next) || next <= 0) return;
+            setOverlayPreviewScale((current) => (Math.abs(current - next) < 0.001 ? current : next));
+        };
+        sync();
+        const observer = new ResizeObserver(sync);
+        observer.observe(monitor);
+        return () => observer.disconnect();
+    }, []);
     const [showPreviewCaption, setShowPreviewCaption] = useState(initialPreviewCaptionVisibility);
     // O monitor desta tela é fixo em 9:16. Usar silenciosamente o formato do
     // último projeto fazia o editor mostrar uma geometria e salvar em outra.
@@ -1394,6 +1412,7 @@ export const AiTitleGeneratorTest = () => {
                                 <span>{format}</span>
                             </div>
                             <div
+                                ref={previewMonitorRef}
                                 className="relative aspect-[9/16] w-full overflow-hidden rounded-2xl border border-white/8 bg-[#151b1d]"
                             >
                                 <img
@@ -1405,49 +1424,63 @@ export const AiTitleGeneratorTest = () => {
                                 <div className="absolute inset-0 bg-black/12" />
                                 <div className="absolute inset-x-0 bottom-0 h-[55%] bg-linear-to-t from-black/60 via-black/16 to-transparent" />
 
-                                {showPreviewCaption && (
-                                    <div className="pointer-events-none absolute inset-x-0 z-30 flex justify-center px-5" style={{ bottom: '23%' }}>
-                                        <div
-                                            className="flex max-w-full flex-wrap justify-center text-center font-black uppercase leading-[1.2] tracking-wide"
-                                            style={{
-                                                fontFamily: 'Montserrat',
-                                                fontSize: '16px',
-                                                WebkitTextStroke: '1px #000000',
-                                                paintOrder: 'stroke fill',
-                                                textShadow: '0 6px 12px rgba(0,0,0,.8)',
-                                            }}
-                                        >
-                                            <span className="mx-1.5 text-white">SEU NEGÓCIO EM</span>
-                                            <span className="mx-1.5 text-brand-lime">DESTAQUE</span>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {previewTitle ? (
-                                    <EditableTitleOverlay
-                                        title={previewTitle}
-                                        selected
-                                        editingEnabled
-                                        onSelect={() => undefined}
-                                        onChange={handleOverlayChange}
-                                        onDelete={() => activeModel && toggleModel(activeModel, false)}
-                                        captionSafeTopPct={
-                                            showPreviewCaption
-                                                ? captionSafeTopPercent(
-                                                      { fontSize: 16, strokeWidth: 1, verticalPosition: 23 },
-                                                      format
-                                                  )
-                                                : undefined
-                                        }
+                                <div className="pointer-events-none absolute inset-0 flex items-start justify-center overflow-hidden">
+                                    <div
+                                        className="relative shrink-0"
+                                        style={{
+                                            width: 360,
+                                            height: 640,
+                                            transform: `scale(${overlayPreviewScale})`,
+                                            transformOrigin: 'top center',
+                                        }}
                                     >
-                                <div
-                                    key={`${previewTitle.styleId}-${previewTitle.animationId || 'none'}`}
-                                    className={cn('origin-center', animationPreviewClass(previewTitle.animationId || 'none'))}
-                                >
-                                            <DynamicTitleRenderer title={previewTitle} timeElapsed={0.45} previewMode />
-                                        </div>
-                                    </EditableTitleOverlay>
-                                ) : (
+                                        {showPreviewCaption && (
+                                            <div className="pointer-events-none absolute inset-x-0 z-30 flex justify-center px-5" style={{ bottom: '23%' }}>
+                                                <div
+                                                    className="flex max-w-full flex-wrap justify-center text-center font-black uppercase leading-[1.2] tracking-wide"
+                                                    style={{
+                                                        fontFamily: 'Montserrat',
+                                                        fontSize: '16px',
+                                                        WebkitTextStroke: '1px #000000',
+                                                        paintOrder: 'stroke fill',
+                                                        textShadow: '0 6px 12px rgba(0,0,0,.8)',
+                                                    }}
+                                                >
+                                                    <span className="mx-1.5 text-white">SEU NEGÓCIO EM</span>
+                                                    <span className="mx-1.5 text-brand-lime">DESTAQUE</span>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {previewTitle && (
+                                            <EditableTitleOverlay
+                                                title={previewTitle}
+                                                selected
+                                                editingEnabled
+                                                onSelect={() => undefined}
+                                                onChange={handleOverlayChange}
+                                                onDelete={() => activeModel && toggleModel(activeModel, false)}
+                                                captionSafeTopPct={
+                                                    showPreviewCaption
+                                                        ? captionSafeTopPercent(
+                                                              { fontSize: 16, strokeWidth: 1, verticalPosition: 23 },
+                                                              format
+                                                          )
+                                                        : undefined
+                                                }
+                                            >
+                                                <div
+                                                    key={`${previewTitle.styleId}-${previewTitle.animationId || 'none'}`}
+                                                    className={cn('origin-center', animationPreviewClass(previewTitle.animationId || 'none'))}
+                                                >
+                                                    <DynamicTitleRenderer title={previewTitle} timeElapsed={0.45} previewMode />
+                                                </div>
+                                            </EditableTitleOverlay>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {!previewTitle && (
                                     <div className="absolute inset-0 grid place-items-center p-8 text-center">
                                         <div>
                                             <WandSparkles className="mx-auto h-8 w-8 text-white/15" />
