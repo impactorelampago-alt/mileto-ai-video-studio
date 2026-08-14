@@ -31,7 +31,14 @@ import {
 import { cn } from '../../lib/utils';
 import * as chatApi from '../../lib/chatApi';
 import { useWizard } from '../../context/WizardContext';
-import { AdData, ChatAgentId, ChatFolder, ChatSession, ChatMessage } from '../../types';
+import {
+    AdData,
+    ChatAgentId,
+    ChatFolder,
+    ChatSession,
+    ChatMessage,
+    ChatTitleProposalSnapshot,
+} from '../../types';
 import { narrationContractFromChatScript } from '../../lib/narrationContract';
 import { invalidatedNarrationDerivatives } from '../../lib/narrationState';
 import { planNarrationTitles, titlePlanningNarrationKey, type TitlePlanningProposal } from '../../lib/titlePlanning';
@@ -66,7 +73,33 @@ interface ChatTitlePlanState {
     sessionId: string;
     script: string;
     narrationKey: string;
+    titleThreadId: string;
 }
+
+const titleProposalSnapshot = (
+    proposal: TitlePlanningProposal,
+    narrationKey: string,
+): ChatTitleProposalSnapshot => ({
+    version: 1,
+    proposalId: proposal.proposalId,
+    revision: proposal.revision,
+    narrationKey,
+    source: proposal.source,
+    summary: proposal.summary,
+    suggestions: proposal.suggestions,
+    triggers: proposal.triggers,
+    warnings: proposal.warnings,
+});
+
+const titleProposalFromSnapshot = (snapshot: ChatTitleProposalSnapshot): TitlePlanningProposal => ({
+    proposalId: snapshot.proposalId,
+    revision: snapshot.revision,
+    source: snapshot.source,
+    suggestions: snapshot.suggestions,
+    triggers: snapshot.triggers,
+    summary: snapshot.summary,
+    warnings: snapshot.warnings,
+});
 
 const SAVED_CHAT_SCRIPTS_STORAGE_KEY = 'mileto_chat_saved_scripts_v1';
 
@@ -527,6 +560,67 @@ export const ChatMileto: React.FC = () => {
         [adData]
     );
 
+    const appendTitleProposalMessage = useCallback(async (input: {
+        sessionId: string;
+        titleThreadId: string;
+        replyToMessageId: string;
+        proposal: TitlePlanningProposal;
+        narrationKey: string;
+        script: string;
+        phase: TitlePlanningProgressPhase;
+        lastInstruction?: string;
+    }): Promise<ChatMessage> => {
+        const snapshot = titleProposalSnapshot(input.proposal, input.narrationKey);
+        let proposalMessage: ChatMessage;
+        try {
+            proposalMessage = await chatApi.persistTitleProposalMessage(input.sessionId, {
+                titleProposal: snapshot,
+                titleThreadId: input.titleThreadId,
+                replyToMessageId: input.replyToMessageId,
+            });
+        } catch (error) {
+            console.error('Falha ao persistir a proposta de títulos:', error);
+            proposalMessage = {
+                id: `temp-title-proposal-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                sessionId: input.sessionId,
+                role: 'assistant',
+                content: snapshot.summary || 'Sugestões de títulos atualizadas.',
+                agentId: ACTIVE_CHAT_AGENT_ID,
+                agentLabel: 'Narrador',
+                interactionMode: 'title_proposal',
+                titleThreadId: input.titleThreadId,
+                replyToMessageId: input.replyToMessageId,
+                titleProposal: snapshot,
+                createdAt: new Date().toISOString(),
+            };
+            toast.warning('A proposta apareceu na conversa, mas não pôde ser salva no histórico local.');
+        }
+
+        if (activeSessionRef.current === input.sessionId) {
+            setMessages((current) => current.some((message) => message.id === proposalMessage.id)
+                ? current
+                : [...current, proposalMessage]);
+        }
+        setTitlePlans((current) => ({
+            ...current,
+            [proposalMessage.id]: {
+                proposal: proposalMessage.titleProposal
+                    ? titleProposalFromSnapshot(proposalMessage.titleProposal)
+                    : input.proposal,
+                busy: false,
+                phase: input.phase,
+                sessionId: input.sessionId,
+                script: input.script,
+                narrationKey: input.narrationKey,
+                titleThreadId: input.titleThreadId,
+                lastInstruction: input.lastInstruction,
+            },
+        }));
+        setActiveTitlePlanMessageId(proposalMessage.id);
+        setTierMenuOpen(false);
+        return proposalMessage;
+    }, []);
+
     const handleUseAsScript = useCallback(
         (msg: ChatMessage) => {
             if (isLoading) {
@@ -565,21 +659,26 @@ export const ChatMileto: React.FC = () => {
                 sessionId: msg.sessionId,
                 script,
                 narrationKey: titlePlanningNarrationKey(script),
+                titleThreadId: msg.id,
             },
         }));
         try {
             const proposal = await planNarrationTitles({ script, signal: controller.signal });
             if (titlePlanAbortControllerRef.current !== controller) return;
-            setTitlePlans((current) => ({
-                ...current,
-                [msg.id]: {
-                    ...current[msg.id],
-                    proposal,
-                    busy: false,
-                    phase: 'generating',
-                    error: undefined,
-                },
-            }));
+            await appendTitleProposalMessage({
+                sessionId: msg.sessionId,
+                titleThreadId: msg.id,
+                replyToMessageId: msg.id,
+                proposal,
+                narrationKey: titlePlanningNarrationKey(script),
+                script,
+                phase: 'generating',
+            });
+            setTitlePlans((current) => {
+                const remaining = { ...current };
+                delete remaining[msg.id];
+                return remaining;
+            });
             toast.success('Narração aplicada. Agora revise os títulos sugeridos.');
         } catch (error) {
             if (controller.signal.aborted) return;
@@ -592,6 +691,7 @@ export const ChatMileto: React.FC = () => {
                         script,
                         narrationKey: titlePlanningNarrationKey(script),
                         phase: 'generating' as const,
+                        titleThreadId: msg.id,
                     }),
                     busy: false,
                     error: message,
@@ -603,7 +703,7 @@ export const ChatMileto: React.FC = () => {
                 titlePlanAbortControllerRef.current = null;
             }
         }
-    }, [adData, exitTitleMode, isLoading, narrationPatchFromMessage, updateAdData]);
+    }, [adData, appendTitleProposalMessage, exitTitleMode, isLoading, narrationPatchFromMessage, updateAdData]);
 
     const updateTitlePlan = useCallback((messageId: string, updater: (proposal: TitlePlanningProposal) => TitlePlanningProposal) => {
         setTitlePlans((current) => {
@@ -616,7 +716,7 @@ export const ChatMileto: React.FC = () => {
     const handleRefineTitlePlan = useCallback(async (messageId: string, rawInstruction: string) => {
         const state = titlePlans[messageId];
         const instruction = rawInstruction.trim();
-        if (!state || !instruction || state.busy) return;
+        if (!state || !instruction || state.busy) return null;
         if (titlePlanningNarrationKey(adData.narrationPlainText) !== state.narrationKey) {
             const message = 'A narração do projeto mudou. Gere novamente os títulos a partir da narração atual.';
             setTitlePlans((current) => ({
@@ -624,7 +724,7 @@ export const ChatMileto: React.FC = () => {
                 [messageId]: { ...current[messageId], error: message },
             }));
             toast.warning(message);
-            return;
+            return null;
         }
         const controller = new AbortController();
         titlePlanAbortControllerRef.current?.abort();
@@ -647,19 +747,19 @@ export const ChatMileto: React.FC = () => {
                 revision: state.proposal?.revision,
                 signal: controller.signal,
             });
-            if (titlePlanAbortControllerRef.current !== controller) return;
+            if (titlePlanAbortControllerRef.current !== controller) return null;
             setTitlePlans((current) => ({
                 ...current,
                 [messageId]: {
                     ...current[messageId],
-                    proposal,
                     busy: false,
                     phase: 'refining',
                     error: undefined,
                 },
             }));
+            return proposal;
         } catch (error) {
-            if (controller.signal.aborted) return;
+            if (controller.signal.aborted) return null;
             const message = error instanceof Error ? error.message : 'Não foi possível ajustar os títulos.';
             setTitlePlans((current) => ({
                 ...current,
@@ -669,6 +769,7 @@ export const ChatMileto: React.FC = () => {
                     error: message,
                 },
             }));
+            return null;
         } finally {
             if (titlePlanAbortControllerRef.current === controller) {
                 titlePlanAbortControllerRef.current = null;
@@ -676,8 +777,9 @@ export const ChatMileto: React.FC = () => {
         }
     }, [adData.narrationPlainText, titlePlans]);
 
-    const handleApplyTitlePlan = useCallback((msg: ChatMessage) => {
-        const proposal = titlePlans[msg.id]?.proposal;
+    const handleApplyTitlePlan = useCallback((messageId: string) => {
+        const state = titlePlans[messageId];
+        const proposal = state?.proposal;
         if (!proposal) return;
         const selected = proposal.suggestions
             .filter((suggestion) => suggestion.selected && suggestion.text.trim())
@@ -686,21 +788,17 @@ export const ChatMileto: React.FC = () => {
             toast.warning('Selecione pelo menos um título.');
             return;
         }
-        const nextAdData = { ...adData, ...narrationPatchFromMessage(msg) } as AdData;
-        if (
-            titlePlanningNarrationKey(adData.narrationPlainText) !==
-            titlePlanningNarrationKey(nextAdData.narrationPlainText)
-        ) {
+        if (titlePlanningNarrationKey(adData.narrationPlainText) !== state.narrationKey) {
             toast.warning('A narração do projeto mudou. Gere novamente as sugestões para evitar títulos desatualizados.');
             return;
         }
         updateAdData({
             plannedTitles: selected,
-            plannedTitlesNarrationKey: titlePlanningNarrationKey(nextAdData.narrationPlainText),
+            plannedTitlesNarrationKey: state.narrationKey,
         });
         exitTitleMode();
         toast.success(`${selected.length} título${selected.length === 1 ? '' : 's'} aplicado${selected.length === 1 ? '' : 's'} ao projeto.`);
-    }, [adData, exitTitleMode, narrationPatchFromMessage, titlePlans, updateAdData]);
+    }, [adData.narrationPlainText, exitTitleMode, titlePlans, updateAdData]);
 
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -758,6 +856,40 @@ export const ChatMileto: React.FC = () => {
             setMessages([]);
         }
     }, [activeSessionId]);
+
+    useEffect(() => {
+        const persistedProposals = messages.filter((message) => (
+            message.role === 'assistant'
+            && message.interactionMode === 'title_proposal'
+            && message.titleProposal?.version === 1
+        ));
+        if (!persistedProposals.length) return;
+        setTitlePlans((current) => {
+            let changed = false;
+            const next = { ...current };
+            for (const message of persistedProposals) {
+                if (!message.titleProposal || next[message.id]) continue;
+                const reply = messages.find((candidate) => candidate.id === message.replyToMessageId);
+                const narrationKey = message.titleProposal.narrationKey;
+                next[message.id] = {
+                    proposal: titleProposalFromSnapshot(message.titleProposal),
+                    busy: false,
+                    phase: message.titleProposal.revision > 1 ? 'refining' : 'generating',
+                    sessionId: message.sessionId,
+                    script: titlePlanningNarrationKey(adData.narrationPlainText) === narrationKey
+                        ? adData.narrationPlainText
+                        : '',
+                    narrationKey,
+                    titleThreadId: message.titleThreadId || message.id,
+                    lastInstruction: reply?.interactionMode === 'title_refinement'
+                        ? reply.content
+                        : undefined,
+                };
+                changed = true;
+            }
+            return changed ? next : current;
+        });
+    }, [adData.narrationPlainText, messages]);
 
     useEffect(() => {
         activeSessionRef.current = activeSessionId;
@@ -1008,8 +1140,10 @@ export const ChatMileto: React.FC = () => {
                 setMessages((current) => [...current, tempUserMsg]);
 
                 const refinement = handleRefineTitlePlan(activeTitlePlanMessageId, userContent);
+                let requestMessage = tempUserMsg;
                 try {
                     const persisted = await chatApi.persistTitleRefinementMessage(sessionId, userContent);
+                    requestMessage = persisted;
                     if (activeSessionRef.current === sessionId) {
                         setMessages((current) => current.map((message) => (
                             message.id === tempUserMsg.id ? persisted : message
@@ -1019,7 +1153,19 @@ export const ChatMileto: React.FC = () => {
                     console.error('Falha ao persistir o ajuste de títulos:', error);
                     toast.warning('O ajuste foi enviado, mas não pôde ser salvo no histórico local.');
                 }
-                await refinement;
+                const proposal = await refinement;
+                if (proposal) {
+                    await appendTitleProposalMessage({
+                        sessionId,
+                        titleThreadId: activeTitlePlan.titleThreadId,
+                        replyToMessageId: requestMessage.id,
+                        proposal,
+                        narrationKey: activeTitlePlan.narrationKey,
+                        script: activeTitlePlan.script,
+                        phase: 'refining',
+                        lastInstruction: userContent,
+                    });
+                }
                 return;
             }
 
@@ -1159,6 +1305,7 @@ export const ChatMileto: React.FC = () => {
         activeSessionId,
         activeTitlePlan,
         activeTitlePlanMessageId,
+        appendTitleProposalMessage,
         editingMessageId,
         exitTitleMode,
         handleRefineTitlePlan,
@@ -1351,6 +1498,12 @@ export const ChatMileto: React.FC = () => {
         .reverse()
         .find((message) => message.role === 'user' && message.interactionMode !== 'title_refinement')
         ?.id;
+    const latestTitleProposalByThread = new Map<string, string>();
+    for (const message of messages) {
+        if (message.interactionMode !== 'title_proposal' || !message.titleProposal) continue;
+        latestTitleProposalByThread.set(message.titleThreadId || message.id, message.id);
+    }
+    const latestTitleProposalMessageIds = new Set(latestTitleProposalByThread.values());
 
     return (
         <div
@@ -1706,7 +1859,7 @@ export const ChatMileto: React.FC = () => {
                                 key={msg.id}
                                 className={cn('flex gap-2.5', msg.role === 'user' ? 'justify-end' : 'justify-start')}
                             >
-                                {msg.role === 'assistant' && (
+                                {msg.role === 'assistant' && msg.interactionMode !== 'title_proposal' && (
                                     <div className="w-8 h-8 rounded-full bg-linear-to-br from-brand-lime to-brand-accent flex items-center justify-center shrink-0 mt-0.5 shadow-[0_0_10px_rgba(0,230,118,0.2)]">
                                         <AgentGlyph id={msg.agentId || ACTIVE_CHAT_AGENT_ID} className="w-4 h-4 text-[#0a0f12]" />
                                     </div>
@@ -1716,12 +1869,12 @@ export const ChatMileto: React.FC = () => {
                                         'text-[13px] leading-relaxed flex flex-col',
                                         msg.role === 'user'
                                             ? 'max-w-[80%] px-4 py-3 bg-brand-accent/10 text-foreground border border-brand-accent/30 rounded-2xl rounded-br-sm shadow-[0_4px_20px_rgba(0,230,118,0.05)]'
-                                            : hasFinalScript(msg.content)
+                                            : hasFinalScript(msg.content) || msg.interactionMode === 'title_proposal'
                                                 ? 'w-full max-w-[88%] text-foreground/90'
                                                 : 'max-w-[80%] px-4 py-3 bg-brand-card/50 text-foreground/90 border border-black/5 dark:border-white/5 rounded-2xl rounded-bl-sm shadow-xl'
                                     )}
                                 >
-                                    {msg.role === 'assistant' && (
+                                    {msg.role === 'assistant' && msg.interactionMode !== 'title_proposal' && (
                                         <div className={cn(
                                             'mb-2 text-[9px] font-bold uppercase tracking-[.16em] text-brand-muted',
                                             hasFinalScript(msg.content) && 'px-1'
@@ -1735,48 +1888,57 @@ export const ChatMileto: React.FC = () => {
                                         </div>
                                     )}
                                     {msg.role === 'assistant'
-                                        ? (
+                                        ? msg.interactionMode === 'title_proposal' && msg.titleProposal
+                                            ? (
+                                                <ChatTitleProposal
+                                                    proposal={titlePlans[msg.id]?.proposal
+                                                        || titleProposalFromSnapshot(msg.titleProposal)}
+                                                    busy={titlePlans[msg.id]?.busy}
+                                                    error={titlePlanningNarrationKey(adData.narrationPlainText)
+                                                        !== msg.titleProposal.narrationKey
+                                                        ? 'A narração mudou. Esta proposta foi preservada apenas como histórico.'
+                                                        : titlePlans[msg.id]?.error}
+                                                    active={isTitleModeActive && activeTitlePlanMessageId === msg.id}
+                                                    readOnly={!latestTitleProposalMessageIds.has(msg.id)
+                                                        || titlePlanningNarrationKey(adData.narrationPlainText)
+                                                        !== msg.titleProposal.narrationKey}
+                                                    lastInstruction={titlePlans[msg.id]?.lastInstruction}
+                                                    onActivate={() => {
+                                                        if (
+                                                            titlePlanningNarrationKey(adData.narrationPlainText)
+                                                            !== msg.titleProposal?.narrationKey
+                                                        ) {
+                                                            toast.warning('A narração mudou. Gere uma nova proposta de títulos.');
+                                                            return;
+                                                        }
+                                                        exitTitleMode();
+                                                        setEditingMessageId(null);
+                                                        setActiveTitlePlanMessageId(msg.id);
+                                                        setTierMenuOpen(false);
+                                                        textareaRef.current?.focus();
+                                                    }}
+                                                    onToggle={(id) => updateTitlePlan(msg.id, (proposal) => ({
+                                                        ...proposal,
+                                                        suggestions: proposal.suggestions.map((item) =>
+                                                            item.id === id ? { ...item, selected: !item.selected } : item
+                                                        ),
+                                                    }))}
+                                                    onEdit={(id, text) => updateTitlePlan(msg.id, (proposal) => ({
+                                                        ...proposal,
+                                                        suggestions: proposal.suggestions.map((item) =>
+                                                            item.id === id ? { ...item, text: text.slice(0, 90) } : item
+                                                        ),
+                                                    }))}
+                                                    onApply={() => handleApplyTitlePlan(msg.id)}
+                                                />
+                                            )
+                                            : (
                                             <StructuredAgentResponse
                                                 content={msg.content}
                                                 onApply={() => handleUseAsScript(msg)}
                                                 onApplyAndCreateTitles={() => handleApplyAndCreateTitles(msg)}
                                                 actionsDisabled={isLoading}
-                                                titlePlanningNode={titlePlans[msg.id]?.proposal ? (
-                                                    <ChatTitleProposal
-                                                        proposal={titlePlans[msg.id].proposal!}
-                                                        busy={titlePlans[msg.id].busy}
-                                                        error={titlePlans[msg.id].error}
-                                                        active={isTitleModeActive && activeTitlePlanMessageId === msg.id}
-                                                        lastInstruction={titlePlans[msg.id].lastInstruction}
-                                                        onActivate={() => {
-                                                            if (
-                                                                titlePlanningNarrationKey(adData.narrationPlainText)
-                                                                !== titlePlans[msg.id].narrationKey
-                                                            ) {
-                                                                toast.warning('A narração mudou. Gere uma nova proposta de títulos.');
-                                                                return;
-                                                            }
-                                                            exitTitleMode();
-                                                            setEditingMessageId(null);
-                                                            setActiveTitlePlanMessageId(msg.id);
-                                                            setTierMenuOpen(false);
-                                                            textareaRef.current?.focus();
-                                                        }}
-                                                        onToggle={(id) => updateTitlePlan(msg.id, (proposal) => ({
-                                                            ...proposal,
-                                                            suggestions: proposal.suggestions.map((item) =>
-                                                                item.id === id ? { ...item, selected: !item.selected } : item
-                                                            ),
-                                                        }))}
-                                                        onEdit={(id, text) => updateTitlePlan(msg.id, (proposal) => ({
-                                                            ...proposal,
-                                                            suggestions: proposal.suggestions.map((item) =>
-                                                                item.id === id ? { ...item, text: text.slice(0, 90) } : item
-                                                            ),
-                                                        }))}
-                                                        onApply={() => handleApplyTitlePlan(msg)}
-                                                    />
-                                                ) : titlePlans[msg.id]?.busy ? (
+                                                titlePlanningNode={titlePlans[msg.id]?.busy ? (
                                                     <div className="mt-3 rounded-xl border border-brand-accent/15 bg-brand-accent/[.035] px-3 py-2 text-[10px] text-brand-muted">
                                                         Planejamento em andamento no campo principal do chat.
                                                     </div>
@@ -1786,7 +1948,7 @@ export const ChatMileto: React.FC = () => {
                                                     </div>
                                                 ) : undefined}
                                             />
-                                        )
+                                            )
                                         : <div className="whitespace-pre-wrap">{msg.content}</div>}
 
                                     {msg.role === 'user'

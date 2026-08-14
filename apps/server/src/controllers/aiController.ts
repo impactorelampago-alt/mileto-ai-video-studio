@@ -51,9 +51,11 @@ import {
     TITLE_EDITORIAL_REVIEW_SYSTEM_PROMPT,
 } from '../services/titleEditorialReview';
 import {
+    applyTitlePlanningOperations,
     normalizePlanningText,
     planningDisplaySupported,
     planningLiteralExists,
+    type TitlePlanningSuggestionState,
 } from '../services/titlePlanningSafety';
 import { storeAiGeneratedMedia } from './fileExplorerController';
 
@@ -106,14 +108,7 @@ const parseGatewayJson = (value: unknown) => {
     }
 };
 
-type PlannedTitleSuggestion = {
-    id: string;
-    text: string;
-    sourceText: string;
-    triggerId: string;
-    triggerName: string;
-    selected: boolean;
-};
+type PlannedTitleSuggestion = TitlePlanningSuggestionState;
 
 const safePlanningLine = (value: unknown, maxLength = 90) => String(value || '')
     .normalize('NFKC')
@@ -152,6 +147,42 @@ Responda exclusivamente em JSON válido:
 {"titles":[{"sourceText":"trecho literal","text":"texto visual","triggerId":"id-do-gatilho"}],"summary":"resumo curto das alterações"}`;
 };
 
+const titlePlanningRefinementPrompt = (config: TitleGeneratorConfig) => {
+    const triggers = config.triggers
+        .filter((trigger) => trigger.enabled && trigger.titleTypes.length)
+        .map((trigger) => ({
+            id: trigger.id,
+            name: trigger.name,
+            instructions: trigger.instructions,
+            maxOccurrences: Math.min(3, trigger.maxOccurrences),
+        }));
+    return `Você edita uma proposta existente de títulos por operações pontuais.
+
+Regras de revisão:
+1. Não regenere nem devolva a lista completa. Itens omitidos permanecem exatamente como estão.
+2. Use sempre o id exato da proposta atual para edit_text, set_selected e remove.
+3. Quando o usuário pedir para encurtar ou reescrever um título nomeado, use edit_text somente nesse item.
+4. edit_text pode usar apenas um trecho literal e contínuo do sourceText daquele item.
+5. set_selected altera somente a seleção. remove exclui somente o item indicado.
+6. add exige sourceText literal e contínuo da narração, text literal e contínuo dentro desse sourceText e um triggerId autorizado.
+7. "O resto mantém" significa que nenhum outro item deve receber operação.
+8. Nunca invente preço, prazo, oferta, local, prova, benefício, escassez ou CTA.
+
+Gatilhos autorizados:
+${JSON.stringify(triggers)}
+
+Responda exclusivamente em JSON válido neste contrato:
+{"operations":[
+  {"op":"edit_text","id":"id-existente","text":"novo trecho literal"},
+  {"op":"set_selected","id":"id-existente","selected":true},
+  {"op":"remove","id":"id-existente"},
+  {"op":"add","sourceText":"trecho literal","text":"texto literal","triggerId":"id-do-gatilho","selected":false}
+],"summary":"resumo curto do que mudou"}
+
+Os quatro objetos acima mostram somente os formatos permitidos; não os copie por padrão.
+Inclua apenas as operações realmente necessárias.`;
+};
+
 /**
  * Planeja textos antes de existirem legendas temporizadas. Nada desta rota é
  * gravado no projeto: o cliente mantém a proposta isolada até a confirmação.
@@ -161,12 +192,21 @@ export const planTitles = async (req: Request, res: Response) => {
     const requestId = String(req.headers['x-request-id'] || uuidv4()).slice(0, 80);
     const script = String(req.body?.script || '').normalize('NFKC').trim().slice(0, 20_000);
     const instruction = safePlanningLine(req.body?.instruction, 1_000);
-    const previousTitles = Array.isArray(req.body?.previousTitles)
-        ? req.body.previousTitles.slice(0, 40).flatMap((item: any) => {
+    const requestedPreviousTitles: PlannedTitleSuggestion[] = Array.isArray(req.body?.previousTitles)
+        ? req.body.previousTitles.slice(0, 40).flatMap((item: any, index: number) => {
+            const id = safePlanningLine(item?.id, 120) || `legacy-title-${index + 1}`;
             const text = safePlanningLine(item?.text);
             const sourceText = safePlanningLine(item?.sourceText, 240);
             const triggerId = safePlanningLine(item?.triggerId, 80);
-            return text && sourceText && triggerId ? [{ text, sourceText, triggerId }] : [];
+            const triggerName = safePlanningLine(item?.triggerName, 80);
+            return text && sourceText && triggerId ? [{
+                id,
+                text,
+                sourceText,
+                triggerId,
+                triggerName,
+                selected: item?.selected === true,
+            }] : [];
         })
         : [];
 
@@ -206,21 +246,43 @@ export const planTitles = async (req: Request, res: Response) => {
         const enabledTriggers = titleSettings.config.triggers
             .filter((trigger) => trigger.enabled && trigger.titleTypes.length);
         const triggerById = triggerMapWithAliases(enabledTriggers);
+        const previousTitles: PlannedTitleSuggestion[] = requestedPreviousTitles.flatMap((item) => {
+            const trigger = triggerById.get(normalizeTriggerKey(item.triggerId));
+            if (!trigger || !planningLiteralExists(script, item.sourceText)) return [];
+            return [{
+                ...item,
+                triggerId: trigger.id,
+                triggerName: item.triggerName || trigger.name,
+            }];
+        });
+        const isRefinement = Boolean(instruction);
+        const summarizePlanningTriggers = (suggestions: PlannedTitleSuggestion[]) => enabledTriggers.map((trigger) => ({
+            id: trigger.id,
+            name: trigger.name,
+            maxOccurrences: Math.min(3, trigger.maxOccurrences),
+            status: suggestions.some((suggestion) => suggestion.triggerId === trigger.id)
+                ? 'found'
+                : 'not_found',
+            suggestionCount: suggestions.filter((suggestion) => suggestion.triggerId === trigger.id).length,
+        }));
 
         let source: 'ai' | 'local' = 'ai';
         let summary = instruction ? 'Propostas ajustadas conforme o pedido.' : 'Propostas criadas a partir da narração.';
         let rawTitles: any[] = [];
+        let rawOperations: unknown[] = [];
         try {
             const result = await gatewayChat(token, {
                 messages: [{
                     role: 'user',
                     content: [
                         `Narração escolhida:\n${script}`,
-                        previousTitles.length ? `Propostas anteriores:\n${JSON.stringify(previousTitles)}` : '',
+                        isRefinement ? `Propostas atuais:\n${JSON.stringify(previousTitles)}` : '',
                         instruction ? `Ajuste solicitado pelo usuário:\n${instruction}` : '',
                     ].filter(Boolean).join('\n\n'),
                 }],
-                system: titlePlanningPrompt(titleSettings.config),
+                system: isRefinement
+                    ? titlePlanningRefinementPrompt(titleSettings.config)
+                    : titlePlanningPrompt(titleSettings.config),
                 json: true,
                 model: titleSettings.config.ai.model,
                 reasoning: titleSettings.config.ai.reasoning,
@@ -228,17 +290,70 @@ export const planTitles = async (req: Request, res: Response) => {
                 locale: 'pt-BR',
             }, controller.signal, TITLE_GENERATION_TOTAL_TIMEOUT_MS);
             const parsed: any = parseGatewayJson(result.text);
-            rawTitles = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.titles) ? parsed.titles : [];
+            if (isRefinement) {
+                rawOperations = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.operations) ? parsed.operations : [];
+            } else {
+                rawTitles = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.titles) ? parsed.titles : [];
+            }
             summary = safePlanningLine(parsed?.summary, 240) || summary;
         } catch (error) {
             if (controller.signal.aborted) throw error;
             source = 'local';
-            rawTitles = deterministicTitleCandidates(script).map((candidate) => ({
-                sourceText: candidate.text,
-                text: candidate.text,
-                triggerId: candidate.kind,
-            }));
-            summary = 'A IA não respondeu; foram preservados apenas fatos detectados localmente.';
+            if (isRefinement) {
+                rawOperations = [];
+                summary = 'O ajuste não ficou disponível agora; a proposta anterior foi preservada.';
+            } else {
+                rawTitles = deterministicTitleCandidates(script).map((candidate) => ({
+                    sourceText: candidate.text,
+                    text: candidate.text,
+                    triggerId: candidate.kind,
+                }));
+                summary = 'A IA não respondeu; foram preservados apenas fatos detectados localmente.';
+            }
+        }
+
+        if (isRefinement) {
+            const operationResult = applyTitlePlanningOperations({
+                script,
+                previousTitles,
+                operations: rawOperations,
+                resolveTrigger: (triggerId) => {
+                    const trigger = triggerById.get(normalizeTriggerKey(triggerId));
+                    return trigger ? {
+                        id: trigger.id,
+                        name: trigger.name,
+                        maxOccurrences: trigger.maxOccurrences,
+                    } : null;
+                },
+                createId: uuidv4,
+            });
+            if (source === 'ai' && operationResult.appliedOperationCount === 0) {
+                summary = operationResult.rejectedOperationCount
+                    ? 'O pedido não produziu uma alteração factual segura; a proposta anterior foi preservada.'
+                    : 'Nenhuma alteração foi necessária; a proposta anterior foi preservada.';
+            }
+            const warnings = [
+                ...(source === 'local' ? [{
+                    code: 'title_plan_refinement_unavailable',
+                    message: summary,
+                }] : []),
+                ...(operationResult.rejectedOperationCount ? [{
+                    code: 'title_plan_operations_rejected',
+                    message: `${operationResult.rejectedOperationCount} operação(ões) insegura(s) ou inválida(s) foi(ram) ignorada(s).`,
+                }] : []),
+            ];
+            return res.json({
+                ok: true,
+                proposalId: uuidv4(),
+                revision: Math.max(1, Number(req.body?.revision) + 1 || 1),
+                source,
+                configSource: titleSettings.source,
+                suggestions: operationResult.suggestions,
+                triggers: summarizePlanningTriggers(operationResult.suggestions),
+                summary,
+                warnings,
+                appliedOperationCount: operationResult.appliedOperationCount,
+            });
         }
 
         const occurrenceByTrigger = new Map<string, number>();
@@ -281,15 +396,7 @@ export const planTitles = async (req: Request, res: Response) => {
             if (selected) selectedCount += 1;
             return { ...item, selected };
         });
-        const triggers = enabledTriggers.map((trigger) => ({
-            id: trigger.id,
-            name: trigger.name,
-            maxOccurrences: Math.min(3, trigger.maxOccurrences),
-            status: suggestions.some((suggestion) => suggestion.triggerId === trigger.id)
-                ? 'found'
-                : 'not_found',
-            suggestionCount: suggestions.filter((suggestion) => suggestion.triggerId === trigger.id).length,
-        }));
+        const triggers = summarizePlanningTriggers(suggestions);
 
         return res.json({
             ok: true,

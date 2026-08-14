@@ -34,9 +34,12 @@ test('os novos textos visíveis permanecem em UTF-8 sem mojibake', () => {
 test('o cliente usa a rota dedicada e limita o contexto reenviado na revisão', () => {
     assert.match(planningClientSource, /\/api\/video\/plan-titles/);
     assert.match(planningClientSource, /titles\.slice\(0, 40\)/);
+    assert.match(planningClientSource, /id:[\s\S]*slice\(0, 120\)/);
     assert.match(planningClientSource, /text:[\s\S]*slice\(0, 90\)/);
     assert.match(planningClientSource, /sourceText:[\s\S]*slice\(0, 240\)/);
     assert.match(planningClientSource, /triggerId:[\s\S]*slice\(0, 80\)/);
+    assert.match(planningClientSource, /triggerName:[\s\S]*slice\(0, 80\)/);
+    assert.match(planningClientSource, /selected:\s*title\.selected === true/);
 });
 
 test('a narração é aplicada antes de solicitar títulos e a ação simples não os cria', () => {
@@ -87,7 +90,8 @@ test('títulos só entram no projeto após seleção explícita e ficam ligados 
 
     assert.match(applyPlan, /filter\(\(suggestion\) => suggestion\.selected/);
     assert.match(applyPlan, /plannedTitles:\s*selected/);
-    assert.match(applyPlan, /plannedTitlesNarrationKey:\s*titlePlanningNarrationKey\(nextAdData\.narrationPlainText\)/);
+    assert.match(applyPlan, /titlePlanningNarrationKey\(adData\.narrationPlainText\) !== state\.narrationKey/);
+    assert.match(applyPlan, /plannedTitlesNarrationKey:\s*state\.narrationKey/);
 });
 
 test('Step 4 mantém a proposta fora do projeto e só confirma em uma atualização atômica', () => {

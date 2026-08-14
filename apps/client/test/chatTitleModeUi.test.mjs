@@ -47,7 +47,16 @@ test('a proposta usa o chat principal e não mantém uma segunda caixa de instru
     assert.doesNotMatch(proposalSource, /onInstructionChange|placeholder="Ex\.: faltou/);
     assert.match(proposalSource, /Ajuste em andamento no campo principal do chat/);
     assert.doesNotMatch(proposalSource, /<TitlePlanningProgress/);
-    assert.match(proposalSource, /disabled=\{busy\}/);
+    assert.match(proposalSource, /disabled=\{busy \|\| readOnly\}/);
+});
+
+test('cada revisão de títulos vira uma nova resposta persistida abaixo do pedido', () => {
+    assert.match(apiSource, /persistTitleProposalMessage/);
+    assert.match(apiSource, /title-proposal-message/);
+    assert.match(chatSource, /const proposal = await refinement;[\s\S]*appendTitleProposalMessage/);
+    assert.match(chatSource, /interactionMode === 'title_proposal'[\s\S]*<ChatTitleProposal/);
+    assert.match(proposalSource, /Versão anterior preservada/);
+    assert.doesNotMatch(chatSource, /\[messageId\]: \{[\s\S]{0,160}proposal,[\s\S]{0,80}phase: 'refining'/);
 });
 
 test('ações de narração e edição não concorrem com uma resposta ou proposta ativa', () => {

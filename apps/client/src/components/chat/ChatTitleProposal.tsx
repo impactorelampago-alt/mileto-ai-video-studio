@@ -8,6 +8,7 @@ interface ChatTitleProposalProps {
     busy?: boolean;
     error?: string | null;
     active: boolean;
+    readOnly?: boolean;
     lastInstruction?: string;
     onActivate: () => void;
     onToggle: (id: string) => void;
@@ -20,6 +21,7 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
     busy = false,
     error,
     active,
+    readOnly = false,
     lastInstruction,
     onActivate,
     onToggle,
@@ -57,7 +59,7 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
                         <button
                             type="button"
                             onClick={() => onToggle(item.id)}
-                            disabled={busy}
+                            disabled={busy || readOnly}
                             className={cn(
                                 'grid h-5 w-5 shrink-0 place-items-center rounded-md border transition disabled:cursor-wait disabled:opacity-50',
                                 item.selected
@@ -72,7 +74,7 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
                             <input
                                 value={item.text}
                                 onChange={(event) => onEdit(item.id, event.target.value)}
-                                disabled={busy}
+                                disabled={busy || readOnly}
                                 maxLength={90}
                                 className="w-full bg-transparent text-[12px] font-semibold text-foreground outline-none disabled:cursor-wait disabled:opacity-60"
                                 aria-label={`Texto do gatilho ${item.triggerName}`}
@@ -119,7 +121,11 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
             </div>
 
             <div className="border-t border-black/5 p-3 dark:border-white/5">
-                {busy ? (
+                {readOnly ? (
+                    <div className="rounded-xl border border-black/10 px-3 py-2.5 text-[10px] text-brand-muted dark:border-white/10">
+                        Versão anterior preservada no histórico. Continue pela proposta mais recente abaixo.
+                    </div>
+                ) : busy ? (
                     <div className="flex items-center gap-2 rounded-xl border border-brand-accent/15 bg-brand-accent/[.035] px-3 py-2.5 text-[10px] text-brand-muted">
                         <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-brand-accent motion-reduce:animate-none" aria-hidden="true" />
                         Ajuste em andamento no campo principal do chat.
@@ -149,14 +155,16 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
                     </button>
                 )}
                 {error && <p className="mt-2 text-[10px] text-red-400">{error}</p>}
-                <button
-                    type="button"
-                    disabled={!selectedCount || busy}
-                    onClick={onApply}
-                    className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl bg-brand-accent px-4 text-[10px] font-bold text-[#07110d] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                    <Check className="h-3.5 w-3.5" /> Aplicar títulos selecionados
-                </button>
+                {!readOnly && (
+                    <button
+                        type="button"
+                        disabled={!selectedCount || busy}
+                        onClick={onApply}
+                        className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl bg-brand-accent px-4 text-[10px] font-bold text-[#07110d] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        <Check className="h-3.5 w-3.5" /> Aplicar títulos selecionados
+                    </button>
+                )}
             </div>
         </section>
     );

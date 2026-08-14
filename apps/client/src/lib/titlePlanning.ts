@@ -37,9 +37,12 @@ export const titlePlanningNarrationKey = (value: string): string => {
 };
 
 const safePreviousTitles = (titles: TitlePlanningSuggestion[]) => titles.slice(0, 40).map((title) => ({
+    id: String(title.id || '').slice(0, 120),
     text: String(title.text || '').slice(0, 90),
     sourceText: String(title.sourceText || '').slice(0, 240),
     triggerId: String(title.triggerId || '').slice(0, 80),
+    triggerName: String(title.triggerName || '').slice(0, 80),
+    selected: title.selected === true,
 }));
 
 export const planNarrationTitles = async (input: {

@@ -20,6 +20,41 @@ export interface ChatSession {
     updatedAt: string;
 }
 
+export interface ChatTitleProposalSuggestion {
+    id: string;
+    text: string;
+    sourceText: string;
+    triggerId: string;
+    triggerName: string;
+    selected: boolean;
+}
+
+export interface ChatTitleProposalTrigger {
+    id: string;
+    name: string;
+    maxOccurrences: number;
+    status: 'found' | 'not_found';
+    suggestionCount: number;
+}
+
+export interface ChatTitleProposalWarning {
+    code: string;
+    message?: string;
+}
+
+/** Snapshot seguro do card editorial. Nao inclui narracao, prompt, modelo ou resposta bruta. */
+export interface ChatTitleProposalSnapshot {
+    version: 1;
+    proposalId: string;
+    revision: number;
+    narrationKey: string;
+    source: 'ai' | 'local';
+    summary: string;
+    suggestions: ChatTitleProposalSuggestion[];
+    triggers: ChatTitleProposalTrigger[];
+    warnings: ChatTitleProposalWarning[];
+}
+
 export interface ChatMessage {
     id: string;
     sessionId: string;
@@ -31,7 +66,13 @@ export interface ChatMessage {
     agentTier?: 'lite' | 'mileto' | 'ultra';
     narrationDirectionMode?: 'automatic' | 'manual' | 'clean';
     /** Turno editorial persistido, mas fora do contexto enviado ao Narrador. */
-    interactionMode?: 'title_refinement';
+    interactionMode?: 'title_refinement' | 'title_proposal';
+    /** Mensagem raiz da narracao que iniciou esta sequencia editorial. */
+    titleThreadId?: string;
+    /** Mensagem imediatamente anterior a que este artefato responde. */
+    replyToMessageId?: string;
+    /** Proposta editorial sanitizada; presente somente em title_proposal. */
+    titleProposal?: ChatTitleProposalSnapshot;
     createdAt: string;
 }
 
@@ -220,7 +261,18 @@ export function addMessage(
     sessionId: string,
     role: 'user' | 'assistant' | 'system',
     content: string,
-    metadata: Pick<ChatMessage, 'agentId' | 'agentLabel' | 'agentVersion' | 'agentTier' | 'narrationDirectionMode' | 'interactionMode'> = {}
+    metadata: Pick<
+        ChatMessage,
+        | 'agentId'
+        | 'agentLabel'
+        | 'agentVersion'
+        | 'agentTier'
+        | 'narrationDirectionMode'
+        | 'interactionMode'
+        | 'titleThreadId'
+        | 'replyToMessageId'
+        | 'titleProposal'
+    > = {}
 ): ChatMessage {
     const db = readDB();
     const msg: ChatMessage = {
@@ -246,7 +298,9 @@ export function addMessage(
 export function getNarratorGatewayHistory(sessionId: string): Array<{ role: 'user' | 'assistant'; content: string }> {
     return getMessages(sessionId)
         .filter((message): message is ChatMessage & { role: 'user' | 'assistant' } => {
-            if (message.interactionMode === 'title_refinement') return false;
+            // Default-deny: qualquer turno editorial atual ou futuro fica fora
+            // do contexto do Narrador, inclusive se um novo modo for adicionado.
+            if (message.interactionMode != null) return false;
             if (message.role === 'user') return true;
             if (message.role !== 'assistant') return false;
 

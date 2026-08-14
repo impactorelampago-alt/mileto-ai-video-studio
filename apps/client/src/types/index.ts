@@ -545,6 +545,19 @@ export interface ChatSession {
     updatedAt: string;
 }
 
+/** Artefato editorial persistido; não contém roteiro, prompt ou resposta bruta da IA. */
+export interface ChatTitleProposalSnapshot {
+    version: 1;
+    proposalId: string;
+    revision: number;
+    narrationKey: string;
+    source: 'ai' | 'local';
+    summary: string;
+    suggestions: TitlePlanningSuggestion[];
+    triggers: TitlePlanningTrigger[];
+    warnings: Array<{ code: string; message?: string }>;
+}
+
 export interface ChatMessage {
     id: string;
     sessionId: string;
@@ -557,7 +570,13 @@ export interface ChatMessage {
     agentTier?: 'lite' | 'mileto' | 'ultra';
     /** Metadado tecnico separado da conversa; preserva pedidos como sem tags. */
     narrationDirectionMode?: NarrationDirectionMode;
-    /** Pedido editorial de títulos: aparece no histórico, mas não vira contexto do Narrador. */
-    interactionMode?: 'title_refinement';
+    /** Turnos editoriais aparecem no histórico, mas nunca viram contexto do Narrador. */
+    interactionMode?: 'title_refinement' | 'title_proposal';
+    /** Mensagem raiz de narração que iniciou esta sequência de títulos. */
+    titleThreadId?: string;
+    /** Turno imediatamente anterior ao qual esta proposta responde. */
+    replyToMessageId?: string;
+    /** Proposta segura e versionada, persistida para sobreviver ao reload. */
+    titleProposal?: ChatTitleProposalSnapshot;
     createdAt: string;
 }

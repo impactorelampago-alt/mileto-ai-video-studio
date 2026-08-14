@@ -28,7 +28,7 @@ test('a resposta enumera todo gatilho ativo e marca ausência sem omiti-lo', () 
         controllerSource,
         /const enabledTriggers = titleSettings\.config\.triggers[\s\S]*\.filter\(\(trigger\) => trigger\.enabled && trigger\.titleTypes\.length\);/,
     );
-    assert.match(controllerSource, /const triggers = enabledTriggers\.map\(\(trigger\) => \(\{/);
+    assert.match(controllerSource, /const summarizePlanningTriggers = \(suggestions: PlannedTitleSuggestion\[\]\) => enabledTriggers\.map\(\(trigger\) => \(\{/);
     assert.match(
         controllerSource,
         /status:\s*suggestions\.some\([\s\S]*\? 'found'[\s\S]*: 'not_found'/,
@@ -50,6 +50,18 @@ test('nenhum gatilho aceita mais de três propostas', () => {
         controllerSource,
         /maxOccurrences:\s*Math\.min\(3, trigger\.maxOccurrences\)/,
     );
+});
+
+test('refinamento usa operações por id e preserva itens omitidos', () => {
+    assert.match(controllerSource, /const titlePlanningRefinementPrompt =/);
+    assert.match(controllerSource, /Não regenere nem devolva a lista completa\. Itens omitidos permanecem exatamente como estão\./);
+    assert.match(controllerSource, /"op":"edit_text"/);
+    assert.match(controllerSource, /"op":"set_selected"/);
+    assert.match(controllerSource, /"op":"remove"/);
+    assert.match(controllerSource, /"op":"add"/);
+    assert.match(controllerSource, /applyTitlePlanningOperations\(\{/);
+    assert.match(controllerSource, /previousTitles,/);
+    assert.match(controllerSource, /operations: rawOperations/);
 });
 
 test('sourceText só é aceito quando corresponde a trecho literal normalizado da narração', () => {
@@ -115,10 +127,14 @@ test('texto visual rejeitado continua usando o compactador determinístico', () 
 test('contexto anterior não contorna a validação literal nem vaza resposta bruta', () => {
     assert.match(controllerSource, /req\.body\?\.previousTitles[\s\S]*\.slice\(0, 40\)/);
 
-    const successResponse = controllerSource.slice(
-        controllerSource.indexOf('return res.json({', controllerSource.indexOf('export const planTitles')),
-        controllerSource.indexOf('} catch (error: unknown)', controllerSource.indexOf('export const planTitles')),
+    const planSource = controllerSource.slice(
+        controllerSource.indexOf('export const planTitles'),
+        controllerSource.indexOf('let titleGenerationSequence'),
     );
-    assert.ok(successResponse.length > 0, 'resposta de sucesso do planejamento deve existir');
-    assert.doesNotMatch(successResponse, /rawTitles|previousTitles|\btoken\b|\bsystem\b/);
+    const responses = [...planSource.matchAll(/return res\.json\(\{[\s\S]*?\n\s*\}\);/g)]
+        .map((match) => match[0]);
+    assert.ok(responses.length >= 2, 'respostas de sucesso inicial e de refinamento devem existir');
+    responses.forEach((response) => {
+        assert.doesNotMatch(response, /\b(?:rawTitles|previousTitles|token|system)\s*[:,}]/);
+    });
 });

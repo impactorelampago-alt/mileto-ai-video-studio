@@ -1,4 +1,4 @@
-import { ChatAgentId, ChatFolder, ChatSession, ChatMessage } from '../types';
+import { ChatAgentId, ChatFolder, ChatSession, ChatMessage, ChatTitleProposalSnapshot } from '../types';
 import { API_BASE_URL } from './apiBase';
 import { authStorage } from './authStorage';
 import { SYSTEM_VOICES } from './systemVoices';
@@ -119,6 +119,28 @@ export async function persistTitleRefinementMessage(
         {
             method: 'POST',
             body: JSON.stringify({ content }),
+        },
+    );
+    return data.message;
+}
+
+export async function persistTitleProposalMessage(
+    sessionId: string,
+    input: {
+        titleProposal: ChatTitleProposalSnapshot;
+        titleThreadId: string;
+        replyToMessageId: string;
+    },
+): Promise<ChatMessage> {
+    const data = await request<{ ok: true; message: ChatMessage }>(
+        `${BASE}/sessions/${encodeURIComponent(sessionId)}/title-proposal-message`,
+        {
+            method: 'POST',
+            body: JSON.stringify({
+                proposal: input.titleProposal,
+                titleThreadId: input.titleThreadId,
+                replyToMessageId: input.replyToMessageId,
+            }),
         },
     );
     return data.message;

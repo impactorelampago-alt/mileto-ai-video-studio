@@ -34,6 +34,7 @@ router.delete('/chat/sessions/:id', chatController.deleteSession);
 
 router.get('/chat/sessions/:sessionId/messages', chatController.getMessages);
 router.post('/chat/sessions/:sessionId/title-refinement-message', chatController.persistTitleRefinementMessage);
+router.post('/chat/sessions/:sessionId/title-proposal-message', chatController.persistTitleProposalMessage);
 router.delete('/chat/sessions/:sessionId/messages/from/:messageId', chatController.truncateMessagesFrom);
 router.get('/chat/sessions/:sessionId/response-status', chatController.getResponseStatus);
 router.post('/chat/sessions/:sessionId/cancel-response', chatController.cancelResponse);

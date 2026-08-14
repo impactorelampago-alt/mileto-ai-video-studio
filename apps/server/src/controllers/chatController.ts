@@ -5,6 +5,96 @@ import { normalizeNarratorVoiceContext } from '../services/narratorVoiceContext'
 
 const ACTIVE_CHAT_AGENT_ID = chatService.ACTIVE_CHAT_AGENT_ID;
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const limitedText = (value: unknown, maxLength: number): string =>
+    typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+
+const limitedInteger = (value: unknown, min: number, max: number): number | null => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return Math.min(max, Math.max(min, Math.trunc(numeric)));
+};
+
+/**
+ * Mantem somente os dados necessarios para reconstruir o card editorial.
+ * A whitelist impede que script, prompt, modelo, configSource ou resposta bruta
+ * sejam gravados mesmo se um cliente adulterado envia-los no mesmo objeto.
+ */
+const sanitizeTitleProposal = (raw: unknown): chatService.ChatTitleProposalSnapshot | null => {
+    if (!isRecord(raw) || raw.version !== 1) return null;
+
+    const proposalId = limitedText(raw.proposalId, 80);
+    const narrationKey = limitedText(raw.narrationKey, 80);
+    const revision = limitedInteger(raw.revision, 1, 1_000_000);
+    const source = raw.source === 'ai' || raw.source === 'local' ? raw.source : null;
+    if (!proposalId || !/^title-plan-v1-[a-f0-9]{1,16}$/i.test(narrationKey) || revision == null || !source) {
+        return null;
+    }
+
+    const rawSuggestions = Array.isArray(raw.suggestions) ? raw.suggestions.slice(0, 40) : [];
+    const suggestions: chatService.ChatTitleProposalSuggestion[] = [];
+    const suggestionIds = new Set<string>();
+    for (const item of rawSuggestions) {
+        if (!isRecord(item)) return null;
+        const id = limitedText(item.id, 80);
+        const text = limitedText(item.text, 90);
+        const sourceText = limitedText(item.sourceText, 240);
+        const triggerId = limitedText(item.triggerId, 80);
+        const triggerName = limitedText(item.triggerName, 120);
+        if (!id || !text || !sourceText || !triggerId || !triggerName || suggestionIds.has(id)) return null;
+        suggestionIds.add(id);
+        suggestions.push({
+            id,
+            text,
+            sourceText,
+            triggerId,
+            triggerName,
+            selected: item.selected === true,
+        });
+    }
+
+    const rawTriggers = Array.isArray(raw.triggers) ? raw.triggers.slice(0, 40) : [];
+    const triggers: chatService.ChatTitleProposalTrigger[] = [];
+    const triggerIds = new Set<string>();
+    for (const item of rawTriggers) {
+        if (!isRecord(item)) return null;
+        const id = limitedText(item.id, 80);
+        const name = limitedText(item.name, 120);
+        const maxOccurrences = limitedInteger(item.maxOccurrences, 1, 3);
+        const suggestionCount = limitedInteger(item.suggestionCount, 0, 40);
+        const status = item.status === 'found' || item.status === 'not_found' ? item.status : null;
+        if (!id || !name || maxOccurrences == null || suggestionCount == null || !status || triggerIds.has(id)) {
+            return null;
+        }
+        triggerIds.add(id);
+        triggers.push({ id, name, maxOccurrences, status, suggestionCount });
+    }
+
+    const warnings: chatService.ChatTitleProposalWarning[] = [];
+    const rawWarnings = Array.isArray(raw.warnings) ? raw.warnings.slice(0, 10) : [];
+    for (const item of rawWarnings) {
+        if (!isRecord(item)) return null;
+        const code = limitedText(item.code, 80);
+        const message = limitedText(item.message, 240);
+        if (!code) return null;
+        warnings.push({ code, ...(message ? { message } : {}) });
+    }
+
+    return {
+        version: 1,
+        proposalId,
+        revision,
+        narrationKey,
+        source,
+        summary: limitedText(raw.summary, 240),
+        suggestions,
+        triggers,
+        warnings,
+    };
+};
+
 // A geração é um trabalho do servidor, não da janela de chat. Recolher o painel
 // ou navegar pelo app não deve descartar uma resposta que já está em andamento.
 const activeResponseControllers = new Map<string, AbortController>();
@@ -203,6 +293,60 @@ export const persistTitleRefinementMessage = async (req: Request, res: Response)
         const message = chatService.addMessage(sessionId, 'user', content, {
             interactionMode: 'title_refinement',
         });
+        res.status(201).json({ ok: true, message });
+    } catch (err: unknown) {
+        res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'Unknown error' });
+    }
+};
+
+export const persistTitleProposalMessage = async (req: Request, res: Response) => {
+    try {
+        const { sessionId } = req.params;
+        if (!chatService.getSession(sessionId)) {
+            res.status(404).json({ ok: false, message: 'Conversa não encontrada.' });
+            return;
+        }
+
+        const titleThreadId = limitedText(req.body?.titleThreadId, 100);
+        const replyToMessageId = limitedText(req.body?.replyToMessageId, 100);
+        if (!titleThreadId || !replyToMessageId) {
+            res.status(400).json({
+                ok: false,
+                message: 'titleThreadId e replyToMessageId são obrigatórios.',
+            });
+            return;
+        }
+
+        const messages = chatService.getMessages(sessionId);
+        const threadMessage = messages.find((message) => message.id === titleThreadId);
+        const replyMessage = messages.find((message) => message.id === replyToMessageId);
+        if (!threadMessage || !replyMessage) {
+            res.status(400).json({
+                ok: false,
+                message: 'As relações da proposta devem apontar para mensagens desta conversa.',
+            });
+            return;
+        }
+
+        const proposal = sanitizeTitleProposal(req.body?.proposal);
+        if (!proposal) {
+            res.status(400).json({ ok: false, message: 'Proposta de títulos inválida.' });
+            return;
+        }
+
+        const message = chatService.addMessage(
+            sessionId,
+            'assistant',
+            proposal.summary || 'Sugestões de títulos atualizadas.',
+            {
+                agentId: chatService.ACTIVE_CHAT_AGENT_ID,
+                agentLabel: chatService.ACTIVE_CHAT_AGENT_LABEL,
+                interactionMode: 'title_proposal',
+                titleThreadId,
+                replyToMessageId,
+                titleProposal: proposal,
+            },
+        );
         res.status(201).json({ ok: true, message });
     } catch (err: unknown) {
         res.status(500).json({ ok: false, message: err instanceof Error ? err.message : 'Unknown error' });
