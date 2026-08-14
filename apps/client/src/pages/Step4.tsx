@@ -60,6 +60,16 @@ import {
     type TitleAssistantSnapshot,
 } from '../lib/titleAssistantTransaction';
 import { titlePlanningNarrationKey } from '../lib/titlePlanning';
+import {
+    materializeCurrentTitlePlan,
+    titlePlanMaterializationDecision,
+} from '../lib/titlePlanMaterialization';
+import {
+    captureTitleWorkflowAsyncFingerprint,
+    isTitleWorkflowAsyncFingerprintCurrent,
+    titleWorkflowAsyncFingerprintKey,
+    type TitleWorkflowAsyncFingerprint,
+} from '../lib/titleWorkflowAsyncGuard';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -232,10 +242,19 @@ export const Step4 = () => {
     const [lastAppliedTitleSnapshot, setLastAppliedTitleSnapshot] = useState<TitleAssistantSnapshot | null>(null);
     const previewRef = useRef<VideoSequencePreviewRef>(null);
     const titleGenerationAbortRef = useRef<AbortController | null>(null);
+    const titleGenerationFingerprintRef = useRef<TitleWorkflowAsyncFingerprint | null>(null);
+    const titleAssistantProposalFingerprintRef = useRef<TitleWorkflowAsyncFingerprint | null>(null);
+    const recoveredTitlePlanRef = useRef<string | null>(null);
+    const latestAdDataRef = useRef(adData);
+    latestAdDataRef.current = adData;
 
     const currentSourceKey = narrationSourceKey(adData);
-    useEffect(() => () => titleGenerationAbortRef.current?.abort(), [currentSourceKey]);
     const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
+    const currentWorkflowFingerprintKey = titleWorkflowAsyncFingerprintKey(
+        captureTitleWorkflowAsyncFingerprint(adData),
+    );
+    const pendingTitlePlan = titlePlanMaterializationDecision(adData);
+    const pendingPlannedTitles = pendingTitlePlan.plannedTitles;
     const persistedTitles = (adData.captions?.segments?.length && !currentCaptions)
         || (adData.dynamicTitlesSourceKey && adData.dynamicTitlesSourceKey !== currentSourceKey)
         ? EMPTY_TITLES
@@ -243,6 +262,36 @@ export const Step4 = () => {
     const titles = isTitleAssistantOpen && titleAssistantProposal
         ? titleAssistantDraft
         : persistedTitles;
+
+    useEffect(() => {
+        const activeFingerprint = titleGenerationFingerprintRef.current;
+        if (
+            titleGenerationAbortRef.current
+            && activeFingerprint
+            && !isTitleWorkflowAsyncFingerprintCurrent(activeFingerprint, latestAdDataRef.current)
+        ) {
+            titleGenerationAbortRef.current.abort();
+        }
+
+        const proposalFingerprint = titleAssistantProposalFingerprintRef.current;
+        if (
+            proposalFingerprint
+            && !isTitleWorkflowAsyncFingerprintCurrent(proposalFingerprint, latestAdDataRef.current)
+        ) {
+            titleAssistantProposalFingerprintRef.current = null;
+            setTitleAssistantProposal(null);
+            setTitleAssistantDraft([]);
+            setTitleAssistantError(
+                'A narração, o plano confirmado ou as legendas mudaram. A proposta anterior foi descartada.',
+            );
+        }
+    }, [currentWorkflowFingerprintKey]);
+
+    useEffect(() => () => {
+        titleGenerationAbortRef.current?.abort();
+        titleGenerationAbortRef.current = null;
+        titleGenerationFingerprintRef.current = null;
+    }, []);
     const orderedTitles = useMemo(
         () => titles
             .map((title, originalIndex) => ({ title, originalIndex }))
@@ -426,6 +475,8 @@ export const Step4 = () => {
     const closeTitleAssistant = useCallback(() => {
         titleGenerationAbortRef.current?.abort();
         titleGenerationAbortRef.current = null;
+        titleGenerationFingerprintRef.current = null;
+        titleAssistantProposalFingerprintRef.current = null;
         setIsGenerating(false);
         setTitleGenerationProgress('');
         setIsTitleAssistantOpen(false);
@@ -441,15 +492,27 @@ export const Step4 = () => {
         initial?: boolean;
     } = {}) => {
         if (titleGenerationAbortRef.current || isGenerating) return;
-        if (!currentCaptions?.segments?.length) {
-            toast.error(adData.captions?.segments?.length
+        const operationAdData = latestAdDataRef.current;
+        const operationSourceKey = narrationSourceKey(operationAdData);
+        const operationCaptions = operationAdData.captions?.sourceKey === operationSourceKey
+            ? operationAdData.captions
+            : undefined;
+        if (!operationCaptions?.segments?.length) {
+            toast.error(operationAdData.captions?.segments?.length
                 ? 'A narração mudou. Gere novamente as legendas na Etapa 3 antes dos títulos.'
                 : 'Gere as legendas na Etapa 3 primeiro!');
             return;
         }
 
         const controller = new AbortController();
+        const operationFingerprint = captureTitleWorkflowAsyncFingerprint(operationAdData);
         titleGenerationAbortRef.current = controller;
+        titleGenerationFingerprintRef.current = operationFingerprint;
+        const operationIsCurrent = () => (
+            titleGenerationAbortRef.current === controller
+            && !controller.signal.aborted
+            && isTitleWorkflowAsyncFingerprintCurrent(operationFingerprint, latestAdDataRef.current)
+        );
         setIsGenerating(true);
         setIsTitleAssistantOpen(true);
         setTitleAssistantError(undefined);
@@ -461,12 +524,14 @@ export const Step4 = () => {
         }
 
         try {
-            const narrationPlanIsCurrent = adData.plannedTitlesNarrationKey ===
-                titlePlanningNarrationKey(adData.narrationPlainText);
-            const generationInput: typeof adData = {
-                ...adData,
-                plannedTitles: narrationPlanIsCurrent ? adData.plannedTitles : undefined,
-                plannedTitlesNarrationKey: narrationPlanIsCurrent ? adData.plannedTitlesNarrationKey : undefined,
+            const narrationPlanIsCurrent = operationAdData.plannedTitlesNarrationKey ===
+                titlePlanningNarrationKey(operationAdData.narrationPlainText);
+            const generationInput: typeof operationAdData = {
+                ...operationAdData,
+                plannedTitles: narrationPlanIsCurrent ? operationAdData.plannedTitles : undefined,
+                plannedTitlesNarrationKey: narrationPlanIsCurrent
+                    ? operationAdData.plannedTitlesNarrationKey
+                    : undefined,
             };
             const result = await generateAutomaticTitlesResilient(generationInput, {
                 signal: controller.signal,
@@ -478,20 +543,27 @@ export const Step4 = () => {
                     selected: title.isActive,
                 })),
                 onProgress: (progress) => {
-                    if (titleGenerationAbortRef.current !== controller) return;
+                    if (!operationIsCurrent()) return;
                     setTitleGenerationProgress(progress.message);
                 },
             });
-            if (controller.signal.aborted) throw new DOMException('Operação cancelada.', 'AbortError');
+            if (!operationIsCurrent()) throw new DOMException('Operação cancelada.', 'AbortError');
 
-            const proposal = createTitleAssistantProposal(result, currentSourceKey);
+            const proposal = createTitleAssistantProposal(result, operationSourceKey);
+            titleAssistantProposalFingerprintRef.current = operationFingerprint;
             setTitleAssistantProposal(proposal);
             setTitleAssistantDraft(cloneTitleAssistantTitles(proposal.titles));
             setTitleAssistantInstruction('');
             setSelectedTitleId(proposal.titles[0]?.id ?? null);
         } catch (error: unknown) {
             if (isTitleGenerationAbortError(error) || controller.signal.aborted) {
-                if (isTitleAssistantOpen) setTitleAssistantError(undefined);
+                if (!isTitleWorkflowAsyncFingerprintCurrent(operationFingerprint, latestAdDataRef.current)) {
+                    setTitleAssistantError(
+                        'A narração, o plano confirmado ou as legendas mudaram. A resposta antiga foi descartada.',
+                    );
+                } else if (isTitleAssistantOpen) {
+                    setTitleAssistantError(undefined);
+                }
             } else {
                 const safeError = error instanceof LocalApiError
                     ? {
@@ -516,6 +588,7 @@ export const Step4 = () => {
         } finally {
             if (titleGenerationAbortRef.current === controller) {
                 titleGenerationAbortRef.current = null;
+                titleGenerationFingerprintRef.current = null;
                 setIsGenerating(false);
                 setTitleGenerationProgress('');
             }
@@ -523,6 +596,112 @@ export const Step4 = () => {
     };
 
     const handleGenerateTitles = () => runTitleAssistantGeneration({ initial: true });
+
+    // A confirmação feita no Chat acontece antes de existirem tempos de legenda.
+    // Se o usuário recarregar ou chegar à etapa depois que as legendas ficaram
+    // prontas, conclui automaticamente a materialização uma única vez por fonte.
+    useEffect(() => {
+        if (
+            !currentCaptions?.segments?.length
+            || !pendingTitlePlan.shouldMaterialize
+            || persistedTitles.length > 0
+            || isGenerating
+            || isTitleAssistantOpen
+            || titleGenerationAbortRef.current
+        ) return;
+
+        const recoveryKey = currentWorkflowFingerprintKey;
+        if (recoveredTitlePlanRef.current === recoveryKey) return;
+        recoveredTitlePlanRef.current = recoveryKey;
+
+        const operationAdData = latestAdDataRef.current;
+        const controller = new AbortController();
+        const operationFingerprint = captureTitleWorkflowAsyncFingerprint(operationAdData);
+        titleGenerationAbortRef.current = controller;
+        titleGenerationFingerprintRef.current = operationFingerprint;
+        const operationIsCurrent = () => (
+            titleGenerationAbortRef.current === controller
+            && !controller.signal.aborted
+            && isTitleWorkflowAsyncFingerprintCurrent(operationFingerprint, latestAdDataRef.current)
+        );
+        setIsGenerating(true);
+        setTitleGenerationProgress('Posicionando os títulos confirmados no chat…');
+
+        void materializeCurrentTitlePlan(operationAdData, {
+            signal: controller.signal,
+            onProgress: (progress) => {
+                if (!operationIsCurrent()) return;
+                setTitleGenerationProgress(progress.message);
+            },
+        }).then((result) => {
+            if (!operationIsCurrent()) {
+                if (recoveredTitlePlanRef.current === recoveryKey) recoveredTitlePlanRef.current = null;
+                return;
+            }
+            const titleCount = result.adData.dynamicTitles?.length || 0;
+            const materialization = result.adData.titleGenerationSummary?.materialization;
+            const requestedTitleCount = materialization?.requestedCount || result.plannedTitleCount;
+            const firstIssue = materialization?.diagnostics[0];
+            updateAdData({
+                dynamicTitles: result.adData.dynamicTitles,
+                dynamicTitlesSourceKey: result.adData.dynamicTitlesSourceKey,
+                titleGenerationSummary: result.adData.titleGenerationSummary,
+                brandPalette: result.adData.brandPalette,
+                brandPaletteUpdatedAt: result.adData.brandPaletteUpdatedAt,
+            });
+            if (!titleCount) {
+                toast.warning(
+                    'As legendas estão prontas, mas nenhum dos títulos confirmados pôde ser posicionado. '
+                    + `${firstIssue?.message ? `Motivo: ${firstIssue.message} ` : ''}`
+                    + 'O diagnóstico e o plano continuam salvos.',
+                    { duration: 8_000 },
+                );
+                return;
+            }
+            setSelectedTitleId(result.adData.dynamicTitles?.[0]?.id ?? null);
+            if (titleCount < requestedTitleCount) {
+                toast.warning(
+                    `${titleCount} de ${requestedTitleCount} títulos confirmados foram posicionados. `
+                    + `${firstIssue?.message ? `Motivo do primeiro pendente: ${firstIssue.message} ` : ''}`
+                    + 'O diagnóstico e o plano completo continuam salvos.',
+                    { duration: 10_000 },
+                );
+                return;
+            }
+            toast.success(
+                `${titleCount} título${titleCount === 1 ? '' : 's'} confirmado${titleCount === 1 ? '' : 's'} no chat agora ${titleCount === 1 ? 'está' : 'estão'} posicionado${titleCount === 1 ? '' : 's'} no vídeo.`,
+                { duration: 7_000 },
+            );
+        }).catch((error: unknown) => {
+            if (
+                controller.signal.aborted
+                || !isTitleWorkflowAsyncFingerprintCurrent(operationFingerprint, latestAdDataRef.current)
+            ) {
+                if (recoveredTitlePlanRef.current === recoveryKey) recoveredTitlePlanRef.current = null;
+                return;
+            }
+            console.error('[title-plan-recovery]', error);
+            toast.warning(
+                'Os títulos confirmados continuam salvos, mas não foi possível posicioná-los agora. Use “Títulos inteligentes” para tentar novamente.',
+                { duration: 8_000 },
+            );
+        }).finally(() => {
+            if (titleGenerationAbortRef.current === controller) {
+                titleGenerationAbortRef.current = null;
+                titleGenerationFingerprintRef.current = null;
+                setIsGenerating(false);
+                setTitleGenerationProgress('');
+            }
+        });
+    }, [
+        currentCaptions?.segments?.length,
+        currentWorkflowFingerprintKey,
+        isGenerating,
+        isTitleAssistantOpen,
+        pendingTitlePlan.shouldMaterialize,
+        persistedTitles.length,
+        updateAdData,
+    ]);
 
     const handleRefineTitleAssistant = () => {
         const instruction = titleAssistantInstruction.trim();
@@ -536,11 +715,19 @@ export const Step4 = () => {
 
     const handleApplyTitleAssistant = () => {
         if (!titleAssistantProposal || !titleAssistantDraft.some((title) => title.isActive)) return;
-        if (titleAssistantProposal.sourceKey !== currentSourceKey) {
-            setTitleAssistantError('A narração ou as legendas mudaram. Gere os títulos novamente antes de aplicar.');
+        const latestAdData = latestAdDataRef.current;
+        const proposalFingerprint = titleAssistantProposalFingerprintRef.current;
+        if (
+            titleAssistantProposal.sourceKey !== narrationSourceKey(latestAdData)
+            || !proposalFingerprint
+            || !isTitleWorkflowAsyncFingerprintCurrent(proposalFingerprint, latestAdData)
+        ) {
+            setTitleAssistantError(
+                'A narração, o plano confirmado ou as legendas mudaram. Gere os títulos novamente antes de aplicar.',
+            );
             return;
         }
-        setLastAppliedTitleSnapshot(captureTitleAssistantSnapshot(adData));
+        setLastAppliedTitleSnapshot(captureTitleAssistantSnapshot(latestAdData));
         updateAdData(titleAssistantCommitPatch(titleAssistantProposal, titleAssistantDraft));
         setSelectedTitleId(titleAssistantDraft.find((title) => title.isActive)?.id ?? null);
         const count = titleAssistantDraft.filter((title) => title.isActive).length;
@@ -789,8 +976,17 @@ export const Step4 = () => {
                                     <Sparkles className="h-5 w-5 text-brand-muted opacity-50" />
                                 </div>
                                 <p className="text-xs text-brand-muted uppercase tracking-wider font-bold">
-                                    Nenhum título gerado ainda
+                                    {pendingPlannedTitles.length
+                                        ? `${pendingPlannedTitles.length} título${pendingPlannedTitles.length === 1 ? '' : 's'} confirmado${pendingPlannedTitles.length === 1 ? '' : 's'}`
+                                        : 'Nenhum título gerado ainda'}
                                 </p>
+                                {pendingPlannedTitles.length > 0 && (
+                                    <p className="mx-auto mt-2 max-w-[280px] text-[10px] leading-4 text-brand-muted">
+                                        {currentCaptions?.segments?.length
+                                            ? 'As legendas já estão prontas. Use “Títulos inteligentes” para tentar posicioná-los novamente.'
+                                            : 'Eles estão salvos e serão posicionados automaticamente depois que você gerar a narração e as legendas na Etapa 3.'}
+                                    </p>
+                                )}
                             </div>
                         )}
 

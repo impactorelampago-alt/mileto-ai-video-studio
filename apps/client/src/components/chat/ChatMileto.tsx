@@ -981,9 +981,19 @@ export const ChatMileto: React.FC = () => {
         updateAdData({
             plannedTitles: selected,
             plannedTitlesNarrationKey: state.narrationKey,
+            // Um novo plano confirmado substitui a versão visual anterior.
+            // As legendas continuam válidas e permitem que a Etapa 4
+            // materialize imediatamente este conjunto, quando já existirem.
+            dynamicTitles: [],
+            dynamicTitlesSourceKey: undefined,
+            titleGenerationSummary: undefined,
         });
         exitTitleMode();
-        toast.success(`${selected.length} título${selected.length === 1 ? '' : 's'} aplicado${selected.length === 1 ? '' : 's'} ao projeto.`);
+        toast.success(
+            `${selected.length} título${selected.length === 1 ? '' : 's'} confirmado${selected.length === 1 ? '' : 's'}. `
+            + 'Eles serão posicionados automaticamente depois que as legendas forem geradas.',
+            { duration: 7000 },
+        );
     }, [adData.narrationPlainText, exitTitleMode, titlePlans, updateAdData]);
 
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());

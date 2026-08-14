@@ -75,9 +75,13 @@ export const rebindNarrationDerivativeSourceKeys = (
 
 /** Tudo abaixo depende do áudio atual e precisa ser refeito ao trocar a voz. */
 export const invalidatedNarrationDerivatives = (): Partial<AdData> => ({
+    isNarrationGenerated: false,
     narrationSource: undefined,
+    narrationAudioUrl: null,
     narrationAudioPath: null,
     sharedNarrationAssetId: undefined,
+    narrationDuration: 0,
+    audioTimeline: undefined,
     captions: undefined,
     dynamicTitles: [],
     dynamicTitlesSourceKey: undefined,

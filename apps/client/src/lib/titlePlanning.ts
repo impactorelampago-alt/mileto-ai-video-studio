@@ -1,6 +1,7 @@
 import { API_BASE_URL } from './apiBase';
 import { localAuthHeaders } from './serverAuth';
 import type { TitlePlanningSuggestion, TitlePlanningTrigger } from '../types';
+export { titlePlanningNarrationKey } from './titlePlanningKey.ts';
 
 export interface TitlePlanningProposal {
     proposalId: string;
@@ -24,17 +25,6 @@ export class TitlePlanningError extends Error {
         this.name = 'TitlePlanningError';
     }
 }
-
-/** Assinatura estável do texto; gerar/trocar o arquivo de áudio não invalida o planejamento. */
-export const titlePlanningNarrationKey = (value: string): string => {
-    const source = String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
-    let hash = 2166136261;
-    for (let index = 0; index < source.length; index += 1) {
-        hash ^= source.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
-    }
-    return `title-plan-v1-${(hash >>> 0).toString(16)}`;
-};
 
 const safePreviousTitles = (titles: TitlePlanningSuggestion[]) => titles.slice(0, 40).map((title) => ({
     id: String(title.id || '').slice(0, 120),

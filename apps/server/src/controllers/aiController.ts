@@ -58,6 +58,7 @@ import {
     planningLiteralExists,
     type TitlePlanningSuggestionState,
 } from '../services/titlePlanningSafety';
+import { materializeExactTitlePlan } from '../services/exactTitlePlanMaterialization';
 import { storeAiGeneratedMedia } from './fileExplorerController';
 
 const titleExtractionPrompt = (config: TitleGeneratorConfig) => {
@@ -883,6 +884,7 @@ export const generateTitles = async (req: Request, res: Response) => {
         mode = 'ai',
         refinementInstruction = '',
         baseTitles = [],
+        materializationMode = '',
     } = req.body;
     const token = bearerFrom(req);
     const requestId = String(req.headers['x-request-id'] || uuidv4()).slice(0, 80);
@@ -1059,6 +1061,70 @@ Responda exclusivamente em JSON válido, nesta estrutura:
             ...captions.segments.map((segment: any) => Number(segment.end) || 0),
             ...spokenWords.map((word: { start: number }) => word.start + 0.25),
         );
+        const videoFormat = (['9:16', '16:9', '4:5', '1:1'].includes(String(format)) ? format : '9:16') as VideoFormat;
+
+        if (materializationMode === 'exact-plan') {
+            phase = 'exact_plan_materialization';
+            const formattingStartedAt = Date.now();
+            const materialization = materializeExactTitlePlan({
+                baseTitles,
+                spokenWords,
+                titleConfig,
+                format: videoFormat,
+                brandPalette: effectiveBrandPalette,
+                timelineDurationSec,
+            });
+            timingsMs.formatting = elapsedMs(formattingStartedAt);
+            timingsMs.total = elapsedMs(requestStartedAt);
+            const warnings = materialization.diagnostics.map((diagnostic) => ({
+                code: diagnostic.code,
+                message: diagnostic.message,
+                itemId: diagnostic.itemId,
+            }));
+            const warning = materialization.diagnostics.length
+                ? `${materialization.materializedCount} de ${materialization.requestedCount} título${materialization.requestedCount === 1 ? '' : 's'} confirmado${materialization.requestedCount === 1 ? '' : 's'} foram materializados. Consulte os diagnósticos dos itens pendentes.`
+                : undefined;
+            const responseSource = materialization.titles.length ? 'plan' : 'none';
+            console.info('[title-generation]', JSON.stringify({
+                event: 'exact_plan_materialized',
+                requestId,
+                source: responseSource,
+                requestedCount: materialization.requestedCount,
+                materializedCount: materialization.materializedCount,
+                timingsMs,
+            }));
+            return res.json({
+                ok: true,
+                titles: materialization.titles,
+                configSource: titleSettings.source,
+                source: responseSource,
+                attempts: 0,
+                timelineDurationSec,
+                materialization: {
+                    mode: 'exact-plan',
+                    requestedCount: materialization.requestedCount,
+                    materializedCount: materialization.materializedCount,
+                    diagnostics: materialization.diagnostics,
+                },
+                metrics: {
+                    rawCandidateCount: materialization.requestedCount,
+                    formattedCandidateCount: materialization.materializedCount,
+                    inTimelineCandidateCount: materialization.materializedCount,
+                    acceptedCount: materialization.materializedCount,
+                    droppedOutOfBoundsOrInvisible: materialization.diagnostics.filter((item) =>
+                        item.code === 'title_plan_timeline_unavailable'
+                    ).length,
+                    droppedByCoverageLimitOrOverlap: 0,
+                    editorialReviewedCount: 0,
+                    editorialCorrectedCount: 0,
+                    editorialFallbackToLegacy: 0,
+                },
+                timingsMs: { ...timingsMs },
+                ...(warnings.length ? { warnings } : {}),
+                ...(warning ? { warning } : {}),
+            });
+        }
+
         const enabledTriggers = titleConfig.triggers.filter((trigger) => trigger.enabled && trigger.titleTypes.length);
         const plannedBaseTitles = Array.isArray(baseTitles)
             ? baseTitles.slice(0, 40).flatMap((title: any) => {
@@ -1151,7 +1217,6 @@ Responda exclusivamente em JSON válido, nesta estrutura:
         const generationSequence = nextTitleGenerationSequence();
         let modelAssignmentIndex = 0;
         const triggerById = triggerMapWithAliases(enabledTriggers);
-        const videoFormat = (['9:16', '16:9', '4:5', '1:1'].includes(String(format)) ? format : '9:16') as VideoFormat;
         const titleCandidates = resilientGeneration.source === 'ai'
             ? [
                 ...deterministicSpokenCandidates,

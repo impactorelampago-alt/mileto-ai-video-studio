@@ -328,6 +328,8 @@ export interface TitleGenerationTimings {
     aiRequestMs?: number;
     /** Duração do fallback local, quando necessário. */
     localFallbackRequestMs?: number;
+    /** Duração do posicionamento exato de um plano confirmado no Chat. */
+    materializationRequestMs?: number;
     /** Fases devolvidas pelo servidor, limitadas a inteiros não negativos. */
     server?: Record<string, number>;
 }
@@ -337,6 +339,24 @@ export interface TitleGenerationDiagnostic {
     status?: number;
     phase?: string;
     requestId?: string;
+}
+
+export interface TitlePlanMaterializationItemDiagnostic {
+    index: number;
+    itemId?: string;
+    text?: string;
+    sourceText?: string;
+    triggerId?: string;
+    code: string;
+    message: string;
+    retryable: boolean;
+}
+
+export interface TitlePlanMaterializationSummary {
+    mode: 'exact-plan';
+    requestedCount: number;
+    materializedCount: number;
+    diagnostics: TitlePlanMaterializationItemDiagnostic[];
 }
 
 export interface TitleGenerationSummary {
@@ -349,12 +369,19 @@ export interface TitleGenerationSummary {
     semanticCoverage?: TitleSemanticCoverage;
     metrics?: TitleGenerationMetrics;
     editorialReview?: TitleEditorialReviewSummary;
+    /** Resultado item a item ao posicionar exatamente um plano confirmado no Chat. */
+    materialization?: TitlePlanMaterializationSummary;
     /** Mantém separadas as tentativas da IA e do fallback para não apagar a causa da degradação. */
     attemptsBySource?: { ai?: number; fallback?: number };
     metricsBySource?: { ai?: TitleGenerationMetrics; fallback?: TitleGenerationMetrics };
     timings?: TitleGenerationTimings;
     warning?: string;
-    warnings?: Array<{ code: string; message?: string; missingRoles?: TitleSemanticRole[] }>;
+    warnings?: Array<{
+        code: string;
+        message?: string;
+        missingRoles?: TitleSemanticRole[];
+        itemId?: string;
+    }>;
     diagnostic?: TitleGenerationDiagnostic;
     diagnostics?: TitleGenerationDiagnostic[];
     generatedAt: string;

@@ -11,13 +11,46 @@ import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 import { narrationSourceKey } from '../lib/narrationState';
 import { repairCaptionCurrencySegments } from '../lib/captionCurrency';
 import { materializeSharedAudioForCaptions } from '../lib/sharedMediaRecovery';
+import {
+    materializeCurrentTitlePlan,
+    titlePlanMaterializationDecision,
+} from '../lib/titlePlanMaterialization';
+import {
+    captureTitleWorkflowAsyncFingerprint,
+    isTitleWorkflowAsyncFingerprintCurrent,
+    titleWorkflowAsyncFingerprintKey,
+    type TitleWorkflowAsyncFingerprint,
+} from '../lib/titleWorkflowAsyncGuard';
 
 export const Step3 = () => {
     const { adData, updateAdData, mediaTakes, setMediaTakes, captionStyle, setCaptionStyle } = useWizard();
     const navigate = useNavigate();
     const [isGenerating, setIsGenerating] = useState(false);
+    const [generationStatus, setGenerationStatus] = useState('');
+    const latestAdDataRef = useRef(adData);
+    latestAdDataRef.current = adData;
+    const captionGenerationRef = useRef<{
+        controller: AbortController;
+        fingerprint: TitleWorkflowAsyncFingerprint;
+    } | null>(null);
     const currentSourceKey = narrationSourceKey(adData);
     const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
+    const currentWorkflowFingerprintKey = titleWorkflowAsyncFingerprintKey(
+        captureTitleWorkflowAsyncFingerprint(adData),
+    );
+
+    useEffect(() => {
+        const active = captionGenerationRef.current;
+        if (active && !isTitleWorkflowAsyncFingerprintCurrent(active.fingerprint, latestAdDataRef.current)) {
+            active.controller.abort();
+        }
+    }, [currentWorkflowFingerprintKey]);
+
+    useEffect(() => () => {
+        const active = captionGenerationRef.current;
+        captionGenerationRef.current = null;
+        active?.controller.abort();
+    }, []);
 
     // Projetos que já haviam sido transcritos com `R`, `199`, `00` podem ser
     // corrigidos localmente, preservando todos os tempos e sem consumir outra
@@ -86,54 +119,79 @@ export const Step3 = () => {
     }, []);
 
     const handleGenerateCaptions = async () => {
-        if (!adData.masterAudioUrl && !adData.narrationAudioUrl) {
+        if (captionGenerationRef.current) return;
+
+        const operationAdData = latestAdDataRef.current;
+        if (!operationAdData.masterAudioUrl && !operationAdData.narrationAudioUrl) {
             toast.error('Nenhum áudio encontrado. Volte ao Step 1 e gere a narração.');
             return;
         }
 
+        const controller = new AbortController();
+        const operationFingerprint = captureTitleWorkflowAsyncFingerprint(operationAdData);
+        const operation = { controller, fingerprint: operationFingerprint };
+        captionGenerationRef.current = operation;
+        const operationSourceKey = narrationSourceKey(operationAdData);
+        const operationIsCurrent = () => (
+            captionGenerationRef.current === operation
+            && !controller.signal.aborted
+            && isTitleWorkflowAsyncFingerprintCurrent(operationFingerprint, latestAdDataRef.current)
+        );
+        const assertOperationIsCurrent = () => {
+            if (operationIsCurrent()) return;
+            const staleError = new Error('O projeto mudou durante a geração.');
+            staleError.name = 'AbortError';
+            throw staleError;
+        };
+
         setIsGenerating(true);
+        setGenerationStatus('Sincronizando legendas...');
         const toastId = toast.loading('Analisando áudio e sincronizando palavras...');
 
         try {
             // Pick the best available audio for transcription:
             // Preferably narration-only (cleaner for STT), fallback to master if needed
-            let audioToTranscribe = adData.narrationAudioUrl || adData.masterAudioUrl;
-            const sharedAudioAssetId = adData.narrationAudioUrl
-                ? adData.sharedNarrationAssetId
-                : adData.sharedMasterAssetId;
+            let audioToTranscribe = operationAdData.narrationAudioUrl || operationAdData.masterAudioUrl;
+            const sharedAudioAssetId = operationAdData.narrationAudioUrl
+                ? operationAdData.sharedNarrationAssetId
+                : operationAdData.sharedMasterAssetId;
             if (sharedAudioAssetId) {
                 audioToTranscribe = await materializeSharedAudioForCaptions(sharedAudioAssetId);
+                assertOperationIsCurrent();
             }
 
-            const response = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/stt/generate-captions`, {
+            const apiBaseUrl = (window as Window & { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
+            const response = await fetch(`${apiBaseUrl}/api/stt/generate-captions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
+                signal: controller.signal,
                 body: JSON.stringify({
                     audioUrl: audioToTranscribe,
-                    narrationText: adData.narrationText,
+                    narrationText: operationAdData.narrationText,
                 }),
             });
 
             const data = await response.json();
+            assertOperationIsCurrent();
 
             if (!data.ok) {
                 throw new Error(data.message || 'Erro na geração de legendas');
             }
 
-            // Save segments to state
-            updateAdData({
-                captions: {
-                    enabled: true,
-                    language: 'pt-BR',
-                    presetId: 'karaoke-yellow', // Internal identifier for the backend rendering
-                    segments: repairCaptionCurrencySegments(data.segments),
-                    sourceKey: currentSourceKey,
-                    review: data.review,
-                },
+            const captions = {
+                enabled: true,
+                language: 'pt-BR' as const,
+                presetId: 'karaoke-yellow', // Internal identifier for the backend rendering
+                segments: repairCaptionCurrencySegments(data.segments),
+                sourceKey: operationSourceKey,
+                review: data.review,
+            };
+            const captionsOnlyPatch = {
+                captions,
                 dynamicTitles: [],
                 dynamicTitlesSourceKey: undefined,
                 titleGenerationSummary: undefined,
-            });
+            };
 
             const reviewBits = [
                 data.review?.correctedWords
@@ -143,18 +201,108 @@ export const Step3 = () => {
                     ? `${data.review.formattedValues} valor${data.review.formattedValues === 1 ? '' : 'es'} formatado${data.review.formattedValues === 1 ? '' : 's'}`
                     : '',
             ].filter(Boolean);
-            toast.success(
-                reviewBits.length
-                    ? `Legendas sincronizadas e revisadas: ${reviewBits.join(' · ')}`
-                    : 'Legendas perfeitamente sincronizadas! ✓',
-                { id: toastId }
+            const reviewSummary = reviewBits.length
+                ? `Legendas sincronizadas e revisadas: ${reviewBits.join(' · ')}`
+                : 'Legendas perfeitamente sincronizadas! ✓';
+            const titlePlan = titlePlanMaterializationDecision(operationAdData);
+
+            if (!titlePlan.shouldMaterialize) {
+                assertOperationIsCurrent();
+                updateAdData(captionsOnlyPatch);
+                toast.success(reviewSummary, { id: toastId });
+                return;
+            }
+
+            setGenerationStatus('Criando títulos confirmados...');
+            toast.loading(
+                `${reviewSummary} Criando ${titlePlan.plannedTitles.length} título${titlePlan.plannedTitles.length === 1 ? '' : 's'} confirmado${titlePlan.plannedTitles.length === 1 ? '' : 's'} no chat...`,
+                { id: toastId },
             );
+
+            try {
+                const result = await materializeCurrentTitlePlan({
+                    ...operationAdData,
+                    ...captionsOnlyPatch,
+                }, {
+                    signal: controller.signal,
+                    onProgress: (progress) => {
+                        if (!operationIsCurrent()) return;
+                        setGenerationStatus(progress.message);
+                        toast.loading(`Legendas prontas. ${progress.message}`, { id: toastId });
+                    },
+                });
+                assertOperationIsCurrent();
+                const titleCount = result.adData.dynamicTitles?.length || 0;
+                updateAdData({
+                    captions: result.adData.captions,
+                    dynamicTitles: result.adData.dynamicTitles,
+                    dynamicTitlesSourceKey: result.adData.dynamicTitlesSourceKey,
+                    titleGenerationSummary: result.adData.titleGenerationSummary,
+                    brandPalette: result.adData.brandPalette,
+                    brandPaletteUpdatedAt: result.adData.brandPaletteUpdatedAt,
+                });
+
+                if (!titleCount) {
+                    const firstIssue = result.adData.titleGenerationSummary?.materialization?.diagnostics[0];
+                    toast.warning(
+                        'As legendas foram criadas, mas nenhum dos títulos confirmados pôde ser posicionado. '
+                        + `${firstIssue?.message ? `Motivo: ${firstIssue.message} ` : ''}`
+                        + 'O plano continua salvo para revisão ou nova tentativa.',
+                        { id: toastId, duration: 8_000 },
+                    );
+                    return;
+                }
+
+                const materialization = result.adData.titleGenerationSummary?.materialization;
+                const requestedTitleCount = materialization?.requestedCount || result.plannedTitleCount;
+                if (titleCount < requestedTitleCount) {
+                    const firstIssue = materialization?.diagnostics[0];
+                    toast.warning(
+                        `${reviewSummary} ${titleCount} de ${requestedTitleCount} títulos confirmados foram posicionados. `
+                        + `${firstIssue?.message ? `Motivo do primeiro pendente: ${firstIssue.message} ` : ''}`
+                        + 'O plano completo continua salvo.',
+                        { id: toastId, duration: 10_000 },
+                    );
+                    return;
+                }
+
+                toast.success(
+                    result.source === 'local'
+                        ? `${reviewSummary} ${titleCount} título${titleCount === 1 ? '' : 's'} criado${titleCount === 1 ? '' : 's'} com a geração local.`
+                        : `${reviewSummary} ${titleCount} título${titleCount === 1 ? '' : 's'} criado${titleCount === 1 ? '' : 's'} a partir do plano do chat.`,
+                    { id: toastId, duration: 7_000 },
+                );
+            } catch (titleError: unknown) {
+                // Captions are already valid and must not be discarded just because
+                // title materialization failed. Omitting plannedTitles from this patch
+                // deliberately preserves the confirmed chat plan for a retry.
+                assertOperationIsCurrent();
+                updateAdData(captionsOnlyPatch);
+                console.error('[title-materialization]', titleError);
+                toast.warning(
+                    'As legendas foram criadas, mas os títulos confirmados não puderam ser gerados agora. O plano continua salvo para uma nova tentativa.',
+                    { id: toastId, duration: 8_000 },
+                );
+            }
         } catch (error: unknown) {
+            if (error instanceof Error && error.name === 'AbortError') {
+                if (captionGenerationRef.current === operation) {
+                    toast.warning(
+                        'A narração, o plano de títulos ou as legendas mudaram durante o processamento. O resultado antigo foi descartado; gere novamente para usar a versão atual.',
+                        { id: toastId, duration: 8_000 },
+                    );
+                }
+                return;
+            }
             console.error('STT Error:', error);
             const errMsg = error instanceof Error ? error.message : 'Erro';
             toast.error(`Erro: ${errMsg}`, { id: toastId });
         } finally {
-            setIsGenerating(false);
+            if (captionGenerationRef.current === operation) {
+                captionGenerationRef.current = null;
+                setIsGenerating(false);
+                setGenerationStatus('');
+            }
         }
     };
 
@@ -245,7 +393,7 @@ export const Step3 = () => {
                                     : 'bg-linear-to-r from-brand-lime to-brand-accent text-[#0a0f12] hover:shadow-[0_0_20px_rgba(0,230,118,0.4)] hover:scale-[1.02] active:scale-[0.98]'
                             )}
                         >
-                            {isGenerating ? 'Processando Áudio...' : 'Gerar Legendas Automáticas'}
+                            {isGenerating ? (generationStatus || 'Processando Áudio...') : 'Gerar Legendas Automáticas'}
                         </button>
 
                         <div className="mt-5 space-y-3 border-t border-black/5 pt-5 dark:border-white/5">

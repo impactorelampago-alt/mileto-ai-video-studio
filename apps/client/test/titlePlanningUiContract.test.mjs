@@ -92,7 +92,7 @@ test('o cartão de narração expõe exatamente as duas ações aprovadas e nenh
     assert.doesNotMatch(cardSource, /Copiar|copy/i);
 });
 
-test('títulos só entram no projeto após seleção explícita e ficam ligados à narração', () => {
+test('a seleção do chat fica pendente e ligada à narração até existirem legendas temporizadas', () => {
     const applyPlan = chatSource.slice(
         chatSource.indexOf('const handleApplyTitlePlan ='),
         chatSource.indexOf('const [expandedFolders'),
@@ -102,12 +102,25 @@ test('títulos só entram no projeto após seleção explícita e ficam ligados 
     assert.match(applyPlan, /plannedTitles:\s*selected/);
     assert.match(applyPlan, /titlePlanningNarrationKey\(adData\.narrationPlainText\) !== state\.narrationKey/);
     assert.match(applyPlan, /plannedTitlesNarrationKey:\s*state\.narrationKey/);
+    assert.match(applyPlan, /dynamicTitles:\s*\[\]/);
+    assert.match(applyPlan, /dynamicTitlesSourceKey:\s*undefined/);
+    assert.match(applyPlan, /titleGenerationSummary:\s*undefined/);
+    assert.match(applyPlan, /serão posicionados automaticamente depois que as legendas forem geradas/);
+    assert.doesNotMatch(applyPlan, /títulos? aplicado/);
+});
+
+test('Step 4 diferencia plano confirmado de título final renderizável', () => {
+    assert.match(step4Source, /titlePlanMaterializationDecision\(adData\)/);
+    assert.match(step4Source, /pendingPlannedTitles/);
+    assert.match(step4Source, /serão posicionados automaticamente/);
+    assert.match(step4Source, /materializeCurrentTitlePlan\(operationAdData/);
+    assert.match(step4Source, /recoveredTitlePlanRef/);
 });
 
 test('Step 4 mantém a proposta fora do projeto e só confirma em uma atualização atômica', () => {
     const generation = step4Source.slice(
         step4Source.indexOf('const runTitleAssistantGeneration ='),
-        step4Source.indexOf('const handleApplyTitleAssistant ='),
+        step4Source.indexOf('const handleGenerateTitles ='),
     );
     const apply = step4Source.slice(
         step4Source.indexOf('const handleApplyTitleAssistant ='),
@@ -118,7 +131,7 @@ test('Step 4 mantém a proposta fora do projeto e só confirma em uma atualizaç
     assert.match(generation, /setTitleAssistantProposal\(proposal\)/);
     assert.match(generation, /setTitleAssistantDraft\(/);
     assert.match(step4Source, /isTitleAssistantOpen && titleAssistantProposal[\s\S]*\? titleAssistantDraft/);
-    assert.match(apply, /captureTitleAssistantSnapshot\(adData\)/);
+    assert.match(apply, /captureTitleAssistantSnapshot\(latestAdData\)/);
     assert.match(apply, /updateAdData\(titleAssistantCommitPatch\(titleAssistantProposal, titleAssistantDraft\)\)/);
 });
 

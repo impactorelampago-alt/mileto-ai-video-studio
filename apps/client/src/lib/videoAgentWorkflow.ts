@@ -248,7 +248,7 @@ export type AutomaticTitleGenerationOutcome = {
 export const TITLE_AI_REQUEST_DEADLINE_MS = 55_000;
 export const TITLE_LOCAL_FALLBACK_DEADLINE_MS = 20_000;
 
-export type TitleGenerationProgressPhase = 'brand' | 'ai' | 'fallback' | 'completed';
+export type TitleGenerationProgressPhase = 'brand' | 'ai' | 'fallback' | 'materialization' | 'completed';
 
 export interface TitleGenerationProgress {
     phase: TitleGenerationProgressPhase;
@@ -264,11 +264,14 @@ export interface AutomaticTitleGenerationOptions {
     refinementInstruction?: string;
     /** Escolhas confirmadas anteriormente no Chat ou na revisÃ£o atual. */
     baseTitles?: Array<{
+        id?: string;
         text: string;
         sourceText?: string;
         triggerId?: string;
         selected?: boolean;
     }>;
+    /** Materializa o plano confirmado sem permitir nova selecao ou reescrita pela IA. */
+    materializationMode?: 'exact-plan';
     onProgress?: (progress: TitleGenerationProgress) => void;
 }
 
@@ -290,7 +293,7 @@ const runTitleRequestWithDeadline = async <T>(
     operation: (signal: AbortSignal) => Promise<T>,
     deadlineMs: number,
     parentSignal: AbortSignal | undefined,
-    phase: 'ai' | 'local_fallback',
+    phase: 'ai' | 'local_fallback' | 'exact_plan_materialization',
 ): Promise<T> => {
     if (parentSignal?.aborted) throw titleGenerationAbortError();
     const controller = new AbortController();
@@ -309,7 +312,9 @@ const runTitleRequestWithDeadline = async <T>(
             throw new LocalApiError(
                 phase === 'ai'
                     ? 'A IA excedeu o tempo seguro; iniciando o fallback local.'
-                    : 'O fallback local excedeu o tempo seguro.',
+                    : phase === 'exact_plan_materialization'
+                        ? 'O posicionamento dos títulos confirmados excedeu o tempo seguro.'
+                        : 'O fallback local excedeu o tempo seguro.',
                 0,
                 'title_generation_timeout',
                 true,
@@ -419,9 +424,10 @@ export const generateAutomaticTitlesResilient = async (
     let clientRequests = 0;
     let aiRequestMs: number | undefined;
     let localFallbackRequestMs: number | undefined;
+    let materializationRequestMs: number | undefined;
     type TitleResponse = {
         titles?: TitleHook[];
-        source?: 'ai' | 'local' | 'none';
+        source?: 'ai' | 'local' | 'plan' | 'none';
         warning?: string;
         diagnostic?: AutomaticTitleGenerationOutcome['diagnostic'];
         attempts?: number;
@@ -430,17 +436,22 @@ export const generateAutomaticTitlesResilient = async (
         metrics?: NonNullable<AdData['titleGenerationSummary']>['metrics'];
         editorialReview?: NonNullable<AdData['titleGenerationSummary']>['editorialReview'];
         warnings?: NonNullable<AdData['titleGenerationSummary']>['warnings'];
+        materialization?: NonNullable<AdData['titleGenerationSummary']>['materialization'];
         timingsMs?: unknown;
     };
-    const request = async (mode: 'ai' | 'local') => {
+    const exactPlanMaterialization = options.materializationMode === 'exact-plan';
+    const request = async (mode: 'ai' | 'local' | 'exact-plan') => {
         clientRequests += 1;
         const startedAt = Date.now();
         const isAi = mode === 'ai';
+        const isExactPlan = mode === 'exact-plan';
         options.onProgress?.({
-            phase: isAi ? 'ai' : 'fallback',
-            message: isAi
-                ? 'Gerando ganchos com IA…'
-                : 'A IA não respondeu a tempo. Aplicando fallback local…',
+            phase: isExactPlan ? 'materialization' : isAi ? 'ai' : 'fallback',
+            message: isExactPlan
+                ? 'Posicionando exatamente os títulos confirmados…'
+                : isAi
+                    ? 'Gerando ganchos com IA…'
+                    : 'A IA não respondeu a tempo. Aplicando fallback local…',
         });
         try {
             const headers = { 'Content-Type': 'application/json', ...(await localAuthHeaders()) };
@@ -455,9 +466,11 @@ export const generateAutomaticTitlesResilient = async (
                         brandPalette,
                         companyId,
                         opsViewContextId,
-                        mode,
+                        mode: isExactPlan ? 'local' : mode,
+                        ...(isExactPlan ? { materializationMode: 'exact-plan' } : {}),
                         refinementInstruction: String(options.refinementInstruction || '').slice(0, 1_000),
                         baseTitles: (options.baseTitles || input.plannedTitles || []).slice(0, 40).map((title) => ({
+                            id: String(title.id || '').slice(0, 120),
                             text: String(title.text || '').slice(0, 90),
                             sourceText: String(title.sourceText || '').slice(0, 240),
                             triggerId: String(title.triggerId || '').slice(0, 80),
@@ -470,9 +483,10 @@ export const generateAutomaticTitlesResilient = async (
             }, positiveDeadline(
                 isAi ? options.aiDeadlineMs : options.localFallbackDeadlineMs,
                 isAi ? TITLE_AI_REQUEST_DEADLINE_MS : TITLE_LOCAL_FALLBACK_DEADLINE_MS,
-            ), options.signal, isAi ? 'ai' : 'local_fallback');
+            ), options.signal, isExactPlan ? 'exact_plan_materialization' : isAi ? 'ai' : 'local_fallback');
         } finally {
-            if (isAi) aiRequestMs = elapsedMs(startedAt);
+            if (isExactPlan) materializationRequestMs = elapsedMs(startedAt);
+            else if (isAi) aiRequestMs = elapsedMs(startedAt);
             else localFallbackRequestMs = elapsedMs(startedAt);
         }
     };
@@ -482,14 +496,14 @@ export const generateAutomaticTitlesResilient = async (
     let lastError: unknown;
     const requestDiagnostics: TitleGenerationDiagnostic[] = [];
     try {
-        primaryData = await request('ai');
+        primaryData = await request(exactPlanMaterialization ? 'exact-plan' : 'ai');
     } catch (error) {
         if (isTitleGenerationAbortError(error) || options.signal?.aborted) throw titleGenerationAbortError();
         lastError = error;
         requestDiagnostics.push(safeTitleDiagnostic(error));
     }
 
-    if (primaryData === null) {
+    if (primaryData === null && !exactPlanMaterialization) {
         try {
             fallbackData = await request('local');
         } catch (error) {
@@ -501,11 +515,11 @@ export const generateAutomaticTitlesResilient = async (
 
     const data = fallbackData?.titles?.length ? fallbackData : (primaryData?.titles?.length ? primaryData : fallbackData || primaryData);
     const serverAttempts = Number(primaryData?.attempts || 0) + Number(fallbackData?.attempts || 0);
-    const attemptsBySource = {
+    const attemptsBySource = exactPlanMaterialization ? {} : {
         ...(primaryData ? { ai: Number(primaryData.attempts || 0) } : {}),
         ...(fallbackData ? { fallback: Number(fallbackData.attempts || 0) } : {}),
     };
-    const metricsBySource = {
+    const metricsBySource = exactPlanMaterialization ? {} : {
         ...(primaryData?.source === 'local'
             ? { fallback: primaryData.metrics }
             : (primaryData?.metrics ? { ai: primaryData.metrics } : {})),
@@ -523,6 +537,7 @@ export const generateAutomaticTitlesResilient = async (
             brandResolutionMs,
             ...(aiRequestMs !== undefined ? { aiRequestMs } : {}),
             ...(localFallbackRequestMs !== undefined ? { localFallbackRequestMs } : {}),
+            ...(materializationRequestMs !== undefined ? { materializationRequestMs } : {}),
             ...(server ? { server } : {}),
         };
     };
@@ -556,6 +571,7 @@ export const generateAutomaticTitlesResilient = async (
                     semanticCoverage: data?.semanticCoverage,
                     metrics: data?.metrics,
                     editorialReview: data?.editorialReview,
+                    materialization: data?.materialization,
                     attemptsBySource,
                     metricsBySource,
                     timings: timingSnapshot(),
@@ -572,7 +588,8 @@ export const generateAutomaticTitlesResilient = async (
         };
     }
 
-    const fallbackUsed = data.source === 'local' || data === fallbackData;
+    const planMaterialized = data.source === 'plan';
+    const fallbackUsed = !planMaterialized && (data.source === 'local' || data === fallbackData);
     const responseWarning = data.warning?.trim();
     const warningMessages = [
         ...(fallbackUsed && !responseWarning?.includes(AUTOMATIC_TITLES_FALLBACK_WARNING)
@@ -588,7 +605,11 @@ export const generateAutomaticTitlesResilient = async (
     const diagnostic = fallbackUsed ? (primaryData?.diagnostic || diagnostics[0] || data.diagnostic) : data.diagnostic;
     options.onProgress?.({
         phase: 'completed',
-        message: fallbackUsed ? 'Títulos prontos pelo fallback local.' : 'Títulos gerados com IA.',
+        message: planMaterialized
+            ? 'Títulos confirmados posicionados sem alterações.'
+            : fallbackUsed
+                ? 'Títulos prontos pelo fallback local.'
+                : 'Títulos gerados com IA.',
     });
 
     const next: AdData = {
@@ -599,7 +620,7 @@ export const generateAutomaticTitlesResilient = async (
         dynamicTitlesSourceKey: sourceKey,
         titleGenerationSummary: {
             requested: true,
-            outcome: fallbackUsed ? 'fallback' : 'ai',
+            outcome: planMaterialized ? 'manual' : fallbackUsed ? 'fallback' : 'ai',
             titleCount: data.titles.length,
             serverAttempts,
             clientRequests,
@@ -607,6 +628,7 @@ export const generateAutomaticTitlesResilient = async (
             semanticCoverage: data.semanticCoverage,
             metrics: data.metrics,
             editorialReview: data.editorialReview,
+            materialization: data.materialization,
             attemptsBySource,
             metricsBySource,
             timings: timingSnapshot(),
@@ -619,6 +641,8 @@ export const generateAutomaticTitlesResilient = async (
     };
     return {
         adData: { ...next, dynamicTitles: bindTitlesToBrandPalette(next) },
+        // Public compatibility remains ai/local/none. The summary's `manual`
+        // outcome and exact materialization payload identify this non-AI path.
         source: fallbackUsed ? 'local' : 'ai',
         warning,
         diagnostic,
