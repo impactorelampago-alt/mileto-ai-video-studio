@@ -1,4 +1,5 @@
-import { Check, CircleAlert, Loader2, RefreshCw, Sparkles, X } from 'lucide-react';
+import { useState } from 'react';
+import { Check, CircleAlert, Loader2, RefreshCw, Sparkles, WandSparkles, X } from 'lucide-react';
 import type { TitleHook } from '../types';
 import { cn } from '../lib/utils';
 
@@ -35,8 +36,16 @@ export const TitleAssistantDialog = ({
     onApply,
     onClose,
 }: TitleAssistantDialogProps) => {
+    const [edits, setEdits] = useState<Record<string, string>>({});
     if (!open) return null;
     const activeCount = titles.filter((title) => title.isActive).length;
+    const pendingEdits = Object.entries(edits).filter(
+        ([id, value]) => value.trim().length > 0 && titles.some((title) => title.id === id),
+    );
+    const applyPendingEdits = () => {
+        pendingEdits.forEach(([id, value]) => onChangeTitle(id, { text: value.trim().slice(0, 120) }));
+        setEdits({});
+    };
 
     return (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
@@ -113,22 +122,44 @@ export const TitleAssistantDialog = ({
                                     >
                                         <Check className="h-3 w-3" />
                                     </button>
-                                    <div className="min-w-0 flex-1">
-                                        <input
-                                            value={title.text}
-                                            onChange={(event) => onChangeTitle(title.id, { text: event.target.value })}
-                                            maxLength={120}
-                                            aria-label="Editar texto do título"
-                                            className="w-full bg-transparent text-[12px] font-semibold text-foreground outline-none placeholder:text-brand-muted"
-                                        />
-                                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[9px] text-brand-muted">
-                                            {title.triggerId && <span>{title.triggerId}</span>}
-                                            <span>{titleTime(title.startSec)}–{titleTime(title.startSec + title.durationSec)}</span>
-                                            {title.sourceText && <span className="truncate">Base: “{title.sourceText}”</span>}
+                                    <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(150px,.9fr)]">
+                                        <div className="min-w-0 self-center">
+                                            <input
+                                                value={title.text}
+                                                onChange={(event) => onChangeTitle(title.id, { text: event.target.value })}
+                                                maxLength={120}
+                                                aria-label="Editar texto do título"
+                                                className="w-full bg-transparent text-[12px] font-semibold text-foreground outline-none placeholder:text-brand-muted"
+                                            />
+                                            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[9px] text-brand-muted">
+                                                {title.triggerId && <span>{title.triggerId}</span>}
+                                                <span>{titleTime(title.startSec)}–{titleTime(title.startSec + title.durationSec)}</span>
+                                                {title.sourceText && <span className="truncate">Base: “{title.sourceText}”</span>}
+                                            </div>
                                         </div>
+                                        <input
+                                            value={edits[title.id] ?? ''}
+                                            onChange={(event) => setEdits((current) => ({ ...current, [title.id]: event.target.value }))}
+                                            disabled={busy}
+                                            maxLength={90}
+                                            placeholder="Como você quer que fique?"
+                                            aria-label={`Mudança desejada para ${title.text}`}
+                                            className="h-9 min-w-0 self-center rounded-lg border border-white/10 bg-white/[.025] px-2.5 text-[10px] text-foreground outline-none transition placeholder:text-brand-muted/70 focus:border-brand-accent/45 focus:bg-brand-accent/[.03] disabled:cursor-wait disabled:opacity-50"
+                                        />
                                     </div>
                                 </article>
                             ))}
+
+                            {pendingEdits.length > 0 && (
+                                <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={applyPendingEdits}
+                                    className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl border border-brand-accent/25 bg-brand-accent/[.05] px-3 text-[10px] font-bold text-brand-accent transition hover:border-brand-accent/45 hover:bg-brand-accent/[.09] disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                    <WandSparkles className="h-3.5 w-3.5" /> Fazer essas mudanças ({pendingEdits.length})
+                                </button>
+                            )}
 
                             {!titles.length && !busy && (
                                 <div className="rounded-xl border border-dashed border-white/10 p-6 text-center text-[11px] text-brand-muted">
