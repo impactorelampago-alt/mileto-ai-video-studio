@@ -49,7 +49,7 @@ export const initialModelEditorSettings = (modelId: string): TitleModelEditorSet
     return {
         enabled: true,
         colorMode: 'custom',
-        paletteSlot: 'rotate',
+        paletteSlot: 'primary',
         primaryColor: model.primaryColor,
         secondaryColor: model.secondaryColor,
         animationId: 'pop',

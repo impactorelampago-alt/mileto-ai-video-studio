@@ -286,8 +286,38 @@ export const contrastColor = (background: string): '#000000' | '#ffffff' => {
 export const resolvePaletteSlot = (palette: BrandPalette | null | undefined, slot: 'rotate' | 'primary' | 'secondary' | 'tertiary', index = 0) => {
     if (!palette) return null;
     if (slot !== 'rotate') return normalizeHex(palette[slot]);
-    const colors = [palette.primary, palette.secondary, palette.tertiary].map(normalizeHex).filter((value): value is string => !!value);
+    // Mesma base do servidor (distinctPaletteColors): inclui palette.all e
+    // deduplica, senão o mesmo rotationIndex aponta cores diferentes nos dois lados.
+    const colors = Array.from(new Set(
+        [palette.primary, palette.secondary, palette.tertiary, ...(Array.isArray(palette.all) ? palette.all : [])]
+            .map(normalizeHex)
+            .filter((value): value is string => !!value)
+    ));
     return colors.length ? colors[index % colors.length] : null;
+};
+
+/**
+ * Resolve o par de cores de um título modo "paleta da empresa" exatamente como o
+ * servidor fará na geração (slot + ocorrência). Usado pelos previews para nunca
+ * divergirem do vídeo real.
+ */
+export const brandSlotPreviewColors = (
+    palette: BrandPalette | null | undefined,
+    slot: 'rotate' | 'primary' | 'secondary' | 'tertiary',
+    index = 0,
+): { primaryColor: string; secondaryColor: string } | null => {
+    const primary = resolvePaletteSlot(palette, slot, index);
+    if (!primary) return null;
+    const secondarySlot = slot === 'primary'
+        ? 'secondary'
+        : slot === 'secondary' || slot === 'tertiary'
+          ? 'primary'
+          : 'rotate';
+    const secondary = resolvePaletteSlot(palette, secondarySlot, secondarySlot === 'rotate' ? index + 1 : index);
+    return {
+        primaryColor: primary,
+        secondaryColor: !secondary || secondary === primary ? contrastColor(primary) : secondary,
+    };
 };
 
 export const bindTitlesToBrandPalette = (adData: Pick<AdData, 'dynamicTitles' | 'brandPalette'>) =>

@@ -48,7 +48,7 @@ import {
     type TitleTriggerEditor,
 } from '../lib/titleGeneratorEditor';
 import { toast } from 'sonner';
-import { loadOpsBrandDirectory, opsProjectCompanyName } from '../lib/opsProjectBrand';
+import { brandSlotPreviewColors, loadOpsBrandDirectory, opsProjectCompanyName } from '../lib/opsProjectBrand';
 import { normalizeBrandPalette } from '../lib/brandPalette';
 import type { OpsCompany } from '../lib/gateway';
 import { limitTitleWords } from '../lib/titleText';
@@ -140,7 +140,9 @@ const initialModelSettings = (modelId: string): ModelSettings => {
     return {
         enabled: true,
         colorMode: 'custom',
-        paletteSlot: 'rotate',
+        // 1ª cor por padrão: previsível e igual entre preview e vídeo. 'rotate'
+        // continua disponível no seletor de slot para quem quiser variação.
+        paletteSlot: 'primary',
         primaryColor: model.primaryColor,
         secondaryColor: model.secondaryColor,
         animationId: 'pop',
@@ -175,7 +177,7 @@ const makeInitialTriggers = (): TriggerPrototype[] => [
         enabled: true,
         maxWords: 3,
         maxOccurrences: 3,
-        color: { mode: 'brand', paletteSlot: 'tertiary', primary: '#00e676', secondary: '#07110d' },
+        color: { mode: 'brand', paletteSlot: 'primary', primary: '#00e676', secondary: '#07110d' },
         name: 'Região',
         hint: 'Cidade, estado, país, bairro ou área atendida.',
         examples: ['Casimiro de Abreu', 'Rio de Janeiro', 'Todo o Brasil'],
@@ -572,14 +574,6 @@ const layoutFingerprint = (config: AiTitleGeneratorConfig) => JSON.stringify(
 
 const isHexColor = (value: string | undefined): value is string => !!value && /^#[0-9a-f]{6}$/i.test(value);
 
-const contrastColor = (hex: string) => {
-    const value = hex.replace('#', '');
-    const red = Number.parseInt(value.slice(0, 2), 16);
-    const green = Number.parseInt(value.slice(2, 4), 16);
-    const blue = Number.parseInt(value.slice(4, 6), 16);
-    return (red * 299 + green * 587 + blue * 114) / 1000 > 150 ? '#07110d' : '#ffffff';
-};
-
 const animationPreviewClass = (animationId: string) => {
     if (animationId === 'pop') return 'anim-title-pop';
     if (animationId === 'fade') return 'anim-title-fade';
@@ -799,16 +793,22 @@ export const AiTitleGeneratorTest = () => {
     const activeModel = TITLE_MODELS.find((model) => model.id === effectiveActiveModelId);
     const activeSettings = effectiveActiveModelId ? selectedTrigger.models[effectiveActiveModelId] : undefined;
 
+    const effectivePreviewPalette = previewPalette || adData.brandPalette;
     const opsColors = useMemo(() => {
-        const palette = previewPalette || adData.brandPalette;
+        const palette = effectivePreviewPalette;
         const candidates = [palette?.primary, palette?.secondary, palette?.tertiary, ...(palette?.all || [])]
             .filter(isHexColor);
         return Array.from(new Set(candidates));
-    }, [adData.brandPalette, previewPalette]);
+    }, [effectivePreviewPalette]);
 
+    // O preview replica exatamente a resolução do servidor (slot configurado +
+    // 1ª ocorrência) para nunca divergir da cor do vídeo gerado.
+    const previewBrandColors = activeSettings?.colorMode === 'ops'
+        ? brandSlotPreviewColors(effectivePreviewPalette, activeSettings.paletteSlot, 0)
+        : null;
     const previewColors = activeModel && activeSettings
-        ? activeSettings.colorMode === 'ops' && opsColors.length
-            ? [opsColors[0], opsColors[1] || contrastColor(opsColors[0])]
+        ? previewBrandColors
+            ? [previewBrandColors.primaryColor, previewBrandColors.secondaryColor]
             : [activeSettings.primaryColor || activeModel.primaryColor, activeSettings.secondaryColor || activeModel.secondaryColor]
         : ['#00e676', '#ffffff'];
 
@@ -1239,8 +1239,11 @@ export const AiTitleGeneratorTest = () => {
                                 const settings = selectedTrigger.models[model.id];
                                 const enabled = !!settings?.enabled;
                                 const active = enabled && model.id === effectiveActiveModelId;
-                                const modelColors = settings?.colorMode === 'ops' && opsColors.length
-                                    ? [opsColors[0], opsColors[1] || contrastColor(opsColors[0])]
+                                const modelBrandColors = settings?.colorMode === 'ops'
+                                    ? brandSlotPreviewColors(effectivePreviewPalette, settings.paletteSlot, 0)
+                                    : null;
+                                const modelColors = modelBrandColors
+                                    ? [modelBrandColors.primaryColor, modelBrandColors.secondaryColor]
                                     : [settings?.primaryColor || model.primaryColor, settings?.secondaryColor || model.secondaryColor];
                                 const modelPreviewTitle: TitleHook = {
                                     id: `model-preview-${model.id}`,
@@ -1342,13 +1345,45 @@ export const AiTitleGeneratorTest = () => {
                                                             </button>
                                                         </div>
                                                         {settings.colorMode === 'ops' ? (
-                                                            <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-white/7 bg-black/15 px-2 py-2">
-                                                                <span className="min-w-0 text-[7px] leading-relaxed text-muted-foreground">
-                                                                    {opsColors.length ? 'Paleta atual da empresa no Ops.' : 'Sem paleta Ops; exibindo as cores originais da Etapa 4.'}
-                                                                </span>
-                                                                <span className="flex shrink-0 -space-x-1">
-                                                                    {modelColors.slice(0, 5).map((color) => <span key={color} className="h-5 w-5 rounded-full border-2 border-[#101716]" style={{ backgroundColor: color }} title={color} />)}
-                                                                </span>
+                                                            <div className="mt-2 rounded-lg border border-white/7 bg-black/15 px-2 py-2">
+                                                                <div className="mb-1.5 grid grid-cols-4 gap-1">
+                                                                    {([
+                                                                        ['primary', '1ª cor'],
+                                                                        ['secondary', '2ª cor'],
+                                                                        ['tertiary', '3ª cor'],
+                                                                        ['rotate', 'Alternar'],
+                                                                    ] as const).map(([slot, label]) => {
+                                                                        const slotColors = brandSlotPreviewColors(effectivePreviewPalette, slot, 0);
+                                                                        return (
+                                                                            <button
+                                                                                key={slot}
+                                                                                type="button"
+                                                                                onClick={() => patchModelSettings(model.id, { paletteSlot: slot })}
+                                                                                className={cn(
+                                                                                    'flex flex-col items-center gap-1 rounded-md border px-1 py-1.5 transition',
+                                                                                    settings.paletteSlot === slot
+                                                                                        ? 'border-brand-lime/50 bg-brand-lime/10'
+                                                                                        : 'border-white/8 hover:border-white/20'
+                                                                                )}
+                                                                                title={slot === 'rotate' ? 'Alterna as cores da paleta entre os títulos deste gatilho' : undefined}
+                                                                            >
+                                                                                <span
+                                                                                    className="h-4 w-4 rounded-full border-2 border-[#101716]"
+                                                                                    style={{ backgroundColor: slotColors?.primaryColor || '#333' }}
+                                                                                />
+                                                                                <span className={cn('text-[7px] font-black', settings.paletteSlot === slot ? 'text-brand-lime' : 'text-foreground/55')}>{label}</span>
+                                                                            </button>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                                <div className="flex items-center justify-between gap-3">
+                                                                    <span className="min-w-0 text-[7px] leading-relaxed text-muted-foreground">
+                                                                        {opsColors.length ? 'Cor da paleta usada por este título — igual no vídeo.' : 'Sem paleta Ops; exibindo as cores originais da Etapa 4.'}
+                                                                    </span>
+                                                                    <span className="flex shrink-0 -space-x-1">
+                                                                        {modelColors.slice(0, 5).map((color) => <span key={color} className="h-5 w-5 rounded-full border-2 border-[#101716]" style={{ backgroundColor: color }} title={color} />)}
+                                                                    </span>
+                                                                </div>
                                                             </div>
                                                         ) : (
                                                             <div className="mt-2 grid grid-cols-2 gap-2">
