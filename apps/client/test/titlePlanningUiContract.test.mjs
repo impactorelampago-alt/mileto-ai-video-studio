@@ -68,6 +68,16 @@ test('a proposta mostra todos os gatilhos inclusive os não encontrados', () => 
     assert.match(proposalSource, /trigger\.name/);
 });
 
+test('cada sugestão aceita uma mudança dedicada e envia somente o conjunto preenchido', () => {
+    assert.match(proposalSource, /placeholder="Como você quer que fique\?"/);
+    assert.match(proposalSource, /maxLength=\{90\}/);
+    assert.match(proposalSource, /collectTitleProposalRevisionEdits/);
+    assert.match(proposalSource, /onRequestChanges\(requestedChanges\)/);
+    assert.match(proposalSource, /Fazer essas mudanças/);
+    assert.match(proposalSource, /disabled=\{!requestedChanges\.length \|\| busy\}/);
+    assert.doesNotMatch(proposalSource, /\bonEdit\b/);
+});
+
 test('o cartão de narração expõe exatamente as duas ações aprovadas e nenhuma cópia', () => {
     const cardSource = chatSource.slice(
         chatSource.indexOf('const NarrationCard ='),

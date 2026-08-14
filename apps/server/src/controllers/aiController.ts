@@ -52,6 +52,7 @@ import {
 } from '../services/titleEditorialReview';
 import {
     applyTitlePlanningOperations,
+    constrainTitlePlanningOperationsToRequestedEdits,
     normalizePlanningText,
     planningDisplaySupported,
     planningLiteralExists,
@@ -117,6 +118,17 @@ const safePlanningLine = (value: unknown, maxLength = 90) => String(value || '')
     .trim()
     .slice(0, maxLength);
 
+const safeRequestedTitleEdits = (value: unknown) => {
+    const seenIds = new Set<string>();
+    return (Array.isArray(value) ? value : []).slice(0, 40).flatMap((item: any) => {
+        const id = safePlanningLine(item?.id, 120);
+        const desiredText = safePlanningLine(item?.desiredText, 90);
+        if (!id || !desiredText || seenIds.has(id)) return [];
+        seenIds.add(id);
+        return [{ id, desiredText }];
+    });
+};
+
 const titlePlanningPrompt = (config: TitleGeneratorConfig) => {
     const triggers = config.triggers
         .filter((trigger) => trigger.enabled && trigger.titleTypes.length)
@@ -167,6 +179,8 @@ Regras de revisão:
 6. add exige sourceText literal e contínuo da narração, text literal e contínuo dentro desse sourceText e um triggerId autorizado.
 7. "O resto mantém" significa que nenhum outro item deve receber operação.
 8. Nunca invente preço, prazo, oferta, local, prova, benefício, escassez ou CTA.
+9. Se houver alterações estruturadas, devolva somente edit_text para os IDs listados. Não selecione, remova, adicione nem altere itens omitidos.
+10. Cada desiredText estruturado é uma decisão autoral explícita: copie-o exatamente em edit_text, sem corrigir, resumir ou substituir. Somente esse caso pode usar uma redação que não seja recorte literal do sourceText.
 
 Gatilhos autorizados:
 ${JSON.stringify(triggers)}
@@ -192,6 +206,7 @@ export const planTitles = async (req: Request, res: Response) => {
     const requestId = String(req.headers['x-request-id'] || uuidv4()).slice(0, 80);
     const script = String(req.body?.script || '').normalize('NFKC').trim().slice(0, 20_000);
     const instruction = safePlanningLine(req.body?.instruction, 1_000);
+    const requestedEditRequests = safeRequestedTitleEdits(req.body?.requestedEdits);
     const requestedPreviousTitles: PlannedTitleSuggestion[] = Array.isArray(req.body?.previousTitles)
         ? req.body.previousTitles.slice(0, 40).flatMap((item: any, index: number) => {
             const id = safePlanningLine(item?.id, 120) || `legacy-title-${index + 1}`;
@@ -248,14 +263,35 @@ export const planTitles = async (req: Request, res: Response) => {
         const triggerById = triggerMapWithAliases(enabledTriggers);
         const previousTitles: PlannedTitleSuggestion[] = requestedPreviousTitles.flatMap((item) => {
             const trigger = triggerById.get(normalizeTriggerKey(item.triggerId));
-            if (!trigger || !planningLiteralExists(script, item.sourceText)) return [];
+            if (!planningLiteralExists(script, item.sourceText)) return [];
+            // Uma alteração posterior na configuração de gatilhos não pode
+            // apagar silenciosamente um item já proposto. Quando o gatilho não
+            // está mais ativo, preservamos o snapshot anterior exatamente como
+            // chegou; apenas novas sugestões dependem da configuração atual.
+            if (!trigger) return [{ ...item }];
             return [{
                 ...item,
                 triggerId: trigger.id,
                 triggerName: item.triggerName || trigger.name,
             }];
         });
-        const isRefinement = Boolean(instruction);
+        const previousTitleById = new Map(previousTitles.map((item) => [item.id, item]));
+        const requestedEdits = requestedEditRequests.flatMap((edit) => {
+            const current = previousTitleById.get(edit.id);
+            if (!current) return [];
+            return [{
+                id: current.id,
+                currentText: current.text,
+                desiredText: edit.desiredText,
+                sourceText: current.sourceText,
+                triggerId: current.triggerId,
+                triggerName: current.triggerName,
+                selected: current.selected,
+            }];
+        });
+        const invalidRequestedEditCount = requestedEditRequests.length - requestedEdits.length;
+        const isStructuredRefinement = requestedEditRequests.length > 0;
+        const isRefinement = Boolean(instruction || isStructuredRefinement);
         const summarizePlanningTriggers = (suggestions: PlannedTitleSuggestion[]) => enabledTriggers.map((trigger) => ({
             id: trigger.id,
             name: trigger.name,
@@ -278,6 +314,9 @@ export const planTitles = async (req: Request, res: Response) => {
                         `Narração escolhida:\n${script}`,
                         isRefinement ? `Propostas atuais:\n${JSON.stringify(previousTitles)}` : '',
                         instruction ? `Ajuste solicitado pelo usuário:\n${instruction}` : '',
+                        requestedEdits.length
+                            ? `Alterações estruturadas autorizadas:\n${JSON.stringify(requestedEdits)}`
+                            : '',
                     ].filter(Boolean).join('\n\n'),
                 }],
                 system: isRefinement
@@ -313,6 +352,15 @@ export const planTitles = async (req: Request, res: Response) => {
         }
 
         if (isRefinement) {
+            let scopedOperationRejectionCount = 0;
+            if (isStructuredRefinement) {
+                const constrained = constrainTitlePlanningOperationsToRequestedEdits({
+                    operations: rawOperations,
+                    requestedEdits,
+                });
+                rawOperations = constrained.operations;
+                scopedOperationRejectionCount = constrained.rejectedOperationCount;
+            }
             const operationResult = applyTitlePlanningOperations({
                 script,
                 previousTitles,
@@ -326,20 +374,43 @@ export const planTitles = async (req: Request, res: Response) => {
                     } : null;
                 },
                 createId: uuidv4,
+                strictTargetIsolation: isStructuredRefinement,
+                authorialRequestedEdits: isStructuredRefinement ? requestedEdits : undefined,
             });
-            if (source === 'ai' && operationResult.appliedOperationCount === 0) {
+            const unappliedRequestedEditCount = isStructuredRefinement
+                ? Math.max(0, requestedEditRequests.length - operationResult.appliedOperationCount)
+                : 0;
+            if (isStructuredRefinement && source === 'ai') {
+                if (operationResult.appliedOperationCount > 0) {
+                    summary = unappliedRequestedEditCount
+                        ? `${operationResult.appliedOperationCount} mudança(s) aplicada(s); ${unappliedRequestedEditCount} não pôde(m) ser aplicada(s) na forma exata pedida e foi(ram) preservada(s).`
+                        : 'Todas as mudanças solicitadas foram aplicadas aos títulos.';
+                } else {
+                    summary = 'As mudanças não puderam ser aplicadas na forma exata pedida; a proposta anterior foi preservada.';
+                }
+            } else if (source === 'ai' && operationResult.appliedOperationCount === 0) {
                 summary = operationResult.rejectedOperationCount
                     ? 'O pedido não produziu uma alteração factual segura; a proposta anterior foi preservada.'
                     : 'Nenhuma alteração foi necessária; a proposta anterior foi preservada.';
             }
+            const totalRejectedOperationCount = operationResult.rejectedOperationCount
+                + scopedOperationRejectionCount;
             const warnings = [
                 ...(source === 'local' ? [{
                     code: 'title_plan_refinement_unavailable',
                     message: summary,
                 }] : []),
-                ...(operationResult.rejectedOperationCount ? [{
+                ...(totalRejectedOperationCount ? [{
                     code: 'title_plan_operations_rejected',
-                    message: `${operationResult.rejectedOperationCount} operação(ões) insegura(s) ou inválida(s) foi(ram) ignorada(s).`,
+                    message: `${totalRejectedOperationCount} operação(ões) insegura(s) ou inválida(s) foi(ram) ignorada(s).`,
+                }] : []),
+                ...(isStructuredRefinement && unappliedRequestedEditCount ? [{
+                    code: 'title_plan_requested_edits_not_applied',
+                    message: `${unappliedRequestedEditCount} mudança(s) não pôde(m) ser aplicada(s) na forma exata pedida; os demais títulos foram preservados.`,
+                }] : []),
+                ...(invalidRequestedEditCount ? [{
+                    code: 'title_plan_requested_edit_unknown',
+                    message: `${invalidRequestedEditCount} mudança(s) apontava(m) para títulos que não existem mais.`,
                 }] : []),
             ];
             return res.json({

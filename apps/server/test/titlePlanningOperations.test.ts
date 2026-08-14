@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     applyTitlePlanningOperations,
+    constrainTitlePlanningOperationsToRequestedEdits,
     type TitlePlanningSuggestionState,
     type TitlePlanningTriggerState,
 } from '../src/services/titlePlanningSafety';
@@ -164,4 +165,79 @@ test('set_selected, remove e add alteram somente os campos declarados', () => {
         triggerName: 'Escassez e urgência',
         selected: true,
     });
+});
+
+test('revisao estruturada bloqueia operacoes e IDs que nao foram pedidos', () => {
+    const previousTitles = baseTitles();
+    const constrained = constrainTitlePlanningOperationsToRequestedEdits({
+        requestedEdits: [{ id: 'benefit-1', desiredText: 'Óculos completo' }],
+        operations: [
+            { op: 'edit_text', id: 'benefit-1', text: 'Óculos completo' },
+            { op: 'edit_text', id: 'price-1', text: 'a partir de 199 reais' },
+            { op: 'set_selected', id: 'benefit-1', selected: false },
+            { op: 'remove', id: 'cta-1' },
+            {
+                op: 'add',
+                sourceText: 'somente até sábado',
+                text: 'até sábado',
+                triggerId: 'scarcity',
+            },
+        ],
+    });
+    const result = applyTitlePlanningOperations({
+        script,
+        previousTitles,
+        operations: constrained.operations,
+        authorialRequestedEdits: [{ id: 'benefit-1', desiredText: 'Óculos completo' }],
+        resolveTrigger,
+        createId: () => 'malicious-new-id',
+    });
+
+    assert.equal(constrained.rejectedOperationCount, 4);
+    assert.equal(result.appliedOperationCount, 1);
+    assert.deepEqual(result.suggestions.find((item) => item.id === 'benefit-1'), {
+        ...previousTitles[1],
+        text: 'Óculos completo',
+    });
+    assert.deepEqual(result.suggestions.find((item) => item.id === 'price-1'), previousTitles[0]);
+    assert.deepEqual(result.suggestions.find((item) => item.id === 'cta-1'), previousTitles[2]);
+    assert.equal(result.suggestions.some((item) => item.id === 'malicious-new-id'), false);
+});
+
+test('texto autoral explícito é aplicado exatamente e texto diferente devolvido pela IA é rejeitado', () => {
+    const previousTitles: TitlePlanningSuggestionState[] = [{
+        id: 'region-1',
+        text: 'Piracicaba',
+        sourceText: 'Piracicaba',
+        triggerId: 'region',
+        triggerName: 'Região',
+        selected: true,
+    }];
+    const requestedEdits = [{ id: 'region-1', desiredText: 'Óculos em Piracicaba' }];
+    const refused = constrainTitlePlanningOperationsToRequestedEdits({
+        requestedEdits,
+        operations: [{ op: 'edit_text', id: 'region-1', text: 'Oferta em Piracicaba' }],
+    });
+    assert.deepEqual(refused.operations, []);
+    assert.equal(refused.rejectedOperationCount, 1);
+
+    const constrained = constrainTitlePlanningOperationsToRequestedEdits({
+        requestedEdits,
+        operations: [{ op: 'edit_text', id: 'region-1', text: 'Óculos em Piracicaba' }],
+    });
+    const result = applyTitlePlanningOperations({
+        script,
+        previousTitles,
+        operations: constrained.operations,
+        authorialRequestedEdits: requestedEdits,
+        strictTargetIsolation: true,
+        resolveTrigger,
+        createId: () => 'unused',
+    });
+
+    assert.equal(result.appliedOperationCount, 1);
+    assert.deepEqual(result.suggestions, [{
+        ...previousTitles[0],
+        text: 'Óculos em Piracicaba',
+    }]);
 });

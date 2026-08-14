@@ -25,8 +25,7 @@ test('o campo principal desvia ajustes para títulos antes de iniciar o Narrador
         sendSource.indexOf("intent === 'refine_titles'") < sendSource.indexOf('let sessionId = activeSessionId'),
         'o roteamento de títulos deve acontecer antes de criar/iniciar uma resposta do Narrador',
     );
-    assert.match(sendSource, /persistTitleRefinementMessage\(sessionId, userContent\)/);
-    assert.match(sendSource, /handleRefineTitlePlan\(activeTitlePlanMessageId, userContent\)/);
+    assert.match(sendSource, /submitTitlePlanRefinement\(\{[\s\S]*messageId: activeTitlePlanMessageId,[\s\S]*displayInstruction: userContent/);
     assert.match(sendSource, /intent === 'narrator'[\s\S]*exitTitleMode\(\)/);
 });
 
@@ -51,9 +50,29 @@ test('a proposta usa o chat principal e não mantém uma segunda caixa de instru
 });
 
 test('cada revisão de títulos vira uma nova resposta persistida abaixo do pedido', () => {
+    const submitSource = chatSource.slice(
+        chatSource.indexOf('const submitTitlePlanRefinement ='),
+        chatSource.indexOf('const handleRequestTitleChanges ='),
+    );
     assert.match(apiSource, /persistTitleProposalMessage/);
     assert.match(apiSource, /title-proposal-message/);
-    assert.match(chatSource, /const proposal = await refinement;[\s\S]*appendTitleProposalMessage/);
+    assert.ok(
+        submitSource.indexOf('persistTitleRefinementMessage')
+            < submitSource.indexOf('handleRefineTitlePlan'),
+        'o pedido editorial deve ser persistido antes de acionar a IA',
+    );
+    assert.ok(
+        submitSource.indexOf('handleRefineTitlePlan')
+            < submitSource.indexOf('appendTitleProposalMessage'),
+        'a nova proposta deve ser persistida como resposta abaixo do pedido',
+    );
+    assert.match(submitSource, /return await appendTitleProposalMessage\(\{/);
+    assert.match(submitSource, /\[input\.messageId\]: \{ \.\.\.previous, busy: false \}/);
+    assert.match(chatSource, /const hasBusyTitlePlan = Object\.values\(titlePlans\)\.some/);
+    assert.match(chatSource, /busy=\{hasBusyTitlePlan\}/);
+    assert.match(apiSource, /persistTitleProposalMessage[\s\S]*signal\?: AbortSignal/);
+    assert.match(apiSource, /persistTitleRefinementMessage[\s\S]*signal\?: AbortSignal/);
+    assert.match(submitSource, /persistTitleRefinementMessage\([\s\S]*operationController\.signal/);
     assert.match(chatSource, /interactionMode === 'title_proposal'[\s\S]*<ChatTitleProposal/);
     assert.match(proposalSource, /Versão anterior preservada/);
     assert.doesNotMatch(chatSource, /\[messageId\]: \{[\s\S]{0,160}proposal,[\s\S]{0,80}phase: 'refining'/);

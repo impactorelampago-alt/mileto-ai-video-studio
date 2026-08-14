@@ -44,6 +44,10 @@ import { invalidatedNarrationDerivatives } from '../../lib/narrationState';
 import { planNarrationTitles, titlePlanningNarrationKey, type TitlePlanningProposal } from '../../lib/titlePlanning';
 import { classifyChatTitleModeIntent } from '../../lib/chatTitleMode';
 import { ChatTitleProposal } from './ChatTitleProposal';
+import {
+    prepareTitleProposalRevision,
+    type TitleProposalRevisionEdit,
+} from '../../lib/titleProposalRevision';
 import { TitlePlanningProgress, type TitlePlanningProgressPhase } from './TitlePlanningProgress';
 import {
     extractChatNarration as extractScript,
@@ -462,6 +466,7 @@ export const ChatMileto: React.FC = () => {
     const [titlePlans, setTitlePlans] = useState<Record<string, ChatTitlePlanState>>({});
     const [activeTitlePlanMessageId, setActiveTitlePlanMessageId] = useState<string | null>(null);
     const titlePlanAbortControllerRef = useRef<AbortController | null>(null);
+    const hasBusyTitlePlan = Object.values(titlePlans).some((plan) => plan.busy);
     const activeTitlePlan = activeTitlePlanMessageId
         ? titlePlans[activeTitlePlanMessageId]
         : undefined;
@@ -569,7 +574,9 @@ export const ChatMileto: React.FC = () => {
         script: string;
         phase: TitlePlanningProgressPhase;
         lastInstruction?: string;
+        signal?: AbortSignal;
     }): Promise<ChatMessage> => {
+        if (input.signal?.aborted) throw new DOMException('Operação cancelada.', 'AbortError');
         const snapshot = titleProposalSnapshot(input.proposal, input.narrationKey);
         let proposalMessage: ChatMessage;
         try {
@@ -577,8 +584,10 @@ export const ChatMileto: React.FC = () => {
                 titleProposal: snapshot,
                 titleThreadId: input.titleThreadId,
                 replyToMessageId: input.replyToMessageId,
-            });
+            }, input.signal);
+            if (input.signal?.aborted) throw new DOMException('Operação cancelada.', 'AbortError');
         } catch (error) {
+            if (input.signal?.aborted) throw error;
             console.error('Falha ao persistir a proposta de títulos:', error);
             proposalMessage = {
                 id: `temp-title-proposal-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -673,6 +682,7 @@ export const ChatMileto: React.FC = () => {
                 narrationKey: titlePlanningNarrationKey(script),
                 script,
                 phase: 'generating',
+                signal: controller.signal,
             });
             setTitlePlans((current) => {
                 const remaining = { ...current };
@@ -713,10 +723,16 @@ export const ChatMileto: React.FC = () => {
         });
     }, []);
 
-    const handleRefineTitlePlan = useCallback(async (messageId: string, rawInstruction: string) => {
+    const handleRefineTitlePlan = useCallback(async (
+        messageId: string,
+        rawInstruction: string,
+        requestedEdits: Array<{ id: string; desiredText: string }> = [],
+        allowAlreadyBusy = false,
+        providedController?: AbortController,
+    ) => {
         const state = titlePlans[messageId];
         const instruction = rawInstruction.trim();
-        if (!state || !instruction || state.busy) return null;
+        if (!state || !instruction || (state.busy && !allowAlreadyBusy)) return null;
         if (titlePlanningNarrationKey(adData.narrationPlainText) !== state.narrationKey) {
             const message = 'A narração do projeto mudou. Gere novamente os títulos a partir da narração atual.';
             setTitlePlans((current) => ({
@@ -726,9 +742,12 @@ export const ChatMileto: React.FC = () => {
             toast.warning(message);
             return null;
         }
-        const controller = new AbortController();
-        titlePlanAbortControllerRef.current?.abort();
-        titlePlanAbortControllerRef.current = controller;
+        const controller = providedController || new AbortController();
+        let controllerOwnedByCaller = Boolean(providedController);
+        if (!providedController) {
+            titlePlanAbortControllerRef.current?.abort();
+            titlePlanAbortControllerRef.current = controller;
+        }
         setTitlePlans((current) => ({
             ...current,
             [messageId]: {
@@ -744,22 +763,25 @@ export const ChatMileto: React.FC = () => {
                 script: state.script,
                 instruction,
                 previousTitles: state.proposal?.suggestions,
+                requestedEdits,
                 revision: state.proposal?.revision,
                 signal: controller.signal,
             });
             if (titlePlanAbortControllerRef.current !== controller) return null;
-            setTitlePlans((current) => ({
-                ...current,
-                [messageId]: {
-                    ...current[messageId],
-                    busy: false,
-                    phase: 'refining',
-                    error: undefined,
-                },
-            }));
-            return proposal;
+            controllerOwnedByCaller = true;
+            return { proposal, controller };
         } catch (error) {
-            if (controller.signal.aborted) return null;
+            if (controller.signal.aborted) {
+                setTitlePlans((current) => {
+                    const interrupted = current[messageId];
+                    if (!interrupted?.busy) return current;
+                    return {
+                        ...current,
+                        [messageId]: { ...interrupted, busy: false },
+                    };
+                });
+                return null;
+            }
             const message = error instanceof Error ? error.message : 'Não foi possível ajustar os títulos.';
             setTitlePlans((current) => ({
                 ...current,
@@ -771,11 +793,175 @@ export const ChatMileto: React.FC = () => {
             }));
             return null;
         } finally {
-            if (titlePlanAbortControllerRef.current === controller) {
+            if (!controllerOwnedByCaller && titlePlanAbortControllerRef.current === controller) {
                 titlePlanAbortControllerRef.current = null;
             }
         }
     }, [adData.narrationPlainText, titlePlans]);
+
+    const submitTitlePlanRefinement = useCallback(async (input: {
+        messageId: string;
+        displayInstruction: string;
+        requestedEdits?: Array<{ id: string; desiredText: string }>;
+    }) => {
+        const state = titlePlans[input.messageId];
+        const displayInstruction = input.displayInstruction.trim();
+        if (!state?.proposal || !displayInstruction || state.busy) return null;
+        if (titlePlanningNarrationKey(adData.narrationPlainText) !== state.narrationKey) {
+            const message = 'A narração do projeto mudou. Gere novamente os títulos antes de pedir alterações.';
+            setTitlePlans((current) => ({
+                ...current,
+                [input.messageId]: { ...current[input.messageId], error: message },
+            }));
+            toast.warning(message);
+            return null;
+        }
+
+        const operationController = new AbortController();
+        titlePlanAbortControllerRef.current?.abort();
+        titlePlanAbortControllerRef.current = operationController;
+
+        const tempUserMsg: ChatMessage = {
+            id: `temp-title-refinement-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            sessionId: state.sessionId,
+            role: 'user',
+            content: displayInstruction,
+            interactionMode: 'title_refinement',
+            createdAt: new Date().toISOString(),
+        };
+        setTitlePlans((current) => ({
+            ...current,
+            [input.messageId]: {
+                ...state,
+                busy: true,
+                phase: 'refining',
+                lastInstruction: displayInstruction,
+                error: undefined,
+            },
+        }));
+        setMessages((current) => [...current, tempUserMsg]);
+
+        let requestMessage: ChatMessage;
+        try {
+            requestMessage = await chatApi.persistTitleRefinementMessage(
+                state.sessionId,
+                displayInstruction,
+                operationController.signal,
+            );
+            if (operationController.signal.aborted) {
+                throw new DOMException('Operação cancelada.', 'AbortError');
+            }
+            if (activeSessionRef.current === state.sessionId) {
+                setMessages((current) => current.map((message) => (
+                    message.id === tempUserMsg.id ? requestMessage : message
+                )));
+            }
+        } catch (error) {
+            if (!operationController.signal.aborted) {
+                console.error('Falha ao persistir o ajuste de títulos:', error);
+            }
+            setMessages((current) => current.filter((message) => message.id !== tempUserMsg.id));
+            if (titlePlanAbortControllerRef.current === operationController) {
+                titlePlanAbortControllerRef.current = null;
+            }
+            setTitlePlans((current) => ({
+                ...current,
+                [input.messageId]: {
+                    ...current[input.messageId],
+                    busy: false,
+                    ...(operationController.signal.aborted
+                        ? {}
+                        : { error: 'Não foi possível registrar o pedido no histórico. Tente novamente.' }),
+                },
+            }));
+            if (operationController.signal.aborted) return null;
+            toast.error('Não foi possível registrar as mudanças. Nenhum título foi alterado.');
+            return null;
+        }
+
+        const refinement = await handleRefineTitlePlan(
+            input.messageId,
+            displayInstruction,
+            input.requestedEdits,
+            true,
+            operationController,
+        );
+        if (!refinement) {
+            if (titlePlanAbortControllerRef.current === operationController) {
+                titlePlanAbortControllerRef.current = null;
+            }
+            return null;
+        }
+        const { proposal, controller } = refinement;
+        try {
+            return await appendTitleProposalMessage({
+                sessionId: state.sessionId,
+                titleThreadId: state.titleThreadId,
+                replyToMessageId: requestMessage.id,
+                proposal,
+                narrationKey: state.narrationKey,
+                script: state.script,
+                phase: 'refining',
+                lastInstruction: displayInstruction,
+                signal: controller.signal,
+            });
+        } catch (error) {
+            if (!controller.signal.aborted) {
+                const message = error instanceof Error
+                    ? error.message
+                    : 'Não foi possível salvar a nova proposta de títulos.';
+                setTitlePlans((current) => ({
+                    ...current,
+                    [input.messageId]: {
+                        ...current[input.messageId],
+                        error: message,
+                    },
+                }));
+                toast.error(message);
+            }
+            return null;
+        } finally {
+            if (titlePlanAbortControllerRef.current === controller) {
+                titlePlanAbortControllerRef.current = null;
+            }
+            // A versão anterior só volta a aceitar interação depois que a nova
+            // resposta editorial existe na timeline. Isso impede ramificações
+            // concorrentes partindo da mesma revisão.
+            setTitlePlans((current) => {
+                const previous = current[input.messageId];
+                if (!previous?.busy) return current;
+                return {
+                    ...current,
+                    [input.messageId]: { ...previous, busy: false },
+                };
+            });
+        }
+    }, [
+        adData.narrationPlainText,
+        appendTitleProposalMessage,
+        handleRefineTitlePlan,
+        titlePlans,
+    ]);
+
+    const handleRequestTitleChanges = useCallback(async (
+        messageId: string,
+        edits: TitleProposalRevisionEdit[],
+    ) => {
+        const prepared = prepareTitleProposalRevision(edits);
+        if (!prepared) {
+            toast.info('Escreva pelo menos uma mudança diferente do título atual.');
+            return;
+        }
+        setInputText('');
+        setEditingMessageId(null);
+        setActiveTitlePlanMessageId(messageId);
+        setTierMenuOpen(false);
+        await submitTitlePlanRefinement({
+            messageId,
+            displayInstruction: prepared.displayInstruction,
+            requestedEdits: prepared.requestedEdits,
+        });
+    }, [submitTitlePlanRefinement]);
 
     const handleApplyTitlePlan = useCallback((messageId: string) => {
         const state = titlePlans[messageId];
@@ -1126,46 +1312,12 @@ export const ChatMileto: React.FC = () => {
                 return;
             }
             if (intent === 'refine_titles') {
-                const sessionId = activeTitlePlan.sessionId;
-                const tempUserMsg: ChatMessage = {
-                    id: `temp-title-refinement-${Date.now()}`,
-                    sessionId,
-                    role: 'user',
-                    content: userContent,
-                    interactionMode: 'title_refinement',
-                    createdAt: new Date().toISOString(),
-                };
                 setInputText('');
                 setEditingMessageId(null);
-                setMessages((current) => [...current, tempUserMsg]);
-
-                const refinement = handleRefineTitlePlan(activeTitlePlanMessageId, userContent);
-                let requestMessage = tempUserMsg;
-                try {
-                    const persisted = await chatApi.persistTitleRefinementMessage(sessionId, userContent);
-                    requestMessage = persisted;
-                    if (activeSessionRef.current === sessionId) {
-                        setMessages((current) => current.map((message) => (
-                            message.id === tempUserMsg.id ? persisted : message
-                        )));
-                    }
-                } catch (error) {
-                    console.error('Falha ao persistir o ajuste de títulos:', error);
-                    toast.warning('O ajuste foi enviado, mas não pôde ser salvo no histórico local.');
-                }
-                const proposal = await refinement;
-                if (proposal) {
-                    await appendTitleProposalMessage({
-                        sessionId,
-                        titleThreadId: activeTitlePlan.titleThreadId,
-                        replyToMessageId: requestMessage.id,
-                        proposal,
-                        narrationKey: activeTitlePlan.narrationKey,
-                        script: activeTitlePlan.script,
-                        phase: 'refining',
-                        lastInstruction: userContent,
-                    });
-                }
+                await submitTitlePlanRefinement({
+                    messageId: activeTitlePlanMessageId,
+                    displayInstruction: userContent,
+                });
                 return;
             }
 
@@ -1305,15 +1457,14 @@ export const ChatMileto: React.FC = () => {
         activeSessionId,
         activeTitlePlan,
         activeTitlePlanMessageId,
-        appendTitleProposalMessage,
         editingMessageId,
         exitTitleMode,
-        handleRefineTitlePlan,
         inputText,
         isLoading,
         isTitleModeActive,
         messages,
         selectedModel,
+        submitTitlePlanRefinement,
     ]);
 
     // ─── Inline Folder Creation ──────────────────────────────────────────────
@@ -1893,7 +2044,7 @@ export const ChatMileto: React.FC = () => {
                                                 <ChatTitleProposal
                                                     proposal={titlePlans[msg.id]?.proposal
                                                         || titleProposalFromSnapshot(msg.titleProposal)}
-                                                    busy={titlePlans[msg.id]?.busy}
+                                                    busy={hasBusyTitlePlan}
                                                     error={titlePlanningNarrationKey(adData.narrationPlainText)
                                                         !== msg.titleProposal.narrationKey
                                                         ? 'A narração mudou. Esta proposta foi preservada apenas como histórico.'
@@ -1923,12 +2074,9 @@ export const ChatMileto: React.FC = () => {
                                                             item.id === id ? { ...item, selected: !item.selected } : item
                                                         ),
                                                     }))}
-                                                    onEdit={(id, text) => updateTitlePlan(msg.id, (proposal) => ({
-                                                        ...proposal,
-                                                        suggestions: proposal.suggestions.map((item) =>
-                                                            item.id === id ? { ...item, text: text.slice(0, 90) } : item
-                                                        ),
-                                                    }))}
+                                                    onRequestChanges={(edits) => {
+                                                        void handleRequestTitleChanges(msg.id, edits);
+                                                    }}
                                                     onApply={() => handleApplyTitlePlan(msg.id)}
                                                 />
                                             )

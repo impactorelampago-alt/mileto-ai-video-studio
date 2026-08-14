@@ -1,7 +1,13 @@
 import React from 'react';
-import { Check, CircleDashed, LoaderCircle, MessageSquareText, Sparkles } from 'lucide-react';
+import { Check, CircleDashed, LoaderCircle, MessageSquareText, Sparkles, WandSparkles } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { TitlePlanningProposal } from '../../lib/titlePlanning';
+import {
+    collectTitleProposalRevisionEdits,
+    type TitleProposalRevisionEdit,
+} from '../../lib/titleProposalRevision';
+
+export type { TitleProposalRevisionEdit } from '../../lib/titleProposalRevision';
 
 interface ChatTitleProposalProps {
     proposal: TitlePlanningProposal;
@@ -12,7 +18,7 @@ interface ChatTitleProposalProps {
     lastInstruction?: string;
     onActivate: () => void;
     onToggle: (id: string) => void;
-    onEdit: (id: string, value: string) => void;
+    onRequestChanges: (edits: TitleProposalRevisionEdit[]) => void;
     onApply: () => void;
 }
 
@@ -25,10 +31,24 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
     lastInstruction,
     onActivate,
     onToggle,
-    onEdit,
+    onRequestChanges,
     onApply,
 }) => {
+    const proposalRevisionKey = `${proposal.proposalId}:${proposal.revision}`;
+    const [revisionDraft, setRevisionDraft] = React.useState<{
+        proposalRevisionKey: string;
+        values: Record<string, string>;
+    }>({ proposalRevisionKey, values: {} });
+    const desiredTextBySuggestionId = revisionDraft.proposalRevisionKey === proposalRevisionKey
+        ? revisionDraft.values
+        : {};
+
     const selectedCount = proposal.suggestions.filter((item) => item.selected).length;
+    const requestedChanges = collectTitleProposalRevisionEdits(
+        proposal.suggestions,
+        desiredTextBySuggestionId,
+    );
+
     return (
         <section className="mt-3 overflow-hidden rounded-2xl border border-black/10 bg-brand-card/75 dark:border-white/10">
             <header className="flex items-start justify-between gap-3 border-b border-black/5 px-4 py-3 dark:border-white/5">
@@ -70,18 +90,40 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
                         >
                             <Check className="h-3 w-3" />
                         </button>
-                        <div className="min-w-0 flex-1">
-                            <input
-                                value={item.text}
-                                onChange={(event) => onEdit(item.id, event.target.value)}
-                                disabled={busy || readOnly}
-                                maxLength={90}
-                                className="w-full bg-transparent text-[12px] font-semibold text-foreground outline-none disabled:cursor-wait disabled:opacity-60"
-                                aria-label={`Texto do gatilho ${item.triggerName}`}
-                            />
-                            <div className="mt-0.5 truncate text-[9px] text-brand-muted">
-                                {item.triggerName} · base: “{item.sourceText}”
+                        <div className={cn(
+                            'grid min-w-0 flex-1 gap-2',
+                            !readOnly && 'sm:grid-cols-[minmax(0,1fr)_minmax(160px,.9fr)]',
+                        )}>
+                            <div className="min-w-0 self-center">
+                                <div className="truncate text-[12px] font-semibold text-foreground" title={item.text}>
+                                    {item.text}
+                                </div>
+                                <div className="mt-0.5 truncate text-[9px] text-brand-muted">
+                                    {item.triggerName} · base: “{item.sourceText}”
+                                </div>
                             </div>
+                            {!readOnly && (
+                                <input
+                                    value={desiredTextBySuggestionId[item.id] || ''}
+                                    onChange={(event) => {
+                                        const desiredText = event.target.value;
+                                        setRevisionDraft((current) => ({
+                                            proposalRevisionKey,
+                                            values: {
+                                                ...(current.proposalRevisionKey === proposalRevisionKey
+                                                    ? current.values
+                                                    : {}),
+                                                [item.id]: desiredText,
+                                            },
+                                        }));
+                                    }}
+                                    disabled={busy}
+                                    maxLength={90}
+                                    placeholder="Como você quer que fique?"
+                                    className="h-9 min-w-0 rounded-lg border border-black/10 bg-black/[.025] px-2.5 text-[10px] text-foreground outline-none transition placeholder:text-brand-muted/70 focus:border-brand-accent/45 focus:bg-brand-accent/[.025] disabled:cursor-wait disabled:opacity-50 dark:border-white/10 dark:bg-white/[.025]"
+                                    aria-label={`Mudança desejada para ${item.text}, gatilho ${item.triggerName}`}
+                                />
+                            )}
                         </div>
                     </div>
                 ))}
@@ -156,14 +198,27 @@ export const ChatTitleProposal: React.FC<ChatTitleProposalProps> = ({
                 )}
                 {error && <p className="mt-2 text-[10px] text-red-400">{error}</p>}
                 {!readOnly && (
-                    <button
-                        type="button"
-                        disabled={!selectedCount || busy}
-                        onClick={onApply}
-                        className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-xl bg-brand-accent px-4 text-[10px] font-bold text-[#07110d] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                        <Check className="h-3.5 w-3.5" /> Aplicar títulos selecionados
-                    </button>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        <button
+                            type="button"
+                            disabled={!requestedChanges.length || busy}
+                            onClick={() => onRequestChanges(requestedChanges)}
+                            className="inline-flex h-9 items-center justify-center gap-2 rounded-xl border border-brand-accent/25 bg-brand-accent/[.045] px-3 text-[10px] font-bold text-brand-accent transition hover:border-brand-accent/45 hover:bg-brand-accent/[.08] disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            {busy
+                                ? <LoaderCircle className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+                                : <WandSparkles className="h-3.5 w-3.5" />}
+                            Fazer essas mudanças
+                        </button>
+                        <button
+                            type="button"
+                            disabled={!selectedCount || busy}
+                            onClick={onApply}
+                            className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-brand-accent px-3 text-[10px] font-bold text-[#07110d] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            <Check className="h-3.5 w-3.5" /> Aplicar títulos selecionados
+                        </button>
+                    </div>
                 )}
             </div>
         </section>

@@ -113,11 +113,13 @@ export async function getMessages(sessionId: string): Promise<ChatMessage[]> {
 export async function persistTitleRefinementMessage(
     sessionId: string,
     content: string,
+    signal?: AbortSignal,
 ): Promise<ChatMessage> {
     const data = await request<{ ok: true; message: ChatMessage }>(
         `${BASE}/sessions/${encodeURIComponent(sessionId)}/title-refinement-message`,
         {
             method: 'POST',
+            signal,
             body: JSON.stringify({ content }),
         },
     );
@@ -131,11 +133,13 @@ export async function persistTitleProposalMessage(
         titleThreadId: string;
         replyToMessageId: string;
     },
+    signal?: AbortSignal,
 ): Promise<ChatMessage> {
     const data = await request<{ ok: true; message: ChatMessage }>(
         `${BASE}/sessions/${encodeURIComponent(sessionId)}/title-proposal-message`,
         {
             method: 'POST',
+            signal,
             body: JSON.stringify({
                 proposal: input.titleProposal,
                 titleThreadId: input.titleThreadId,

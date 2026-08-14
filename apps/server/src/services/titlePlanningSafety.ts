@@ -65,6 +65,49 @@ const safeOperationText = (value: unknown, maxLength: number) => String(value ||
     .trim()
     .slice(0, maxLength);
 
+/**
+ * Uma revisao disparada pelas caixas por titulo concede ao modelo permissao
+ * apenas para editar o texto dos IDs explicitamente pedidos. Qualquer tentativa
+ * de selecionar, remover, adicionar ou tocar outro item e descartada antes da
+ * aplicacao das operacoes.
+ */
+export const constrainTitlePlanningOperationsToRequestedEdits = (input: {
+    operations: unknown;
+    requestedEdits: Array<{ id: string; desiredText: string }>;
+}) => {
+    const requestedTextById = new Map(input.requestedEdits.slice(0, 40).flatMap((edit) => {
+        const id = safeOperationText(edit?.id, 120);
+        const desiredText = safeOperationText(edit?.desiredText, 90);
+        return id && desiredText ? [[id, desiredText] as const] : [];
+    }));
+    const seenIds = new Set<string>();
+    let rejectedOperationCount = 0;
+    const operations = (Array.isArray(input.operations) ? input.operations : [])
+        .slice(0, 80)
+        .flatMap((rawOperation: any) => {
+            const op = safeOperationText(rawOperation?.op, 40);
+            const id = safeOperationText(rawOperation?.id, 120);
+            const desiredText = requestedTextById.get(id);
+            const modelText = safeOperationText(rawOperation?.text, 90);
+            if (
+                op !== 'edit_text'
+                || !desiredText
+                || modelText !== desiredText
+                || seenIds.has(id)
+            ) {
+                rejectedOperationCount += 1;
+                return [];
+            }
+            seenIds.add(id);
+            return [{
+                op: 'edit_text' as const,
+                id,
+                text: desiredText,
+            }];
+        });
+    return { operations, rejectedOperationCount };
+};
+
 const normalizedTitleKey = (value: unknown) => normalizePlanningText(value);
 
 /**
@@ -79,6 +122,8 @@ export const applyTitlePlanningOperations = (input: {
     resolveTrigger: (triggerId: string) => TitlePlanningTriggerState | null;
     createId: () => string;
     maxItems?: number;
+    strictTargetIsolation?: boolean;
+    authorialRequestedEdits?: Array<{ id: string; desiredText: string }>;
 }) => {
     const maxItems = Math.max(1, Math.min(40, Number(input.maxItems) || 40));
     const seenIds = new Set<string>();
@@ -89,6 +134,11 @@ export const applyTitlePlanningOperations = (input: {
         return [{ ...item, id }];
     });
     const operations = Array.isArray(input.operations) ? input.operations.slice(0, 80) : [];
+    const authorialTextById = new Map((input.authorialRequestedEdits || []).slice(0, 40).flatMap((edit) => {
+        const id = safeOperationText(edit?.id, 120);
+        const desiredText = safeOperationText(edit?.desiredText, 90);
+        return id && desiredText ? [[id, desiredText] as const] : [];
+    }));
     const rejections: TitlePlanningOperationRejection[] = [];
     const aliases = new Map<string, string>();
     let appliedOperationCount = 0;
@@ -134,13 +184,27 @@ export const applyTitlePlanningOperations = (input: {
             }
             const text = safeOperationText(rawOperation?.text, 90);
             const current = suggestions[itemIndex];
-            if (!planningDisplaySupported(current.sourceText, text)) {
+            const authorialText = authorialTextById.get(id);
+            if (
+                (authorialText && text !== authorialText)
+                || (!authorialText && !planningDisplaySupported(current.sourceText, text))
+            ) {
                 rejections.push({ index, code: 'unsafe_text', id });
                 return;
             }
             if (current.text === text) return;
+            if (
+                input.strictTargetIsolation
+                && suggestions.some((item, candidateIndex) => (
+                    candidateIndex !== itemIndex
+                    && normalizedTitleKey(item.text) === normalizedTitleKey(text)
+                ))
+            ) {
+                rejections.push({ index, code: 'invalid_operation', id });
+                return;
+            }
             suggestions[itemIndex] = { ...current, text };
-            mergeDuplicate(id);
+            if (!input.strictTargetIsolation) mergeDuplicate(id);
             appliedOperationCount += 1;
             return;
         }

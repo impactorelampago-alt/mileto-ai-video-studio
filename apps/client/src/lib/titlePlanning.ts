@@ -45,10 +45,27 @@ const safePreviousTitles = (titles: TitlePlanningSuggestion[]) => titles.slice(0
     selected: title.selected === true,
 }));
 
+export interface TitlePlanningRequestedEdit {
+    id: string;
+    desiredText: string;
+}
+
+const safeRequestedEdits = (edits: TitlePlanningRequestedEdit[]) => {
+    const seenIds = new Set<string>();
+    return edits.slice(0, 40).flatMap((edit) => {
+        const id = String(edit?.id || '').normalize('NFKC').replace(/\s+/g, ' ').trim().slice(0, 120);
+        const desiredText = String(edit?.desiredText || '').normalize('NFKC').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90);
+        if (!id || !desiredText || seenIds.has(id)) return [];
+        seenIds.add(id);
+        return [{ id, desiredText }];
+    });
+};
+
 export const planNarrationTitles = async (input: {
     script: string;
     instruction?: string;
     previousTitles?: TitlePlanningSuggestion[];
+    requestedEdits?: TitlePlanningRequestedEdit[];
     revision?: number;
     signal?: AbortSignal;
 }): Promise<TitlePlanningProposal> => {
@@ -59,6 +76,7 @@ export const planNarrationTitles = async (input: {
             script: input.script,
             instruction: String(input.instruction || '').slice(0, 1_000),
             previousTitles: safePreviousTitles(input.previousTitles || []),
+            requestedEdits: safeRequestedEdits(input.requestedEdits || []),
             revision: input.revision || 0,
         }),
         signal: input.signal,

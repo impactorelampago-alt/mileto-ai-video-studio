@@ -64,6 +64,23 @@ test('refinamento usa operações por id e preserva itens omitidos', () => {
     assert.match(controllerSource, /operations: rawOperations/);
 });
 
+test('mudanças por caixa usam contrato estruturado, IDs existentes e isolamento estrito', () => {
+    assert.match(controllerSource, /safeRequestedTitleEdits\(req\.body\?\.requestedEdits\)/);
+    assert.match(controllerSource, /const previousTitleById = new Map\(previousTitles\.map/);
+    assert.match(controllerSource, /const current = previousTitleById\.get\(edit\.id\);\s*if \(!current\) return \[\];/);
+    assert.match(controllerSource, /const isRefinement = Boolean\(instruction \|\| isStructuredRefinement\)/);
+    assert.match(controllerSource, /constrainTitlePlanningOperationsToRequestedEdits\(\{/);
+    assert.match(controllerSource, /requestedEdits,\s*\}\);/);
+    assert.match(controllerSource, /strictTargetIsolation: isStructuredRefinement/);
+    assert.match(controllerSource, /authorialRequestedEdits: isStructuredRefinement \? requestedEdits : undefined/);
+    assert.match(controllerSource, /As mudanças não puderam ser aplicadas na forma exata pedida/);
+});
+
+test('revisão preserva título anterior quando o gatilho deixa de estar ativo', () => {
+    assert.match(controllerSource, /if \(!planningLiteralExists\(script, item\.sourceText\)\) return \[\];/);
+    assert.match(controllerSource, /if \(!trigger\) return \[\{ \.\.\.item \}\];/);
+});
+
 test('sourceText só é aceito quando corresponde a trecho literal normalizado da narração', () => {
     assert.equal(planningLiteralExists(
         'Atenção, Piracicaba! Óculos a partir de R$ 199.',
