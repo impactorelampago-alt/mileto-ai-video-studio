@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-
 process.env.DATABASE_URL ||= 'postgresql://test:test@127.0.0.1:1/test';
 process.env.TOKEN_SECRET ||= 'test-token-secret';
 process.env.ADMIN_PASSWORD ||= 'test-admin-password';
 
-const { normalizeAgentConfig, normalizeAgentTierId } = await import('../src/settings.js');
+const {
+    normalizeAgentConfig,
+    normalizeAgentTierId,
+    upgradeBundledAgentConfig,
+} = await import('../src/settings.js');
 
 test('migra a configuração antiga para o nível Mileto sem perder o modelo', () => {
     const config = normalizeAgentConfig('director', {
@@ -55,4 +58,30 @@ test('somente o Narrador aceita prompt global vazio', () => {
         () => normalizeAgentConfig('director', { systemPrompt: '   ' }),
         /prompt de sistema não pode ficar vazio/i
     );
+});
+
+test('prompt migration preserves custom, blank, version and rollback metadata', () => {
+    const stock = {
+        systemPrompt: '<AGENTE id="prompt-sales" versao="7">\n' +
+            '<IDENTIDADE>Você é um prompt oficial legado.</IDENTIDADE>\n' +
+            '</AGENTE>',
+        version: 7,
+        publishedAt: '2026-08-13T12:00:00.000Z',
+        publishedBy: 42,
+        rollbackOf: 3,
+    };
+    const migrated = upgradeBundledAgentConfig('prompt_sales', stock);
+
+    // Um prompt desconhecido é personalização e não pode ser migrado por aproximação.
+    assert.equal(migrated.systemPrompt, stock.systemPrompt);
+    assert.equal(migrated.version, 7);
+    assert.equal(migrated.publishedAt, stock.publishedAt);
+    assert.equal(migrated.publishedBy, 42);
+    assert.equal(migrated.rollbackOf, 3);
+
+    const custom = { ...stock, systemPrompt: 'My agency narrator.' };
+    assert.equal(upgradeBundledAgentConfig('prompt_sales', custom).systemPrompt, custom.systemPrompt);
+    const intentionallyBlank = { ...stock, systemPrompt: '' };
+    assert.equal(upgradeBundledAgentConfig('prompt_sales', intentionallyBlank).systemPrompt, '');
+    assert.equal(upgradeBundledAgentConfig('image_director', stock).systemPrompt, stock.systemPrompt);
 });

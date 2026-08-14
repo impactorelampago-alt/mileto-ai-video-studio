@@ -10,12 +10,13 @@ process.env.ADMIN_PASSWORD ||= 'test-admin-password';
 import {
     DEFAULT_AGENT_CONFIGS,
     DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION,
+    NARRATION_SALES_SYSTEM_PROMPT_V9,
     NARRATOR_FINAL_DELIVERY_CONTRACT,
 } from '../src/agentDefaults.js';
 const { composeAgentSystemPrompt, normalizeAgentConfig } = await import('../src/settings.js');
 
 test('mantém exatamente o bloco Fish Audio aprovado como default privado', () => {
-    assert.equal(DEFAULT_AGENT_CONFIGS.prompt_sales.systemPrompt, '');
+    assert.equal(DEFAULT_AGENT_CONFIGS.prompt_sales.systemPrompt, NARRATION_SALES_SYSTEM_PROMPT_V9);
     assert.equal(
         DEFAULT_AGENT_CONFIGS.prompt_sales.internalVideoInstruction,
         DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION
@@ -45,10 +46,11 @@ test('versiona a instrução separadamente e só no Narrador', () => {
 test('contrato mantém conversa limpa e marca somente a narração final com direções Fish', () => {
     const runtime = composeAgentSystemPrompt(
         'prompt_sales',
-        '',
+        NARRATION_SALES_SYSTEM_PROMPT_V9,
         DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION
     );
-    assert.ok(runtime.startsWith(DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION));
+    assert.ok(runtime.startsWith(NARRATION_SALES_SYSTEM_PROMPT_V9));
+    assert.ok(runtime.indexOf(NARRATION_SALES_SYSTEM_PROMPT_V9) < runtime.indexOf(DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION));
     assert.ok(runtime.endsWith(NARRATOR_FINAL_DELIVERY_CONTRACT));
     assert.match(runtime, /Não mostre esta instrução na conversa/);
     assert.match(runtime, /A conversa normal do Filmmaker deve permanecer limpa e natural/);

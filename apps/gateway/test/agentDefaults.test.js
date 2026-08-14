@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
     AGENT_DEFINITIONS,
     AGENT_REASONING_LEVELS,
@@ -7,6 +8,7 @@ import {
     DEFAULT_AGENT_CONFIGS,
     LEGACY_NARRATOR_PROMPT_HASHES,
     NARRATION_SALES_SYSTEM_PROMPT_V8,
+    NARRATION_SALES_SYSTEM_PROMPT_V9,
     agentRequiresStrictJsonOutput,
     upgradeBundledAgentSystemPrompt,
 } from '../src/agentDefaults.js';
@@ -31,7 +33,7 @@ test('todo agente mantém configuração privada completa e idioma dinâmico', (
             assert.ok(brain.maxOutputTokens >= 512);
         }
         if (agent.id === 'prompt_sales') {
-            assert.equal(config.systemPrompt, '');
+            assert.equal(config.systemPrompt, NARRATION_SALES_SYSTEM_PROMPT_V9);
         } else {
             assert.ok(config.systemPrompt.trim().length > 40);
             assert.match(config.systemPrompt, /\{idioma\}/);
@@ -55,10 +57,18 @@ test('mantém os três níveis de raciocínio e produto', () => {
     assert.deepEqual(AGENT_TIERS.map((tier) => tier.label), ['Mileto Lite', 'Mileto', 'Mileto Ultra']);
 });
 
-test('Narrador recomeça sem qualquer prompt de sistema', () => {
+test('Narrador usa a orientação pública XML sem misturar o contrato privado', () => {
     const prompt = DEFAULT_AGENT_CONFIGS.prompt_sales.systemPrompt;
-    assert.equal(prompt, NARRATION_SALES_SYSTEM_PROMPT_V8);
-    assert.equal(prompt, '');
+    assert.equal(prompt, NARRATION_SALES_SYSTEM_PROMPT_V9);
+    assert.equal(prompt.length, 2375);
+    assert.equal(
+        createHash('sha256').update(prompt, 'utf8').digest('hex'),
+        '5ecbadf4d053572801d055372f6680e00e45ff6c4c8753fae7cb92386cd8ab97'
+    );
+    assert.match(prompt, /^<CONFIGURACAO_DO_NARRADOR>[\s\S]*<\/CONFIGURACAO_DO_NARRADOR>$/);
+    assert.match(prompt, /<IDENTIDADE>[\s\S]*<MISSAO>[\s\S]*<COMPORTAMENTO>/);
+    assert.match(prompt, /<CRIACAO_DE_NARRACAO>[\s\S]*<ENTREGA_FINAL>/);
+    assert.doesNotMatch(prompt, /Fish Audio|===ROTEIRO===|JSON/i);
     assert.equal(AGENT_DEFINITIONS.find((agent) => agent.id === 'prompt_sales')?.label, 'Narrador');
 });
 
@@ -70,8 +80,9 @@ test('mantém somente fingerprints das versões antigas e preserva prompts perso
 
     assert.equal(
         upgradeBundledAgentSystemPrompt('prompt_sales', NARRATION_SALES_SYSTEM_PROMPT_V8),
-        ''
+        NARRATION_SALES_SYSTEM_PROMPT_V8
     );
+    assert.equal(upgradeBundledAgentSystemPrompt('prompt_sales', '   \r\n '), '   \r\n ');
     const customPrompt = 'Você é um narrador personalizado pela agência.';
     assert.equal(upgradeBundledAgentSystemPrompt('prompt_sales', customPrompt), customPrompt);
     assert.equal(upgradeBundledAgentSystemPrompt('image_director', customPrompt), customPrompt);

@@ -34,8 +34,16 @@ import * as chatApi from '../../lib/chatApi';
 import { useWizard } from '../../context/WizardContext';
 import { ChatAgentId, ChatFolder, ChatSession, ChatMessage } from '../../types';
 import { narrationContractFromChatScript } from '../../lib/narrationContract';
-
-type StructuredAgentResult = Record<string, unknown>;
+import {
+    extractChatNarration as extractScript,
+    extractChatNarrationTitle as extractProjectTitle,
+    extractFishDirectionTags,
+    hasChatNarrationDelivery as hasFinalScript,
+    parseChatNarrationDelivery,
+    parseStructuredChatResult as parseStructuredResult,
+    stripChatNarrationMarkers as stripMarkers,
+    uniqueFishDirectionTags,
+} from '../../lib/chatNarrationDelivery';
 
 interface SavedChatScript {
     id: string;
@@ -60,135 +68,6 @@ const readSavedChatScripts = (): SavedChatScript[] => {
     } catch {
         return [];
     }
-};
-
-const parseStructuredResult = (content: string): StructuredAgentResult | null => {
-    const trimmed = (content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-    if (!trimmed.startsWith('{')) return null;
-    try {
-        const value = JSON.parse(trimmed);
-        return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-    } catch {
-        return null;
-    }
-};
-
-/**
- * A resposta contém um ROTEIRO FINAL marcado pela IA (entre ===ROTEIRO=== e ===FIM===)?
- * É o que decide se os botões Copiar/Usar aparecem — perguntas, exemplos e explicações
- * NÃO têm o marcador, então não mostram botão.
- */
-const hasFinalScript = (content: string): boolean => {
-    if (/===\s*ROTEIRO\s*===[\s\S]*?===\s*FIM\s*===/i.test(content || '')) return true;
-    return typeof parseStructuredResult(content)?.narration === 'string';
-};
-
-/** Remove as linhas marcadoras do texto exibido — o usuário vê o roteiro limpo. */
-const stripMarkers = (content: string): string =>
-    (content || '')
-        .replace(/^[ \t]*===\s*T[ÍI]TULO\s*===[ \t]*$/gim, 'Título do projeto:')
-        .replace(/^[ \t]*===\s*(?:ROTEIRO|FIM)\s*===[ \t]*$/gim, '')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-
-const formatNarrationParagraphs = (narration: string): string =>
-    narration
-        .replace(/(\S)[ \t]*(\[(?:pause|long pause)\])[ \t]*/gi, '$1 $2\n\n')
-        .replace(/^[ \t]*(\[(?:pause|long pause)\])[ \t]*/gim, '$1\n\n')
-        .replace(/[ \t]+\n/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-
-const parseMarkedNarration = (content: string): {
-    title: string;
-    narration: string;
-    before: string;
-    after: string;
-} | null => {
-    const match = (content || '').match(
-        /===\s*T[ÍI]TULO\s*===\s*([\s\S]*?)\s*===\s*ROTEIRO\s*===\s*([\s\S]*?)\s*===\s*FIM\s*===/i
-    );
-    if (!match || typeof match.index !== 'number') return null;
-    const end = match.index + match[0].length;
-    return {
-        title: match[1].trim(),
-        narration: formatNarrationParagraphs(match[2].trim()),
-        before: content.slice(0, match.index).trim(),
-        after: content.slice(end).trim(),
-    };
-};
-
-const FISH_AUDIO_TAG_PATTERN = /(\[[a-z][a-z '-]*\])/gi;
-
-const getFishAudioTagCount = (narration: string): number =>
-    (narration.match(FISH_AUDIO_TAG_PATTERN) || []).length;
-
-const renderNarrationWithFishTags = (narration: string): React.ReactNode[] =>
-    narration.split(FISH_AUDIO_TAG_PATTERN).map((part, index) =>
-        /^\[[a-z][a-z '-]*\]$/i.test(part) ? (
-            <span
-                key={`fish-tag-${index}`}
-                className="mx-0.5 inline-flex translate-y-[-1px] items-center rounded-md border border-cyan-400/30 bg-cyan-400/10 px-1.5 py-0.5 font-mono text-[10px] font-bold leading-none text-cyan-300"
-                title="Direção de voz do Fish Audio"
-            >
-                {part}
-            </span>
-        ) : (
-            <React.Fragment key={`fish-text-${index}`}>{part}</React.Fragment>
-        )
-    );
-
-/**
- * Extrai SÓ o(s) roteiro(s) marcado(s) (o que a IA quer que seja usado). Fallback
- * heurístico (introdução/aviso/"---") para mensagens antigas sem marcador.
- */
-const extractScript = (content: string): string => {
-    const structuredNarration = parseStructuredResult(content)?.narration;
-    if (typeof structuredNarration === 'string' && structuredNarration.trim()) {
-        return formatNarrationParagraphs(structuredNarration.trim());
-    }
-    const marked = [...(content || '').matchAll(/===\s*ROTEIRO\s*===\s*([\s\S]*?)\s*===\s*FIM\s*===/gi)]
-        .map((m) => m[1].trim())
-        .filter(Boolean);
-    if (marked.length) return formatNarrationParagraphs(marked.join('\n\n'));
-
-    // Fallback (sem marcador): corta introdução e aviso.
-    let text = (content || '').trim();
-    text = text.replace(/\n\s*(?:[*_>#\s]|⚠️)*(?:aviso|obs\.?|observa[çc]|nota|importante)\b[\s\S]*$/i, '').trim();
-    const blocks = text
-        .split(/^\s*---\s*$/m)
-        .map((s) => s.trim())
-        .filter(Boolean);
-    if (blocks.length >= 2) {
-        const tagged = blocks.find((b) => /\[[a-zA-Z]/.test(b));
-        return (tagged || blocks[0]).replace(/^\s*---\s*$/gm, '').trim();
-    }
-    const lines = text.split('\n');
-    const firstTag = lines.findIndex((l) => /^\s*\[[a-zA-Z]/.test(l));
-    if (firstTag > 0) return lines.slice(firstTag).join('\n').trim();
-    if (/:\s*$/.test(lines[0] || '')) return lines.slice(1).join('\n').trim();
-    return text;
-};
-
-/** Extrai o título estruturado pela IA e cria um fallback para respostas antigas. */
-const extractProjectTitle = (content: string): string => {
-    const structuredTitle = parseStructuredResult(content)?.title;
-    if (typeof structuredTitle === 'string' && structuredTitle.trim()) return structuredTitle.trim().slice(0, 60);
-    const markedTitle = (content || '').match(
-        /===\s*T[ÍI]TULO\s*===\s*([\s\S]*?)\s*===\s*ROTEIRO\s*===/i
-    )?.[1];
-    const cleanMarkedTitle = markedTitle?.replace(/\s+/g, ' ').trim();
-    if (cleanMarkedTitle) return cleanMarkedTitle.slice(0, 60);
-
-    const cleanScript = extractScript(content)
-        .replace(/\[[^\]]+\]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-    if (!cleanScript) return 'Novo projeto Mileto';
-
-    const firstSentence = cleanScript.split(/[.!?]/, 1)[0].trim();
-    const words = (firstSentence || cleanScript).split(' ').slice(0, 8).join(' ');
-    return words.slice(0, 60).trim() || 'Novo projeto Mileto';
 };
 
 type MiletoTier = 'lite' | 'mileto' | 'ultra';
@@ -285,55 +164,168 @@ const RichChatText = ({ content }: { content: string }) => {
     );
 };
 
-const StructuredAgentResponse = ({ content }: { content: string }) => {
-    const result = parseStructuredResult(content);
-    if (!result) {
-        const markedNarration = parseMarkedNarration(content);
-        if (!markedNarration) return <RichChatText content={stripMarkers(content)} />;
-        const fishTagCount = getFishAudioTagCount(markedNarration.narration);
+const FISH_DIRECTION_PART_PATTERN = /(\[[a-z][a-z ' -]{0,63}\])/g;
 
-        return (
-            <div className="space-y-3">
-                {markedNarration.before && <RichChatText content={markedNarration.before} />}
-                <div
-                    className={cn(
-                        'overflow-hidden rounded-2xl border shadow-[0_12px_35px_rgba(0,230,118,0.08)]',
-                        fishTagCount > 0
-                            ? 'border-brand-accent/35 bg-brand-accent/[.055]'
-                            : 'border-amber-400/35 bg-amber-400/[.055]'
-                    )}
-                >
-                    <div className="flex items-center justify-between gap-3 border-b border-brand-accent/20 bg-brand-accent/[.075] px-4 py-3">
-                        <div>
-                            <div className="text-[9px] font-black uppercase tracking-[.18em] text-brand-accent">
-                                Texto que vai para a narração
-                            </div>
-                            <div className="mt-1 text-xs font-bold text-foreground">{markedNarration.title}</div>
-                        </div>
-                        <span
-                            className={cn(
-                                'shrink-0 rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-wider',
-                                fishTagCount > 0
-                                    ? 'border-cyan-400/25 bg-cyan-400/10 text-cyan-300'
-                                    : 'border-amber-400/25 bg-amber-400/10 text-amber-300'
-                            )}
-                        >
-                            {fishTagCount > 0 ? `Fish Audio S2 · ${fishTagCount} tags` : 'Sem direção de voz'}
+const NarrationText = ({ narration }: { narration: string }) => {
+    const directionTags = new Set(extractFishDirectionTags(narration));
+    return narration.split(FISH_DIRECTION_PART_PATTERN).map((part, index) =>
+        directionTags.has(part) ? (
+            <span
+                key={`fish-direction-${index}`}
+                className="mx-0.5 inline-flex translate-y-[-1px] items-center rounded-md border border-cyan-500/25 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] font-bold leading-none text-cyan-700 dark:text-cyan-300"
+                title="Direção de voz do Fish Audio"
+            >
+                {part}
+            </span>
+        ) : (
+            <React.Fragment key={`narration-text-${index}`}>{part}</React.Fragment>
+        )
+    );
+};
+
+interface NarrationCardProps {
+    content: string;
+    copied: boolean;
+    onCopy: () => void;
+    onApply: () => void;
+}
+
+const NarrationCard = ({ content, copied, onCopy, onApply }: NarrationCardProps) => {
+    const delivery = parseChatNarrationDelivery(content);
+    if (!delivery) return null;
+
+    const directionTags = extractFishDirectionTags(delivery.narration);
+    const uniqueDirections = uniqueFishDirectionTags(delivery.narration);
+    const visibleDirections = uniqueDirections.slice(0, 6);
+    const hiddenDirections = uniqueDirections.length - visibleDirections.length;
+    const directionLabel = `${directionTags.length} ${directionTags.length === 1 ? 'direção' : 'direções'}`;
+
+    return (
+        <div className="space-y-3">
+            {delivery.before && (
+                <div className="rounded-2xl border border-black/5 bg-brand-card/50 px-4 py-3 shadow-lg dark:border-white/5">
+                    <RichChatText content={delivery.before} />
+                </div>
+            )}
+
+            <section
+                data-mileto-narration-card="final"
+                aria-label="Narração pronta"
+                className="relative overflow-hidden rounded-3xl border border-brand-lime/35 bg-brand-card shadow-[0_20px_60px_rgba(0,0,0,.22),0_0_38px_rgba(0,230,118,.08)]"
+            >
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-linear-to-br from-brand-lime/15 via-brand-accent/[.055] to-transparent" />
+
+                <header className="relative flex flex-wrap items-start justify-between gap-3 border-b border-brand-lime/15 px-4 py-4">
+                    <div className="flex min-w-0 items-start gap-3">
+                        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-brand-lime/25 bg-brand-lime/12 text-brand-lime shadow-[0_0_24px_rgba(0,230,118,.10)]">
+                            <FileText className="h-5 w-5" />
                         </span>
+                        <div className="min-w-0">
+                            <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[.2em] text-brand-lime">
+                                <span className="h-1.5 w-1.5 rounded-full bg-brand-lime shadow-[0_0_8px_rgba(0,230,118,.8)]" />
+                                Narração pronta
+                            </div>
+                            <h4 className="mt-1.5 text-[14px] font-black leading-tight text-foreground">
+                                {delivery.title}
+                            </h4>
+                        </div>
                     </div>
-                    <div className="whitespace-pre-wrap px-4 py-4 text-[13px] leading-6 text-foreground">
-                        {renderNarrationWithFishTags(markedNarration.narration)}
+
+                    <span className={cn(
+                        'shrink-0 rounded-full border px-2.5 py-1 text-[8px] font-black uppercase tracking-wider',
+                        directionTags.length > 0
+                            ? 'border-cyan-500/25 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300'
+                            : 'border-black/10 bg-black/[.035] text-brand-muted dark:border-white/10 dark:bg-white/[.035]'
+                    )}>
+                        {directionTags.length > 0 ? `Fish Audio · ${directionLabel}` : 'Texto limpo'}
+                    </span>
+                </header>
+
+                <div className="relative px-4 py-4">
+                    <div className="mb-2 text-[8px] font-black uppercase tracking-[.18em] text-brand-muted">
+                        Texto da narração
+                    </div>
+                    <div className="whitespace-pre-wrap text-[13px] leading-6 text-foreground/95">
+                        <NarrationText narration={delivery.narration} />
                     </div>
                 </div>
-                {markedNarration.after && (
-                    <div className="rounded-xl border border-black/5 bg-black/[.025] px-3 py-2 dark:border-white/5 dark:bg-white/[.025]">
-                        <div className="mb-1 text-[9px] font-bold uppercase tracking-[.16em] text-brand-muted">Notas da estratégia</div>
-                        <RichChatText content={markedNarration.after} />
+
+                {visibleDirections.length > 0 && (
+                    <div className="border-t border-cyan-500/10 bg-cyan-500/[.025] px-4 py-3">
+                        <div className="mb-2 text-[8px] font-black uppercase tracking-[.17em] text-cyan-700/75 dark:text-cyan-300/70">
+                            Direções de voz
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                            {visibleDirections.map((tag) => (
+                                <span
+                                    key={tag}
+                                    className="rounded-lg border border-cyan-500/20 bg-cyan-500/[.08] px-2 py-1 font-mono text-[9px] font-bold text-cyan-700 dark:text-cyan-300"
+                                >
+                                    {tag}
+                                </span>
+                            ))}
+                            {hiddenDirections > 0 && (
+                                <span className="rounded-lg border border-cyan-500/15 px-2 py-1 text-[9px] font-bold text-cyan-700/75 dark:text-cyan-300/70">
+                                    +{hiddenDirections}
+                                </span>
+                            )}
+                        </div>
                     </div>
                 )}
-            </div>
-        );
+
+                <footer className="grid grid-cols-2 gap-2 border-t border-brand-lime/15 bg-black/[.025] p-3 dark:bg-black/10">
+                    <button
+                        type="button"
+                        data-narration-action="copy"
+                        onClick={onCopy}
+                        className={cn(
+                            'inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border px-3 text-[9px] font-black uppercase tracking-wider transition',
+                            copied
+                                ? 'border-brand-lime/35 bg-brand-lime/10 text-brand-lime'
+                                : 'border-black/10 bg-black/[.025] text-foreground/75 hover:border-brand-lime/30 hover:text-brand-lime dark:border-white/10 dark:bg-white/[.025]'
+                        )}
+                        title="Copiar somente o texto da narração"
+                    >
+                        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                        {copied ? 'Copiado' : 'Copiar'}
+                    </button>
+                    <button
+                        type="button"
+                        data-narration-action="apply"
+                        onClick={onApply}
+                        className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-brand-lime px-3 text-[9px] font-black uppercase tracking-wider text-[#07110d] shadow-[0_8px_24px_rgba(0,230,118,.13)] transition hover:brightness-110 active:translate-y-px"
+                        title="Aplicar este título e esta narração ao projeto"
+                    >
+                        <Wand2 className="h-3.5 w-3.5" /> Aplicar ao projeto
+                    </button>
+                </footer>
+            </section>
+
+            {delivery.after && (
+                <div className="rounded-xl border border-black/5 bg-black/[.025] px-3 py-2 dark:border-white/5 dark:bg-white/[.025]">
+                    <div className="mb-1 text-[9px] font-bold uppercase tracking-[.16em] text-brand-muted">Observação</div>
+                    <RichChatText content={delivery.after} />
+                </div>
+            )}
+        </div>
+    );
+};
+
+interface StructuredAgentResponseProps {
+    content: string;
+    copied: boolean;
+    onCopy: () => void;
+    onApply: () => void;
+}
+
+const StructuredAgentResponse = ({ content, copied, onCopy, onApply }: StructuredAgentResponseProps) => {
+    const delivery = parseChatNarrationDelivery(content);
+    if (delivery) {
+        return <NarrationCard content={content} copied={copied} onCopy={onCopy} onApply={onApply} />;
     }
+
+    const result = parseStructuredResult(content);
+    if (!result) return <RichChatText content={stripMarkers(content)} />;
 
     const title = typeof result.title === 'string' ? result.title : 'Plano de produção';
     const mainPrompt = [result.prompt, result.masterPrompt, result.objective]
@@ -1431,19 +1423,31 @@ export const ChatMileto: React.FC = () => {
                                 )}
                                 <div
                                     className={cn(
-                                        'max-w-[80%] px-4 py-3 text-[13px] leading-relaxed flex flex-col',
+                                        'text-[13px] leading-relaxed flex flex-col',
                                         msg.role === 'user'
-                                            ? 'bg-brand-accent/10 text-foreground border border-brand-accent/30 rounded-2xl rounded-br-sm shadow-[0_4px_20px_rgba(0,230,118,0.05)]'
-                                            : 'bg-brand-card/50 text-foreground/90 border border-black/5 dark:border-white/5 rounded-2xl rounded-bl-sm shadow-xl'
+                                            ? 'max-w-[80%] px-4 py-3 bg-brand-accent/10 text-foreground border border-brand-accent/30 rounded-2xl rounded-br-sm shadow-[0_4px_20px_rgba(0,230,118,0.05)]'
+                                            : hasFinalScript(msg.content)
+                                                ? 'w-full max-w-[88%] text-foreground/90'
+                                                : 'max-w-[80%] px-4 py-3 bg-brand-card/50 text-foreground/90 border border-black/5 dark:border-white/5 rounded-2xl rounded-bl-sm shadow-xl'
                                     )}
                                 >
                                     {msg.role === 'assistant' && (
-                                        <div className="mb-2 text-[9px] font-bold uppercase tracking-[.16em] text-brand-muted">
+                                        <div className={cn(
+                                            'mb-2 text-[9px] font-bold uppercase tracking-[.16em] text-brand-muted',
+                                            hasFinalScript(msg.content) && 'px-1'
+                                        )}>
                                             {msg.agentLabel || historicalAgentLabel(msg.agentId)}
                                         </div>
                                     )}
                                     {msg.role === 'assistant'
-                                        ? <StructuredAgentResponse content={msg.content} />
+                                        ? (
+                                            <StructuredAgentResponse
+                                                content={msg.content}
+                                                copied={copiedMsgId === msg.id}
+                                                onCopy={() => handleCopyMessage(msg)}
+                                                onApply={() => handleUseAsScript(msg)}
+                                            />
+                                        )
                                         : <div className="whitespace-pre-wrap">{msg.content}</div>}
 
                                     {msg.role === 'user' && msg.id === lastUserMessageId && !isLoading && (
@@ -1459,33 +1463,6 @@ export const ChatMileto: React.FC = () => {
                                         </div>
                                     )}
 
-                                    {/* Copiar/Usar SÓ quando a resposta traz um roteiro final marcado */}
-                                    {msg.role === 'assistant' && hasFinalScript(msg.content) && (
-                                            <div className="flex items-center gap-2 mt-2.5 pt-2 border-t border-black/5 dark:border-white/5">
-                                                <button
-                                                    onClick={() => handleCopyMessage(msg)}
-                                                    className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand-muted hover:text-foreground transition-colors"
-                                                    title="Copiar resposta"
-                                                >
-                                                    {copiedMsgId === msg.id ? (
-                                                        <>
-                                                            <Check className="w-3 h-3 text-brand-accent" /> Copiado
-                                                        </>
-                                                    ) : (
-                                                        <>
-                                                            <Copy className="w-3 h-3" /> Copiar
-                                                        </>
-                                                    )}
-                                                </button>
-                                                <button
-                                                    onClick={() => handleUseAsScript(msg)}
-                                                    className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-brand-accent hover:text-brand-lime transition-colors"
-                                                    title="Usar este título e roteiro no projeto"
-                                                >
-                                                    <Wand2 className="w-3 h-3" /> Usar no projeto
-                                                </button>
-                                            </div>
-                                        )}
                                 </div>
                                 {msg.role === 'user' && (
                                     <div className="w-8 h-8 rounded-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 flex items-center justify-center shrink-0 mt-0.5">

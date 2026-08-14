@@ -302,7 +302,7 @@ export const assertAgentModelsAllowed = (config) => {
     return config;
 };
 
-const upgradeBundledAgentConfig = (id, value) => value && typeof value === 'object'
+export const upgradeBundledAgentConfig = (id, value) => value && typeof value === 'object'
     ? { ...value, systemPrompt: upgradeBundledAgentSystemPrompt(id, value.systemPrompt) }
     : value;
 
