@@ -141,6 +141,13 @@ const TITLE_FONT_OPTIONS = [
     'Oswald',
     'Playfair Display',
     'Impact',
+    'Roboto',
+    'Barlow Condensed',
+    'Sora',
+    'Unbounded',
+    'Syne',
+    'Fraunces',
+    'Passion One',
 ];
 
 const titleLibraryHeaderClass = (isOpen: boolean) => cn(

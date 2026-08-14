@@ -18,7 +18,11 @@ const PRESETS: Preset[] = [
     { id: 'youtuber-kids', name: 'Youtuber Kids', revision: 1, s: { activeColor: '#FF6B00', baseColor: '#FFFFFF', strokeColor: '#000000', strokeWidth: 1, fontFamily: 'Comic Sans MS', fontSize: 40, textCase: 'uppercase' } },
 ];
 
-const FONTS = ['Poppins', 'Roboto', 'Inter', 'Impact', 'Montserrat', 'Anton', 'Bebas Neue', 'Playfair Display', 'Comic Sans MS'];
+const FONTS = [
+    'Poppins', 'Roboto', 'Inter', 'Impact', 'Montserrat', 'Anton', 'Bebas Neue', 'Playfair Display', 'Comic Sans MS',
+    'DM Sans', 'Oswald', 'League Spartan', 'Space Grotesk', 'Archivo Black',
+    'Barlow Condensed', 'Sora', 'Unbounded', 'Syne', 'Fraunces', 'Passion One',
+];
 
 const normalizeSearch = (value: string) =>
     value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR');
