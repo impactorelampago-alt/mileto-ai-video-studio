@@ -596,9 +596,10 @@ export const EditableTitleOverlay = ({
                         {/* DEBUG TEMPORÁRIO — comparar tamanho do título entre gerador e Etapa 4. Remover depois. */}
                         <div
                             data-title-editor-ui="true"
-                            className="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-black px-2 py-0.5 text-[9px] font-mono text-yellow-300 shadow-xl ring-1 ring-yellow-400/60"
+                            className="pointer-events-none absolute left-1/2 top-0 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-lg bg-black px-3 py-2 font-mono font-black text-yellow-300 shadow-2xl ring-2 ring-yellow-400"
+                            style={{ fontSize: '46px', lineHeight: 1 }}
                         >
-                            s={(title.scale ?? 1).toFixed(3)} · box={title.textBoxWidthPct ?? '—'} · sg={safeGeometry.scale.toFixed(3)} · {title.styleId || '?'}
+                            s={(title.scale ?? 1).toFixed(2)} · {title.styleId || '?'}
                         </div>
                         {isTextEditing && (
                             <div
