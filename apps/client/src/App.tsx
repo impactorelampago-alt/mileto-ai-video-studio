@@ -15,6 +15,7 @@ import { OpsVideoJobCoordinator } from './components/OpsVideoJobCoordinator';
 const Home = lazy(() => import('./pages/Home').then((m) => ({ default: m.Home })));
 const Downloads = lazy(() => import('./pages/Downloads').then((m) => ({ default: m.Downloads })));
 const DownloadQueue = lazy(() => import('./pages/DownloadQueue').then((m) => ({ default: m.DownloadQueue })));
+const OpsHistory = lazy(() => import('./pages/OpsHistory').then((m) => ({ default: m.OpsHistory })));
 const Account = lazy(() => import('./pages/Account').then((m) => ({ default: m.Account })));
 const Integrations = lazy(() => import('./pages/Integrations').then((m) => ({ default: m.Integrations })));
 const AiChatSettings = lazy(() => import('./pages/AiChatSettings').then((m) => ({ default: m.AiChatSettings })));
@@ -60,6 +61,7 @@ function App() {
                                     <Route index element={<Home />} />
                                     <Route path="files" element={<Downloads />} />
                                     <Route path="downloads" element={<DownloadQueue />} />
+                                    <Route path="ops-history" element={<OpsHistory />} />
                                     <Route path="account" element={<Account />} />
                                     <Route path="integrations" element={<Integrations />} />
                                     <Route path="ai/chat" element={user?.role === 'owner' ? <AiChatSettings /> : <Navigate to="/" replace />} />

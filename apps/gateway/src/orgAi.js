@@ -1,6 +1,7 @@
 import { query } from './db.js';
 import { AGENT_DEFINITIONS } from './agentDefaults.js';
 import { TITLE_ANIMATION_ID_SET, TITLE_MODEL_ID_SET } from './titleCatalog.js';
+import { assertAiModelAllowed, isAiModelAllowed } from './aiModels.js';
 
 export const VIDEO_FORMATS = ['9:16', '16:9', '4:5', '1:1'];
 export const COLOR_MODES = ['brand', 'fixed'];
@@ -364,6 +365,23 @@ export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERA
     if (triggers.some((trigger) => trigger.enabled && !trigger.titleTypes.length)) {
         throw new Error('Todo gatilho ativo precisa ter pelo menos um modelo de título.');
     }
+    const requestedAiProvider = ['openai', 'gemini'].includes(String(source.ai?.provider))
+        ? String(source.ai.provider)
+        : base.ai?.provider || DEFAULT_TITLE_GENERATOR_CONFIG.ai.provider;
+    const requestedAiModel = text(
+        source.ai?.model,
+        base.ai?.model || DEFAULT_TITLE_GENERATOR_CONFIG.ai.model,
+        160,
+    );
+    // Configurações históricas com ID livre não podem continuar chegando ao
+    // provedor. Na leitura, rebaixa para o padrão seguro; nas gravações, os
+    // setters abaixo rejeitam explicitamente o valor inválido.
+    const safeAi = isAiModelAllowed(requestedAiProvider, requestedAiModel)
+        ? { provider: requestedAiProvider, model: requestedAiModel }
+        : {
+            provider: base.ai?.provider || DEFAULT_TITLE_GENERATOR_CONFIG.ai.provider,
+            model: base.ai?.model || DEFAULT_TITLE_GENERATOR_CONFIG.ai.model,
+        };
     return {
         version: 4,
         pipeline: base.pipeline === 'legacy-v4'
@@ -372,10 +390,8 @@ export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERA
                 ? String(source.pipeline)
                 : base.pipeline || DEFAULT_TITLE_GENERATOR_CONFIG.pipeline,
         ai: {
-            provider: ['openai', 'gemini'].includes(String(source.ai?.provider))
-                ? String(source.ai.provider)
-                : base.ai?.provider || DEFAULT_TITLE_GENERATOR_CONFIG.ai.provider,
-            model: text(source.ai?.model, base.ai?.model || DEFAULT_TITLE_GENERATOR_CONFIG.ai.model, 160),
+            provider: safeAi.provider,
+            model: safeAi.model,
             reasoning: ['rapido', 'equilibrado', 'profundo'].includes(String(source.ai?.reasoning))
                 ? String(source.ai.reasoning)
                 : base.ai?.reasoning || DEFAULT_TITLE_GENERATOR_CONFIG.ai.reasoning,
@@ -408,6 +424,13 @@ export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERA
     };
 };
 
+export const assertTitleGeneratorAiSelection = (input, base = DEFAULT_TITLE_GENERATOR_CONFIG) => {
+    const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+    const provider = String(source.ai?.provider || base.ai?.provider || DEFAULT_TITLE_GENERATOR_CONFIG.ai.provider);
+    const model = String(source.ai?.model || base.ai?.model || DEFAULT_TITLE_GENERATOR_CONFIG.ai.model);
+    return assertAiModelAllowed(provider, model);
+};
+
 /**
  * O editor da organizacao recebe a config efetiva. Durante o kill switch ela vem
  * como legacy-v4, mas isso nao pode cristalizar no override ao salvar um layout.
@@ -415,7 +438,13 @@ export const normalizeTitleGeneratorConfig = (input, base = DEFAULT_TITLE_GENERA
  * configuracao editorial que voltara a reviewed-v1 quando o switch for liberado.
  */
 export const normalizeStoredOrgTitleGeneratorConfig = (input, globalConfig) => ({
-    ...normalizeTitleGeneratorConfig(input, { ...globalConfig, pipeline: 'reviewed-v1' }),
+    ...normalizeTitleGeneratorConfig({
+        ...(input || {}),
+        // A organização personaliza somente a parte editorial/visual. Provedor,
+        // modelo, raciocínio e revisor pertencem ao padrão global do Mileto.
+        ai: globalConfig.ai,
+        reviewer: globalConfig.reviewer,
+    }, { ...globalConfig, pipeline: 'reviewed-v1' }),
     pipeline: 'reviewed-v1',
 });
 
@@ -428,21 +457,30 @@ export const getOrgAgentPrompt = async (orgId, agentId) => {
     return row ? { prompt: row.system_prompt, updatedAt: row.updated_at } : null;
 };
 
+export const normalizeOrgAgentPromptValue = (agentId, prompt) => {
+    if (typeof prompt !== 'string') throw new Error('O prompt da agência deve ser um texto.');
+    const normalized = prompt.trim();
+    if (!normalized && agentId !== 'prompt_sales') {
+        throw new Error('O prompt da agência não pode ficar vazio.');
+    }
+    if (prompt.length > 120000) throw new Error('O prompt ultrapassa 120.000 caracteres.');
+    return normalized;
+};
+
 export const setOrgAgentPrompt = async (orgId, agentId, prompt, actorId) => {
     if (!AGENT_IDS.has(agentId)) throw new Error('Agente inválido.');
     if (prompt == null) {
         await query('DELETE FROM org_agent_prompt_overrides WHERE org_id = $1 AND agent_id = $2', [orgId, agentId]);
         return null;
     }
-    if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('O prompt da agência não pode ficar vazio.');
-    if (prompt.length > 120000) throw new Error('O prompt ultrapassa 120.000 caracteres.');
+    const normalizedPrompt = normalizeOrgAgentPromptValue(agentId, prompt);
     return (await query(
         `INSERT INTO org_agent_prompt_overrides (org_id, agent_id, system_prompt, updated_by)
          VALUES ($1,$2,$3,$4)
          ON CONFLICT (org_id, agent_id) DO UPDATE
          SET system_prompt = EXCLUDED.system_prompt, updated_by = EXCLUDED.updated_by, updated_at = now()
          RETURNING system_prompt, updated_at`,
-        [orgId, agentId, prompt.trim(), actorId || null]
+        [orgId, agentId, normalizedPrompt, actorId || null]
     )).rows[0];
 };
 
@@ -459,6 +497,7 @@ export const getGlobalTitleGeneratorConfig = async () => {
 };
 
 export const setGlobalTitleGeneratorConfig = async (input) => {
+    assertTitleGeneratorAiSelection(input);
     const config = normalizeTitleGeneratorConfig(input);
     const row = (await query(
         `INSERT INTO settings (key, value) VALUES ($1,$2)
@@ -474,8 +513,13 @@ export const getOrgTitleGeneratorConfig = async (orgId) => {
     const row = (await query('SELECT config, updated_at FROM org_title_generator_settings WHERE org_id = $1', [orgId])).rows[0];
     if (!row) return { config: clone(global.config), defaultConfig: global.config, usesDefault: true, updatedAt: global.updatedAt };
     const storedOrgConfig = normalizeStoredOrgTitleGeneratorConfig(row.config, global.config);
+    const effectiveOrgConfig = {
+        ...storedOrgConfig,
+        ai: clone(global.config.ai),
+        reviewer: clone(global.config.reviewer),
+    };
     return {
-        config: normalizeTitleGeneratorConfig(storedOrgConfig, global.config),
+        config: normalizeTitleGeneratorConfig(effectiveOrgConfig, global.config),
         defaultConfig: global.config,
         usesDefault: false,
         updatedAt: row.updated_at,

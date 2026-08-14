@@ -38,6 +38,9 @@ services:
       SEED_OWNER_ORG: ${SEED_OWNER_ORG}
       SEED_OWNER_PLAN: ${SEED_OWNER_PLAN}
       RESELL_MULTIPLIER: ${RESELL_MULTIPLIER}
+      # Modelos Fish autorizados neste ambiente. O preflight usa esta lista
+      # antes de reservar credito e nunca substitui um modelo indisponivel.
+      FISH_TTS_AVAILABLE_MODELS: ${FISH_TTS_AVAILABLE_MODELS:-s2.1-pro,s2.1-pro-free,s2-pro,s1}
       # Compartilhado: permanece desativado enquanto os quatro campos estiverem
       # vazios. O script scripts/configure-r2.sh preenche e valida tudo.
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}

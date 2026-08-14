@@ -159,6 +159,17 @@
   .agent-card label { margin-top: 0; }
   .agent-prompt { width: 100%; min-height: 190px; resize: vertical; background: var(--bg); border: 1px solid var(--rule); border-radius: 11px; padding: 13px; color: var(--ink); font: 12px/1.55 var(--mono); outline: none; }
   .agent-prompt:focus { border-color: var(--accent); }
+  .agent-internal-instruction { position: relative; overflow: hidden; margin-top: 18px; padding: 16px; border: 1px solid rgba(43,190,134,.3); border-radius: 15px; background: linear-gradient(145deg,rgba(16,31,27,.98),rgba(7,17,14,.98)); box-shadow: inset 0 1px 0 rgba(255,255,255,.035), 0 14px 32px rgba(0,0,0,.14); }
+  .agent-internal-instruction::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: linear-gradient(180deg,var(--accent),rgba(43,190,134,.15)); }
+  .agent-internal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+  .agent-internal-identity { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+  .agent-internal-lock { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--accent-line); border-radius: 10px; background: var(--accent-soft); color: var(--accent); font-size: 15px; }
+  .agent-internal-title { color: var(--ink); font-size: 13px; font-weight: 800; }
+  .agent-internal-help { max-width: 720px; margin-top: 4px; color: var(--ink-3); font-size: 10px; line-height: 1.5; }
+  .agent-internal-badge { flex: 0 0 auto; padding: 4px 8px; border: 1px solid var(--accent-line); border-radius: 999px; background: var(--accent-soft); color: var(--accent); font: 9px/1 var(--mono); letter-spacing: .045em; text-transform: uppercase; }
+  .agent-internal-video-instruction { width: 100%; min-height: 230px; resize: vertical; background: rgba(2,10,8,.72); border: 1px solid rgba(120,200,175,.18); border-radius: 11px; padding: 13px; color: var(--ink); font: 12px/1.55 var(--mono); outline: none; transition: border-color .16s, box-shadow .16s; }
+  .agent-internal-video-instruction:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(43,190,134,.09); }
+  .agent-internal-state { margin-top: 7px; color: var(--ink-3); font-size: 10px; }
   .agent-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
   .agent-actions .publish { margin-left: auto; }
   .agent-test { margin-top: 14px; padding: 14px; background: rgba(0,0,0,.18); border: 1px solid var(--rule); border-radius: 12px; }
@@ -173,6 +184,88 @@
   .title-ai-title { font-size: 15px; font-weight: 800; color: var(--ink); }
   .title-ai-subtitle { color: var(--ink-3); font-size: 11px; margin-top: 3px; }
   .title-ai-grid { display: grid; grid-template-columns: .8fr 1.5fr 1fr .8fr; gap: 10px; }
+  .title-ai-field { min-width: 0; }
+  .title-ai-field > label { margin-top: 0; }
+  .title-ai-field-note { margin-top: 7px; color: var(--ink-3); font-size: 10px; line-height: 1.35; }
+
+  /* Select exclusivo da configuracao de titulos: visual consistente em qualquer navegador. */
+  .premium-select { position: relative; min-width: 0; }
+  .premium-select-native {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    clip: rect(0 0 0 0) !important;
+    clip-path: inset(50%) !important;
+    border: 0 !important;
+    white-space: nowrap !important;
+    pointer-events: none !important;
+  }
+  .premium-select-trigger {
+    width: 100%; min-height: 44px; display: flex; align-items: center; gap: 10px;
+    padding: 8px 11px; border: 1px solid rgba(120,200,175,.19); border-radius: 12px;
+    background: linear-gradient(145deg,rgba(15,26,23,.98),rgba(7,15,13,.98));
+    color: var(--ink); outline: none; text-align: left;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.025), 0 8px 24px rgba(0,0,0,.1);
+    transition: border-color .16s, box-shadow .16s, transform .16s, background .16s;
+  }
+  .premium-select-trigger:hover {
+    border-color: rgba(43,190,134,.52);
+    background: linear-gradient(145deg,rgba(18,32,28,.99),rgba(8,18,15,.99));
+  }
+  .premium-select-trigger:focus-visible,
+  .premium-select.is-open .premium-select-trigger {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(43,190,134,.14), inset 0 1px 0 rgba(255,255,255,.04), 0 12px 28px rgba(0,0,0,.2);
+  }
+  .premium-select.is-open .premium-select-trigger { transform: translateY(-1px); }
+  .premium-select-mark {
+    width: 28px; height: 28px; flex: 0 0 28px; display: grid; place-items: center;
+    border: 1px solid var(--accent-line); border-radius: 9px; background: var(--accent-soft);
+    color: var(--accent); font-size: 12px; font-weight: 900;
+  }
+  .premium-select[data-kind="provider"] .premium-select-mark::before { content: '\25C8'; }
+  .premium-select[data-kind="model"] .premium-select-mark::before { content: '\2726'; }
+  .premium-select[data-kind="reasoning"] .premium-select-mark::before { content: '\223F'; }
+  .premium-select-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; }
+  .premium-select-value { overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .premium-select-meta { overflow: hidden; color: var(--ink-3); font: 9px/1.3 var(--mono); letter-spacing: .02em; text-overflow: ellipsis; white-space: nowrap; }
+  .premium-select-chevron { width: 18px; height: 18px; flex: 0 0 auto; color: var(--ink-3); transition: color .16s, transform .16s; }
+  .premium-select-chevron svg { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+  .premium-select.is-open .premium-select-chevron { color: var(--accent); transform: rotate(180deg); }
+  .premium-select-menu {
+    position: absolute; z-index: 75; top: calc(100% + 8px); left: 0; width: max(100%, 220px);
+    max-height: 286px; overflow: auto; padding: 6px;
+    border: 1px solid rgba(43,190,134,.3); border-radius: 14px;
+    background: rgba(10,19,17,.985); box-shadow: 0 24px 64px rgba(0,0,0,.48), inset 0 1px 0 rgba(255,255,255,.035);
+    transform-origin: top center; animation: premium-select-in .14s ease-out;
+    scrollbar-width: thin; scrollbar-color: rgba(120,200,175,.3) transparent;
+  }
+  .premium-select-menu[hidden] { display: none; }
+  .premium-select-option {
+    width: 100%; min-height: 42px; display: grid; grid-template-columns: minmax(0,1fr) auto;
+    align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid transparent;
+    border-radius: 10px; background: transparent; color: var(--ink-2); outline: none; text-align: left;
+    transition: color .12s, background .12s, border-color .12s;
+  }
+  .premium-select-option:hover,
+  .premium-select-option:focus-visible { color: var(--ink); background: rgba(255,255,255,.045); }
+  .premium-select-option.is-selected {
+    color: var(--ink); border-color: rgba(43,190,134,.22);
+    background: linear-gradient(90deg,rgba(43,190,134,.15),rgba(43,190,134,.045));
+  }
+  .premium-select-option-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+  .premium-select-option-name { overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .premium-select-option-meta { overflow: hidden; color: var(--ink-3); font: 9px/1.35 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+  .premium-select-option-check { width: 18px; color: var(--accent); font-size: 14px; opacity: 0; text-align: center; }
+  .premium-select-option.is-selected .premium-select-option-check { opacity: 1; }
+  @keyframes premium-select-in { from { opacity: 0; transform: translateY(-4px) scale(.985); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .premium-select-trigger,.premium-select-chevron,.premium-select-option { transition: none; }
+    .premium-select-menu { animation: none; }
+  }
 
   .modal { position: fixed; inset: 0; display: grid; place-items: center; z-index: 60; padding: 20px; background: rgba(0,0,0,.5); }
   .modal-card { background: var(--panel); border: 1px solid var(--rule); border-radius: 16px; padding: 28px; width: 100%; max-width: 440px; max-height: 92vh; overflow-y: auto; }
@@ -213,7 +306,7 @@
           <svg class="chev" viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M6 9l6 6 6-6"/></svg>
         </button>
         <div class="nav-sub">
-          <button class="nav-subitem" data-view="ia-agents">Chat</button>
+          <button class="nav-subitem" data-view="ia-agents">Narrador</button>
           <button class="nav-subitem" data-view="ia-title-generator">Gerador de T&iacute;tulos</button>
           <button class="nav-subitem" data-view="ia-api">API</button>
           <button class="nav-subitem" data-view="ia-models">Modelo de IA</button>
@@ -243,26 +336,23 @@
     <!-- IA · API -->
     <section id="viewIaAgents" class="hidden">
       <div class="topbar">
-        <div><h1>IA &middot; Chat</h1><div class="muted">Os quatro prompts padr&atilde;o do Mileto. Donos de ag&ecirc;ncia podem criar uma sobreposi&ccedil;&atilde;o para a pr&oacute;pria equipe.</div></div>
+        <div><h1>IA &middot; Narrador</h1><div class="muted">Configura&ccedil;&atilde;o da IA de conversa e narra&ccedil;&atilde;o do Mileto.</div></div>
       </div>
-      <div class="banner">&#129504; O <b>Mileto Diretor</b> conversa com o usu&aacute;rio e coordena os especialistas. Cada agente possui <b>Mileto Lite, Mileto e Mileto Ultra</b>, com c&eacute;rebro e profundidade independentes. Prompt &amp; Vendas transforma ideias em briefings; Imagem e V&iacute;deo convertem o briefing em contratos de produ&ccedil;&atilde;o. Tudo fica somente no gateway.</div>
+      <div class="banner">&#129504; O <b>Narrador</b> &eacute; a &uacute;nica IA vis&iacute;vel no Chat. Ele conversa naturalmente, ajuda a desenvolver ideias e cria narra&ccedil;&otilde;es quando solicitado. As configura&ccedil;&otilde;es hist&oacute;ricas dos demais agentes permanecem preservadas, mas inativas na experi&ecirc;ncia atual.</div>
       <div class="agent-grid" id="agentGrid"></div>
-      <datalist id="agentModelsOpenai"></datalist>
-      <datalist id="agentModelsGemini"></datalist>
     </section>
 
     <section id="viewIaTitleGenerator" class="hidden">
       <div class="topbar"><div><h1>IA &middot; Gerador de T&iacute;tulos</h1><div class="muted">Padr&atilde;o global de gatilhos, tipos visuais, cores e layouts por propor&ccedil;&atilde;o.</div></div></div>
       <div class="banner">Este JSON &eacute; o padr&atilde;o Mileto. O dono de cada ag&ecirc;ncia pode personaliz&aacute;-lo pela interface do app; a equipe recebe automaticamente a configura&ccedil;&atilde;o efetiva.</div>
       <div class="title-ai-card">
-        <div class="title-ai-head"><div><div class="title-ai-title">IA usada para analisar a narra&ccedil;&atilde;o</div><div class="title-ai-subtitle">Configura&ccedil;&atilde;o exclusiva do gerador de t&iacute;tulos. N&atilde;o altera os agentes do Chat.</div></div><span class="pill ok">recomendado: GPT-5 Mini</span></div>
+        <div class="title-ai-head"><div><div class="title-ai-title">IA usada para analisar a narra&ccedil;&atilde;o</div><div class="title-ai-subtitle">Configura&ccedil;&atilde;o exclusiva do gerador de t&iacute;tulos. N&atilde;o altera os agentes do Chat.</div></div><span class="pill ok" id="titleAiRecommended">recomendado: GPT-5.6 Luna</span></div>
         <div class="title-ai-grid">
-          <div><label>Provedor</label><select id="titleAiProvider"><option value="openai">OpenAI</option><option value="gemini">Google Gemini</option></select></div>
-          <div><label>Modelo</label><input id="titleAiModel" list="titleAiModelsOpenai" placeholder="Selecione ou informe o ID" /></div>
-          <div><label>Racioc&iacute;nio</label><select id="titleAiReasoning"></select></div>
-          <div><label>Sa&iacute;da m&aacute;xima</label><input id="titleAiTokens" type="number" min="512" max="32768" step="256" value="4096" /></div>
+          <div class="title-ai-field"><label for="titleAiProvider">Provedor</label><select id="titleAiProvider" data-premium-kind="provider"><option value="openai">OpenAI</option><option value="gemini">Google Gemini</option></select></div>
+          <div class="title-ai-field"><label for="titleAiModel">Modelo</label><select id="titleAiModel" data-premium-kind="model" data-premium-meta="value"></select><div class="title-ai-field-note">Lista fechada: escolha um modelo aprovado.</div></div>
+          <div class="title-ai-field"><label for="titleAiReasoning" id="titleAiReasoningLabel">Racioc&iacute;nio</label><select id="titleAiReasoning" data-premium-kind="reasoning"></select></div>
+          <div class="title-ai-field"><label for="titleAiTokens">Sa&iacute;da m&aacute;xima</label><input id="titleAiTokens" type="number" min="512" max="32768" step="256" value="4096" /></div>
         </div>
-        <datalist id="titleAiModelsOpenai"></datalist><datalist id="titleAiModelsGemini"></datalist>
       </div>
       <textarea id="titleConfigBox" spellcheck="false" style="width:100%;min-height:520px;background:var(--panel);border:1px solid var(--rule);border-radius:12px;padding:18px;color:var(--ink);font-family:var(--mono);font-size:12px;line-height:1.55;resize:vertical;outline:none"></textarea>
       <div style="display:flex;gap:10px;margin-top:14px;align-items:center"><button class="btn" id="titleConfigSave">Salvar padr&atilde;o</button><span class="muted" id="titleConfigInfo"></span></div>
@@ -315,6 +405,197 @@ const fmt = (n) => new Intl.NumberFormat('pt-BR').format(Math.round(Number(n) ||
 const fmt2 = (n) => new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0);
 const rel = (iso) => { if (!iso) return '—'; const d = (Date.now() - new Date(iso)) / 864e5; if (d < 1) return 'hoje'; if (d < 2) return 'ontem'; return `há ${Math.floor(d)} d`; };
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+const PREMIUM_SELECTS = new Map();
+let premiumSelectSequence = 0;
+
+function premiumSelectOptions(state) {
+  return [...state.menu.querySelectorAll('.premium-select-option:not(:disabled)')];
+}
+
+function closePremiumSelect(state, { focusTrigger = false } = {}) {
+  state.host.classList.remove('is-open');
+  state.trigger.setAttribute('aria-expanded', 'false');
+  state.menu.hidden = true;
+  if (focusTrigger) state.trigger.focus();
+}
+
+function closeAllPremiumSelects(except = null) {
+  PREMIUM_SELECTS.forEach((state) => { if (state !== except) closePremiumSelect(state); });
+}
+
+function focusPremiumSelectOption(state, index) {
+  const options = premiumSelectOptions(state);
+  if (!options.length) return;
+  options[Math.max(0, Math.min(options.length - 1, index))].focus();
+}
+
+function openPremiumSelect(state, focus = 'selected') {
+  closeAllPremiumSelects(state);
+  state.host.classList.add('is-open');
+  state.trigger.setAttribute('aria-expanded', 'true');
+  state.menu.hidden = false;
+  requestAnimationFrame(() => {
+    const options = premiumSelectOptions(state);
+    const selectedIndex = Math.max(0, options.findIndex((option) => option.dataset.value === state.select.value));
+    const index = focus === 'last' ? options.length - 1 : focus === 'first' ? 0 : selectedIndex;
+    focusPremiumSelectOption(state, index);
+  });
+}
+
+function choosePremiumSelectOption(state, value) {
+  state.select.value = value;
+  closePremiumSelect(state);
+  refreshPremiumSelect(state.select);
+  state.select.dispatchEvent(new Event('change', { bubbles: true }));
+  state.trigger.focus();
+}
+
+function onPremiumSelectOptionKeydown(event, state, option) {
+  const options = premiumSelectOptions(state);
+  const currentIndex = options.indexOf(option);
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const offset = event.key === 'ArrowDown' ? 1 : -1;
+    focusPremiumSelectOption(state, (currentIndex + offset + options.length) % options.length);
+  } else if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault();
+    focusPremiumSelectOption(state, event.key === 'Home' ? 0 : options.length - 1);
+  } else if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    choosePremiumSelectOption(state, option.dataset.value);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    closePremiumSelect(state, { focusTrigger: true });
+  } else if (event.key === 'Tab') {
+    closePremiumSelect(state);
+  } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const query = event.key.toLocaleLowerCase('pt-BR');
+    const ordered = [...options.slice(currentIndex + 1), ...options.slice(0, currentIndex + 1)];
+    const match = ordered.find((item) => item.dataset.label.toLocaleLowerCase('pt-BR').startsWith(query));
+    if (match) { event.preventDefault(); match.focus(); }
+  }
+}
+
+function refreshPremiumSelect(select) {
+  const state = PREMIUM_SELECTS.get(select);
+  if (!state) return;
+  const selected = select.options[select.selectedIndex] || select.options[0];
+  const selectedLabel = selected ? selected.textContent.trim() : 'Selecione';
+  state.value.textContent = selectedLabel;
+  state.meta.textContent = selected?.value || '';
+  state.meta.hidden = select.dataset.premiumMeta !== 'value' || !selected?.value;
+  state.trigger.disabled = select.disabled;
+  state.trigger.title = selectedLabel;
+  state.menu.replaceChildren();
+
+  [...select.options].forEach((nativeOption, index) => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.id = `${state.menu.id}-option-${index}`;
+    option.className = 'premium-select-option';
+    option.dataset.value = nativeOption.value;
+    option.dataset.label = nativeOption.textContent.trim();
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(nativeOption.selected));
+    option.tabIndex = -1;
+    option.disabled = nativeOption.disabled;
+    option.classList.toggle('is-selected', nativeOption.selected);
+
+    const copy = document.createElement('span');
+    copy.className = 'premium-select-option-copy';
+    const name = document.createElement('span');
+    name.className = 'premium-select-option-name';
+    name.textContent = nativeOption.textContent.trim();
+    copy.appendChild(name);
+    if (select.dataset.premiumMeta === 'value' && nativeOption.value) {
+      const meta = document.createElement('span');
+      meta.className = 'premium-select-option-meta';
+      meta.textContent = nativeOption.value;
+      copy.appendChild(meta);
+    }
+    const check = document.createElement('span');
+    check.className = 'premium-select-option-check';
+    check.setAttribute('aria-hidden', 'true');
+    check.textContent = '\u2713';
+    option.append(copy, check);
+    option.addEventListener('click', () => choosePremiumSelectOption(state, nativeOption.value));
+    option.addEventListener('keydown', (event) => onPremiumSelectOptionKeydown(event, state, option));
+    state.menu.appendChild(option);
+  });
+}
+
+function enhancePremiumSelect(select) {
+  if (!select || PREMIUM_SELECTS.has(select)) return;
+  const sequence = ++premiumSelectSequence;
+  const host = document.createElement('div');
+  host.className = 'premium-select';
+  host.dataset.kind = select.dataset.premiumKind || 'default';
+  select.before(host);
+  host.appendChild(select);
+  select.classList.add('premium-select-native');
+  select.tabIndex = -1;
+  select.setAttribute('aria-hidden', 'true');
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.id = `${select.id || 'premiumSelect'}Trigger${sequence}`;
+  trigger.className = 'premium-select-trigger';
+  trigger.setAttribute('role', 'combobox');
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  const mark = document.createElement('span');
+  mark.className = 'premium-select-mark';
+  mark.setAttribute('aria-hidden', 'true');
+  const copy = document.createElement('span');
+  copy.className = 'premium-select-copy';
+  const value = document.createElement('span');
+  value.id = `${trigger.id}Value`;
+  value.className = 'premium-select-value';
+  const meta = document.createElement('span');
+  meta.className = 'premium-select-meta';
+  copy.append(value, meta);
+  const chevron = document.createElement('span');
+  chevron.className = 'premium-select-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  chevron.innerHTML = '<svg viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5"/></svg>';
+  trigger.append(mark, copy, chevron);
+
+  const menu = document.createElement('div');
+  menu.id = `${trigger.id}Listbox`;
+  menu.className = 'premium-select-menu';
+  menu.setAttribute('role', 'listbox');
+  menu.hidden = true;
+  trigger.setAttribute('aria-controls', menu.id);
+  const label = select.id ? document.querySelector(`label[for="${select.id}"]`) : null;
+  if (label) {
+    if (!label.id) label.id = `${trigger.id}Label`;
+    label.htmlFor = trigger.id;
+    trigger.setAttribute('aria-labelledby', `${label.id} ${value.id}`);
+  } else {
+    trigger.setAttribute('aria-labelledby', value.id);
+  }
+  host.append(trigger, menu);
+  const state = { select, host, trigger, menu, value, meta };
+  PREMIUM_SELECTS.set(select, state);
+  trigger.addEventListener('click', () => state.host.classList.contains('is-open') ? closePremiumSelect(state) : openPremiumSelect(state));
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      const focus = event.key === 'ArrowUp' || event.key === 'End' ? 'last' : event.key === 'Home' ? 'first' : 'selected';
+      openPremiumSelect(state, focus);
+    } else if ((event.key === 'Enter' || event.key === ' ') && !state.host.classList.contains('is-open')) {
+      event.preventDefault(); openPremiumSelect(state);
+    } else if (event.key === 'Escape' && state.host.classList.contains('is-open')) {
+      event.preventDefault(); closePremiumSelect(state);
+    }
+  });
+  refreshPremiumSelect(select);
+}
+
+document.addEventListener('pointerdown', (event) => {
+  PREMIUM_SELECTS.forEach((state) => { if (!state.host.contains(event.target)) closePremiumSelect(state); });
+});
 
 function toast(msg, isErr) { const t = document.createElement('div'); t.className = 'toast' + (isErr ? ' err' : ''); t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 3200); }
 
@@ -452,6 +733,31 @@ $('newOrgBtn').addEventListener('click', () => {
 let AGENT_CATALOG = {};
 const AGENT_ICONS = { director: '&#10022;', prompt_sales: '&#9998;', image_director: '&#9635;', video_director: '&#9654;' };
 
+function catalogModelOptions(catalog, provider, selected = '') {
+  const models = catalog[provider] || [];
+  const legacy = selected && !models.some((model) => model.id === selected)
+    ? `<option value="${esc(selected)}" selected disabled>${esc(selected)} (indispon&iacute;vel &mdash; escolha outro)</option>`
+    : '';
+  return legacy + models.map((model) => `<option value="${esc(model.id)}" ${model.id===selected?'selected':''}>${esc(model.name)}</option>`).join('');
+}
+
+function preferredCatalogModel(catalog, provider) {
+  const models = catalog[provider] || [];
+  return (models.find((model) => model.recommended) || models[0])?.id || '';
+}
+
+function syncAgentTierReasoning(panel) {
+  const provider = panel.querySelector('.agent-provider').value;
+  const modelId = panel.querySelector('.agent-model').value;
+  const model = (AGENT_CATALOG[provider] || []).find((entry) => entry.id === modelId);
+  const reasoning = panel.querySelector('.agent-reasoning');
+  const label = panel.querySelector('.agent-reasoning-label');
+  const applicable = provider === 'openai' && model?.reasoning !== false;
+  reasoning.disabled = !applicable;
+  reasoning.title = applicable ? '' : 'Este modelo n&atilde;o usa racioc&iacute;nio configur&aacute;vel.';
+  label.innerHTML = applicable ? 'Racioc&iacute;nio' : 'Racioc&iacute;nio <span class="muted">&middot; n&atilde;o se aplica</span>';
+}
+
 function agentDraft(card) {
   const tiers = {};
   card.querySelectorAll('.agent-tier-panel').forEach((panel) => {
@@ -469,30 +775,38 @@ function agentDraft(card) {
     enabled: card.querySelector('.agent-enabled').checked,
     tiers,
     systemPrompt: card.querySelector('.agent-prompt').value,
+    internalVideoInstruction: card.querySelector('.agent-internal-video-instruction')?.value ?? '',
   };
 }
 
 function syncAgentCard(card) {
   card.classList.toggle('is-off', !card.querySelector('.agent-enabled').checked);
-  card.querySelectorAll('.agent-tier-panel').forEach((panel) => {
-    const provider = panel.querySelector('.agent-provider').value;
-    panel.querySelector('.agent-model').setAttribute('list', provider === 'gemini' ? 'agentModelsGemini' : 'agentModelsOpenai');
-  });
+  card.querySelectorAll('.agent-tier-panel').forEach(syncAgentTierReasoning);
+  const prompt = card.querySelector('.agent-prompt').value;
+  card.querySelector('.agent-prompt-state').textContent = prompt.length
+    ? `${prompt.length.toLocaleString('pt-BR')} caracteres`
+    : '0 caracteres · sem prompt (estado válido)';
+  const internalInstruction = card.querySelector('.agent-internal-video-instruction');
+  if (internalInstruction) {
+    const count = internalInstruction.value.length;
+    card.querySelector('.agent-internal-state').textContent = count
+      ? `${count.toLocaleString('pt-BR')} caracteres · instrução oculta`
+      : '0 caracteres · nenhuma instrução interna';
+  }
 }
 
 async function loadAgents() {
   const data = await api('/admin/agents');
   AGENT_CATALOG = data.catalog || {};
-  $('agentModelsOpenai').innerHTML = (AGENT_CATALOG.openai || []).map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
-  $('agentModelsGemini').innerHTML = (AGENT_CATALOG.gemini || []).map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
   const reasonOpts = (selected) => data.reasoningLevels.map(r => `<option value="${r.id}" ${r.id===selected?'selected':''}>${esc(r.label)}</option>`).join('');
-  $('agentGrid').innerHTML = data.agents.map((a) => {
+  const visibleAgents = data.agents.filter((agent) => agent.id === 'prompt_sales');
+  $('agentGrid').innerHTML = visibleAgents.map((a) => {
     const c = a.config;
     const production = ['image','video'].includes(a.kind);
     const tierPanels = data.tiers.map((tierMeta) => {
       const tier = c.tiers[tierMeta.id];
       const productionFields = production ? `<div class="agent-production-fields"><div><label>Motor de produ&ccedil;&atilde;o</label><input class="agent-gen-provider" value="${esc(tier.generationProvider)}" placeholder="Ex.: seedance, gemini" /></div><div><label>Modelo de produ&ccedil;&atilde;o</label><input class="agent-gen-model" value="${esc(tier.generationModel)}" placeholder="ID exato do modelo deste n&iacute;vel" /></div><div><label>Custo m&aacute;ximo (US$ / gera&ccedil;&atilde;o)</label><input class="agent-gen-cost" type="number" min="0" max="10000" step="0.000001" value="${Number(tier.generationCostUsd || 0)}" /><div class="muted" style="font-size:10px;margin-top:4px">Obrigat&oacute;rio para ativar sem risco de subcobran&ccedil;a.</div></div></div>` : '';
-      return `<div class="agent-tier-panel" data-tier="${tierMeta.id}"><div class="agent-tier-head"><span class="agent-tier-name">${esc(tierMeta.label)}</span><span class="agent-tier-desc">${esc(tierMeta.description)}</span></div><div class="agent-tier-fields"><div><label>C&eacute;rebro</label><select class="agent-provider"><option value="openai" ${tier.provider==='openai'?'selected':''}>OpenAI</option><option value="gemini" ${tier.provider==='gemini'?'selected':''}>Google Gemini</option></select></div><div><label>Modelo</label><input class="agent-model" value="${esc(tier.model)}" /></div><div><label>Racioc&iacute;nio</label><select class="agent-reasoning">${reasonOpts(tier.reasoning)}</select></div><div><label>Sa&iacute;da m&aacute;xima</label><input class="agent-tokens" type="number" min="512" max="32768" step="256" value="${tier.maxOutputTokens}" /></div></div>${productionFields}</div>`;
+      return `<div class="agent-tier-panel" data-tier="${tierMeta.id}"><div class="agent-tier-head"><span class="agent-tier-name">${esc(tierMeta.label)}</span><span class="agent-tier-desc">${esc(tierMeta.description)}</span></div><div class="agent-tier-fields"><div><label>C&eacute;rebro</label><select class="agent-provider"><option value="openai" ${tier.provider==='openai'?'selected':''}>OpenAI</option><option value="gemini" ${tier.provider==='gemini'?'selected':''}>Google Gemini</option></select></div><div><label>Modelo</label><select class="agent-model">${catalogModelOptions(AGENT_CATALOG, tier.provider, tier.model)}</select></div><div><label class="agent-reasoning-label">Racioc&iacute;nio</label><select class="agent-reasoning">${reasonOpts(tier.reasoning)}</select></div><div><label>Sa&iacute;da m&aacute;xima</label><input class="agent-tokens" type="number" min="512" max="32768" step="256" value="${tier.maxOutputTokens}" /></div></div>${productionFields}</div>`;
     }).join('');
     return `<article class="agent-card ${c.enabled?'':'is-off'} is-collapsed" data-agent="${a.id}">
       <div class="agent-card-head">
@@ -506,7 +820,19 @@ async function loadAgents() {
         <div class="agent-divider"></div>
         <div class="agent-tier-stack">${tierPanels}</div>
         <label style="margin-top:14px">Prompt de sistema</label>
-        <textarea class="agent-prompt">${esc(c.systemPrompt)}</textarea>
+        <textarea class="agent-prompt" aria-label="Prompt do Narrador">${esc(c.systemPrompt)}</textarea>
+        <div class="agent-prompt-state muted" style="margin-top:7px;font-size:10px">0 caracteres &middot; sem prompt (estado v&aacute;lido)</div>
+        <section class="agent-internal-instruction" aria-labelledby="agentInternalTitle-${esc(a.id)}">
+          <div class="agent-internal-head">
+            <div class="agent-internal-identity">
+              <span class="agent-internal-lock" aria-hidden="true">&#128274;</span>
+              <div><div class="agent-internal-title" id="agentInternalTitle-${esc(a.id)}">Instru&ccedil;&atilde;o interna do AI Video</div><div class="agent-internal-help">Aplicada por baixo dos panos somente ao preparar a narra&ccedil;&atilde;o final para o AI Video. N&atilde;o aparece no Chat, no aplicativo nem para as ag&ecirc;ncias.</div></div>
+            </div>
+            <span class="agent-internal-badge">Somente Super Admin</span>
+          </div>
+          <textarea class="agent-internal-video-instruction" aria-label="Instru&ccedil;&atilde;o interna do AI Video" spellcheck="false">${esc(c.internalVideoInstruction || '')}</textarea>
+          <div class="agent-internal-state" aria-live="polite">0 caracteres &middot; nenhuma instru&ccedil;&atilde;o interna</div>
+        </section>
         <div class="agent-actions"><button class="btn btn-ghost btn-sm agent-history">Hist&oacute;rico</button><button class="btn btn-ghost btn-sm agent-toggle-test">Testar rascunho</button><button class="btn btn-sm publish agent-publish">Publicar nova vers&atilde;o</button></div>
         <div class="agent-test hidden"><div class="muted" style="margin-bottom:8px">O teste usa este rascunho sem public&aacute;-lo.</div><div style="max-width:220px;margin-bottom:9px"><label>N&iacute;vel do teste</label><select class="agent-test-tier">${data.tiers.map(t => `<option value="${t.id}" ${t.id==='mileto'?'selected':''}>${esc(t.label)}</option>`).join('')}</select></div><textarea class="agent-test-message" placeholder="Ex.: Crie uma campanha de 15 segundos para uma &oacute;tica..."></textarea><div class="agent-actions"><button class="btn btn-sm agent-run-test">Executar teste</button></div><pre class="agent-result hidden"></pre></div>
       </div>
@@ -522,7 +848,15 @@ async function loadAgents() {
       collapse.title = collapsed ? 'Expandir cargo' : 'Recolher cargo';
     });
     card.querySelector('.agent-enabled').addEventListener('change', () => syncAgentCard(card));
-    card.querySelectorAll('.agent-provider').forEach((provider) => provider.addEventListener('change', () => syncAgentCard(card)));
+    card.querySelector('.agent-prompt').addEventListener('input', () => syncAgentCard(card));
+    card.querySelector('.agent-internal-video-instruction').addEventListener('input', () => syncAgentCard(card));
+    card.querySelectorAll('.agent-provider').forEach((provider) => provider.addEventListener('change', () => {
+      const panel = provider.closest('.agent-tier-panel');
+      const model = panel.querySelector('.agent-model');
+      model.innerHTML = catalogModelOptions(AGENT_CATALOG, provider.value, preferredCatalogModel(AGENT_CATALOG, provider.value));
+      syncAgentTierReasoning(panel);
+    }));
+    card.querySelectorAll('.agent-model').forEach((model) => model.addEventListener('change', () => syncAgentTierReasoning(model.closest('.agent-tier-panel'))));
     card.querySelector('.agent-toggle-test').addEventListener('click', () => card.querySelector('.agent-test').classList.toggle('hidden'));
     card.querySelector('.agent-publish').addEventListener('click', async (e) => {
       const btn = e.currentTarget; btn.disabled = true;
@@ -542,25 +876,60 @@ async function loadAgents() {
 
 let TITLE_AI_CATALOG = {};
 
-function syncTitleAiModelList({ chooseDefault = false } = {}) {
+function normalizeTitleAiCatalog(catalog = {}) {
+  return {
+    openai: [...(Array.isArray(catalog.openai) ? catalog.openai : [])],
+    gemini: [...(Array.isArray(catalog.gemini) ? catalog.gemini : [])],
+  };
+}
+
+function updateTitleAiRecommendedBadge() {
+  const provider = $('titleAiProvider').value === 'gemini' ? 'gemini' : 'openai';
+  const recommended = (TITLE_AI_CATALOG[provider] || []).find((model) => model.recommended);
+  const badge = $('titleAiRecommended');
+  badge.textContent = recommended ? `recomendado: ${recommended.name}` : 'selecione conforme a necessidade';
+  badge.classList.toggle('hidden', !recommended);
+}
+
+function syncTitleAiReasoningAvailability() {
+  const provider = $('titleAiProvider').value === 'gemini' ? 'gemini' : 'openai';
+  const model = (TITLE_AI_CATALOG[provider] || []).find((entry) => entry.id === $('titleAiModel').value);
+  const applicable = provider === 'openai' && model?.reasoning !== false;
+  $('titleAiReasoning').disabled = !applicable;
+  $('titleAiReasoningLabel').innerHTML = applicable ? 'Racioc&iacute;nio' : 'Racioc&iacute;nio <span class="muted">&middot; n&atilde;o se aplica</span>';
+  refreshPremiumSelect($('titleAiReasoning'));
+}
+
+function syncTitleAiModelList({ chooseDefault = false, preferredModel = null } = {}) {
   const provider = $('titleAiProvider').value === 'gemini' ? 'gemini' : 'openai';
   const models = TITLE_AI_CATALOG[provider] || [];
-  const modelInput = $('titleAiModel');
-  modelInput.setAttribute('list', provider === 'gemini' ? 'titleAiModelsGemini' : 'titleAiModelsOpenai');
-  if (chooseDefault && models.length && !models.some((entry) => entry.id === modelInput.value)) {
-    modelInput.value = provider === 'openai'
-      ? (models.find((entry) => entry.id === 'gpt-5-mini') || models[0]).id
-      : (models.find((entry) => entry.id === 'gemini-2.5-flash') || models[0]).id;
-  }
+  const modelSelect = $('titleAiModel');
+  const current = preferredModel || modelSelect.value;
+  const recommended = models.find((entry) => entry.recommended);
+  const fallback = recommended || (provider === 'openai'
+    ? models.find((entry) => entry.id === 'gpt-5-mini')
+    : models.find((entry) => entry.id === 'gemini-2.5-flash')) || models[0];
+  const preserveConfigured = !chooseDefault && current && !models.some((entry) => entry.id === current);
+  const selectableModels = preserveConfigured
+    ? [{ id: current, name: `${current} (configurado anteriormente)` }, ...models]
+    : models;
+  modelSelect.innerHTML = selectableModels
+    .map((model) => `<option value="${esc(model.id)}">${esc(model.name)}</option>`)
+    .join('');
+  modelSelect.value = !chooseDefault && current ? current : fallback?.id || '';
+  refreshPremiumSelect(modelSelect);
+  updateTitleAiRecommendedBadge();
+  syncTitleAiReasoningAvailability();
 }
 
 function applyTitleAiFields(config) {
   const ai = config.ai || {};
   $('titleAiProvider').value = ai.provider === 'gemini' ? 'gemini' : 'openai';
-  $('titleAiModel').value = ai.model || 'gpt-5-mini';
+  refreshPremiumSelect($('titleAiProvider'));
+  syncTitleAiModelList({ preferredModel: ai.model || 'gpt-5-mini' });
   $('titleAiReasoning').value = ai.reasoning || 'equilibrado';
+  refreshPremiumSelect($('titleAiReasoning'));
   $('titleAiTokens').value = Number(ai.maxOutputTokens || 4096);
-  syncTitleAiModelList();
 }
 
 function titleConfigWithAiFields() {
@@ -578,15 +947,17 @@ function titleConfigWithAiFields() {
 
 async function loadTitleGenerator() {
   const { config, updatedAt, catalog = {}, reasoningLevels = [] } = await api('/admin/title-generator');
-  TITLE_AI_CATALOG = catalog;
-  $('titleAiModelsOpenai').innerHTML = (catalog.openai || []).map((model) => `<option value="${esc(model.id)}">${esc(model.name)}</option>`).join('');
-  $('titleAiModelsGemini').innerHTML = (catalog.gemini || []).map((model) => `<option value="${esc(model.id)}">${esc(model.name)}</option>`).join('');
+  TITLE_AI_CATALOG = normalizeTitleAiCatalog(catalog);
   $('titleAiReasoning').innerHTML = reasoningLevels.map((level) => `<option value="${esc(level.id)}">${esc(level.label)}</option>`).join('');
+  refreshPremiumSelect($('titleAiReasoning'));
   applyTitleAiFields(config);
   $('titleConfigBox').value = JSON.stringify(config, null, 2);
   $('titleConfigInfo').textContent = updatedAt ? 'Atualizado em ' + new Date(updatedAt).toLocaleString('pt-BR') : 'Usando padrão embutido';
 }
+['titleAiProvider', 'titleAiModel', 'titleAiReasoning'].forEach((id) => enhancePremiumSelect($(id)));
 $('titleAiProvider').addEventListener('change', () => syncTitleAiModelList({ chooseDefault: true }));
+$('titleAiModel').addEventListener('change', () => { refreshPremiumSelect($('titleAiModel')); syncTitleAiReasoningAvailability(); });
+$('titleAiReasoning').addEventListener('change', () => refreshPremiumSelect($('titleAiReasoning')));
 $('titleConfigSave').addEventListener('click', async () => {
   try {
     const config = titleConfigWithAiFields();
@@ -637,7 +1008,7 @@ async function loadModels() {
   const { tiers, catalog } = await api('/admin/models');
   CATALOG = catalog;
   const provOpts = (sel) => Object.keys(catalog).map((p) => `<option value="${p}" ${p===sel?'selected':''}>${p === 'openai' ? 'OpenAI' : 'Google Gemini'}</option>`).join('');
-  const modelOpts = (prov, sel) => (catalog[prov] || []).map((m) => `<option value="${m.id}" ${m.id===sel?'selected':''}>${esc(m.name)}</option>`).join('') + `<option value="__custom__">Outro (digitar)…</option>`;
+  const modelOpts = (prov, sel) => catalogModelOptions(catalog, prov, sel);
   $('modelGrid').innerHTML = tiers.map((t) => `
     <div class="ia-card" data-tier="${t.id}">
       <div class="ia-head"><span class="ia-name">${esc(t.label)}</span></div>
@@ -646,20 +1017,17 @@ async function loadModels() {
       <select class="sel-prov">${provOpts(t.provider)}</select>
       <label>Modelo</label>
       <select class="sel-model">${modelOpts(t.provider, t.model)}</select>
-      <input class="in-custom hidden" placeholder="ID do modelo (ex.: gpt-5-mini)" style="margin-top:8px" value="${(catalog[t.provider]||[]).some(m=>m.id===t.model)?'':esc(t.model)}" />
       <button class="btn btn-sm btn-block" style="margin-top:14px" data-savetier="${t.id}">Salvar</button>
     </div>`).join('');
 
   $('modelGrid').querySelectorAll('.ia-card').forEach((card) => {
-    const prov = card.querySelector('.sel-prov'), model = card.querySelector('.sel-model'), custom = card.querySelector('.in-custom');
-    const syncCustom = () => custom.classList.toggle('hidden', model.value !== '__custom__');
-    // se o modelo salvo não está no catálogo, o custom já vem preenchido → mostra
-    if (custom.value) { model.value = '__custom__'; }
-    syncCustom();
-    prov.addEventListener('change', () => { model.innerHTML = (CATALOG[prov.value]||[]).map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('') + `<option value="__custom__">Outro (digitar)…</option>`; custom.value=''; syncCustom(); });
-    model.addEventListener('change', syncCustom);
+    const prov = card.querySelector('.sel-prov'), model = card.querySelector('.sel-model');
+    prov.addEventListener('change', () => {
+      const preferred = preferredCatalogModel(CATALOG, prov.value);
+      model.innerHTML = modelOpts(prov.value, preferred);
+    });
     card.querySelector('[data-savetier]').addEventListener('click', async () => {
-      const chosen = model.value === '__custom__' ? custom.value.trim() : model.value;
+      const chosen = model.value;
       if (!chosen) return toast('Informe o modelo.', true);
       try { await api('/admin/models', { method: 'POST', body: JSON.stringify({ tier: card.dataset.tier, provider: prov.value, model: chosen }) }); toast('Modelo salvo.'); } catch (e) { toast(e.message, true); }
     });

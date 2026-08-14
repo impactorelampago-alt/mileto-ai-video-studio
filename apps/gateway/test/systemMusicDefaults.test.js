@@ -26,7 +26,7 @@ const preset = (musicTrackId, overrides = {}) => ({
         volume: 0,
         stability: 0.4,
         similarityBoost: 0.75,
-        fishModel: 's2-pro',
+        fishModel: 's2.1-pro',
         ...overrides.voiceSettings,
     },
     musicTrackId,

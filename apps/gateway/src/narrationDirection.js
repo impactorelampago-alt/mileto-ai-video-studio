@@ -1,14 +1,22 @@
-import { normalizeSpokenNumbersPtBr } from './spokenNumbers.js';
-
 const FINAL_NARRATION_PATTERN = /(===\s*ROTEIRO\s*===\s*)([\s\S]*?)(\s*===\s*FIM\s*===)/i;
-const FISH_AUDIO_TAG_PATTERN = /\[(?:angry|sad|embarrassed|emphasis|whispering|soft|breathy|excited|laughing|chuckling|moaning|clear throat|sobbing|crying loudly|sighing|panting|groaning|pause|long pause)\]/i;
+const BRACKET_DIRECTION_PATTERN_GLOBAL = /\[[a-z][a-z '-]{0,63}\]/g;
+const TRAILING_ORPHAN_DIRECTIONS_PATTERN = /(?:\s*\[[a-z][a-z '-]{0,63}\])+\s*([.!?,;:]*)\s*$/;
 const CLEAN_NARRATION_REQUEST = /(?:sem\s+tags?|texto\s+limpo|fish\s*audio\s*s1|modelo\s*s1)/i;
 
-const normalizeSupportedAliases = (narration) =>
-    narration
-        .replace(/\[soft tone\]/gi, '[soft]')
-        .replace(/\[long-break\]/gi, '[long pause]')
-        .replace(/\[break\]/gi, '[pause]');
+const removeNaturalDirections = (narration) => narration
+    .replace(BRACKET_DIRECTION_PATTERN_GLOBAL, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/^[ \t]+|[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+// Uma direcao controla somente o texto que vem depois dela. Direcoes no fim
+// do roteiro nao possuem alvo; move-las para tras mudaria o sentido criativo.
+// Removemos apenas a sequencia terminal reconhecida como direcao natural,
+// mantendo tags validas anteriores e colchetes editoriais intactos.
+const removeTrailingOrphanDirections = (narration) => String(narration || '')
+    .replace(TRAILING_ORPHAN_DIRECTIONS_PATTERN, (_match, punctuation) => punctuation || '')
+    .trim();
 
 // Pausas de locução também são fronteiras naturais de leitura. O modelo pode
 // devolver tudo na mesma linha; esta proteção mantém o roteiro escaneável e
@@ -21,48 +29,19 @@ export const formatNarrationParagraphs = (narration) =>
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 
-const prefixSegment = (segment, tag) => {
-    const leadingWhitespace = segment.match(/^\s*/)?.[0] || '';
-    return `${leadingWhitespace}${tag} ${segment.slice(leadingWhitespace.length)}`;
-};
-
-const addFallbackDirection = (narration) => {
-    const segments = narration.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) || [narration];
-    const contentIndexes = segments
-        .map((segment, index) => (segment.trim() ? index : -1))
-        .filter((index) => index >= 0);
-
-    if (!contentIndexes.length) return narration;
-
-    const first = contentIndexes[0];
-    const middle = contentIndexes[Math.floor(contentIndexes.length / 2)];
-    const last = contentIndexes[contentIndexes.length - 1];
-    segments[first] = prefixSegment(segments[first], '[excited]');
-    if (middle !== first) segments[middle] = prefixSegment(segments[middle], '[emphasis]');
-    if (last !== first && last !== middle) segments[last] = prefixSegment(segments[last], '[pause]');
-    return segments.join('');
-};
-
 export const userRequestedCleanNarration = (messages = []) => {
     const latestUserMessage = [...messages].reverse().find((message) => message?.role === 'user');
     return CLEAN_NARRATION_REQUEST.test(String(latestUserMessage?.content || ''));
 };
 
-/**
- * Proteção final do produto: o prompt continua responsável pela direção criativa,
- * mas um roteiro S2 nunca chega ao usuário completamente sem marcação por uma
- * eventual desobediência do modelo.
- */
+// Compatibilidade de API: a função não cria direção de voz. Ela apenas
+// higieniza o bloco técnico final, remove direções órfãs e honra texto limpo.
 export const ensureNarrationSalesVoiceDirection = (text, { allowClean = false } = {}) => {
     if (typeof text !== 'string') return text;
     return text.replace(FINAL_NARRATION_PATTERN, (_match, opening, rawNarration, closing) => {
-        const narration = formatNarrationParagraphs(
-            normalizeSpokenNumbersPtBr(normalizeSupportedAliases(rawNarration.trim()))
-        );
-        if (allowClean) return `${opening}${narration}${closing}`;
-        const directed = FISH_AUDIO_TAG_PATTERN.test(narration)
-            ? narration
-            : addFallbackDirection(narration);
-        return `${opening}${directed}${closing}`;
+        const narration = removeTrailingOrphanDirections(formatNarrationParagraphs(
+            allowClean ? removeNaturalDirections(rawNarration.trim()) : rawNarration.trim()
+        ));
+        return `${opening}${narration}${closing}`;
     });
 };

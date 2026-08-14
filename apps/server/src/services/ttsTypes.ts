@@ -30,13 +30,13 @@ export interface VoiceSettings {
  * ([whisper], [laugh], [emphasis]...). Sem enviar o header, a API usa o padrão
  * legado e as tags viram texto falado.
  */
-export type FishModel = 's2.1-pro-free' | 's2-pro' | 's1';
+export type FishModel = 's2.1-pro' | 's2.1-pro-free' | 's2-pro' | 's1';
 
-// Pro por padrão: melhor qualidade de voz. Era o grátis; trocado a pedido do founder.
-export const DEFAULT_FISH_MODEL: FishModel = 's2-pro';
+// S2.1 Pro pago por padrão: modelo de produção mais atual da Fish Audio.
+export const DEFAULT_FISH_MODEL: FishModel = 's2.1-pro';
 
 export const isFishModel = (v: unknown): v is FishModel =>
-    v === 's2.1-pro-free' || v === 's2-pro' || v === 's1';
+    v === 's2.1-pro' || v === 's2.1-pro-free' || v === 's2-pro' || v === 's1';
 
 export interface NarrationResult {
     url: string;

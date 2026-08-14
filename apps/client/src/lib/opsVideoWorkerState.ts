@@ -1,7 +1,7 @@
 import type { OpsVideoJob, OpsVideoJobStage } from './gateway';
 import type { ExportResultDiagnostics } from './exportIntegrity';
 
-export const OPS_VIDEO_WORKER_APP_VERSION = '1.4.39';
+export const OPS_VIDEO_WORKER_APP_VERSION = '1.4.40';
 export const OPS_VIDEO_WORKER_STATE_KEY = 'mileto:ops-video-worker:active:v1';
 
 export type OpsVideoWorkerLocalStatus =
@@ -11,6 +11,120 @@ export type OpsVideoWorkerLocalStatus =
     | 'paused'
     | 'completed'
     | 'failed';
+
+export type OpsVideoExecutionDisposition =
+    | 'revision_possible'
+    | 'new_execution'
+    | 'project_original_missing'
+    | 'new_execution_required'
+    | 'temporarily_unavailable';
+
+export interface OpsVideoWorkerDiagnostic {
+    code: string;
+    message: string;
+    stage: OpsVideoJobStage;
+    retryable: boolean;
+    phase?: string;
+    requestId?: string;
+}
+
+export type OpsVideoWorkerCompanySource =
+    | 'mileto_ops_company'
+    | 'legacy_job_company_id'
+    | 'unresolved';
+
+export interface OpsVideoClaimIdentityDecision {
+    action: 'continue' | 'rebase' | 'reject';
+    code?: 'ops_claim_job_mismatch' | 'ops_claim_revision_regressed';
+    message: string;
+    retryable: boolean;
+    queuedRevision: number;
+    claimedRevision: number;
+}
+
+export interface OpsVideoExecutionDispositionInput {
+    isRevisionExecution: boolean;
+    requiresFreshRender: boolean;
+    hasCompatibleProject: boolean;
+    hasPreviousExecutionEvidence: boolean;
+    hasCompletePayload: boolean;
+    projectLookupUnavailable?: boolean;
+}
+
+export interface OpsVideoExecutionDispositionDecision {
+    disposition: OpsVideoExecutionDisposition;
+    canExecute: boolean;
+    code?: 'project_original_missing' | 'new_execution_required' | 'temporarily_unavailable';
+    message: string;
+    retryable: boolean;
+    phase: 'project_preflight';
+}
+
+/**
+ * Decide se uma solicitacao do Ops pode revisar o projeto original ou precisa
+ * ser tratada como uma execucao realmente nova. Evidencia de uma renderizacao
+ * anterior nunca autoriza recriar um projeto ausente a partir de um payload
+ * parcial: nesse caso o executor para antes de gerar ou cobrar.
+ */
+export const resolveOpsVideoExecutionDisposition = (
+    input: OpsVideoExecutionDispositionInput,
+): OpsVideoExecutionDispositionDecision => {
+    if (input.projectLookupUnavailable) {
+        return {
+            disposition: 'temporarily_unavailable',
+            canExecute: false,
+            code: 'temporarily_unavailable',
+            message: 'O projeto local nao pode ser consultado agora. O executor tentara novamente sem criar outro projeto.',
+            retryable: true,
+            phase: 'project_preflight',
+        };
+    }
+    if (input.hasCompatibleProject) {
+        return {
+            disposition: 'revision_possible',
+            canExecute: true,
+            message: 'Projeto original completo encontrado; a revisao pode continuar com seguranca.',
+            retryable: false,
+            phase: 'project_preflight',
+        };
+    }
+    if (input.isRevisionExecution && input.requiresFreshRender && input.hasCompletePayload) {
+        return {
+            disposition: 'new_execution',
+            canExecute: true,
+            message: 'O projeto local completo nao esta disponivel; o payload integral sera executado como uma nova renderizacao no projectId solicitado pelo Ops.',
+            retryable: false,
+            phase: 'project_preflight',
+        };
+    }
+    if (input.isRevisionExecution && input.hasPreviousExecutionEvidence) {
+        return {
+            disposition: 'project_original_missing',
+            canExecute: false,
+            code: 'project_original_missing',
+            message: 'Existe evidencia da execucao anterior, mas o projeto original completo e o payload integral nao estao disponiveis neste computador. Nenhum projeto substituto foi criado.',
+            retryable: false,
+            phase: 'project_preflight',
+        };
+    }
+    if (input.isRevisionExecution) {
+        return {
+            disposition: 'new_execution_required',
+            canExecute: false,
+            code: 'new_execution_required',
+            message: 'Nao ha projeto original nem payload integral suficiente para executar com seguranca. O Ops precisa reenfileirar uma nova execucao completa.',
+            retryable: false,
+            phase: 'project_preflight',
+        };
+    }
+    return {
+        disposition: 'new_execution',
+        canExecute: true,
+        message: 'Execucao inicial validada com o payload recebido do Ops.',
+        retryable: false,
+        phase: 'project_preflight',
+    };
+};
 
 export interface OpsVideoWorkerResumeData {
     projectPrepared: boolean;
@@ -26,6 +140,9 @@ export interface PersistedOpsVideoWorkerJob {
     jobId: string;
     projectId: string;
     companyId: string;
+    companySource: OpsVideoWorkerCompanySource;
+    companyFallbackUsed: boolean;
+    companyFallbackReason?: string | null;
     executionRevision: number;
     requiresFreshRender: boolean;
     destinationFolderId: string | null;
@@ -40,6 +157,8 @@ export interface PersistedOpsVideoWorkerJob {
     updatedAt: string;
     errorCode?: string | null;
     errorMessage?: string | null;
+    executionDisposition?: OpsVideoExecutionDisposition;
+    diagnostic?: OpsVideoWorkerDiagnostic | null;
     resume: OpsVideoWorkerResumeData;
 }
 
@@ -64,6 +183,42 @@ const browserStorage = (): WorkerStorage | null => {
 };
 
 const text = (value: unknown, max = 2_000) => String(value || '').trim().slice(0, max);
+
+const EXECUTION_DISPOSITIONS = new Set<OpsVideoExecutionDisposition>([
+    'revision_possible',
+    'new_execution',
+    'project_original_missing',
+    'new_execution_required',
+    'temporarily_unavailable',
+]);
+
+const normalizeExecutionDisposition = (value: unknown): OpsVideoExecutionDisposition =>
+    EXECUTION_DISPOSITIONS.has(value as OpsVideoExecutionDisposition)
+        ? value as OpsVideoExecutionDisposition
+        : 'new_execution';
+
+const normalizeDiagnostic = (value: unknown): OpsVideoWorkerDiagnostic | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const source = value as Partial<OpsVideoWorkerDiagnostic>;
+    const code = text(source.code, 120).replace(/[^a-z0-9_.:-]+/gi, '_');
+    const message = text(source.message);
+    const stage = source.stage;
+    if (!code || !message || !stage || !(stage in OPS_VIDEO_PROGRESS || stage === 'failed')) return null;
+    return {
+        code,
+        message,
+        stage,
+        retryable: source.retryable === true,
+        phase: text(source.phase, 120) || undefined,
+        requestId: text(source.requestId, 120).replace(/[^a-z0-9_.:-]+/gi, '_') || undefined,
+    };
+};
+
+const normalizeCompanySource = (value: unknown): OpsVideoWorkerCompanySource => (
+    value === 'mileto_ops_company' || value === 'legacy_job_company_id'
+        ? value
+        : 'unresolved'
+);
 
 const versionParts = (value: string): [number, number, number] | null => {
     const match = String(value || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i);
@@ -97,6 +252,7 @@ const opsVideoJobCoreIdentity = (job: OpsVideoJob) => ({
     voicePresetId: job.voicePresetId || null,
     format: job.format,
     takeAssetIds: job.takeAssetIds,
+    frameAssetId: job.frameAssetId || null,
     destinationFolderId: job.destinationFolderId || null,
     quickEdit: job.quickEdit,
     shuffleTakes: job.shuffleTakes,
@@ -118,6 +274,58 @@ export const opsVideoJobSignature = (job: OpsVideoJob): string => JSON.stringify
     },
 });
 
+/**
+ * Confere novamente a identidade depois do claim. A resposta do claim e a
+ * fonte autoritativa, mas nunca pode apontar para outro job nem regredir a
+ * revisao que acabou de ser lida da fila. Mudancas validas de revisao ou
+ * payload exigem um checkpoint novo, sem reaproveitar artefatos anteriores.
+ */
+export const resolveOpsVideoClaimIdentity = (
+    queued: OpsVideoJob,
+    claimed: OpsVideoJob,
+): OpsVideoClaimIdentityDecision => {
+    const queuedRevision = Math.max(1, Number(queued.execution?.revision || 1));
+    const claimedRevision = Math.max(1, Number(claimed.execution?.revision || 1));
+    if (claimed.id !== queued.id) {
+        return {
+            action: 'reject',
+            code: 'ops_claim_job_mismatch',
+            message: 'O claim devolveu outro job. Nenhum projeto ou render foi iniciado.',
+            retryable: false,
+            queuedRevision,
+            claimedRevision,
+        };
+    }
+    if (claimedRevision < queuedRevision) {
+        return {
+            action: 'reject',
+            code: 'ops_claim_revision_regressed',
+            message: 'O claim devolveu uma revisao anterior a que estava na fila. O executor aguardara o Ops sincronizar o job.',
+            retryable: true,
+            queuedRevision,
+            claimedRevision,
+        };
+    }
+    const sameProject = claimed.projectId === queued.projectId;
+    const samePayload = opsVideoJobSignature(claimed) === opsVideoJobSignature(queued);
+    if (sameProject && claimedRevision === queuedRevision && samePayload) {
+        return {
+            action: 'continue',
+            message: 'A identidade recebida no claim corresponde ao job lido da fila.',
+            retryable: false,
+            queuedRevision,
+            claimedRevision,
+        };
+    }
+    return {
+        action: 'rebase',
+        message: 'O claim trouxe uma revisao ou payload mais novo. O checkpoint anterior foi descartado e recriado a partir da identidade reclamada.',
+        retryable: false,
+        queuedRevision,
+        claimedRevision,
+    };
+};
+
 export const createPersistedOpsVideoJob = (
     job: OpsVideoJob,
     viewContextId: string,
@@ -125,11 +333,15 @@ export const createPersistedOpsVideoJob = (
     const now = new Date().toISOString();
     const executionRevision = Math.max(1, Number(job.execution?.revision || 1));
     const requiresFreshRender = job.execution?.requiresFreshRender === true;
+    const companyResolution = job.projectCompanyResolution;
     return {
         version: 1,
         jobId: job.id,
         projectId: job.projectId,
         companyId: job.companyId,
+        companySource: companyResolution?.source || 'unresolved',
+        companyFallbackUsed: companyResolution?.fallbackUsed === true,
+        companyFallbackReason: companyResolution?.fallbackReason || null,
         executionRevision,
         requiresFreshRender,
         destinationFolderId: job.destinationFolderId || null,
@@ -140,6 +352,8 @@ export const createPersistedOpsVideoJob = (
         message: text(job.progress?.message || 'Preparando o trabalho recebido do Mileto Ops.'),
         status: 'ready',
         jobSignature: opsVideoJobSignature(job),
+        executionDisposition: 'new_execution',
+        diagnostic: null,
         preparedAt: now,
         updatedAt: now,
         resume: {
@@ -171,6 +385,11 @@ export const loadPersistedOpsVideoJob = (
             ...parsed,
             executionRevision,
             requiresFreshRender,
+            companySource: normalizeCompanySource(parsed.companySource),
+            companyFallbackUsed: parsed.companyFallbackUsed === true,
+            companyFallbackReason: text(parsed.companyFallbackReason, 160) || null,
+            executionDisposition: normalizeExecutionDisposition(parsed.executionDisposition),
+            diagnostic: normalizeDiagnostic(parsed.diagnostic),
             resume: {
                 projectPrepared: parsed.resume?.projectPrepared === true,
                 renderStarted: parsed.resume?.renderStarted === true,
@@ -236,6 +455,7 @@ export const rebindPersistedOpsVideoJobContext = (
         message: 'Contexto delegado renovado. Retomando o mesmo trabalho com seguranca.',
         errorCode: null,
         errorMessage: null,
+        diagnostic: null,
     }, storage);
 };
 

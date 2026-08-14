@@ -6,9 +6,16 @@ import {
     AGENT_REASONING_LEVELS,
     AGENT_TIERS,
     DEFAULT_AGENT_CONFIGS,
+    NARRATOR_FINAL_DELIVERY_CONTRACT,
     upgradeBundledAgentSystemPrompt,
 } from './agentDefaults.js';
 import { getOrgAgentPrompt } from './orgAi.js';
+import {
+    MODEL_CATALOG,
+    assertAiModelAllowed,
+} from './aiModels.js';
+
+export { MODEL_CATALOG } from './aiModels.js';
 
 export const PROVIDERS = [
     { id: 'fishAudio', label: 'Fish Audio', help: 'Narração (TTS). Cobra por byte UTF-8.' },
@@ -78,29 +85,6 @@ export const TIERS = [
     { id: 'ultra', label: 'Mileto Ultra', hint: 'Máxima qualidade — roteiros mais elaborados.' },
 ];
 
-/** Catálogo sugerido (os mesmos IDs que o app já usa). Aceita ID custom também. */
-export const MODEL_CATALOG = {
-    openai: [
-        // Modelos de RACIOCÍNIO (gpt-5*, o*): respeitam o nível Rápido/Equilibrado/Profundo.
-        { id: 'gpt-5', name: 'GPT-5 (raciocínio)' },
-        { id: 'gpt-5-mini', name: 'GPT-5 Mini (raciocínio)' },
-        { id: 'gpt-5-nano', name: 'GPT-5 Nano (raciocínio)' },
-        { id: 'o4-mini', name: 'o4-mini (raciocínio)' },
-        { id: 'o3-mini', name: 'o3-mini (raciocínio)' },
-        // Modelos rápidos (sem raciocínio): o nível é ignorado.
-        { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano' },
-        { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini' },
-        { id: 'gpt-4.1', name: 'GPT-4.1' },
-        { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
-        { id: 'gpt-4o', name: 'GPT-4o' },
-    ],
-    gemini: [
-        { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
-        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
-        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
-    ],
-};
-
 // Padrão sensato: Lite/Plus RÁPIDOS (sem raciocínio); Ultra = gpt-5 (RACIOCÍNIO),
 // para o seletor Rápido/Equilibrado/Profundo do app realmente mudar o comportamento.
 const TIER_DEFAULTS = {
@@ -125,7 +109,7 @@ export const getTiers = async () => {
 /** Resolve o tier escolhido pelo cliente no modelo real. Aceita id de modelo direto também. */
 export const resolveModel = async (tierOrModel) => {
     const tier = TIERS.find((t) => t.id === tierOrModel || `mileto-${t.id}` === tierOrModel);
-    if (!tier) return tierOrModel; // já é um id de modelo real
+    if (!tier) return tierOrModel; // compatibilidade com IDs legados já publicados
     const tiers = await getTiers();
     return tiers.find((t) => t.id === tier.id).model;
 };
@@ -147,10 +131,11 @@ export const resolveTier = async (tierOrModel) => {
 };
 
 export const setTier = async (id, provider, model) => {
+    const normalized = assertAiModelAllowed(provider, model);
     await query(
         `INSERT INTO settings (key, value) VALUES ($1,$2)
          ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()`,
-        [`tier_${id}`, JSON.stringify({ provider, model })]
+        [`tier_${id}`, JSON.stringify(normalized)]
     );
     cache = null;
 };
@@ -275,15 +260,51 @@ export const normalizeAgentConfig = (id, input = {}, baseConfig = null) => {
         })
     );
     const systemPrompt = String(input.systemPrompt ?? base.systemPrompt ?? '').trim();
-    if (!systemPrompt) throw new Error('O prompt de sistema não pode ficar vazio.');
+    if (!systemPrompt && id !== 'prompt_sales') throw new Error('O prompt de sistema não pode ficar vazio.');
     if (systemPrompt.length > 120000) throw new Error('O prompt de sistema ultrapassa 120.000 caracteres.');
+    const internalVideoInstruction = id === 'prompt_sales'
+        ? String(
+            input.internalVideoInstruction
+            ?? base.internalVideoInstruction
+            ?? defaults.internalVideoInstruction
+            ?? ''
+        ).trim()
+        : null;
+    if (internalVideoInstruction && internalVideoInstruction.length > 120000) {
+        throw new Error('A instrução interna do AI Video ultrapassa 120.000 caracteres.');
+    }
 
     return {
         enabled: input.enabled === undefined ? Boolean(base.enabled) : Boolean(input.enabled),
         tiers,
         systemPrompt,
+        ...(id === 'prompt_sales' ? { internalVideoInstruction } : {}),
     };
 };
+
+export const composeAgentSystemPrompt = (id, systemPrompt = '', internalVideoInstruction = '') => {
+    const parts = [];
+    const publicPrompt = String(systemPrompt || '').trim();
+    if (publicPrompt) parts.push(publicPrompt);
+    if (id === 'prompt_sales') {
+        const privateInstruction = String(internalVideoInstruction || '').trim();
+        if (privateInstruction) parts.push(privateInstruction);
+        parts.push(NARRATOR_FINAL_DELIVERY_CONTRACT);
+    }
+    return parts.join('\n\n');
+};
+
+export const assertAgentModelsAllowed = (config) => {
+    for (const tier of AGENT_TIERS) {
+        const selected = config?.tiers?.[tier.id];
+        if (selected) assertAiModelAllowed(selected.provider, selected.model);
+    }
+    return config;
+};
+
+const upgradeBundledAgentConfig = (id, value) => value && typeof value === 'object'
+    ? { ...value, systemPrompt: upgradeBundledAgentSystemPrompt(id, value.systemPrompt) }
+    : value;
 
 export const getAgentConfig = async (id) => {
     const definition = agentDefinition(id);
@@ -293,9 +314,7 @@ export const getAgentConfig = async (id) => {
     const defaults = clone(DEFAULT_AGENT_CONFIGS[id]);
     // Preserva o prompt do Chat Mileto existente na primeira adoção do Diretor.
     if (!stored && id === 'director' && map.chat_prompt) defaults.systemPrompt = map.chat_prompt;
-    const effectiveStored = stored
-        ? { ...stored, systemPrompt: upgradeBundledAgentSystemPrompt(id, stored.systemPrompt) }
-        : null;
+    const effectiveStored = upgradeBundledAgentConfig(id, stored);
     const normalized = normalizeAgentConfig(id, effectiveStored || defaults, defaults);
     return {
         ...normalized,
@@ -316,8 +335,13 @@ export const getAgents = async () => {
 export const publishAgentConfig = async (id, input, actorId = null, metadata = {}) => {
     const map = await ensure();
     const current = await getAgentConfig(id);
-    const normalized = normalizeAgentConfig(id, input, current);
-    const history = parseJsonSetting(map, agentHistoryKey(id), []);
+    const normalized = assertAgentModelsAllowed(normalizeAgentConfig(
+        id,
+        upgradeBundledAgentConfig(id, input),
+        current
+    ));
+    const history = parseJsonSetting(map, agentHistoryKey(id), [])
+        .map((item) => upgradeBundledAgentConfig(id, item));
     const highestVersion = Math.max(current.version || 1, ...history.map((item) => Number(item.version) || 0));
     const published = {
         ...normalized,
@@ -346,7 +370,8 @@ export const publishAgentConfig = async (id, input, actorId = null, metadata = {
 export const getAgentHistory = async (id) => {
     if (!agentDefinition(id)) throw new Error('Agente inválido.');
     const map = await ensure();
-    const history = parseJsonSetting(map, agentHistoryKey(id), []);
+    const history = parseJsonSetting(map, agentHistoryKey(id), [])
+        .map((item) => upgradeBundledAgentConfig(id, item));
     if (history.length) return history;
     return [await getAgentConfig(id)];
 };
@@ -367,8 +392,11 @@ export const resolveAgent = async (id, locale = 'pt-BR', requestedTier = 'mileto
     const tier = config.tiers[tierId];
     const key = String(locale).toLowerCase();
     const orgOverride = orgId ? await getOrgAgentPrompt(orgId, id) : null;
-    const effectivePrompt = orgOverride?.prompt || config.systemPrompt;
+    const effectivePrompt = orgOverride
+        ? upgradeBundledAgentSystemPrompt(id, orgOverride.prompt)
+        : config.systemPrompt;
     const language = LANG_NAMES[key] || LANG_NAMES[key.split('-')[0]] || 'Português do Brasil';
+    const systemPrompt = composeAgentSystemPrompt(id, effectivePrompt, config.internalVideoInstruction);
     return {
         id,
         label: definition.label,
@@ -382,7 +410,7 @@ export const resolveAgent = async (id, locale = 'pt-BR', requestedTier = 'mileto
         generationProvider: tier.generationProvider,
         generationModel: tier.generationModel,
         generationCostUsd: tier.generationCostUsd,
-        systemPrompt: effectivePrompt.split('{idioma}').join(language),
+        systemPrompt: systemPrompt.split('{idioma}').join(language),
         promptSource: orgOverride ? 'organization' : 'global',
         promptUpdatedAt: orgOverride?.updatedAt || config.publishedAt || null,
         version: config.version,

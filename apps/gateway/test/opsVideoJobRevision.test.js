@@ -100,6 +100,6 @@ test('cliente exige a chave do caller e interpreta data.job do Ops', () => {
     );
     assert.match(retry, /idempotencyKey: string/);
     assert.match(retry, /'Idempotency-Key': idempotencyKey/);
-    assert.match(retry, /return response\.data\.job/);
+    assert.match(retry, /return normalizeOpsVideoJobProjectCompany\(response\.data\.job\)/);
     assert.doesNotMatch(retry, /randomUUID/);
 });

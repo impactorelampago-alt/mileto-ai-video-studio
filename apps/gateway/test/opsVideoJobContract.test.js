@@ -10,6 +10,7 @@ const executorActivity = read('../../client/src/lib/opsExecutorActivity.ts');
 const mainLayout = read('../../client/src/layouts/MainLayout.tsx');
 const workerState = read('../../client/src/lib/opsVideoWorkerState.ts');
 const gatewayClient = read('../../client/src/lib/gateway.ts');
+const jobCompanyContract = read('../../client/src/lib/opsVideoJobCompany.ts');
 const retryClient = read('../../client/src/lib/opsVideoJobRetry.ts');
 const exportJobs = read('../../client/src/context/ExportJobsContext.tsx');
 const opsController = read('../../server/src/controllers/opsController.ts');
@@ -55,7 +56,7 @@ test('fila, leitura, presença, claim, revisão e PATCH preservam delegação, a
 
 test('heartbeat usa versão 1.4.39, campo oficial mode e job atual', () => {
     const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
-    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.39'/);
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.40'/);
     assert.match(coordinator, /mode: modeRef\.current/);
     assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
     assert.match(coordinator, /resolvePersistedJob\(persisted\)/);
@@ -96,11 +97,38 @@ test('404 do heartbeat é tratado como presença não suportada sem interromper 
     assert.match(coordinator, /result\.supported \? 'online' : 'unsupported'/);
 });
 
-test('job só é assumido depois da validação e da persistência local segura', () => {
-    const validationAt = coordinator.indexOf('await validateBeforeClaim');
-    const saveAt = coordinator.indexOf('savePersistedOpsVideoJob', validationAt);
-    const claimAt = coordinator.indexOf('claimOpsVideoJob', validationAt);
-    assert.ok(validationAt >= 0 && saveAt > validationAt && claimAt > saveAt);
+test('job é persistido e assumido antes do preflight para devolver falhas estruturadas ao Ops', () => {
+    const executeAt = coordinator.indexOf('const execute = useCallback');
+    const saveAt = coordinator.indexOf('savePersistedOpsVideoJob', executeAt);
+    const claimAt = coordinator.indexOf('claimOpsVideoJob', saveAt);
+    const validationAt = coordinator.indexOf('await validateBeforeClaim', claimAt);
+    const paidGenerationAt = coordinator.indexOf('generateNarrationAndMix', validationAt);
+    assert.ok(executeAt >= 0 && saveAt > executeAt && claimAt > saveAt && validationAt > claimAt);
+    assert.ok(paidGenerationAt > validationAt, 'nenhuma geração paga pode anteceder o preflight');
+    assert.match(coordinator, /status: 'failed',[\s\S]*errorPhase: parsed\.phase[\s\S]*errorRequestId: parsed\.requestId[\s\S]*errorRetryable: parsed\.retryable/);
+    assert.match(coordinator, /resolveOpsVideoClaimIdentity\(queued\.job, job\)/);
+    assert.match(coordinator, /claimIdentity\.action === 'rebase'[\s\S]*clearPersistedOpsVideoJob\(\)[\s\S]*createPersistedOpsVideoJob\([\s\S]*job,/);
+    assert.match(coordinator, /historyContextRef\.current = \{[\s\S]*revision: claimIdentity\.claimedRevision/);
+    assert.match(coordinator, /claimIdentity\.action === 'reject'[\s\S]*claim_identity/);
+});
+
+test('falha antes do claim encerra o historico local sem criar revisao ativa fantasma', () => {
+    const start = coordinator.indexOf('let activeClaim: OpsVideoJobClaim;');
+    const end = coordinator.indexOf('const job = activeClaim.job;', start);
+    const preClaimFailure = coordinator.slice(start, end);
+    assert.ok(start >= 0 && end > start);
+    assert.match(preClaimFailure, /catch \(error\)[\s\S]*errorParts\(error\)/);
+    assert.match(preClaimFailure, /preClaimPhase = parsed\.phase \|\| 'pre_claim_failed'/);
+    assert.match(preClaimFailure, /status: 'failed'/);
+    assert.match(preClaimFailure, /errorCode: parsed\.code/);
+    assert.match(preClaimFailure, /errorStage: preClaimStage/);
+    assert.match(preClaimFailure, /errorRequestId: parsed\.requestId/);
+    assert.match(preClaimFailure, /errorRetryable: parsed\.retryable/);
+    assert.match(preClaimFailure, /recordOpsJobHistoryActivity\(terminalActivity/);
+    assert.match(preClaimFailure, /clearPersistedOpsVideoJob\(\)[\s\S]*currentJobRef\.current = null/);
+    assert.match(preClaimFailure, /type: 'monitor-failed'[\s\S]*requestId: parsed\.requestId[\s\S]*retryable: parsed\.retryable/);
+    assert.doesNotMatch(preClaimFailure, /updateOpsVideoJob|claimToken/);
+    assert.match(preClaimFailure, /return;/);
 });
 
 test('varios jobs continuam em fila e somente um executor roda por vez', () => {
@@ -112,10 +140,11 @@ test('varios jobs continuam em fila e somente um executor roda por vez', () => {
 
 test('primeiro progresso remoto após claim é narration 5 com mensagem de preparação', () => {
     const claimAt = coordinator.indexOf('claimOpsVideoJob');
-    const firstPatchAt = coordinator.indexOf("await patch('narration'", claimAt);
-    const snippet = coordinator.slice(firstPatchAt, firstPatchAt + 180);
-    assert.match(snippet, /OPS_VIDEO_PROGRESS\.narration\.start/);
-    assert.match(snippet, /Preparando a narração\./);
+    const claimedFlow = coordinator.slice(claimAt);
+    assert.match(
+        claimedFlow,
+        /await patch\(\s*'narration',\s*OPS_VIDEO_PROGRESS\.narration\.start,\s*`Preparando a narração\./,
+    );
 });
 
 test('faixas oficiais de progresso permanecem exatas', () => {
@@ -173,6 +202,66 @@ test('job com moldura valida PNG, materializa o overlay e preserva flags opciona
     assert.match(workerState, /settings: job\.settings/);
 });
 
+test('executor converte o contrato atual de narracao do Ops sem perder tags e aceita o legado', () => {
+    const validation = coordinator.slice(
+        coordinator.indexOf('const validateBeforeClaim'),
+        coordinator.indexOf('export const OpsVideoJobCoordinator'),
+    );
+    assert.match(validation, /job\.settings\?\.voiceSynthesis/);
+    assert.match(validation, /voiceSynthesis\?\.plainText/);
+    assert.match(validation, /job\.settings\?\.narrationPlainText/);
+    assert.match(validation, /job\.settings\?\.narrationSynthesisText/);
+    assert.match(validation, /const narrationSynthesisText = voiceSynthesisPlainText && jobNarrationText[\s\S]*\? jobNarrationText/);
+    assert.match(validation, /stripNarrationDirections\(narrationSynthesisText\)/);
+    assert.match(validation, /narrationText: narrationPlainText/);
+    assert.match(validation, /narrationSynthesisText: narrationSynthesisText \|\| narrationPlainText/);
+});
+
+test('falha da API local preserva metadados seguros e respeita retryable', () => {
+    const parsing = coordinator.slice(
+        coordinator.indexOf('const safeErrorIdentifier'),
+        coordinator.indexOf('const isPersistedResolutionFailure'),
+    );
+    assert.match(parsing, /error instanceof LocalApiError/);
+    assert.match(parsing, /code: safeErrorIdentifier\(error\.code, 'local_api_failed'\)/);
+    assert.match(parsing, /phase: error\.phase \? safeErrorIdentifier/);
+    assert.match(parsing, /requestId: error\.requestId \? safeErrorIdentifier/);
+    assert.match(parsing, /retryable: error\.retryable === true/);
+    assert.match(parsing, /\[url omitida\]/);
+    assert.match(parsing, /error instanceof LocalApiError\) return error\.retryable === true/);
+    assert.doesNotMatch(parsing, /JSON\.stringify\(error\)|error\.stack/);
+    assert.match(coordinator, /const executorErrorMetadata[\s\S]*errorPhase: error\.phase[\s\S]*errorRequestId: error\.requestId[\s\S]*errorRetryable: error\.retryable/);
+    assert.match(coordinator, /errorPhase\?: string;[\s\S]*errorRequestId\?: string;[\s\S]*errorRetryable\?: boolean;/);
+    assert.match(coordinator, /status: 'failed',[\s\S]*errorPhase: parsed\.phase,[\s\S]*errorRequestId: parsed\.requestId,[\s\S]*errorRetryable: parsed\.retryable/);
+    assert.match(gatewayClient, /errorStage\?: OpsVideoJobStage \| null;[\s\S]*errorPhase\?: string \| null;[\s\S]*errorRequestId\?: string \| null;[\s\S]*errorRetryable\?: boolean \| null;/);
+    const updateBody = coordinator.slice(
+        coordinator.indexOf('const update: OpsVideoJobUpdate'),
+        coordinator.indexOf('const sendUpdate'),
+    );
+    assert.match(updateBody, /errorStage: extra\.errorCode \? stage : undefined/);
+    assert.match(updateBody, /errorPhase: extra\.errorPhase/);
+    assert.match(updateBody, /errorRequestId: extra\.errorRequestId/);
+    assert.match(updateBody, /errorRetryable: extra\.errorRetryable/);
+    assert.match(gatewayClient, /this\.phase = phase/);
+    assert.match(gatewayClient, /this\.requestId = requestId/);
+    assert.match(gatewayClient, /this\.retryable = retryable/);
+    assert.match(gatewayClient, /errorData\?\.requestId \|\| null,[\s\S]*errorData\?\.phase \|\| null/);
+    assert.match(coordinator, /parsed\.retryable[\s\S]*\? 'temporarily_unavailable' as const/);
+});
+
+test('fallback legado de empresa fica auditavel no checkpoint, historico e PATCH remoto', () => {
+    assert.match(workerState, /companySource: OpsVideoWorkerCompanySource/);
+    assert.match(workerState, /companyFallbackUsed: boolean/);
+    assert.match(workerState, /companyFallbackReason\?: string \| null/);
+    assert.match(workerState, /companySource: companyResolution\?\.source \|\| 'unresolved'/);
+    assert.match(coordinator, /companySource: persisted\.companySource/);
+    assert.match(coordinator, /companyFallbackUsed: persisted\.companyFallbackUsed/);
+    assert.match(coordinator, /companyFallbackReason: persisted\.companyFallbackReason/);
+    assert.match(coordinator, /recordOpsJobHistoryActivity\(\{[\s\S]*fallbackAuditMessage/);
+    assert.match(coordinator, /companySource=\$\{readiness\.projectCompanyResolution\.source\}/);
+    assert.match(gatewayClient, /companySource\?: OpsVideoJobCompanyResolution\['source'\] \| 'unresolved'/);
+});
+
 test('revisão mais nova do mesmo job descarta somente o checkpoint antigo e inicia outro claim', () => {
     const resolve = coordinator.slice(
         coordinator.indexOf('const resolvePersistedJob'),
@@ -183,7 +272,7 @@ test('revisão mais nova do mesmo job descarta somente o checkpoint antigo e ini
     assert.match(resolve, /return \{ job, context \}/);
 });
 
-test('checkpoint preparado evita recriar o projeto, mas revisão fresh bloqueia todo cache anterior', () => {
+test('checkpoint de revisão distingue projeto original, execução nova e payload incompleto', () => {
     assert.match(coordinator, /persisted\.resume\.projectPrepared/);
     assert.match(coordinator, /completedExportFor\(job\)/);
     assert.match(coordinator, /previousAssetId/);
@@ -192,8 +281,30 @@ test('checkpoint preparado evita recriar o projeto, mas revisão fresh bloqueia 
     assert.match(coordinator, /const previousAssetId = requiresFreshRender[\s\S]*revisionResume\?\.assetId/);
     assert.match(workerState, /outputAssetId: requiresFreshRender \? null/);
     assert.match(workerState, /executionRevision: current\.executionRevision/);
-    assert.match(coordinator, /if \(isRevisionExecution && !canResumeProject\)/);
-    assert.match(coordinator, /fresh_render_project_unavailable/);
+    assert.match(coordinator, /resolveOpsVideoExecutionDisposition/);
+    assert.match(coordinator, /hasPreviousExecutionEvidence: Boolean\([\s\S]*previousOutputAssetId[\s\S]*job\.renderResult/);
+    assert.match(coordinator, /hasCompletePayload: readiness\.hasCompleteExecutionPayload/);
+    assert.match(coordinator, /executionDecision\.disposition/);
+    assert.match(coordinator, /executionDispositionError/);
+    assert.doesNotMatch(coordinator, /fresh_render_project_unavailable/);
+    for (const disposition of [
+        'revision_possible',
+        'new_execution',
+        'project_original_missing',
+        'new_execution_required',
+        'temporarily_unavailable',
+    ]) {
+        assert.match(workerState, new RegExp(`'${disposition}'`));
+    }
+});
+
+test('contexto do histórico muda para o job atual antes do preflight', () => {
+    const execute = coordinator.slice(
+        coordinator.indexOf('const execute = useCallback'),
+        coordinator.indexOf('const readiness = await validateBeforeClaim'),
+    );
+    assert.match(execute, /historyContextRef\.current = \{/);
+    assert.match(execute, /jobId: queued\.job\.id/);
 });
 
 test('quantidade de takes vem da narracao real, usa TAKES recentes e varia por lote de forma estavel', () => {
@@ -289,6 +400,8 @@ test('falhas permanentes são estruturadas e falhas recuperáveis ficam pausadas
     assert.match(coordinator, /status: 'failed'/);
     assert.match(coordinator, /errorCode: parsed\.code/);
     assert.match(coordinator, /errorMessage: parsed\.message/);
+    assert.match(coordinator, /Diagnostico tecnico:/);
+    assert.match(coordinator, /pode_tentar_novamente=/);
 });
 
 test('cliente Electron de desenvolvimento e instalado compartilham o mesmo worker', () => {
@@ -307,11 +420,13 @@ test('interface separa presença, monitor e erro do job no indicador global', ()
 });
 
 test('indicador diferencia heartbeat local da conexão persistente da empresa com o Ops', () => {
-    assert.match(mainLayout, /Executor local offline\. Isso não indica que a empresa foi desconectada do Mileto Ops\./);
-    assert.match(mainLayout, /Mesmo vermelho, ele não desconecta a empresa do Mileto Ops\./);
+    assert.match(mainLayout, /describeOpsExecutorMonitorError/);
+    assert.match(mainLayout, /Conexão com o Mileto Ops/);
+    assert.match(mainLayout, /Diagnóstico: \{executorMonitorError\.code\}/);
     assert.match(mainLayout, /executorHeartbeatState === 'offline'/);
     assert.match(mainLayout, /executorHeartbeatState === 'unsupported'/);
     assert.match(mainLayout, /motion-reduce:animate-none/);
+    assert.match(mainLayout, /const totalActiveCount = activeCount;/);
     assert.match(coordinator, /if \(!contextId\) \{[\s\S]*heartbeat: 'unsupported'/);
 });
 
@@ -327,8 +442,20 @@ test('cliente do gateway expõe revisão com chave persistida pelo caller', () =
     assert.match(gatewayClient, /requestTemporalIntegrityRetryWithPersistentKey/);
     assert.match(gatewayClient, /idempotencyKey: string/);
     assert.match(gatewayClient, /'Idempotency-Key': idempotencyKey/);
-    assert.match(gatewayClient, /return response\.data\.job/);
+    assert.match(gatewayClient, /normalizeOpsVideoJobProjectCompany\(response\.data\.job\)/);
     assert.match(retryClient, /persistentRetryIdempotencyKey/);
     assert.match(retryClient, /integrity_temporal_1_4_27/);
     assert.match(retryClient, /minimumAppVersion: TEMPORAL_INTEGRITY_MINIMUM_APP_VERSION/);
+});
+
+test('empresa autoritativa do projeto vence a empresa legada em todas as entradas do job', () => {
+    assert.match(jobCompanyContract, /own\(settings, 'projectCompany'\)/);
+    assert.match(jobCompanyContract, /source\.source !== 'mileto_ops_company'/);
+    assert.match(jobCompanyContract, /source: 'legacy_job_company_id'/);
+    assert.match(jobCompanyContract, /fallbackReason: 'settings\.projectCompany_absent'/);
+    assert.match(jobCompanyContract, /companyId: projectCompanyResolution\.id/);
+    assert.match(coordinator, /name: projectCompanyResolution\.name/);
+    assert.match(coordinator, /event: 'legacy_company_fallback'/);
+    assert.match(gatewayClient, /nextOpsVideoJob[\s\S]*normalizeOpsVideoJobProjectCompany\(response\.data\)/);
+    assert.match(gatewayClient, /claimOpsVideoJob[\s\S]*normalizeOpsVideoJobProjectCompany\(response\.data\.job\)/);
 });

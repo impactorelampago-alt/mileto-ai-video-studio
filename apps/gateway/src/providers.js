@@ -1,4 +1,6 @@
 import { getKey } from './settings.js';
+import { resolveTtsModelFromPayload } from './ttsModels.js';
+import { isOpenAiReasoningModel, openAiReasoningEffort } from './aiModels.js';
 
 /** Ha chave real para este provedor? (define modo demo antes de reservar credito). */
 export const hasKey = async (provider) => !!(await getKey(provider));
@@ -18,12 +20,18 @@ const SILENT_MP3 = Buffer.from(
  * Proxy de TTS. As chaves ficam AQUI, no servidor — nunca no cliente.
  * Sem chave configurada → modo demo (áudio silencioso), para ver o fluxo local.
  */
-export const proxyTts = async ({ provider, voiceId, text, voiceSettings }) => {
+export const proxyTts = async ({ provider, voiceId, text, voiceSettings, model }) => {
+    // Revalida o contrato na fronteira externa. Se o chamador resolveu um modelo,
+    // esse identificador exato precisa ser o enviado ao fornecedor.
+    const resolvedModel = resolveTtsModelFromPayload(provider, {
+        ...(model !== undefined ? { ttsModel: model } : {}),
+        voiceSettings,
+    });
     const apiKey = await getKey(provider);
-    if (!apiKey) return { audio: SILENT_MP3, demo: true };
+    if (!apiKey) return { audio: SILENT_MP3, demo: true, model: resolvedModel };
 
     if (provider === 'fishAudio') {
-        const model = voiceSettings?.fishModel || 's2.1-pro-free';
+        const model = resolvedModel;
         const prosody =
             voiceSettings && (voiceSettings.speed !== 1 || voiceSettings.volume !== 0)
                 ? { speed: voiceSettings.speed ?? 1, volume: voiceSettings.volume ?? 0 }
@@ -54,7 +62,7 @@ export const proxyTts = async ({ provider, voiceId, text, voiceSettings }) => {
             }),
         });
         if (!res.ok) throw new Error(`Fish Audio ${res.status}: ${await res.text()}`);
-        return { audio: Buffer.from(await res.arrayBuffer()), demo: false };
+        return { audio: Buffer.from(await res.arrayBuffer()), demo: false, model };
     }
 
     if (provider === 'elevenLabs') {
@@ -72,7 +80,7 @@ export const proxyTts = async ({ provider, voiceId, text, voiceSettings }) => {
             }),
         });
         if (!res.ok) throw new Error(`ElevenLabs ${res.status}: ${await res.text()}`);
-        return { audio: Buffer.from(await res.arrayBuffer()), demo: false };
+        return { audio: Buffer.from(await res.arrayBuffer()), demo: false, model: resolvedModel };
     }
 
     throw new Error(`Provedor de TTS não suportado: ${provider}`);
@@ -111,15 +119,9 @@ export const proxyStt = async ({ audio, filename = 'audio.mp3', language = 'pt' 
 };
 
 // Modelos de raciocínio da OpenAI: não aceitam temperature e usam max_completion_tokens.
-const isReasoningModel = (model) => /^o\d/.test(model) || String(model).startsWith('gpt-5');
+const isReasoningModel = isOpenAiReasoningModel;
 
 // Nível do app (rápido/equilibrado/profundo) → reasoning_effort da OpenAI.
-const REASONING_MAP = {
-    rapido: 'low', low: 'low',
-    equilibrado: 'medium', medium: 'medium',
-    profundo: 'high', high: 'high',
-};
-
 // Modelos de raciocínio podem levar mais de um minuto, mas uma conexão muda não
 // pode manter créditos reservados indefinidamente. O servidor local espera um
 // pouco mais que este limite para receber a resposta de erro e encerrar o fluxo.
@@ -167,6 +169,27 @@ export const completeChatRequest = async (request, signal) => {
     const empty = new Error('O provedor respondeu sem texto.');
     empty.code = 'CHAT_EMPTY_RESPONSE';
     throw empty;
+};
+
+export const buildOpenAiChatBody = ({
+    messages,
+    model,
+    reasoning,
+    json = false,
+    maxOutputTokens = 4096,
+}) => {
+    const outputLimit = Math.max(512, Math.min(32768, Math.round(Number(maxOutputTokens) || 4096)));
+    const body = { model, messages };
+    if (json) body.response_format = { type: 'json_object' };
+    if (isReasoningModel(model)) {
+        body.max_completion_tokens = outputLimit;
+        const reasoningEffort = openAiReasoningEffort(model, reasoning);
+        if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+    } else {
+        body.temperature = 0.7;
+        body.max_tokens = outputLimit;
+    }
+    return body;
 };
 
 const fetchChatProvider = async (url, init, externalSignal) => {
@@ -246,15 +269,7 @@ export const proxyChat = async ({ messages, model, provider, reasoning, json, ma
     }
 
     // OpenAI
-    const body = { model, messages };
-    if (json) body.response_format = { type: 'json_object' };
-    if (isReasoningModel(model)) {
-        body.max_completion_tokens = outputLimit;
-        if (reasoning && REASONING_MAP[reasoning]) body.reasoning_effort = REASONING_MAP[reasoning];
-    } else {
-        body.temperature = 0.7;
-        body.max_tokens = outputLimit;
-    }
+    const body = buildOpenAiChatBody({ messages, model, reasoning, json, maxOutputTokens: outputLimit });
     return completeChatRequest(async () => {
     const res = await fetchChatProvider(
         'https://api.openai.com/v1/chat/completions',

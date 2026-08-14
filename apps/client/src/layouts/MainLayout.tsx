@@ -3,13 +3,13 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
     Bell,
     BrainCircuit,
-    Building2,
     CheckCircle2,
     ChevronDown,
     Download,
     Film,
     FolderOpen,
     Home,
+    History,
     Image as ImageIcon,
     Loader2,
     Link2,
@@ -35,14 +35,23 @@ import { useWizard } from '../context/WizardContext';
 import { useAuth } from '../context/AuthContext';
 import { useDownloadJobs } from '../context/DownloadJobsContext';
 import {
+    describeOpsExecutorMonitorError,
     getOpsExecutorActivity,
     opsExecutorCurrentMonitorError,
     opsExecutorIsOnline,
-    opsExecutorIsWorking,
     opsExecutorVisibleJobError,
     OPS_EXECUTOR_STAGE_LABELS,
     subscribeOpsExecutorActivity,
 } from '../lib/opsExecutorActivity';
+import {
+    explainOpsJobFailure,
+    getOpsJobHistory,
+    opsJobHistoryForScope,
+    opsJobHistoryRecordKey,
+    opsJobHistoryScope,
+    subscribeOpsJobHistory,
+    type OpsJobHistoryRecord,
+} from '../lib/opsJobHistory';
 
 /** Rótulo amigável do plano da organização. */
 const PLAN_LABEL: Record<string, string> = {
@@ -59,6 +68,7 @@ let automaticUpdateCheckStarted = false;
 export const MainLayout = () => {
     const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
     const [isDownloadPanelOpen, setIsDownloadPanelOpen] = useState(false);
+    const [isExecutorPanelOpen, setIsExecutorPanelOpen] = useState(false);
     const [isAiMenuOpen, setIsAiMenuOpen] = useState(false);
     const navigate = useNavigate();
     const location = useLocation();
@@ -72,6 +82,11 @@ export const MainLayout = () => {
         subscribeOpsExecutorActivity,
         getOpsExecutorActivity,
         getOpsExecutorActivity
+    );
+    const opsHistorySnapshot = useSyncExternalStore(
+        subscribeOpsJobHistory,
+        getOpsJobHistory,
+        getOpsJobHistory
     );
     const prevPathRef = useRef<string>(location.pathname);
     const downloadPanelRef = useRef<HTMLDivElement | null>(null);
@@ -105,12 +120,18 @@ export const MainLayout = () => {
     }, [saveProject]);
 
     useEffect(() => {
-        if (!isDownloadPanelOpen) return;
+        if (!isDownloadPanelOpen && !isExecutorPanelOpen) return;
         const closeOnOutsideClick = (event: MouseEvent) => {
-            if (!downloadPanelRef.current?.contains(event.target as Node)) setIsDownloadPanelOpen(false);
+            if (!downloadPanelRef.current?.contains(event.target as Node)) {
+                setIsDownloadPanelOpen(false);
+                setIsExecutorPanelOpen(false);
+            }
         };
         const closeOnEscape = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') setIsDownloadPanelOpen(false);
+            if (event.key === 'Escape') {
+                setIsDownloadPanelOpen(false);
+                setIsExecutorPanelOpen(false);
+            }
         };
         document.addEventListener('mousedown', closeOnOutsideClick);
         document.addEventListener('keydown', closeOnEscape);
@@ -118,10 +139,11 @@ export const MainLayout = () => {
             document.removeEventListener('mousedown', closeOnOutsideClick);
             document.removeEventListener('keydown', closeOnEscape);
         };
-    }, [isDownloadPanelOpen]);
+    }, [isDownloadPanelOpen, isExecutorPanelOpen]);
 
     useEffect(() => {
         setIsDownloadPanelOpen(false);
+        setIsExecutorPanelOpen(false);
     }, [location.pathname]);
 
     useEffect(() => {
@@ -225,13 +247,11 @@ export const MainLayout = () => {
         .slice(0, 4);
     const finishedNotificationCount = jobs.filter((job) => job.phase !== 'downloading').length;
     const executorOnline = opsExecutorIsOnline(executorActivity);
-    const executorWorking = opsExecutorIsWorking(executorActivity);
     const executorJobErrorCode = opsExecutorVisibleJobError(executorActivity);
     const executorMonitorError = opsExecutorCurrentMonitorError(executorActivity);
-    const activitiesLabel = executorMonitorError
-        ? 'Atividades; comunicação temporariamente indisponível'
-        : 'Atividades em segundo plano';
-    const totalActiveCount = activeCount + Number(executorWorking);
+    const executorMonitorExplanation = describeOpsExecutorMonitorError(executorMonitorError);
+    const activitiesLabel = 'Atividades em segundo plano';
+    const totalActiveCount = activeCount;
     const executorHeartbeatState = executorOnline
         ? 'online'
         : executorActivity.heartbeat === 'offline'
@@ -240,13 +260,15 @@ export const MainLayout = () => {
             ? 'unsupported'
             : 'checking';
     const executorHeartbeatLabel = executorHeartbeatState === 'online'
-        ? 'Sinal do executor local ativo'
+        ? 'Mileto Ops conectado. Executor local pronto.'
         : executorHeartbeatState === 'offline'
-          ? 'Executor local offline. Isso não indica que a empresa foi desconectada do Mileto Ops.'
+          ? executorMonitorExplanation
+            ? `${executorMonitorExplanation.title}. ${executorMonitorExplanation.detail}`
+            : 'Não foi possível confirmar a conexão com o Mileto Ops.'
           : executorHeartbeatState === 'unsupported'
-            ? 'Monitoramento do executor local indisponível. Isso não indica desconexão da empresa.'
-            : 'Verificando o executor local. Isso não indica desconexão da empresa.';
-    const executorStatusLabel = executorHeartbeatState === 'offline'
+            ? 'Monitoramento do executor local indisponível.'
+            : 'Verificando a conexão com o Mileto Ops.';
+    const executorStatusLabel = executorMonitorExplanation?.statusLabel || (executorHeartbeatState === 'offline'
         ? 'Offline'
         : executorHeartbeatState === 'unsupported'
           ? 'Sem monitoramento'
@@ -262,7 +284,20 @@ export const MainLayout = () => {
                   ? 'Falhou'
                   : executorActivity.stage === 'export'
                     ? 'Exportando'
-                    : 'Em produção';
+                    : 'Em produção');
+
+    const opsHistoryRecords = opsJobHistoryForScope(
+        opsHistorySnapshot,
+        opsJobHistoryScope(user?.orgId, user?.id)
+    );
+    const recentOpsHistory = [...opsHistoryRecords]
+        .sort((a, b) => {
+            const active = (record: OpsJobHistoryRecord) => Number(
+                record.status === 'requested' || record.status === 'running' || record.status === 'paused'
+            );
+            return active(b) - active(a) || b.updatedAt - a.updatedAt;
+        })
+        .slice(0, 5);
 
     const clearNotificationHistory = async () => {
         try {
@@ -276,10 +311,8 @@ export const MainLayout = () => {
     return (
         <div className="flex h-screen bg-background text-foreground font-sans overflow-hidden transition-colors duration-300">
             <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-                {executorMonitorError
-                    ? `Comunicação temporariamente indisponível. ${executorActivity.status === 'completed'
-                        ? 'O último vídeo continua concluído.'
-                        : 'O executor tentará novamente automaticamente.'}`
+                {executorMonitorExplanation
+                    ? `${executorMonitorExplanation.title}. ${executorMonitorExplanation.detail}`
                     : ''}
             </p>
             <p className="sr-only" role="alert" aria-atomic="true">
@@ -289,6 +322,7 @@ export const MainLayout = () => {
             {(location.pathname === '/' ||
                 location.pathname === '/files' ||
                 location.pathname === '/downloads' ||
+                location.pathname === '/ops-history' ||
                 location.pathname === '/account' ||
                 location.pathname === '/integrations' ||
                 location.pathname.startsWith('/ai/')) && (
@@ -380,6 +414,18 @@ export const MainLayout = () => {
                                         {activeCount}
                                     </span>
                                 )}
+                            </button>
+                            <button
+                                onClick={() => navigate('/ops-history')}
+                                className={cn(
+                                    'flex items-center gap-3 px-4 py-3 rounded-xl transition-all border',
+                                    location.pathname === '/ops-history'
+                                        ? 'bg-brand-lime/10 text-brand-lime border-brand-lime/20'
+                                        : 'text-muted-foreground hover:bg-white/5 hover:text-foreground border-transparent'
+                                )}
+                            >
+                                <History className="w-5 h-5" />
+                                <span className="text-sm font-bold">Histórico do Ops</span>
                             </button>
                             <button
                                 onClick={() => navigate('/account')}
@@ -514,9 +560,12 @@ export const MainLayout = () => {
                     <div ref={downloadPanelRef} className="relative flex items-center gap-2">
                         <button
                             type="button"
-                            onClick={() => setIsDownloadPanelOpen((open) => !open)}
+                            onClick={() => {
+                                setIsDownloadPanelOpen(false);
+                                setIsExecutorPanelOpen((open) => !open);
+                            }}
                             aria-label={executorHeartbeatLabel}
-                            aria-expanded={isDownloadPanelOpen}
+                            aria-expanded={isExecutorPanelOpen}
                             aria-live="polite"
                             title={executorHeartbeatLabel}
                             className={cn(
@@ -540,7 +589,10 @@ export const MainLayout = () => {
                         </button>
                         <button
                             type="button"
-                            onClick={() => setIsDownloadPanelOpen((open) => !open)}
+                            onClick={() => {
+                                setIsExecutorPanelOpen(false);
+                                setIsDownloadPanelOpen((open) => !open);
+                            }}
                             aria-label={activitiesLabel}
                             aria-expanded={isDownloadPanelOpen}
                             title={activitiesLabel}
@@ -548,8 +600,6 @@ export const MainLayout = () => {
                                 'relative flex h-9 w-9 items-center justify-center rounded-xl border transition-all',
                                 isDownloadPanelOpen
                                     ? 'border-brand-lime/30 bg-brand-lime/15 text-brand-lime'
-                                    : executorMonitorError
-                                      ? 'border-amber-300/30 bg-amber-300/10 text-amber-300'
                                     : 'border-white/10 bg-white/5 text-brand-muted hover:border-white/20 hover:text-foreground'
                             )}
                         >
@@ -560,6 +610,162 @@ export const MainLayout = () => {
                                 </span>
                             )}
                         </button>
+
+                        {isExecutorPanelOpen && (
+                            <div className="absolute right-11 top-[calc(100%+0.6rem)] w-[min(410px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-white/10 bg-brand-dark/98 shadow-2xl backdrop-blur-xl">
+                                <div className="border-b border-white/10 px-4 py-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div>
+                                            <p className="text-sm font-black text-foreground">Conexão com o Mileto Ops</p>
+                                            <p className="mt-0.5 text-[10px] text-brand-muted">Executor deste computador</p>
+                                        </div>
+                                        <span
+                                            className={cn(
+                                                'shrink-0 rounded-full border px-2 py-0.5 text-[8px] font-black uppercase tracking-wider',
+                                                executorHeartbeatState === 'online'
+                                                    ? 'border-brand-lime/20 bg-brand-lime/10 text-brand-lime'
+                                                    : executorHeartbeatState === 'offline'
+                                                      ? 'border-red-400/20 bg-red-400/10 text-red-400'
+                                                      : 'border-amber-300/20 bg-amber-300/10 text-amber-300'
+                                            )}
+                                        >
+                                            {executorStatusLabel}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div className="px-4 py-4">
+                                    <div className="flex gap-3">
+                                        <div
+                                            className={cn(
+                                                'mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border',
+                                                executorHeartbeatState === 'online'
+                                                    ? 'border-brand-lime/20 bg-brand-lime/10 text-brand-lime'
+                                                    : executorHeartbeatState === 'offline'
+                                                      ? 'border-red-400/20 bg-red-400/10 text-red-400'
+                                                      : 'border-amber-300/20 bg-amber-300/10 text-amber-300'
+                                            )}
+                                        >
+                                            {executorHeartbeatState === 'online' ? (
+                                                <Wifi className="h-4 w-4" />
+                                            ) : executorHeartbeatState === 'checking' ? (
+                                                <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+                                            ) : (
+                                                <WifiOff className="h-4 w-4" />
+                                            )}
+                                        </div>
+                                        <div className="min-w-0 flex-1">
+                                            <p className="text-xs font-black text-foreground">
+                                                {executorMonitorExplanation?.title || (
+                                                    executorHeartbeatState === 'online'
+                                                        ? 'Executor conectado e pronto'
+                                                        : executorHeartbeatState === 'unsupported'
+                                                          ? 'Monitoramento indisponível'
+                                                          : executorHeartbeatState === 'checking'
+                                                            ? 'Verificando conexão'
+                                                            : 'Executor local sem resposta'
+                                                )}
+                                            </p>
+                                            <p className="mt-1.5 text-[10px] leading-relaxed text-brand-muted">
+                                                {executorMonitorExplanation?.detail || (
+                                                    executorHeartbeatState === 'online'
+                                                        ? 'Este computador está conectado ao Mileto Ops e pronto para receber trabalhos.'
+                                                        : executorHeartbeatState === 'checking'
+                                                          ? 'O Mileto está verificando a comunicação com o Ops.'
+                                                          : 'Ainda não foi possível confirmar a comunicação.'
+                                                )}
+                                            </p>
+                                            {executorMonitorExplanation?.action && (
+                                                <p className="mt-2 text-[10px] font-bold leading-relaxed text-amber-200">
+                                                    {executorMonitorExplanation.action}
+                                                </p>
+                                            )}
+                                            {executorMonitorError && (
+                                                <p className="mt-2 text-[9px] text-brand-muted/75">
+                                                    Diagnóstico: {executorMonitorError.code}
+                                                </p>
+                                            )}
+                                            {executorActivity.jobId && (
+                                                <div className="mt-3 border-t border-white/5 pt-3">
+                                                    <div className="flex items-center justify-between gap-3 text-[10px]">
+                                                        <span className="truncate font-bold text-foreground/80">
+                                                            {executorActivity.projectTitle || 'Trabalho do Mileto Ops'}
+                                                        </span>
+                                                        <span className="shrink-0 font-black text-foreground/70">
+                                                            {Math.round(executorActivity.percent)}%
+                                                        </span>
+                                                    </div>
+                                                    <p className="mt-1 truncate text-[9px] text-brand-muted">
+                                                        {executorActivity.companyName || 'Mileto Ops'} · {OPS_EXECUTOR_STAGE_LABELS[executorActivity.stage]}
+                                                    </p>
+                                                    {executorJobErrorCode && (
+                                                        <p className="mt-1.5 truncate text-[9px] text-red-300">{executorJobErrorCode}</p>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="border-t border-white/10">
+                                    <div className="flex items-center justify-between px-4 py-2.5">
+                                        <p className="text-[10px] font-black uppercase tracking-[0.14em] text-brand-muted">Últimos trabalhos</p>
+                                        <span className="text-[9px] text-brand-muted/70">até 5</span>
+                                    </div>
+                                    <div className="max-h-64 overflow-y-auto border-t border-white/5">
+                                        {recentOpsHistory.length === 0 ? (
+                                            <p className="px-4 py-4 text-center text-[10px] text-brand-muted">
+                                                Nenhum trabalho do Ops registrado neste computador.
+                                            </p>
+                                        ) : recentOpsHistory.map((record) => {
+                                            const failure = record.status === 'failed'
+                                                ? explainOpsJobFailure(record.errorCode, record.message)
+                                                : null;
+                                            const statusColor = record.status === 'completed'
+                                                ? 'bg-brand-lime'
+                                                : record.status === 'failed'
+                                                  ? 'bg-red-400'
+                                                  : record.status === 'paused'
+                                                    ? 'bg-amber-300'
+                                                    : 'bg-brand-accent';
+                                            return (
+                                                <button
+                                                    key={opsJobHistoryRecordKey(record)}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setIsExecutorPanelOpen(false);
+                                                        navigate('/ops-history');
+                                                    }}
+                                                    className="flex w-full gap-3 border-t border-white/5 px-4 py-3 text-left transition-colors first:border-t-0 hover:bg-white/[0.03]"
+                                                >
+                                                    <span className={cn('mt-1.5 h-2 w-2 shrink-0 rounded-full', statusColor)} />
+                                                    <span className="min-w-0 flex-1">
+                                                        <span className="flex items-center justify-between gap-3">
+                                                            <span className="truncate text-[10px] font-black text-foreground/85">{record.projectTitle}</span>
+                                                            <span className="shrink-0 text-[9px] font-black text-foreground/60">{Math.round(record.percent)}%</span>
+                                                        </span>
+                                                        <span className="mt-1 block truncate text-[9px] text-brand-muted">
+                                                            {OPS_EXECUTOR_STAGE_LABELS[record.stage]} · {new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(new Date(record.updatedAt))}
+                                                        </span>
+                                                        <span className={cn('mt-1 line-clamp-2 block text-[9px] leading-relaxed', record.status === 'failed' ? 'text-red-300' : 'text-foreground/55')}>
+                                                            {failure?.title || record.message}
+                                                        </span>
+                                                    </span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setIsExecutorPanelOpen(false);
+                                        navigate('/ops-history');
+                                    }}
+                                    className="flex w-full items-center justify-center gap-2 border-t border-white/10 px-4 py-3 text-xs font-black text-brand-lime transition-colors hover:bg-brand-lime/5"
+                                >
+                                    <History className="h-3.5 w-3.5" /> Ver histórico completo
+                                </button>
+                            </div>
+                        )}
 
                         {isDownloadPanelOpen && (
                             <div className="absolute right-0 top-[calc(100%+0.6rem)] w-[min(380px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-white/10 bg-brand-dark/98 shadow-2xl backdrop-blur-xl">
@@ -590,113 +796,9 @@ export const MainLayout = () => {
                                 </div>
 
                                 <div className="max-h-80 overflow-y-auto">
-                                    <div className="border-b border-white/5 px-4 py-3">
-                                        <div className="flex gap-3">
-                                            <div
-                                                className={cn(
-                                                    'mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border',
-                                                    executorHeartbeatState === 'online'
-                                                        ? 'border-brand-lime/20 bg-brand-lime/10 text-brand-lime'
-                                                        : executorHeartbeatState === 'offline'
-                                                          ? 'border-red-400/20 bg-red-400/10 text-red-400'
-                                                          : 'border-amber-300/20 bg-amber-300/10 text-amber-300'
-                                                )}
-                                            >
-                                                {executorHeartbeatState === 'online' ? (
-                                                    <Wifi className="h-4 w-4" />
-                                                ) : executorHeartbeatState === 'offline' ? (
-                                                    <WifiOff className="h-4 w-4" />
-                                                ) : executorHeartbeatState === 'unsupported' ? (
-                                                    <WifiOff className="h-4 w-4" />
-                                                ) : (
-                                                    <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" />
-                                                )}
-                                            </div>
-                                            <div className="min-w-0 flex-1">
-                                                <div className="flex items-center justify-between gap-3">
-                                                    <p className="truncate text-xs font-black text-foreground">
-                                                        Executor local
-                                                    </p>
-                                                    <span
-                                                        className={cn(
-                                                            'shrink-0 rounded-full border px-2 py-0.5 text-[8px] font-black uppercase tracking-wider',
-                                                            executorHeartbeatState === 'online'
-                                                                ? 'border-brand-lime/20 bg-brand-lime/10 text-brand-lime'
-                                                                : executorHeartbeatState === 'offline'
-                                                                  ? 'border-red-400/20 bg-red-400/10 text-red-400'
-                                                                  : 'border-amber-300/20 bg-amber-300/10 text-amber-300'
-                                                        )}
-                                                    >
-                                                        {executorStatusLabel}
-                                                    </span>
-                                                </div>
-                                                <p className="mt-1 truncate text-[11px] font-bold text-foreground/80">
-                                                    {executorActivity.projectTitle || 'Mileto Ops Video Maker'}
-                                                </p>
-                                                <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[9px] text-brand-muted">
-                                                    <Building2 className="h-3 w-3 shrink-0" />
-                                                    <span className="truncate">
-                                                        {executorActivity.companyName ||
-                                                            (executorHeartbeatState === 'online'
-                                                                ? 'Aguardando trabalho do Mileto Ops'
-                                                                : executorHeartbeatState === 'offline'
-                                                                  ? 'Executor local sem resposta'
-                                                                  : executorHeartbeatState === 'unsupported'
-                                                                    ? 'Monitoramento local indisponível'
-                                                                    : 'Verificando o executor local')}
-                                                    </span>
-                                                </div>
-                                                <p className="mt-1.5 text-[9px] leading-relaxed text-brand-muted">
-                                                    Este indicador acompanha somente o executor deste computador. Mesmo vermelho, ele não desconecta a empresa do Mileto Ops.
-                                                </p>
-                                                <div className="mt-2 flex items-center justify-between gap-3 text-[9px] text-brand-muted">
-                                                    <span className="truncate">
-                                                        {executorActivity.jobId
-                                                            ? `${executorActivity.status === 'completed' || executorActivity.status === 'failed' ? 'Último job' : 'Etapa'}: ${OPS_EXECUTOR_STAGE_LABELS[executorActivity.stage]}`
-                                                            : executorActivity.message}
-                                                    </span>
-                                                    {executorActivity.jobId && (
-                                                        <span className="shrink-0 font-black text-foreground/70">
-                                                            {Math.round(executorActivity.percent)}%
-                                                        </span>
-                                                    )}
-                                                </div>
-                                                {executorActivity.jobId && (
-                                                    <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/5">
-                                                        <div
-                                                            className={cn(
-                                                                'h-full transition-all duration-500',
-                                                                executorActivity.status === 'failed'
-                                                                    ? 'bg-red-400'
-                                                                    : 'bg-linear-to-r from-brand-lime to-brand-accent'
-                                                            )}
-                                                            style={{
-                                                                width: `${Math.max(2, Math.min(100, executorActivity.percent))}%`,
-                                                            }}
-                                                        />
-                                                    </div>
-                                                )}
-                                                {executorMonitorError && (
-                                                    <p
-                                                        className="mt-1.5 text-[9px] leading-relaxed text-amber-200"
-                                                        title={`Diagnóstico do monitor: ${executorMonitorError.code}`}
-                                                    >
-                                                        Comunicação temporariamente indisponível. {executorActivity.status === 'completed'
-                                                            ? 'O último vídeo continua concluído.'
-                                                            : 'O executor tentará novamente automaticamente.'}
-                                                    </p>
-                                                )}
-                                                {executorJobErrorCode && (
-                                                    <p className="mt-1.5 truncate text-[9px] text-red-300">
-                                                        {executorJobErrorCode}
-                                                    </p>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </div>
                                     {notificationJobs.length === 0 ? (
                                         <div className="px-5 py-4 text-center text-brand-muted">
-                                            <p className="text-[10px]">Nenhuma outra atividade recente.</p>
+                                            <p className="text-[10px]">Nenhuma atividade recente.</p>
                                         </div>
                                     ) : (
                                         <div className="divide-y divide-white/5">

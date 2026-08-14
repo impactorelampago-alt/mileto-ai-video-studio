@@ -6,18 +6,35 @@ import {
     requestTemporalIntegrityRetry as requestTemporalIntegrityRetryWithPersistentKey,
     type TemporalIntegrityRetryRequest,
 } from './opsVideoJobRetry';
+import {
+    normalizeOpsVideoJobProjectCompany,
+    type OpsVideoJobCompanyContractError,
+    type OpsVideoJobCompanyResolution,
+    type OpsVideoJobProjectCompany,
+} from './opsVideoJobCompany';
 
 /** Erro do gateway com o status HTTP preservado (401 = sessão, 402 = saldo). */
 export class GatewayError extends Error {
     status: number;
     code: string | null;
     requestId: string | null;
-    constructor(status: number, message: string, code: string | null = null, requestId: string | null = null) {
+    phase: string | null;
+    retryable: boolean | null;
+    constructor(
+        status: number,
+        message: string,
+        code: string | null = null,
+        requestId: string | null = null,
+        phase: string | null = null,
+        retryable: boolean | null = null,
+    ) {
         super(message);
         this.name = 'GatewayError';
         this.status = status;
         this.code = code;
         this.requestId = requestId;
+        this.phase = phase;
+        this.retryable = retryable;
     }
 }
 
@@ -35,6 +52,7 @@ export interface MiletoUser {
 
 export interface UsageRow {
     provider: string;
+    model?: string | null;
     kind: string;
     units: number;
     charged: number;
@@ -264,6 +282,10 @@ export type OpsVideoJobStage =
     | 'completed'
     | 'failed';
 
+export interface OpsVideoJobSettings extends Record<string, unknown> {
+    projectCompany?: OpsVideoJobProjectCompany;
+}
+
 export interface OpsVideoJob {
     id: string;
     workOrderId: string;
@@ -283,7 +305,11 @@ export interface OpsVideoJob {
     shuffleTakes: boolean;
     captions: boolean;
     automaticTitles: boolean;
-    settings: Record<string, unknown>;
+    settings: OpsVideoJobSettings;
+    /** Resolucao local auditavel da empresa autoritativa do projeto. */
+    projectCompanyResolution?: OpsVideoJobCompanyResolution;
+    /** Erro preservado para ser reportado ao Ops depois do claim seguro. */
+    projectCompanyContractError?: OpsVideoJobCompanyContractError;
     progress: { percent?: number; message?: string };
     outputAssetId?: string | null;
     execution?: {
@@ -317,6 +343,14 @@ export interface OpsVideoJobUpdate {
     renderResult?: ExportResultDiagnostics;
     errorCode?: string | null;
     errorMessage?: string | null;
+    errorStage?: OpsVideoJobStage | null;
+    errorPhase?: string | null;
+    errorRequestId?: string | null;
+    errorRetryable?: boolean | null;
+    /** Auditoria da origem usada para resolver a empresa real do projeto. */
+    companySource?: OpsVideoJobCompanyResolution['source'] | 'unresolved';
+    companyFallbackUsed?: boolean;
+    companyFallbackReason?: string | null;
 }
 
 export interface OpsVideoJobRetryInput {
@@ -416,9 +450,22 @@ export async function gatewayFetch<T = unknown>(
     }
 
     if (!res.ok) {
-        const errorData = data as { message?: string; code?: string; requestId?: string };
+        const errorData = data as {
+            message?: string;
+            code?: string;
+            requestId?: string;
+            phase?: string;
+            retryable?: boolean;
+        };
         const message = errorData?.message || `Erro ${res.status}`;
-        throw new GatewayError(res.status, message, errorData?.code || null, errorData?.requestId || null);
+        throw new GatewayError(
+            res.status,
+            message,
+            errorData?.code || null,
+            errorData?.requestId || null,
+            errorData?.phase || null,
+            typeof errorData?.retryable === 'boolean' ? errorData.retryable : null,
+        );
     }
     return data as T;
 }
@@ -641,7 +688,7 @@ export const gatewayApi = {
             '/v1/integrations/mileto-ops/video-jobs/next',
             { headers: opsContextHeaders(viewContextId) }
         );
-        return response.data || null;
+        return response.data ? normalizeOpsVideoJobProjectCompany(response.data) : null;
     },
 
     async getOpsVideoJob(jobId: string, viewContextId?: string | null): Promise<OpsVideoJob> {
@@ -649,7 +696,7 @@ export const gatewayApi = {
             `/v1/integrations/mileto-ops/video-jobs/${encodeURIComponent(jobId)}`,
             { headers: opsContextHeaders(viewContextId) }
         );
-        return response.data;
+        return normalizeOpsVideoJobProjectCompany(response.data);
     },
 
     async heartbeatOpsVideoWorker(
@@ -674,7 +721,10 @@ export const gatewayApi = {
             `/v1/integrations/mileto-ops/video-jobs/${encodeURIComponent(jobId)}/claim`,
             { method: 'POST', headers: opsContextHeaders(viewContextId) }
         );
-        return response.data;
+        return {
+            ...response.data,
+            job: normalizeOpsVideoJobProjectCompany(response.data.job),
+        };
     },
 
     async retryOpsVideoJob(
@@ -694,7 +744,7 @@ export const gatewayApi = {
                 body: JSON.stringify(input),
             }
         );
-        return response.data.job;
+        return normalizeOpsVideoJobProjectCompany(response.data.job);
     },
 
     async requestTemporalIntegrityRetry(input: TemporalIntegrityRetryRequest): Promise<OpsVideoJob> {
@@ -723,7 +773,7 @@ export const gatewayApi = {
                 body: JSON.stringify(input),
             }
         );
-        return response.data;
+        return normalizeOpsVideoJobProjectCompany(response.data);
     },
 
     async opsAssetUrl(

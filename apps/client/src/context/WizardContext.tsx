@@ -25,6 +25,11 @@ import {
 import { refreshSharedAudioSourceUrl } from '../lib/sharedMediaRecovery';
 import { isIncludedTransition } from '../lib/transitionExportRecovery';
 import { narrationSourceKey, rebindNarrationDerivativeSourceKeys } from '../lib/narrationState';
+import {
+    NARRATION_DIRECTION_VERSION,
+    narrationContractFromLegacyText,
+    normalizeNarrationContract,
+} from '../lib/narrationContract';
 
 export const SHOW_DEBUG_FEATURES = false;
 
@@ -175,7 +180,13 @@ const DEFAULT_NARRATION_TEXT = '';
 const defaultAdData: AdData = {
     title: '',
     format: '9:16',
+    narrationPlainText: DEFAULT_NARRATION_TEXT,
+    narrationSynthesisText: DEFAULT_NARRATION_TEXT,
     narrationText: DEFAULT_NARRATION_TEXT,
+    ttsModel: 's2.1-pro',
+    voiceId: DEFAULT_SYSTEM_VOICE.id,
+    directionMode: 'automatic',
+    directionVersion: NARRATION_DIRECTION_VERSION,
     selectedVoiceId: DEFAULT_SYSTEM_VOICE.id,
     selectedVoiceProvider: DEFAULT_SYSTEM_VOICE.provider,
     voiceSettings: { ...DEFAULT_SYSTEM_VOICE.preset.voiceSettings },
@@ -209,22 +220,54 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
     textCase: 'uppercase',
 };
 
-const mergeAdData = (data?: Partial<AdData>): AdData => ({
-    ...defaultAdData,
-    ...(data || {}),
-    selectedVoiceId: canonicalSystemVoiceId(data?.selectedVoiceId ?? defaultAdData.selectedVoiceId) ?? null,
-    audioConfig: {
-        narration: {
-            ...defaultAdData.audioConfig.narration,
-            ...(data?.audioConfig?.narration || {}),
+const mergeAdData = (data?: Partial<AdData>): AdData => {
+    const selectedVoiceId = canonicalSystemVoiceId(
+        data?.selectedVoiceId ?? data?.voiceId ?? defaultAdData.selectedVoiceId,
+    ) ?? null;
+    const selectedVoiceProvider = data?.selectedVoiceProvider ?? defaultAdData.selectedVoiceProvider;
+    const voiceSettings = {
+        ...defaultAdData.voiceSettings!,
+        ...(data?.voiceSettings || {}),
+    };
+    const contract = normalizeNarrationContract({
+        ...(data || {}),
+        selectedVoiceId,
+        voiceSettings,
+    });
+    const projectModel = selectedVoiceProvider === 'elevenLabs'
+        ? (typeof data?.ttsModel === 'string' && data.ttsModel.startsWith('eleven_')
+            ? data.ttsModel
+            : 'eleven_multilingual_v2')
+        : contract.ttsModel;
+    return {
+        ...defaultAdData,
+        ...(data || {}),
+        ...contract,
+        selectedVoiceId,
+        voiceId: selectedVoiceId,
+        selectedVoiceProvider,
+        ttsModel: projectModel,
+        voiceSettings: {
+            ...voiceSettings,
+            // O campo estruturado e a fonte de verdade; drafts antigos sem ele
+            // herdaram acima o modelo explicitamente salvo no preset.
+            fishModel: selectedVoiceProvider === 'fishAudio'
+                ? contract.ttsModel as typeof voiceSettings.fishModel
+                : voiceSettings.fishModel,
         },
-        background: {
-            ...defaultAdData.audioConfig.background,
-            ...(data?.audioConfig?.background || {}),
+        audioConfig: {
+            narration: {
+                ...defaultAdData.audioConfig.narration,
+                ...(data?.audioConfig?.narration || {}),
+            },
+            background: {
+                ...defaultAdData.audioConfig.background,
+                ...(data?.audioConfig?.background || {}),
+            },
         },
-    },
-    videoEnhancement: normalizeVideoEnhancement(data?.videoEnhancement),
-});
+        videoEnhancement: normalizeVideoEnhancement(data?.videoEnhancement),
+    };
+};
 
 export const createDefaultAdData = (input: Partial<AdData> = {}): AdData => mergeAdData(input);
 
@@ -1171,16 +1214,17 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         const nextMusicId = snapshot.selectedMusicId === undefined
             ? SYSTEM_MUSIC_IDS.batida
             : snapshot.selectedMusicId;
+        const nextAdData = mergeAdData({ ...snapshot.adData, title });
         setProjectId(snapshot.projectId);
         setDraftScope('local');
         setDraftTitle(title);
-        setAdData(snapshot.adData);
+        setAdData(nextAdData);
         setMediaTakes(snapshot.mediaTakes);
         setCaptionStyle(nextCaptionStyle);
         setSelectedMusicIdState(nextMusicId);
         stateRef.current = {
             projectId: snapshot.projectId,
-            adData: snapshot.adData,
+            adData: nextAdData,
             mediaTakes: snapshot.mediaTakes,
             captionStyle: nextCaptionStyle,
             selectedMusicId: nextMusicId,
@@ -1290,7 +1334,41 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         if (Object.prototype.hasOwnProperty.call(data, 'title')) {
             setDraftTitle(typeof data.title === 'string' ? data.title : '');
         }
-        setAdData((prev) => ({ ...prev, ...data }));
+        setAdData((prev) => {
+            const legacyNarrationPatch = Object.prototype.hasOwnProperty.call(data, 'narrationText')
+                && !Object.prototype.hasOwnProperty.call(data, 'narrationPlainText')
+                && !Object.prototype.hasOwnProperty.call(data, 'narrationSynthesisText')
+                ? narrationContractFromLegacyText(prev, String(data.narrationText || ''))
+                : {};
+            const selectedProvider = data.selectedVoiceProvider || prev.selectedVoiceProvider || 'fishAudio';
+            const requestedModel = data.ttsModel
+                || (selectedProvider === 'fishAudio' ? data.voiceSettings?.fishModel : undefined)
+                || (Object.prototype.hasOwnProperty.call(data, 'selectedVoiceProvider') && selectedProvider === 'elevenLabs'
+                    ? 'eleven_multilingual_v2'
+                    : undefined);
+            const selectedVoiceId = Object.prototype.hasOwnProperty.call(data, 'selectedVoiceId')
+                ? canonicalSystemVoiceId(data.selectedVoiceId) ?? null
+                : prev.selectedVoiceId;
+            return {
+                ...prev,
+                ...data,
+                ...legacyNarrationPatch,
+                selectedVoiceId,
+                voiceId: Object.prototype.hasOwnProperty.call(data, 'voiceId')
+                    ? data.voiceId ?? null
+                    : selectedVoiceId,
+                ...(requestedModel ? { ttsModel: requestedModel } : {}),
+                ...(data.voiceSettings || requestedModel ? {
+                    voiceSettings: {
+                        ...prev.voiceSettings!,
+                        ...(data.voiceSettings || {}),
+                        ...(requestedModel && selectedProvider === 'fishAudio' ? {
+                            fishModel: requestedModel as NonNullable<AdData['voiceSettings']>['fishModel'],
+                        } : {}),
+                    },
+                } : {}),
+            };
+        });
     }, []);
 
     const addMediaTake = React.useCallback((take: MediaTake) => {

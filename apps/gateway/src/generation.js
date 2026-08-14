@@ -84,6 +84,7 @@ export const generateImage = async (req, res) => {
         orgId: req.user.orgId,
         userId: req.user.id,
         provider: agent.generationProvider,
+        model: agent.generationModel,
         kind: 'image',
         providerCost: quote.providerCost,
         charged: quote.charged,
@@ -108,9 +109,9 @@ const finalizeVideoBilling = async (id, outcome, usageUnits = 1, error = {}) => 
         }
         if (outcome === 'succeeded' || outcome === 'tracking_failed') {
             await client.query(
-                `INSERT INTO usage_ledger (org_id, user_id, provider, kind, units, provider_cost, charged, demo)
-                 VALUES ($1,$2,$3,'video',$4,$5,$6,false)`,
-                [job.org_id, job.user_id, job.provider, Math.max(1, Math.round(Number(usageUnits) || 1)), job.provider_cost, job.charged]
+                `INSERT INTO usage_ledger (org_id, user_id, provider, model, kind, units, provider_cost, charged, demo)
+                 VALUES ($1,$2,$3,$4,'video',$5,$6,$7,false)`,
+                [job.org_id, job.user_id, job.provider, job.model, Math.max(1, Math.round(Number(usageUnits) || 1)), job.provider_cost, job.charged]
             );
             if (outcome === 'succeeded') {
                 await client.query(

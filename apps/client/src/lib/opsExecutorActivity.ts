@@ -1,4 +1,5 @@
 import type { OpsVideoJobStage, OpsVideoWorkerExecutionMode } from './gateway';
+import type { OpsVideoExecutionDisposition } from './opsVideoWorkerState';
 
 export type OpsExecutorActivityStatus =
     | 'idle'
@@ -15,6 +16,16 @@ export type OpsExecutorMonitorError = {
     source: OpsExecutorMonitorSource;
     code: string;
     message: string;
+    phase?: string;
+    requestId?: string;
+    retryable?: boolean;
+};
+
+export type OpsExecutorMonitorExplanation = {
+    statusLabel: string;
+    title: string;
+    detail: string;
+    action?: string;
 };
 
 export type OpsExecutorActivity = {
@@ -27,6 +38,11 @@ export type OpsExecutorActivity = {
     message: string;
     assetId?: string;
     errorCode?: string;
+    errorStage?: OpsVideoJobStage;
+    errorPhase?: string;
+    errorRequestId?: string;
+    errorRetryable?: boolean;
+    executionDisposition?: OpsVideoExecutionDisposition;
     monitorErrors?: Partial<Record<OpsExecutorMonitorSource, OpsExecutorMonitorError>>;
     mode: OpsVideoWorkerExecutionMode;
     heartbeat: 'pending' | 'online' | 'unsupported' | 'offline';
@@ -38,6 +54,9 @@ export type OpsExecutorMonitorEvent =
         source: OpsExecutorMonitorSource;
         code: string;
         message: string;
+        phase?: string;
+        requestId?: string;
+        retryable?: boolean;
     }
     | {
         type: 'monitor-recovered';
@@ -79,6 +98,9 @@ export const transitionOpsExecutorMonitor = (
                     source: event.source,
                     code: String(event.code || 'monitor_unavailable').slice(0, 120),
                     message: String(event.message || 'Monitor temporariamente indisponivel.').slice(0, 2_000),
+                    phase: event.phase,
+                    requestId: event.requestId,
+                    retryable: event.retryable,
                 },
             },
         };
@@ -176,6 +198,105 @@ export const opsExecutorVisibleJobError = (activity: OpsExecutorActivity) =>
 
 export const opsExecutorCurrentMonitorError = (activity: OpsExecutorActivity) =>
     activity.monitorErrors?.heartbeat || activity.monitorErrors?.poll;
+
+const normalizeMonitorCode = (value: unknown) => String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.:-]/g, '_')
+    .slice(0, 120);
+
+const OPS_TEMPORARILY_UNAVAILABLE_CODES = new Set([
+    'invalid_response',
+    'ops_request_failed',
+    'ops_timeout',
+    'ops_token_failed',
+    'ops_token_invalid',
+    'ops_unavailable',
+    'rate_limited',
+    'server_error',
+    'slow_down',
+    'temporarily_unavailable',
+    'too_many_requests',
+]);
+
+const OPS_RECONNECT_CODES = new Set([
+    'access_denied',
+    'connection_revoked',
+    'invalid_grant',
+    'invalid_refresh_token',
+    'invalid_scope',
+    'ops_not_connected',
+    'ops_reconnect_required',
+    'ops_scope_missing',
+    'refresh_token_invalid',
+    'refresh_token_revoked',
+    'token_revoked',
+]);
+
+const OPS_ACCESS_CODES = new Set([
+    'actor_missing',
+    'actor_unavailable',
+    'linked_profile_unavailable',
+    'ops_user_not_linked',
+    'view_context_expired',
+    'view_context_forbidden',
+]);
+
+/**
+ * Traduz o diagnostico tecnico do monitor para uma explicacao que diferencia
+ * falha do Ops, autorizacao expirada e indisponibilidade do app local.
+ */
+export const describeOpsExecutorMonitorError = (
+    error?: OpsExecutorMonitorError,
+): OpsExecutorMonitorExplanation | null => {
+    if (!error) return null;
+    const code = normalizeMonitorCode(error.code);
+
+    if (OPS_TEMPORARILY_UNAVAILABLE_CODES.has(code)) {
+        return {
+            statusLabel: 'Ops indisponível',
+            title: 'Mileto Ops temporariamente indisponível',
+            detail: code === 'ops_token_failed' || code === 'ops_token_invalid'
+                ? 'O serviço do Ops não conseguiu renovar a autenticação. O executor deste computador continua funcionando e tentará novamente automaticamente.'
+                : 'O serviço do Ops não respondeu corretamente. O executor deste computador continua funcionando e tentará novamente automaticamente.',
+        };
+    }
+
+    if (OPS_RECONNECT_CODES.has(code)) {
+        return {
+            statusLabel: 'Reconectar Ops',
+            title: 'Reconexão com o Mileto Ops necessária',
+            detail: 'A autorização do Ops expirou, foi revogada ou perdeu uma permissão necessária.',
+            action: 'Abra Integrações e conecte novamente a conta do Mileto Ops.',
+        };
+    }
+
+    if (OPS_ACCESS_CODES.has(code)) {
+        return {
+            statusLabel: 'Atualizar acesso',
+            title: 'Acesso ao Mileto Ops precisa ser atualizado',
+            detail: 'O usuário ou o contexto de visualização atual não está mais autorizado no Ops.',
+            action: 'Abra Integrações para renovar o vínculo e o acesso.',
+        };
+    }
+
+    if (code === 'ops_not_configured') {
+        return {
+            statusLabel: 'Configurar Ops',
+            title: 'Integração com o Mileto Ops não configurada',
+            detail: 'O executor local está aberto, mas o servidor ainda não possui a configuração necessária para falar com o Ops.',
+        };
+    }
+
+    const technicalMessage = String(error.message || '').trim();
+    return {
+        statusLabel: 'Falha de conexão',
+        title: 'Não foi possível confirmar a conexão com o Mileto Ops',
+        detail: technicalMessage
+            ? `${technicalMessage} O Mileto tentará novamente automaticamente.`
+            : 'O motivo ainda não foi identificado. O Mileto tentará novamente automaticamente.',
+    };
+};
 
 export const OPS_EXECUTOR_STAGE_LABELS: Record<OpsVideoJobStage, string> = {
     queued: 'Na fila',

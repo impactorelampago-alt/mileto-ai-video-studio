@@ -4,7 +4,7 @@ import {
     keyStatus, setKey, getMultiplier, setMultiplier, PROVIDERS,
     getTiers, setTier, TIERS, MODEL_CATALOG, AGENT_REASONING_LEVELS, getPrompt, setPrompt,
     CREDIT_FEATURES, getAllMultipliers, setKindMultiplier,
-    getAgents as listAgentConfigs, normalizeAgentConfig, publishAgentConfig,
+    getAgents as listAgentConfigs, normalizeAgentConfig, composeAgentSystemPrompt, assertAgentModelsAllowed, publishAgentConfig,
     getAgentHistory as listAgentHistory, rollbackAgentConfig,
 } from './settings.js';
 import { proxyChat } from './providers.js';
@@ -55,7 +55,7 @@ export const orgDetail = async (req, res) => {
     ).rows;
     const recentUsage = (
         await query(
-            `SELECT provider, kind, units, provider_cost, charged, demo, created_at
+            `SELECT provider, model, kind, units, provider_cost, charged, demo, created_at
              FROM usage_ledger WHERE org_id = $1 ORDER BY created_at DESC LIMIT 20`,
             [id]
         )
@@ -242,6 +242,9 @@ export const setModel = async (req, res) => {
     if (!TIERS.some((t) => t.id === tier)) return res.status(400).json({ ok: false, message: 'Tier inválido.' });
     if (!MODEL_CATALOG[provider]) return res.status(400).json({ ok: false, message: 'Provedor inválido.' });
     if (!model || !String(model).trim()) return res.status(400).json({ ok: false, message: 'Informe o modelo.' });
+    if (!MODEL_CATALOG[provider].some((entry) => entry.id === String(model).trim())) {
+        return res.status(400).json({ ok: false, message: 'Selecione um modelo disponível na lista.' });
+    }
     await setTier(tier, provider, String(model).trim());
     res.json({ ok: true });
 };
@@ -316,18 +319,21 @@ export const rollbackAgent = async (req, res) => {
 export const testAgent = async (req, res) => {
     try {
         const id = req.params.agentId || req.params.id;
-        const config = normalizeAgentConfig(id, req.body?.config || {});
+        const config = assertAgentModelsAllowed(normalizeAgentConfig(id, req.body?.config || {}));
         const tierId = ['lite', 'mileto', 'ultra'].includes(req.body?.tier) ? req.body.tier : 'mileto';
         const tier = config.tiers[tierId];
         const message = String(req.body?.message || '').trim();
         if (!message) return res.status(400).json({ ok: false, message: 'Escreva uma mensagem para o teste.' });
         const locale = String(req.body?.locale || 'Português do Brasil').slice(0, 80);
-        const systemPrompt = config.systemPrompt.split('{idioma}').join(locale);
+        const systemPrompt = composeAgentSystemPrompt(
+            id,
+            config.systemPrompt,
+            config.internalVideoInstruction
+        ).split('{idioma}').join(locale);
+        const messages = [{ role: 'user', content: message.slice(0, 12000) }];
+        if (systemPrompt) messages.unshift({ role: 'system', content: systemPrompt });
         const result = await proxyChat({
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: message.slice(0, 12000) },
-            ],
+            messages,
             provider: tier.provider,
             model: tier.model,
             reasoning: tier.reasoning,

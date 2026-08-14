@@ -138,6 +138,7 @@ export interface GatewayChatResult {
     demo: boolean;
     charged: number;
     balance: number | null;
+    narrationDirectionMode?: 'automatic' | 'manual' | 'clean';
     agent?: { id: string; label: string; version: number; tier: 'lite' | 'mileto' | 'ultra' };
 }
 
@@ -273,11 +274,24 @@ export interface GatewayTtsResult {
     audio: Buffer;
     demo: boolean;
     balance: number | null;
+    model: string | null;
 }
 
 export const gatewayTts = async (
     token: string,
-    payload: { text: string; voiceId: string; provider: string; voiceSettings?: unknown }
+    payload: {
+        text: string;
+        voiceId: string;
+        provider: string;
+        voiceSettings?: unknown;
+        narrationPlainText?: string;
+        narrationSynthesisText?: string;
+        ttsModel?: string;
+        directionMode?: 'automatic' | 'manual' | 'clean';
+        directionVersion?: string;
+        narrationDialect?: 'fish-natural-v1' | 'mileto-ops-bracket-v1';
+        protectedTerms?: string[];
+    }
 ): Promise<GatewayTtsResult> => {
     const res = await fetchWithTimeout(
         `${GATEWAY_URL}/v1/tts`,
@@ -294,10 +308,12 @@ export const gatewayTts = async (
     }
     const audio = Buffer.from(await res.arrayBuffer());
     const balanceHeader = res.headers.get('x-mileto-balance');
+    const modelHeader = res.headers.get('x-mileto-model');
     return {
         audio,
         demo: res.headers.get('x-mileto-demo') === 'true',
         balance: balanceHeader != null ? Number(balanceHeader) : null,
+        model: modelHeader || null,
     };
 };
 

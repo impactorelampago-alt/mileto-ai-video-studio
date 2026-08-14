@@ -2,6 +2,7 @@ import { query, pool } from './db.js';
 import { hashPassword } from './crypto.js';
 import { PLAN_SEATS } from './admin.js';
 import { getAgents as getGlobalAgents } from './settings.js';
+import { upgradeBundledAgentSystemPrompt } from './agentDefaults.js';
 import {
     getOrgTitleGeneratorConfig,
     listOrgAgentPromptOverrides,
@@ -19,7 +20,7 @@ export const usage = async (req, res) => {
     const orgId = req.user.orgId;
     const recent = (
         await query(
-            `SELECT provider, kind, units, charged, demo, created_at
+            `SELECT provider, model, kind, units, charged, demo, created_at
              FROM usage_ledger WHERE org_id = $1 ORDER BY created_at DESC LIMIT 30`,
             [orgId]
         )
@@ -122,14 +123,17 @@ const orgChatSettings = async (orgId) => {
     const overrides = new Map(overrideRows.map((row) => [row.agent_id, row]));
     return global.agents.map((agent) => {
         const override = overrides.get(agent.id);
+        const customPrompt = override
+            ? upgradeBundledAgentSystemPrompt(agent.id, override.system_prompt)
+            : null;
         return {
             id: agent.id,
             label: agent.label,
             shortLabel: agent.shortLabel,
             description: agent.description,
             defaultPrompt: agent.config.systemPrompt,
-            customPrompt: override?.system_prompt || null,
-            effectivePrompt: override?.system_prompt || agent.config.systemPrompt,
+            customPrompt,
+            effectivePrompt: override ? customPrompt : agent.config.systemPrompt,
             usesDefault: !override,
             updatedAt: override?.updated_at || agent.config.publishedAt || null,
         };

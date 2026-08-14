@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useExportJobs } from '../context/ExportJobsContext';
+import { useAuth } from '../context/AuthContext';
 import { createDefaultAdData, DEFAULT_CAPTION_STYLE } from '../context/WizardContext';
 import { normalizeHydratedCaptionStyle } from '../lib/captionStyleMigration';
 import {
@@ -9,6 +10,7 @@ import {
     type OpsAsset,
     type OpsCompany,
     type OpsVideoJob,
+    type OpsVideoJobClaim,
     type OpsVideoJobUpdate,
     type OpsVideoJobStage,
     type OpsViewContext,
@@ -26,9 +28,13 @@ import {
     opsWorkerSupportsMinimumVersion,
     progressWithinStage,
     rebindPersistedOpsVideoJobContext,
+    resolveOpsVideoClaimIdentity,
+    resolveOpsVideoExecutionDisposition,
     savePersistedOpsVideoJob,
     updatePersistedOpsVideoJob,
     type OpsVideoWorkerLocalStatus,
+    type OpsVideoExecutionDisposition,
+    type OpsVideoWorkerDiagnostic,
     type PersistedOpsVideoWorkerJob,
 } from '../lib/opsVideoWorkerState';
 import { applyQuickEdit } from '../lib/quickEdit';
@@ -40,6 +46,7 @@ import {
     generateAutomaticTitlesResilient,
     generateNarrationAndMix,
     isTitleGenerationAbortError,
+    LocalApiError,
     loadAutomatedProject,
     materializeOpsTake,
     persistAutomatedProject,
@@ -59,6 +66,25 @@ import {
     exportWarningSummary,
     type ExportResultDiagnostics,
 } from '../lib/exportIntegrity';
+import {
+    NARRATION_DIRECTION_VERSION,
+    stripNarrationDirections,
+} from '../lib/narrationContract';
+import {
+    assertOpsNarrationMatchesPlainText,
+    OPS_NARRATION_DIALECT,
+    OpsNarrationContractError,
+    OpsNarrationDirectionsError,
+} from '../lib/opsNarrationContract';
+import {
+    opsJobHistoryScope,
+    recordOpsJobHistoryActivity,
+    type OpsJobHistoryContext,
+} from '../lib/opsJobHistory';
+import {
+    resolveOpsVideoJobCompany,
+    type OpsVideoJobCompanyResolution,
+} from '../lib/opsVideoJobCompany';
 
 const POLL_INTERVAL_MS = 12_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -88,11 +114,13 @@ type ElectronIpc = {
 
 type PreparedJob = {
     company: OpsCompany;
+    projectCompanyResolution: OpsVideoJobCompanyResolution;
     assetById: Map<string, OpsAsset>;
     eligibleAssets: OpsAsset[];
     frameAsset: OpsAsset | null;
     initialAdData: AdData;
     musicId: string | null;
+    hasCompleteExecutionPayload: boolean;
 };
 
 const IDLE_DISPLAY = IDLE_OPS_EXECUTOR_ACTIVITY;
@@ -113,22 +141,162 @@ const technicalFileName = (value: string) => value
     .replace(/^_+|_+$/g, '')
     .slice(0, 120) || 'video_mileto';
 
-const errorParts = (error: unknown) => {
-    if (error instanceof GatewayError) {
-        return {
-            code: String(error.code || (error.status ? `http_${error.status}` : 'gateway_unavailable')).slice(0, 120),
-            message: error.message.slice(0, 2_000),
-        };
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    const match = message.match(/^([a-z0-9_]+):\s*(.+)$/i);
-    return match
-        ? { code: match[1].slice(0, 120), message: match[2].slice(0, 2_000) }
-        : { code: 'ai_video_failed', message: message.slice(0, 2_000) };
+const safeErrorIdentifier = (value: unknown, fallback: string) => {
+    if (typeof value !== 'string') return fallback;
+    const normalized = value.trim().replace(/[^a-z0-9_.:-]+/gi, '_').slice(0, 120);
+    return normalized || fallback;
 };
 
-const isRecoverableInterruption = (error: unknown, code: string) => {
+const safeErrorMessage = (value: unknown) => {
+    const source = value instanceof Error ? value.message : String(value ?? '');
+    return source
+        .replace(/https?:\/\/[^\s]+/gi, '[url omitida]')
+        .replace(/(?:[a-z]:\\|\\\\)[^\r\n]+/gi, '[caminho omitido]')
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ')
+        .trim()
+        .slice(0, 2_000) || 'Falha local sem detalhes adicionais.';
+};
+
+const errorParts = (error: unknown) => {
+    if (error instanceof OpsNarrationContractError || error instanceof OpsNarrationDirectionsError) {
+        return {
+            code: error.code,
+            message: safeErrorMessage(error),
+            phase: error.phase,
+            requestId: undefined,
+            retryable: error.retryable,
+        };
+    }
+    if (error instanceof LocalApiError) {
+        return {
+            code: safeErrorIdentifier(error.code, 'local_api_failed'),
+            message: safeErrorMessage(error),
+            phase: error.phase ? safeErrorIdentifier(error.phase, '') || undefined : undefined,
+            requestId: error.requestId ? safeErrorIdentifier(error.requestId, '') || undefined : undefined,
+            retryable: error.retryable === true,
+        };
+    }
     if (error instanceof GatewayError) {
+        return {
+            code: safeErrorIdentifier(
+                error.code || (error.status ? `http_${error.status}` : 'gateway_unavailable'),
+                'gateway_unavailable',
+            ),
+            message: safeErrorMessage(error),
+            phase: error.phase ? safeErrorIdentifier(error.phase, '') || undefined : undefined,
+            requestId: error.requestId ? safeErrorIdentifier(error.requestId, '') || undefined : undefined,
+            retryable: typeof error.retryable === 'boolean'
+                ? error.retryable
+                : error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500,
+        };
+    }
+    const message = safeErrorMessage(error);
+    const match = message.match(/^([a-z0-9_]+):\s*(.+)$/i);
+    return match
+        ? {
+            code: safeErrorIdentifier(match[1], 'ai_video_failed'),
+            message: match[2].slice(0, 2_000),
+            phase: undefined,
+            requestId: undefined,
+            retryable: false,
+        }
+        : {
+            code: 'ai_video_failed',
+            message,
+            phase: undefined,
+            requestId: undefined,
+            retryable: false,
+        };
+};
+
+type ParsedOpsError = ReturnType<typeof errorParts>;
+
+const executorErrorMetadata = (error: ParsedOpsError, stage: OpsVideoJobStage) => ({
+    errorCode: error.code,
+    errorStage: stage,
+    errorPhase: error.phase,
+    errorRequestId: error.requestId,
+    errorRetryable: error.retryable,
+});
+
+const opsCompatibleErrorMessage = (
+    message: string,
+    metadata: {
+        stage: OpsVideoJobStage;
+        phase?: string;
+        requestId?: string;
+        retryable?: boolean;
+    },
+) => {
+    const diagnostics = [
+        `etapa=${safeErrorIdentifier(metadata.stage, 'unknown')}`,
+        metadata.phase ? `fase=${safeErrorIdentifier(metadata.phase, 'unknown')}` : '',
+        `pode_tentar_novamente=${metadata.retryable === true ? 'sim' : 'nao'}`,
+        metadata.requestId ? `request_id=${safeErrorIdentifier(metadata.requestId, 'unknown')}` : '',
+    ].filter(Boolean).join('; ');
+    // Compatibilidade com versoes do Ops que ainda preservam apenas
+    // errorCode/errorMessage e descartam os novos campos estruturados.
+    return `${safeErrorMessage(message)}\nDiagnostico tecnico: ${diagnostics}.`.slice(0, 2_000);
+};
+
+const workerDiagnostic = (
+    error: ParsedOpsError,
+    stage: OpsVideoJobStage,
+): OpsVideoWorkerDiagnostic => ({
+    code: error.code,
+    message: error.message,
+    stage,
+    retryable: error.retryable,
+    phase: error.phase,
+    requestId: error.requestId,
+});
+
+const dispositionDiagnostic = (
+    disposition: OpsVideoExecutionDisposition,
+    message: string,
+    retryable: boolean,
+    stage: OpsVideoJobStage = 'narration',
+): OpsVideoWorkerDiagnostic => ({
+    code: disposition,
+    message,
+    stage,
+    retryable,
+    phase: 'project_preflight',
+});
+
+const errorExecutionDisposition = (code: string): OpsVideoExecutionDisposition | undefined => {
+    if (code === 'project_original_missing') return 'project_original_missing';
+    if (code === 'new_execution_required') return 'new_execution_required';
+    if (code === 'temporarily_unavailable') return 'temporarily_unavailable';
+    return undefined;
+};
+
+const executionDispositionError = (
+    code: 'project_original_missing' | 'new_execution_required' | 'temporarily_unavailable',
+    message: string,
+    retryable: boolean,
+    metadata?: Partial<Pick<ParsedOpsError, 'phase' | 'requestId'>>,
+) => new LocalApiError(
+    message,
+    retryable ? 503 : 422,
+    code,
+    retryable,
+    metadata?.requestId,
+    metadata?.phase || 'project_preflight',
+);
+
+const monitorErrorMetadata = (error: ParsedOpsError) => ({
+    code: error.code,
+    message: error.message,
+    phase: error.phase,
+    requestId: error.requestId,
+    retryable: error.retryable,
+});
+
+const isRecoverableInterruption = (error: unknown, code: string) => {
+    if (error instanceof LocalApiError) return error.retryable === true;
+    if (error instanceof GatewayError) {
+        if (typeof error.retryable === 'boolean') return error.retryable;
         return error.status === 0
             || error.status === 401
             || error.status === 408
@@ -317,6 +485,9 @@ const resolvePersistedJob = async (state: PersistedOpsVideoWorkerJob): Promise<Q
 };
 
 const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): Promise<PreparedJob> => {
+    if (job.projectCompanyContractError) {
+        throw new Error(`${job.projectCompanyContractError.code}: ${job.projectCompanyContractError.message}`);
+    }
     if (
         job.execution?.requiresFreshRender === true
         && (
@@ -332,7 +503,29 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
             `video_worker_upgrade_required: Este trabalho exige o Mileto AI Video ${minimumAppVersion} ou superior. Atualize o aplicativo antes de continuar.`,
         );
     }
-    const company = (await gatewayApi.opsCompany(job.companyId, context.contextId)).data;
+    const projectCompanyResolution = job.projectCompanyResolution || resolveOpsVideoJobCompany(job);
+    const remoteCompany = (await gatewayApi.opsCompany(projectCompanyResolution.id, context.contextId)).data;
+    if (remoteCompany.id !== projectCompanyResolution.id) {
+        throw new Error(
+            'ops_project_company_lookup_mismatch: O diretorio do Ops devolveu uma empresa diferente de settings.projectCompany.',
+        );
+    }
+    const company: OpsCompany = projectCompanyResolution.authoritative
+        ? {
+            ...remoteCompany,
+            id: projectCompanyResolution.id,
+            name: projectCompanyResolution.name,
+            nome: undefined,
+        }
+        : remoteCompany;
+    if (projectCompanyResolution.fallbackUsed) {
+        console.warn('[ops-project-company]', {
+            event: 'legacy_company_fallback',
+            jobId: job.id,
+            companyId: projectCompanyResolution.id,
+            reason: projectCompanyResolution.fallbackReason,
+        });
+    }
     const voice = job.voicePresetId
         ? SYSTEM_VOICES.find((candidate) => candidate.id === canonicalSystemVoiceId(job.voicePresetId))
         : DEFAULT_SYSTEM_VOICE;
@@ -361,11 +554,59 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
     )) {
         throw new Error('ops_frame_invalid: A moldura precisa ser um PNG autorizado da empresa do job.');
     }
+    const voiceSynthesis = job.settings?.voiceSynthesis
+        && typeof job.settings.voiceSynthesis === 'object'
+        && !Array.isArray(job.settings.voiceSynthesis)
+        ? job.settings.voiceSynthesis as Record<string, unknown>
+        : null;
+    const voiceSynthesisPlainText = typeof voiceSynthesis?.plainText === 'string'
+        ? voiceSynthesis.plainText.trim()
+        : '';
+    const structuredPlainText = typeof job.settings?.narrationPlainText === 'string'
+        ? job.settings.narrationPlainText.trim()
+        : '';
+    const structuredSynthesisText = typeof job.settings?.narrationSynthesisText === 'string'
+        ? job.settings.narrationSynthesisText.trim()
+        : '';
+    const jobNarrationText = job.narration?.trim() || '';
+    // O contrato atual do Ops separa o texto limpo em voiceSynthesis.plainText
+    // e envia em job.narration a versao efetivamente tagueada. Jobs antigos
+    // continuam usando os campos estruturados no topo de settings.
+    const usesOpsNarrationDialect = Boolean(voiceSynthesisPlainText && jobNarrationText);
+    if (usesOpsNarrationDialect) {
+        await assertOpsNarrationMatchesPlainText(jobNarrationText, voiceSynthesisPlainText);
+    }
+    const narrationSynthesisText = voiceSynthesisPlainText && jobNarrationText
+        ? jobNarrationText
+        : structuredSynthesisText || jobNarrationText || voiceSynthesisPlainText || structuredPlainText;
+    const narrationPlainText = voiceSynthesisPlainText
+        || structuredPlainText
+        || stripNarrationDirections(narrationSynthesisText);
+    const directionMode = job.settings?.directionMode === 'manual'
+        || job.settings?.directionMode === 'clean'
+        || job.settings?.directionMode === 'automatic'
+        ? job.settings.directionMode
+        : 'automatic';
+    const ttsModel = typeof job.settings?.ttsModel === 'string' && job.settings.ttsModel.trim()
+        ? job.settings.ttsModel.trim()
+        : voice.preset.voiceSettings.fishModel;
+    const voiceId = typeof job.settings?.voiceId === 'string' && job.settings.voiceId.trim()
+        ? job.settings.voiceId.trim()
+        : voice.id;
     const initialAdData = createDefaultAdData({
         title: job.projectTitle,
         format: job.format,
-        narrationText: job.narration?.trim() || '',
-        selectedVoiceId: voice.id,
+        narrationText: narrationPlainText,
+        narrationPlainText,
+        narrationSynthesisText: narrationSynthesisText || narrationPlainText,
+        ttsModel,
+        voiceId,
+        directionMode,
+        directionVersion: typeof job.settings?.directionVersion === 'string' && job.settings.directionVersion.trim()
+            ? job.settings.directionVersion.trim()
+            : NARRATION_DIRECTION_VERSION,
+        ...(usesOpsNarrationDialect ? { narrationDialect: OPS_NARRATION_DIALECT } : {}),
+        selectedVoiceId: voiceId,
         selectedVoiceProvider: voice.provider,
         voiceSettings: { ...voice.preset.voiceSettings },
         musicAudioUrl: music ? `${API_BASE_URL}${music.publicUrl}` : null,
@@ -382,14 +623,40 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
         brandPalette: company.palette || null,
         brandPaletteUpdatedAt: company.paletteUpdatedAt || null,
     });
-    return { company, assetById, eligibleAssets, frameAsset, initialAdData, musicId: music?.id || null };
+    const hasCompleteExecutionPayload = Boolean(
+        company.id?.trim()
+        && narrationPlainText
+        && eligibleAssets.length > 0
+        && job.settings
+        && typeof job.settings === 'object'
+        && !Array.isArray(job.settings),
+    );
+    return {
+        company,
+        projectCompanyResolution,
+        assetById,
+        eligibleAssets,
+        frameAsset,
+        initialAdData,
+        musicId: music?.id || null,
+        hasCompleteExecutionPayload,
+    };
 };
 
 export const OpsVideoJobCoordinator = () => {
+    const { user } = useAuth();
     const { isExporting, startExport } = useExportJobs();
     const runningRef = useRef(false);
     const exportingRef = useRef(isExporting);
     const [initialPersistedJob] = useState(() => loadPersistedOpsVideoJob());
+    const historyContextRef = useRef<(OpsJobHistoryContext & { jobId?: string }) | null>(
+        initialPersistedJob ? {
+            jobId: initialPersistedJob.jobId,
+            projectId: initialPersistedJob.projectId,
+            companyId: initialPersistedJob.companyId,
+            revision: initialPersistedJob.executionRevision,
+        } : null,
+    );
     const currentJobRef = useRef<string | null>(
         initialPersistedJob && initialPersistedJob.status !== 'completed' && initialPersistedJob.status !== 'failed'
             ? initialPersistedJob.jobId
@@ -414,6 +681,11 @@ export const OpsVideoJobCoordinator = () => {
             message: persisted.message,
             assetId: persisted.resume.outputAssetId || undefined,
             errorCode: persisted.errorCode || undefined,
+            errorStage: persisted.diagnostic?.stage,
+            errorPhase: persisted.diagnostic?.phase,
+            errorRequestId: persisted.diagnostic?.requestId,
+            errorRetryable: persisted.diagnostic?.retryable,
+            executionDisposition: persisted.executionDisposition,
             mode: 'foreground',
             heartbeat: 'pending',
         } : IDLE_DISPLAY;
@@ -427,8 +699,22 @@ export const OpsVideoJobCoordinator = () => {
     }, []);
 
     useEffect(() => {
+        const jobContext = historyContextRef.current?.jobId === display.jobId
+            ? historyContextRef.current
+            : null;
         publishOpsExecutorActivity(display);
-    }, [display]);
+        // Um item so entra no journal depois que o claim confirma a identidade
+        // e a revisao autoritativas. Assim uma revisao vista brevemente em
+        // `/next` nunca fica como trabalho ativo fantasma se o claim a substituir.
+        if (jobContext) {
+            recordOpsJobHistoryActivity(display, {
+                scopeKey: opsJobHistoryScope(user?.orgId, user?.id),
+                projectId: jobContext.projectId,
+                companyId: jobContext.companyId,
+                revision: jobContext.revision,
+            });
+        }
+    }, [display, user?.id, user?.orgId]);
 
     const setMode = useCallback((mode: OpsVideoWorkerExecutionMode) => {
         modeRef.current = mode;
@@ -506,8 +792,7 @@ export const OpsVideoJobCoordinator = () => {
             setDisplay((current) => transitionOpsExecutorMonitor(current, {
                 type: 'monitor-failed',
                 source: 'heartbeat',
-                code: parsed.code,
-                message: parsed.message,
+                ...monitorErrorMetadata(parsed),
             }));
         } finally {
             if (heartbeatAbortRef.current === controller) {
@@ -559,14 +844,16 @@ export const OpsVideoJobCoordinator = () => {
     }, [heartbeat]);
 
     const execute = useCallback(async (queued: QueuedJob) => {
-        const readiness = await validateBeforeClaim(queued.job, queued.context);
+        // O claim pode devolver uma revisao mais nova que a leitura da fila.
+        // O contexto do journal e definido somente depois dessa confirmacao.
+        historyContextRef.current = null;
         let persisted = queued.resume && isPersistedJobCompatible(queued.resume, queued.job)
             ? queued.resume
             : createPersistedOpsVideoJob(queued.job, queued.context.contextId);
         if (!queued.resume) persisted = savePersistedOpsVideoJob(persisted);
         currentJobRef.current = queued.job.id;
         heartbeatContextRef.current = queued.context.contextId;
-        const companyName = opsProjectCompanyName(readiness.company);
+        let companyName = queued.job.projectCompanyResolution?.name || queued.job.companyId;
         setDisplay((current) => ({
             ...transitionOpsExecutorMonitor(current, { type: 'monitor-recovered', source: 'poll' }),
             jobId: queued.job.id,
@@ -575,17 +862,125 @@ export const OpsVideoJobCoordinator = () => {
             stage: persisted.stage,
             status: queued.resume ? 'paused' : 'queued',
             percent: persisted.progress,
-            message: queued.resume ? 'Retomando o mesmo projeto apos a interrupcao.' : 'Validacoes concluidas. Assumindo o trabalho com seguranca.',
+            message: queued.resume
+                ? 'Retomando o mesmo projeto apos a interrupcao.'
+                : 'Trabalho recebido. Assumindo o job para concluir o preflight estruturado.',
             errorCode: undefined,
+            errorStage: undefined,
+            errorPhase: undefined,
+            errorRequestId: undefined,
+            errorRetryable: undefined,
+            executionDisposition: persisted.executionDisposition,
         }));
 
-        let activeClaim = await gatewayApi.claimOpsVideoJob(queued.job.id, queued.context.contextId);
+        let activeClaim: OpsVideoJobClaim;
+        try {
+            activeClaim = await gatewayApi.claimOpsVideoJob(queued.job.id, queued.context.contextId);
+        } catch (error) {
+            const parsed = errorParts(error);
+            const preClaimPhase = parsed.phase || 'pre_claim_failed';
+            const preClaimStage = queued.job.stage || 'queued';
+            const terminalActivity: OpsExecutorActivity = {
+                jobId: queued.job.id,
+                companyName: queued.job.projectCompanyResolution?.name || queued.job.companyId,
+                projectTitle: queued.job.projectTitle,
+                stage: preClaimStage,
+                status: 'failed',
+                percent: Math.max(0, Math.min(100, Number(queued.job.progress?.percent || 0))),
+                message: parsed.message,
+                errorCode: parsed.code,
+                errorStage: preClaimStage,
+                errorPhase: preClaimPhase,
+                errorRequestId: parsed.requestId,
+                errorRetryable: parsed.retryable,
+                mode: modeRef.current,
+                heartbeat: 'pending',
+            };
+            // Sem token de claim nao existe PATCH remoto seguro. Encerramos a
+            // tentativa apenas no historico local e removemos o checkpoint
+            // pre-claim, evitando uma revisao fantasma ativa. Um proximo poll
+            // podera ler novamente o job real da fila.
+            recordOpsJobHistoryActivity(terminalActivity, {
+                scopeKey: opsJobHistoryScope(user?.orgId, user?.id),
+                projectId: queued.job.projectId,
+                companyId: queued.job.companyId,
+                revision: Math.max(1, Number(queued.job.execution?.revision || 1)),
+            });
+            clearPersistedOpsVideoJob();
+            currentJobRef.current = null;
+            setDisplay((current) => transitionOpsExecutorMonitor({
+                ...current,
+                ...terminalActivity,
+                mode: current.mode,
+                heartbeat: current.heartbeat,
+            }, {
+                type: 'monitor-failed',
+                source: 'poll',
+                code: parsed.code,
+                message: parsed.message,
+                phase: preClaimPhase,
+                requestId: parsed.requestId,
+                retryable: parsed.retryable,
+            }));
+            return;
+        }
         const job = activeClaim.job;
-        const resume = Boolean(queued.resume);
-        persisted = updatePersistedOpsVideoJob({ status: 'claimed', message: 'Trabalho assumido pelo executor local.' }) || persisted;
-        toast.info(resume
-            ? `Retomando "${job.projectTitle}" no mesmo projeto.`
-            : `O agente Video Maker iniciou "${job.projectTitle}".`, { duration: 6_000 });
+        const claimIdentity = resolveOpsVideoClaimIdentity(queued.job, job);
+        let resume = Boolean(queued.resume);
+        if (claimIdentity.action === 'rebase') {
+            // A resposta do claim e a identidade autoritativa. Um payload ou
+            // revision mais novo nunca pode herdar projeto, render ou upload do
+            // checkpoint criado a partir da leitura anterior da fila.
+            clearPersistedOpsVideoJob();
+            persisted = savePersistedOpsVideoJob(createPersistedOpsVideoJob(
+                job,
+                queued.context.contextId,
+            ));
+            resume = false;
+        }
+        if (claimIdentity.action !== 'reject') {
+            historyContextRef.current = {
+                jobId: job.id,
+                projectId: job.projectId,
+                companyId: job.companyId,
+                revision: claimIdentity.claimedRevision,
+            };
+            companyName = job.projectCompanyResolution?.name || job.companyId;
+            persisted = updatePersistedOpsVideoJob({
+                status: 'claimed',
+                message: claimIdentity.action === 'rebase'
+                    ? claimIdentity.message
+                    : 'Trabalho assumido pelo executor local.',
+                companySource: job.projectCompanyResolution?.source || 'unresolved',
+                companyFallbackUsed: job.projectCompanyResolution?.fallbackUsed === true,
+                companyFallbackReason: job.projectCompanyResolution?.fallbackReason || null,
+            }) || persisted;
+        }
+        setDisplay((current) => ({
+            ...current,
+            jobId: job.id,
+            companyName,
+            projectTitle: job.projectTitle,
+            stage: persisted.stage,
+            status: 'claimed',
+            percent: persisted.progress,
+            message: claimIdentity.action === 'rebase'
+                ? claimIdentity.message
+                : resume
+                    ? 'Trabalho retomado e reassumido pelo executor local.'
+                    : 'Trabalho assumido pelo executor local.',
+            errorCode: undefined,
+            errorStage: undefined,
+            errorPhase: undefined,
+            errorRequestId: undefined,
+            errorRetryable: undefined,
+            executionDisposition: persisted.executionDisposition,
+        }));
+        if (claimIdentity.action !== 'reject') {
+            toast.info(resume
+                ? `Retomando "${job.projectTitle}" no mesmo projeto.`
+                : `O agente Video Maker iniciou "${job.projectTitle}".`, { duration: 6_000 });
+        }
 
         const patch = async (
             stage: Exclude<OpsVideoJobStage, 'queued'>,
@@ -598,6 +993,9 @@ export const OpsVideoJobCoordinator = () => {
                 renderResult?: ExportResultDiagnostics;
                 errorCode?: string;
                 errorMessage?: string;
+                errorPhase?: string;
+                errorRequestId?: string;
+                errorRetryable?: boolean;
             } = {},
         ) => {
             const localStatus: OpsVideoWorkerLocalStatus = extra.status || 'running';
@@ -610,6 +1008,14 @@ export const OpsVideoJobCoordinator = () => {
                     status: localStatus,
                     errorCode: extra.errorCode || null,
                     errorMessage: extra.errorMessage || null,
+                    ...(extra.errorCode ? { diagnostic: {
+                        code: extra.errorCode,
+                        message: extra.errorMessage || message,
+                        stage,
+                        retryable: extra.errorRetryable === true,
+                        phase: extra.errorPhase,
+                        requestId: extra.errorRequestId,
+                    } } : {}),
                     resume: extra.outputAssetId || extra.renderResult
                         ? { outputAssetId: extra.outputAssetId, renderResult: extra.renderResult }
                         : undefined,
@@ -625,6 +1031,10 @@ export const OpsVideoJobCoordinator = () => {
                     message,
                     assetId: extra.outputAssetId || current.assetId,
                     errorCode: extra.errorCode,
+                    errorStage: extra.errorCode ? stage : undefined,
+                    errorPhase: extra.errorPhase,
+                    errorRequestId: extra.errorRequestId,
+                    errorRetryable: extra.errorRetryable,
                 }));
             };
             // A conclusão só vira estado local terminal depois que o Ops confirma
@@ -639,10 +1049,24 @@ export const OpsVideoJobCoordinator = () => {
                 outputAssetId: extra.outputAssetId,
                 renderResult: extra.renderResult,
                 errorCode: extra.errorCode,
-                errorMessage: extra.errorMessage,
+                errorMessage: extra.errorCode
+                    ? opsCompatibleErrorMessage(extra.errorMessage || message, {
+                        stage,
+                        phase: extra.errorPhase,
+                        requestId: extra.errorRequestId,
+                        retryable: extra.errorRetryable,
+                    })
+                    : extra.errorMessage,
+                errorStage: extra.errorCode ? stage : undefined,
+                errorPhase: extra.errorPhase,
+                errorRequestId: extra.errorRequestId,
+                errorRetryable: extra.errorRetryable,
+                companySource: persisted.companySource,
+                companyFallbackUsed: persisted.companyFallbackUsed,
+                companyFallbackReason: persisted.companyFallbackReason,
             };
             const sendUpdate = () => gatewayApi.updateOpsVideoJob(
-                job.id,
+                queued.job.id,
                 activeClaim.claimToken,
                 update,
                 queued.context.contextId,
@@ -698,17 +1122,87 @@ export const OpsVideoJobCoordinator = () => {
                 percent,
                 message,
                 errorCode: undefined,
+                errorStage: undefined,
+                errorPhase: undefined,
+                errorRequestId: undefined,
+                errorRetryable: undefined,
             }));
         };
 
         try {
+            if (claimIdentity.action === 'reject') {
+                throw new LocalApiError(
+                    claimIdentity.message,
+                    409,
+                    claimIdentity.code || 'ops_claim_identity_mismatch',
+                    claimIdentity.retryable,
+                    undefined,
+                    'claim_identity',
+                );
+            }
+            if (
+                queued.job.projectCompanyResolution?.authoritative === true
+                && job.projectCompanyResolution?.authoritative !== true
+            ) {
+                throw new Error(
+                    'ops_project_company_changed: A empresa autoritativa do projeto mudou entre a leitura e o claim. O job nao foi executado.',
+                );
+            }
+            // O claim fornece o token necessário para devolver qualquer falha
+            // permanente do preflight ao Ops. Nenhuma geração/cobrança acontece
+            // antes da validação integral de empresa, assets e narração.
+            const readiness = await validateBeforeClaim(job, queued.context);
+            companyName = readiness.projectCompanyResolution.name || opsProjectCompanyName(readiness.company);
+            const companyResolutionMessage = readiness.projectCompanyResolution.fallbackUsed
+                ? ' Empresa resolvida pelo fallback legado porque settings.projectCompany nao foi enviado pelo Ops.'
+                : '';
+            if (readiness.projectCompanyResolution.fallbackUsed) {
+                const fallbackAuditMessage = [
+                    'Auditoria da empresa do projeto:',
+                    `companySource=${readiness.projectCompanyResolution.source};`,
+                    'fallbackUsed=true;',
+                    `fallbackReason=${readiness.projectCompanyResolution.fallbackReason || 'nao_informado'}.`,
+                ].join(' ');
+                // Evento gravado diretamente: nao depende do batching do React
+                // e nao some quando o proximo progresso troca a mensagem atual.
+                recordOpsJobHistoryActivity({
+                    jobId: job.id,
+                    companyName,
+                    projectTitle: job.projectTitle,
+                    stage: persisted.stage,
+                    status: 'claimed',
+                    percent: persisted.progress,
+                    message: fallbackAuditMessage,
+                    executionDisposition: persisted.executionDisposition,
+                    mode: modeRef.current,
+                    heartbeat: 'online',
+                }, {
+                    scopeKey: opsJobHistoryScope(user?.orgId, user?.id),
+                    projectId: job.projectId,
+                    companyId: readiness.projectCompanyResolution.id,
+                    revision: Math.max(1, Number(job.execution?.revision || 1)),
+                });
+            }
+            setDisplay((current) => ({
+                ...current,
+                companyName,
+                message: `Preflight concluido com seguranca.${companyResolutionMessage}`,
+            }));
             if (resume) {
                 const stage = persisted.stage === 'queued' ? 'narration' : persisted.stage;
                 const percent = Math.max(5, persisted.progress);
-                await patch(stage as Exclude<OpsVideoJobStage, 'queued'>, percent, `Retomando: ${persisted.message}`);
+                await patch(
+                    stage as Exclude<OpsVideoJobStage, 'queued'>,
+                    percent,
+                    `Retomando: ${persisted.message}${companyResolutionMessage}`,
+                );
             } else {
                 // O primeiro progresso remoto acontece imediatamente depois do claim.
-                await patch('narration', OPS_VIDEO_PROGRESS.narration.start, 'Preparando a narração.');
+                await patch(
+                    'narration',
+                    OPS_VIDEO_PROGRESS.narration.start,
+                    `Preparando a narração.${companyResolutionMessage}`,
+                );
             }
 
             const executionRevision = Math.max(1, Number(job.execution?.revision || 1));
@@ -773,21 +1267,78 @@ export const OpsVideoJobCoordinator = () => {
             let finalTakes: MediaTake[] = [];
             let captionStyle = { ...DEFAULT_CAPTION_STYLE };
             let selectedMusicId = readiness.musicId;
-            const savedProject = (persisted.resume.projectPrepared || isRevisionExecution)
-                ? await loadAutomatedProject(job.projectId)
-                : null;
+            const shouldLoadOriginalProject = persisted.resume.projectPrepared || isRevisionExecution;
+            let savedProject: Awaited<ReturnType<typeof loadAutomatedProject>> = null;
+            if (shouldLoadOriginalProject) {
+                try {
+                    savedProject = await loadAutomatedProject(job.projectId);
+                } catch (error) {
+                    const source = errorParts(error);
+                    const decision = resolveOpsVideoExecutionDisposition({
+                        isRevisionExecution,
+                        requiresFreshRender,
+                        hasCompatibleProject: false,
+                        hasPreviousExecutionEvidence: false,
+                        hasCompletePayload: readiness.hasCompleteExecutionPayload,
+                        projectLookupUnavailable: true,
+                    });
+                    const blocked = executionDispositionError(
+                        'temporarily_unavailable',
+                        decision.message,
+                        true,
+                        { phase: source.phase || decision.phase, requestId: source.requestId },
+                    );
+                    const parsedBlocked = errorParts(blocked);
+                    const diagnosticStage = persisted.stage === 'queued' ? 'narration' : persisted.stage;
+                    persisted = updatePersistedOpsVideoJob({
+                        executionDisposition: decision.disposition,
+                        diagnostic: workerDiagnostic(parsedBlocked, diagnosticStage),
+                        errorCode: parsedBlocked.code,
+                        errorMessage: parsedBlocked.message,
+                    }) || persisted;
+                    throw blocked;
+                }
+            }
             const canResumeProject = Boolean(
                 savedProject
                 && savedProject.title === job.projectTitle.trim()
                 && savedProject.adData.opsCompany?.id === job.companyId
-                && savedProject.adData.narrationText.trim() === (job.narration?.trim() || '')
+                && savedProject.adData.narrationPlainText.trim() === readiness.initialAdData.narrationPlainText.trim()
                 && savedProject.adData.format === job.format
                 && (savedProject.adData.frameOverlay?.externalMedia?.assetId || null) === (readiness.frameAsset?.id || null)
                 && savedProject.mediaTakes.length > 0,
             );
 
-            if (isRevisionExecution && !canResumeProject) {
-                throw new Error('fresh_render_project_unavailable: A revisão exige o projeto original completo neste computador. Nenhum job ou projeto substituto foi criado.');
+            const executionDecision = resolveOpsVideoExecutionDisposition({
+                isRevisionExecution,
+                requiresFreshRender,
+                hasCompatibleProject: canResumeProject,
+                hasPreviousExecutionEvidence: Boolean(
+                    job.execution?.previousOutputAssetId
+                    || job.outputAssetId
+                    || job.renderResult,
+                ),
+                hasCompletePayload: readiness.hasCompleteExecutionPayload,
+            });
+            persisted = updatePersistedOpsVideoJob({
+                executionDisposition: executionDecision.disposition,
+                diagnostic: dispositionDiagnostic(
+                    executionDecision.disposition,
+                    executionDecision.message,
+                    executionDecision.retryable,
+                ),
+            }) || persisted;
+            setDisplay((current) => ({
+                ...current,
+                executionDisposition: executionDecision.disposition,
+            }));
+            if (!executionDecision.canExecute && executionDecision.code) {
+                throw executionDispositionError(
+                    executionDecision.code,
+                    executionDecision.message,
+                    executionDecision.retryable,
+                    { phase: executionDecision.phase },
+                );
             }
 
             if (canResumeProject && savedProject) {
@@ -803,6 +1354,9 @@ export const OpsVideoJobCoordinator = () => {
                     new Set(job.takeAssetIds),
                 );
             } else {
+                // `new_execution` usa exclusivamente o payload integral e o
+                // projectId solicitados pelo Ops. Nao tenta revisar um asset
+                // inexistente e nao inventa um projeto substituto.
                 showLocalProgress('narration', 8, 'Gerando a narracao e preparando a trilha de fundo.');
                 adData = await generateNarrationAndMix(adData);
                 await patch('narration', OPS_VIDEO_PROGRESS.narration.end, 'Narracao final pronta e validada.');
@@ -1057,6 +1611,7 @@ export const OpsVideoJobCoordinator = () => {
                     message,
                     errorCode: parsed.code,
                     errorMessage: message,
+                    diagnostic: { ...workerDiagnostic(parsed, 'export'), message },
                     resume: {
                         renderStarted: false,
                         exportJobId: null,
@@ -1066,19 +1621,61 @@ export const OpsVideoJobCoordinator = () => {
                     },
                 });
                 currentJobRef.current = null;
-                setDisplay((value) => ({ ...value, status: 'paused', message, errorCode: parsed.code, assetId: undefined }));
+                setDisplay((value) => ({
+                    ...value,
+                    status: 'paused',
+                    message,
+                    ...executorErrorMetadata(parsed, 'export'),
+                    assetId: undefined,
+                }));
                 toast.warning(`A revisão de "${job.projectTitle}" será renderizada novamente com um upload novo.`, { duration: 12_000 });
                 return;
             }
             if (isRecoverableInterruption(error, parsed.code)) {
+                const interruptionStage = current.stage === 'queued' ? 'narration' : current.stage;
+                const interruptionPercent = Math.max(5, current.progress);
+                const interruptionDisposition = parsed.retryable
+                    ? 'temporarily_unavailable' as const
+                    : errorExecutionDisposition(parsed.code);
+                try {
+                    await patch(
+                        interruptionStage as Exclude<OpsVideoJobStage, 'queued'>,
+                        interruptionPercent,
+                        parsed.message,
+                        {
+                            status: 'running',
+                            errorCode: parsed.code,
+                            errorMessage: parsed.message,
+                            errorPhase: parsed.phase,
+                            errorRequestId: parsed.requestId,
+                            errorRetryable: parsed.retryable,
+                        },
+                    );
+                } catch {
+                    // A indisponibilidade pode impedir também o PATCH. O estado
+                    // local abaixo preserva todos os metadados para a retomada.
+                }
                 updatePersistedOpsVideoJob({
                     status: 'paused',
                     message: parsed.message,
                     errorCode: parsed.code,
                     errorMessage: parsed.message,
+                    ...(interruptionDisposition
+                        ? { executionDisposition: interruptionDisposition }
+                        : {}),
+                    diagnostic: workerDiagnostic(
+                        parsed,
+                        interruptionStage,
+                    ),
                 });
                 currentJobRef.current = null;
-                setDisplay((value) => ({ ...value, status: 'paused', message: parsed.message, errorCode: parsed.code }));
+                setDisplay((value) => ({
+                    ...value,
+                    status: 'paused',
+                    message: parsed.message,
+                    ...executorErrorMetadata(parsed, interruptionStage),
+                    executionDisposition: interruptionDisposition || value.executionDisposition,
+                }));
                 toast.warning(`O trabalho "${job.projectTitle}" foi pausado e sera retomado: ${parsed.message}`, { duration: 12_000 });
                 return;
             }
@@ -1089,14 +1686,25 @@ export const OpsVideoJobCoordinator = () => {
                     status: 'failed',
                     errorCode: parsed.code,
                     errorMessage: parsed.message,
+                    errorPhase: parsed.phase,
+                    errorRequestId: parsed.requestId,
+                    errorRetryable: parsed.retryable,
                 });
             } catch {
-                updatePersistedOpsVideoJob({ status: 'failed', errorCode: parsed.code, errorMessage: parsed.message });
+                updatePersistedOpsVideoJob({
+                    status: 'failed',
+                    errorCode: parsed.code,
+                    errorMessage: parsed.message,
+                    ...(errorExecutionDisposition(parsed.code)
+                        ? { executionDisposition: errorExecutionDisposition(parsed.code) }
+                        : {}),
+                    diagnostic: workerDiagnostic(parsed, failureStage),
+                });
             }
             currentJobRef.current = null;
             toast.error(`O agente nao concluiu "${job.projectTitle}": ${parsed.message}`, { duration: 14_000 });
         }
-    }, [startExport]);
+    }, [startExport, user?.id, user?.orgId]);
 
     const poll = useCallback(async () => {
         if (runningRef.current || exportingRef.current) return;
@@ -1114,6 +1722,10 @@ export const OpsVideoJobCoordinator = () => {
                         message: parsed.message,
                         errorCode: parsed.code,
                         errorMessage: parsed.message,
+                        diagnostic: workerDiagnostic(
+                            parsed,
+                            persisted.stage === 'queued' ? 'narration' : persisted.stage,
+                        ),
                     }) || persisted;
                     currentJobRef.current = null;
                     setDisplay((current) => ({
@@ -1125,14 +1737,14 @@ export const OpsVideoJobCoordinator = () => {
                         status: 'paused',
                         percent: paused.progress,
                         message: parsed.message,
-                        errorCode: parsed.code,
+                        ...executorErrorMetadata(parsed, paused.stage === 'queued' ? 'narration' : paused.stage),
+                        executionDisposition: paused.executionDisposition,
                     }));
                 } else {
                     setDisplay((current) => transitionOpsExecutorMonitor(current, {
                         type: 'monitor-failed',
                         source: 'poll',
-                        code: parsed.code,
-                        message: parsed.message,
+                        ...monitorErrorMetadata(parsed),
                     }));
                 }
                 return;
@@ -1145,17 +1757,24 @@ export const OpsVideoJobCoordinator = () => {
             const activeQueued = queued;
             heartbeatContextRef.current = activeQueued.context.contextId;
             if (activeQueued.job.status === 'completed' || activeQueued.job.status === 'failed') {
+                historyContextRef.current = {
+                    jobId: activeQueued.job.id,
+                    projectId: activeQueued.job.projectId,
+                    companyId: activeQueued.job.companyId,
+                    revision: Math.max(1, Number(activeQueued.job.execution?.revision || 1)),
+                };
                 setDisplay((current) => ({
                     ...transitionOpsExecutorMonitor(current, { type: 'monitor-recovered', source: 'poll' }),
                     jobId: activeQueued.job.id,
                     projectTitle: activeQueued.job.projectTitle,
-                    companyName: activeQueued.job.companyId,
+                        companyName: activeQueued.job.projectCompanyResolution?.name || activeQueued.job.companyId,
                     stage: activeQueued.job.stage,
                     status: activeQueued.job.status,
                     percent: Number(activeQueued.job.progress?.percent || (activeQueued.job.status === 'completed' ? 100 : 0)),
                     message: activeQueued.job.progress?.message || (activeQueued.job.status === 'completed' ? 'Trabalho concluido no Ops.' : 'Trabalho encerrado com falha no Ops.'),
                     assetId: activeQueued.job.outputAssetId || undefined,
                     errorCode: activeQueued.job.status === 'failed' ? (activeQueued.job.error?.code || undefined) : undefined,
+                    errorStage: activeQueued.job.status === 'failed' ? activeQueued.job.stage : undefined,
                 }));
                 clearPersistedOpsVideoJob();
                 currentJobRef.current = null;
@@ -1165,7 +1784,19 @@ export const OpsVideoJobCoordinator = () => {
         } catch (error) {
             const parsed = errorParts(error);
             const persisted = loadPersistedOpsVideoJob();
-            if (persisted) updatePersistedOpsVideoJob({ status: 'paused', message: parsed.message, errorCode: parsed.code, errorMessage: parsed.message });
+            if (persisted) updatePersistedOpsVideoJob({
+                status: 'paused',
+                message: parsed.message,
+                errorCode: parsed.code,
+                errorMessage: parsed.message,
+                ...(errorExecutionDisposition(parsed.code)
+                    ? { executionDisposition: errorExecutionDisposition(parsed.code) }
+                    : {}),
+                diagnostic: workerDiagnostic(
+                    parsed,
+                    persisted.stage === 'queued' ? 'narration' : persisted.stage,
+                ),
+            });
             const updateRequired = parsed.code === 'video_worker_upgrade_required';
             const blockedBeforeClaim = Boolean(queued)
                 && (updateRequired || !isRecoverableInterruption(error, parsed.code));
@@ -1175,7 +1806,8 @@ export const OpsVideoJobCoordinator = () => {
                     ...current,
                     status: 'paused',
                     message: parsed.message,
-                    errorCode: parsed.code,
+                    ...executorErrorMetadata(parsed, persisted.stage === 'queued' ? 'narration' : persisted.stage),
+                    executionDisposition: errorExecutionDisposition(parsed.code) || persisted.executionDisposition,
                 }));
             } else if (blockedBeforeClaim && queued) {
                 const blockedJob = queued.job;
@@ -1183,20 +1815,20 @@ export const OpsVideoJobCoordinator = () => {
                     ...transitionOpsExecutorMonitor(current, { type: 'monitor-recovered', source: 'poll' }),
                     jobId: blockedJob.id,
                     projectTitle: blockedJob.projectTitle,
-                    companyName: blockedJob.companyId,
+                    companyName: blockedJob.projectCompanyResolution?.name || blockedJob.companyId,
                     stage: blockedJob.stage,
                     status: 'paused',
                     percent: Number(blockedJob.progress?.percent || 0),
                     message: parsed.message,
                     assetId: undefined,
-                    errorCode: parsed.code,
+                    ...executorErrorMetadata(parsed, blockedJob.stage === 'queued' ? 'narration' : blockedJob.stage),
+                    executionDisposition: errorExecutionDisposition(parsed.code),
                 }));
             } else {
                 setDisplay((current) => transitionOpsExecutorMonitor(current, {
                     type: 'monitor-failed',
                     source: 'poll',
-                    code: parsed.code,
-                    message: parsed.message,
+                    ...monitorErrorMetadata(parsed),
                 }));
             }
         } finally {

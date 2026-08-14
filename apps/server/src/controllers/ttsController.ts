@@ -9,6 +9,10 @@ import { getProviderLabel, isTtsProvider } from '../services/ttsProviders';
 import { TtsProvider, VoiceSettings, isFishModel } from '../services/ttsTypes';
 import { synthesizeViaGateway } from '../services/gatewayNarration';
 import { bearerFrom, GatewayHttpError } from '../services/gatewayClient';
+import {
+    NarrationContractError,
+    prepareNarrationContract,
+} from '../services/fishNarrationContract';
 
 const NARRATION_DIR = path.join(process.env.USER_DATA_PATH || path.join(__dirname, '..', '..'), 'narrations');
 
@@ -54,7 +58,14 @@ export const uploadNarrationRecording = async (req: Request, res: Response) => {
  * O provedor vem do cliente porque cada voz salva sabe a qual serviço pertence.
  * Sem `provider` no corpo, mantém o comportamento histórico (Fish Audio).
  */
-const resolveProvider = (raw: unknown): TtsProvider => (isTtsProvider(raw) ? raw : 'fishAudio');
+const resolveProvider = (raw: unknown): TtsProvider => {
+    if (raw === undefined || raw === null || raw === '') return 'fishAudio';
+    if (isTtsProvider(raw)) return raw;
+    throw new NarrationContractError(
+        'TTS_PROVIDER_UNSUPPORTED',
+        `O provedor de narracao solicitado (${String(raw).slice(0, 40)}) nao e suportado.`,
+    );
+};
 
 const parseSettings = (raw: unknown): VoiceSettings | undefined => {
     if (!raw || typeof raw !== 'object') return undefined;
@@ -71,25 +82,82 @@ const parseSettings = (raw: unknown): VoiceSettings | undefined => {
 };
 
 const handleSynthesis = async (req: Request, res: Response, label: string) => {
-    const { voiceId, text, voiceSettings } = req.body;
+    const {
+        voiceId,
+        text,
+        voiceSettings,
+        narrationPlainText,
+        narrationSynthesisText,
+        ttsModel,
+        directionMode,
+        directionVersion,
+        narrationDialect,
+        protectedTerms,
+    } = req.body;
     const provider = resolveProvider(req.body.provider);
     const token = bearerFrom(req);
 
-    if (!voiceId || !text) {
+    if (!voiceId || (!text && !narrationPlainText && !narrationSynthesisText)) {
         return res.status(400).json({ ok: false, message: 'Missing parameters (voiceId, text)' });
     }
     if (!token) {
         return res.status(401).json({ ok: false, message: 'Sessão expirada. Entre novamente para gerar narração.' });
     }
 
-    console.log(`[TTS] ${label} requested — ${getProviderLabel(provider)} · voice ${voiceId}`);
+    const contract = prepareNarrationContract({
+        provider,
+        legacyText: text,
+        narrationPlainText,
+        narrationSynthesisText,
+        ttsModel,
+        voiceSettingsModel: provider === 'fishAudio' ? voiceSettings?.fishModel : voiceSettings?.model,
+        directionMode,
+        directionVersion,
+        narrationDialect,
+        protectedTerms,
+        structured: narrationPlainText !== undefined || narrationSynthesisText !== undefined,
+    });
+    const parsedSettings = parseSettings(voiceSettings) || {};
+    const effectiveSettings = provider === 'fishAudio'
+        ? {
+            ...parsedSettings,
+            fishModel: isFishModel(contract.ttsModel) ? contract.ttsModel : undefined,
+        }
+        : parsedSettings;
 
-    const result = await synthesizeViaGateway(token, provider, voiceId, text, parseSettings(voiceSettings));
-    res.json({ ok: true, provider, url: result.url, path: result.path, duration: result.duration, demo: result.demo });
+    console.log(`[TTS] ${label} requested — ${getProviderLabel(provider)} · model ${contract.ttsModel} · contract ${contract.directionVersion} · voice ${voiceId}`);
+
+    const result = await synthesizeViaGateway(
+        token,
+        provider,
+        voiceId,
+        contract.narrationSynthesisText,
+        effectiveSettings,
+        contract,
+    );
+    res.json({
+        ok: true,
+        provider,
+        url: result.url,
+        path: result.path,
+        duration: result.duration,
+        demo: result.demo,
+        narrationPlainText: contract.narrationPlainText,
+        narrationSynthesisText: contract.narrationSynthesisText,
+        ttsModel: contract.ttsModel,
+        voiceId,
+        directionMode: contract.directionMode,
+        directionVersion: contract.directionVersion,
+        narrationDialect: contract.narrationDialect,
+    });
 };
 
 /** Traduz erros do gateway (401 sessão, 402 saldo) para o app. */
 const sendTtsError = (res: Response, error: unknown, label: string) => {
+    if (error instanceof NarrationContractError) {
+        console.error(`[TTS] ${label} contract ${error.code}:`, error.message);
+        return res.status(error.status).json({ ok: false, code: error.code, message: error.message });
+    }
     if (error instanceof GatewayHttpError) {
         console.error(`[TTS] ${label} gateway error ${error.status}:`, error.message);
         return res.status(error.status).json({ ok: false, message: error.message });

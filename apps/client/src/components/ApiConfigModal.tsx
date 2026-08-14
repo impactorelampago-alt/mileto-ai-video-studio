@@ -202,8 +202,8 @@ export const ApiConfigModal: React.FC<ApiConfigModalProps> = ({ isOpen, onClose 
                                 {fishWallet.credit <= 0 && (
                                     <p className="mt-1 opacity-90 leading-snug">
                                         Sem saldo. Se o painel da Fish mostra saldo, esta chave é de outra
-                                        conta — gere uma nova chave na conta certa. O modelo{' '}
-                                        <strong>S2.1 Pro grátis</strong> funciona mesmo sem saldo.
+                                        conta — gere uma nova chave na conta certa. O padrão profissional{' '}
+                                        <strong>S2.1 Pro pago</strong> exige saldo disponível na Fish Audio.
                                     </p>
                                 )}
                             </div>

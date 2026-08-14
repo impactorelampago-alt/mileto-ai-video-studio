@@ -131,7 +131,10 @@ export const Account = () => {
                                 <tbody>
                                     {usage.map((row, i) => (
                                         <tr key={i} className="border-t border-white/5">
-                                            <td className="py-2 pr-4">{KIND_LABEL[row.kind] || row.kind}</td>
+                                            <td className="py-2 pr-4">
+                                                {KIND_LABEL[row.kind] || row.kind}
+                                                {row.model && <span className="block text-[10px] text-foreground/40">{row.model}</span>}
+                                            </td>
                                             <td className="py-2 pr-4 text-foreground/50">
                                                 {new Date(row.created_at).toLocaleString('pt-BR')}
                                             </td>

@@ -13,6 +13,14 @@ const clientPath = (relative) => path.resolve(__dirname, '../../client/src', rel
 const defaultDependencyMocks = {
     './audioAutoFit': { backgroundTrimEndForNarration: () => undefined },
     './captionStyleMigration': { normalizeHydratedCaptionStyle: (style) => style },
+    './narrationContract': {
+        buildNarrationTtsRequest: () => {
+            throw new Error('narration TTS is outside this title-generation harness');
+        },
+        contractFromTtsResponse: () => {
+            throw new Error('narration TTS is outside this title-generation harness');
+        },
+    },
 };
 
 const compileClientModule = (relative) => {

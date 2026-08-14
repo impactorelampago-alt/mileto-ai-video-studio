@@ -11,6 +11,7 @@
     "migrate": "node src/migrate.js",
     "migrate:ops-v01": "node src/migrateOpsV01.js",
     "migrate:agents-v01": "node src/migrateAgentsV01.js",
+    "migrate:usage-ledger-model": "node src/migrateUsageLedgerModel.js",
     "seed": "node src/seed.js",
     "test": "node --test test/**/*.test.js",
     "start": "node src/server.js",

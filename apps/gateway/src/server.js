@@ -7,13 +7,11 @@ import { config } from './config.js';
 import { query } from './db.js';
 import { login, logout, requireAuth, requireSuperAdmin, requireOwner } from './auth.js';
 import { proxyTts, proxyChat, proxyStt, hasKey } from './providers.js';
+import { prepareTtsRequest } from './narrationTtsContract.js';
+import { userRequestedCleanNarration } from './narrationDirection.js';
 import { estimateUnits, priceOf, reserve, settle, release, getBalance } from './meter.js';
-import { resolveTier, getSystemPrompt, resolveAgent } from './settings.js';
+import { resolveTier, resolveAgent } from './settings.js';
 import { agentRequiresStrictJsonOutput } from './agentDefaults.js';
-import { CHAT_SCRIPT_OUTPUT_CONTRACT } from './defaultPrompt.js';
-import { ensureNarrationSalesVoiceDirection, userRequestedCleanNarration } from './narrationDirection.js';
-import { normalizeSpokenNumbersPtBr } from './spokenNumbers.js';
-import { normalizeSpokenPronunciationPtBr } from './spokenPronunciation.js';
 import * as admin from './admin.js';
 import * as account from './account.js';
 import * as shared from './shared.js';
@@ -154,18 +152,26 @@ app.post(
     asyncHandler(requireAuth),
     asyncHandler(async (req, res) => {
         if (!req.user.orgId) return res.status(403).json({ ok: false, message: 'Conta sem organização.' });
-        const { text, voiceId, provider = 'fishAudio', voiceSettings } = req.body || {};
-        if (!text || !voiceId) return res.status(400).json({ ok: false, message: 'Faltam text e voiceId.' });
+        const payload = req.body || {};
+        const { voiceId, voiceSettings } = payload;
+        if (!voiceId) return res.status(400).json({ ok: false, message: 'Falta voiceId.' });
 
-        // Última barreira antes do Fish Audio: também protege textos digitados ou
-        // colados manualmente, não apenas roteiros criados pelo agente.
-        const spokenText = provider === 'fishAudio'
-            ? normalizeSpokenPronunciationPtBr(normalizeSpokenNumbersPtBr(text))
-            : text;
-
+        // Valida o contrato estruturado e resolve o modelo antes de qualquer
+        // consulta de chave, estimativa ou reserva. Texto estruturado já chega
+        // finalizado pelo servidor local e segue intocado até o Fish Audio.
+        const prepared = prepareTtsRequest(payload);
+        const {
+            provider,
+            model: requestedTtsModel,
+            spokenText,
+            directionMode,
+            directionVersion,
+            narrationDialect,
+            structured,
+        } = prepared;
         const demo = !(await hasKey(provider));
         const units = estimateUnits(provider, 'tts', spokenText); // texto conhecido → estimativa exata
-        const { charged: estCharge } = await priceOf(provider, null, units, 'tts');
+        const { charged: estCharge } = await priceOf(provider, requestedTtsModel, units, 'tts');
 
         let reserved;
         try {
@@ -176,7 +182,20 @@ app.post(
 
         let result;
         try {
-            result = await proxyTts({ provider, voiceId, text: spokenText, voiceSettings });
+            result = await proxyTts({
+                provider,
+                voiceId,
+                text: spokenText,
+                voiceSettings,
+                model: requestedTtsModel,
+            });
+            if (result.model !== requestedTtsModel) {
+                const mismatch = new Error(
+                    `O provedor resolveu ${String(result.model)} em vez do modelo solicitado ${requestedTtsModel}.`
+                );
+                mismatch.code = 'tts_model_mismatch';
+                throw mismatch;
+            }
         } catch (e) {
             await release({ orgId: req.user.orgId, reserved, demo }).catch(() => {});
             console.error('[gateway] /v1/tts provedor', e.message);
@@ -187,7 +206,7 @@ app.post(
             orgId: req.user.orgId,
             userId: req.user.id,
             provider,
-            model: null,
+            model: result.model || null,
             kind: 'tts',
             units,
             demo: result.demo,
@@ -196,8 +215,23 @@ app.post(
 
         res.setHeader('Content-Type', 'audio/mpeg');
         res.setHeader('X-Mileto-Demo', String(result.demo));
+        if (result.model) res.setHeader('X-Mileto-Model', result.model);
+        res.setHeader('X-Mileto-Direction-Version', directionVersion);
+        res.setHeader('X-Mileto-Narration-Dialect', narrationDialect);
         res.setHeader('X-Mileto-Charged', String(meta.charged));
         res.setHeader('X-Mileto-Balance', String(meta.balanceAfter));
+        console.info('[gateway] TTS concluida', {
+            orgId: req.user.orgId,
+            userId: req.user.id,
+            provider,
+            model: result.model || null,
+            directionMode,
+            directionVersion,
+            narrationDialect,
+            structured,
+            units,
+            demo: result.demo,
+        });
         res.send(result.audio);
     })
 );
@@ -214,7 +248,6 @@ app.post(
             locale = 'pt-BR',
             system,
             json,
-            agentId,
             maxOutputTokens: requestedMaxOutputTokens,
         } = req.body || {};
         if (!Array.isArray(messages) || !messages.length) {
@@ -222,12 +255,18 @@ app.post(
         }
 
         const hasCustomSystem = typeof system === 'string' && system.trim();
-        // Chamadas internas com `system` continuam usando os tiers legados. Todo o
-        // chat do produto passa pelo Diretor (ou por um especialista explicitamente
-        // solicitado), cuja configuraÃ§Ã£o real nunca sai deste gateway.
+        const conversationMessages = hasCustomSystem
+            ? messages
+            : messages.filter((message) => message?.role === 'user' || message?.role === 'assistant');
+        if (!conversationMessages.length) {
+            return res.status(400).json({ ok: false, message: 'Falta uma mensagem de usuário ou assistente.' });
+        }
+        // Chamadas internas com `system` continuam usando os tiers legados. O Chat
+        // normal do produto usa sempre o Narrador; agentId legado do cliente ou da
+        // sessao nunca altera mais o roteamento.
         const selectedAgent = hasCustomSystem
             ? null
-            : await resolveAgent(String(agentId || 'director'), locale, model, req.user.orgId);
+            : await resolveAgent('prompt_sales', locale, model, req.user.orgId);
         if (selectedAgent && !selectedAgent.enabled) {
             return res.status(409).json({
                 ok: false,
@@ -245,13 +284,20 @@ app.post(
                 ? Math.min(32768, Math.max(512, parsedMaxOutputTokens))
                 : 4096
         );
-        const baseSystem = hasCustomSystem ? system : selectedAgent?.systemPrompt || (await getSystemPrompt(locale));
-        // Somente o Diretor recebe o contrato do compositor do app. Especialistas
-        // possuem contratos JSON prÃ³prios em seus prompts versionados.
-        const sys = selectedAgent?.id === 'director'
-            ? [baseSystem, CHAT_SCRIPT_OUTPUT_CONTRACT].filter(Boolean).join('\n\n')
-            : baseSystem;
-        const fullMessages = sys ? [{ role: 'system', content: sys }, ...messages] : messages;
+        // Um Narrador sem prompt deve chegar ao modelo realmente sem mensagem de
+        // sistema. Não faça fallback para o antigo prompt global do Diretor.
+        const systemPrompt = hasCustomSystem
+            ? system
+            : selectedAgent.systemPrompt;
+        const fullMessages = systemPrompt
+            ? [{ role: 'system', content: systemPrompt }, ...conversationMessages]
+            : conversationMessages;
+        // Preserva apenas a intenção explícita "sem tags" para quando o usuário
+        // aplicar um roteiro ao projeto. O texto da resposta continua bruto: não
+        // há injeção, remoção ou reescrita de direções no Chat.
+        const narrationDirectionMode = selectedAgent && userRequestedCleanNarration(conversationMessages)
+            ? 'clean'
+            : undefined;
 
         const demo = !(await hasKey(provider));
         const promptChars = fullMessages.map((m) => m.content || '').join(' ');
@@ -289,11 +335,6 @@ app.post(
                 maxOutputTokens,
                 signal: upstreamController.signal,
             });
-            if (selectedAgent?.id === 'prompt_sales') {
-                result.text = ensureNarrationSalesVoiceDirection(result.text, {
-                    allowClean: userRequestedCleanNarration(messages),
-                });
-            }
             providerFinished = true;
         } catch (e) {
             providerFinished = true;
@@ -337,6 +378,7 @@ app.post(
                 demo: result.demo,
                 charged: meta.charged,
                 balance: meta.balanceAfter,
+                ...(narrationDirectionMode ? { narrationDirectionMode } : {}),
                 ...(selectedAgent
                     ? {
                         agent: {

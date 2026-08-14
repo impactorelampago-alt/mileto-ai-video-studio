@@ -7,8 +7,18 @@ process.env.ADMIN_PASSWORD ||= 'test-admin-password';
 
 const {
     DEFAULT_TITLE_GENERATOR_CONFIG,
+    normalizeOrgAgentPromptValue,
     normalizeTitleGeneratorConfig,
 } = await import('../src/orgAi.js');
+
+test('somente o Narrador aceita override de agência vazio', () => {
+    assert.equal(normalizeOrgAgentPromptValue('prompt_sales', '   '), '');
+    assert.equal(normalizeOrgAgentPromptValue('prompt_sales', '  Meu prompt  '), 'Meu prompt');
+    assert.throws(
+        () => normalizeOrgAgentPromptValue('director', '   '),
+        /prompt da agência não pode ficar vazio/i
+    );
+});
 
 test('normaliza regras de titulo, cores e layouts por proporcao', () => {
     const input = structuredClone(DEFAULT_TITLE_GENERATOR_CONFIG);
@@ -169,10 +179,18 @@ test('normaliza a IA exclusiva do gerador de titulos sem depender dos agentes do
 test('rotas de edicao exigem owner e consumo efetivo permanece org-scoped', () => {
     const server = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
     const settings = readFileSync(new URL('../src/settings.js', import.meta.url), 'utf8');
+    const account = readFileSync(new URL('../src/account.js', import.meta.url), 'utf8');
     assert.match(server, /app\.get\('\/account\/ai\/chat',[\s\S]*?requireOwner/);
     assert.match(server, /app\.put\('\/account\/ai\/chat\/:agentId',[\s\S]*?requireOwner/);
     assert.match(server, /app\.put\('\/account\/ai\/title-generator',[\s\S]*?requireOwner/);
     assert.match(server, /app\.get\('\/v1\/ai\/title-generator',[\s\S]*?account\.effectiveAiTitleGenerator/);
-    assert.match(server, /resolveAgent\(String\(agentId \|\| 'director'\), locale, model, req\.user\.orgId\)/);
+    assert.match(server, /resolveAgent\('prompt_sales', locale, model, req\.user\.orgId\)/);
+    assert.doesNotMatch(server, /resolveAgent\(String\(agentId \|\| 'director'\)/);
     assert.match(settings, /getOrgAgentPrompt\(orgId, id\)/);
+    assert.match(settings, /upgradeBundledAgentSystemPrompt\(id, orgOverride\.prompt\)/);
+    assert.match(settings, /const effectivePrompt = orgOverride\s*\?\s*upgradeBundledAgentSystemPrompt/);
+    assert.doesNotMatch(settings, /const effectivePrompt = orgOverride\?\.prompt/);
+    assert.match(account, /upgradeBundledAgentSystemPrompt\(agent\.id, override\.system_prompt\)/);
+    assert.match(account, /effectivePrompt:\s*override\s*\?\s*customPrompt\s*:\s*agent\.config\.systemPrompt/);
+    assert.doesNotMatch(account, /effectivePrompt:\s*customPrompt\s*\|\|/);
 });

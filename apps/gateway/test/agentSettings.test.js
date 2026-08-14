@@ -46,3 +46,13 @@ test('normaliza identificadores públicos e sessões legadas', () => {
     assert.equal(normalizeAgentTierId('mileto-plus'), 'mileto');
     assert.equal(normalizeAgentTierId('qualquer-sessao-antiga'), 'mileto');
 });
+
+test('somente o Narrador aceita prompt global vazio', () => {
+    const narrator = normalizeAgentConfig('prompt_sales', { systemPrompt: '   ' });
+    assert.equal(narrator.systemPrompt, '');
+
+    assert.throws(
+        () => normalizeAgentConfig('director', { systemPrompt: '   ' }),
+        /prompt de sistema não pode ficar vazio/i
+    );
+});

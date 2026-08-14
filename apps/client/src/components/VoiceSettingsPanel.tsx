@@ -91,10 +91,20 @@ export const VoiceSettingsPanel = () => {
             },
         };
 
-    const patch = (changes: Partial<VoiceSettings>) =>
+    const patch = (changes: Partial<VoiceSettings>) => {
+        const requestedModel = provider === 'fishAudio'
+            ? changes.fishModel || settings.fishModel
+            : 'eleven_multilingual_v2';
+        const supportsDirections = provider === 'fishAudio'
+            && FISH_MODELS.find((model) => model.id === requestedModel)?.tags === true;
         updateAdData({
             ...invalidatedNarrationDerivatives(),
             voiceSettings: { ...settings, ...changes },
+            ttsModel: requestedModel,
+            ...(supportsDirections ? {} : {
+                directionMode: 'clean',
+                narrationSynthesisText: adData.narrationPlainText,
+            }),
             // Os ajustes mudam o áudio: obriga a regerar antes de seguir.
             isNarrationGenerated: false,
             narrationAudioUrl: null,
@@ -102,6 +112,7 @@ export const VoiceSettingsPanel = () => {
             sharedNarrationAssetId: undefined,
             narrationDuration: 0,
         });
+    };
 
     const isDefault =
         (Object.keys(selectedPreset.voiceSettings) as (keyof VoiceSettings)[]).every(
@@ -114,6 +125,9 @@ export const VoiceSettingsPanel = () => {
         updateAdData({
             ...invalidatedNarrationDerivatives(),
             voiceSettings: { ...selectedPreset.voiceSettings },
+            ttsModel: provider === 'fishAudio'
+                ? selectedPreset.voiceSettings.fishModel
+                : 'eleven_multilingual_v2',
             audioConfig: {
                 narration: { ...selectedPreset.audioConfig.narration },
                 background: { ...selectedPreset.audioConfig.background },
@@ -277,8 +291,7 @@ export const VoiceSettingsPanel = () => {
                             <code className="text-brand-accent">[whispering]</code>,{' '}
                             <code className="text-brand-accent">[confident]</code>,{' '}
                             <code className="text-brand-accent">[break]</code> para pausa, e{' '}
-                            <code className="text-brand-accent">[emphasis]</code> antes da palavra a destacar. São 66
-                            tags oficiais e elas <strong>não contam na cobrança</strong>. Peça um roteiro ao Chat Mileto
+                            <code className="text-brand-accent">[emphasis]</code> antes da palavra a destacar. O S2.1 entende descrições naturais curtas e não é limitado a uma lista fixa; como fazem parte do texto enviado, entram na medição por bytes. Peça um roteiro ao Chat Mileto
                             que ele já aplica.
                         </p>
                     ) : (

@@ -29,10 +29,13 @@ export interface ChatMessage {
     agentLabel?: string;
     agentVersion?: number;
     agentTier?: 'lite' | 'mileto' | 'ultra';
+    narrationDirectionMode?: 'automatic' | 'manual' | 'clean';
     createdAt: string;
 }
 
 export type ChatAgentId = 'director' | 'prompt_sales' | 'image_director' | 'video_director';
+export const ACTIVE_CHAT_AGENT_ID: ChatAgentId = 'prompt_sales';
+export const ACTIVE_CHAT_AGENT_LABEL = 'Narrador';
 
 interface ChatDB {
     folders: ChatFolder[];
@@ -143,7 +146,7 @@ export function createSession(
     title: string,
     folderId: string | null = null,
     model: string = 'mileto-plus',
-    agentId: ChatAgentId = 'prompt_sales'
+    _requestedAgentId: ChatAgentId = ACTIVE_CHAT_AGENT_ID
 ): ChatSession {
     const db = readDB();
     const now = new Date().toISOString();
@@ -152,7 +155,9 @@ export function createSession(
         title,
         folderId,
         model,
-        agentId,
+        // Nao reescrevemos sessoes nem mensagens existentes. Apenas novas
+        // sessoes passam a pertencer canonicamente ao Narrador.
+        agentId: ACTIVE_CHAT_AGENT_ID,
         createdAt: now,
         updatedAt: now,
     };
@@ -213,7 +218,7 @@ export function addMessage(
     sessionId: string,
     role: 'user' | 'assistant' | 'system',
     content: string,
-    metadata: Pick<ChatMessage, 'agentId' | 'agentLabel' | 'agentVersion' | 'agentTier'> = {}
+    metadata: Pick<ChatMessage, 'agentId' | 'agentLabel' | 'agentVersion' | 'agentTier' | 'narrationDirectionMode'> = {}
 ): ChatMessage {
     const db = readDB();
     const msg: ChatMessage = {
@@ -230,6 +235,25 @@ export function addMessage(
     if (session) session.updatedAt = msg.createdAt;
     writeDB(db);
     return msg;
+}
+
+/**
+ * Persiste uma resposta nova com a identidade publica atual do Chat.
+ *
+ * `addMessage` continua generico porque as mensagens antigas podem carregar os
+ * cargos publicos usados na epoca. Assim, nada lido do historico e migrado ou
+ * rebatizado; somente respostas criadas a partir desta versao recebem Narrador.
+ */
+export function addNarratorMessage(
+    sessionId: string,
+    content: string,
+    metadata: Pick<ChatMessage, 'agentVersion' | 'agentTier' | 'narrationDirectionMode'> = {}
+): ChatMessage {
+    return addMessage(sessionId, 'assistant', content, {
+        agentId: ACTIVE_CHAT_AGENT_ID,
+        agentLabel: ACTIVE_CHAT_AGENT_LABEL,
+        ...metadata,
+    });
 }
 
 export function deleteMessage(id: string): boolean {

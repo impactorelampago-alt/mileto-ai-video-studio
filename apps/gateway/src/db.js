@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
     org_id        BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     user_id       BIGINT REFERENCES users(id) ON DELETE SET NULL,
     provider      TEXT NOT NULL,
+    model         TEXT,
     kind          TEXT NOT NULL,        -- tts | chat
     units         INTEGER NOT NULL,
     provider_cost NUMERIC(14,6) NOT NULL,
@@ -76,6 +77,11 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
     demo          BOOLEAN NOT NULL DEFAULT false,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- CREATE TABLE IF NOT EXISTS nao altera instalacoes existentes. Esta
+-- migracao aditiva e idempotente faz o deploy normal de npm run migrate
+-- preparar o ledger antes de o gateway passar a registrar o modelo usado.
+ALTER TABLE usage_ledger ADD COLUMN IF NOT EXISTS model TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_ledger_org_time ON usage_ledger(org_id, created_at DESC);
 

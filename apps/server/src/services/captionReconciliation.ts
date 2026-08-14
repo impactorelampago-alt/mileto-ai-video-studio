@@ -21,28 +21,6 @@ export type CaptionReconciliationResult = {
     review: CaptionReview;
 };
 
-const FISH_AUDIO_TAGS = new Set([
-    'angry',
-    'sad',
-    'embarrassed',
-    'emphasis',
-    'whispering',
-    'soft',
-    'breathy',
-    'excited',
-    'laughing',
-    'chuckling',
-    'moaning',
-    'clear throat',
-    'sobbing',
-    'crying loudly',
-    'sighing',
-    'panting',
-    'groaning',
-    'pause',
-    'long pause',
-]);
-
 const NUMBER_WORDS: Record<string, number> = {
     zero: 0,
     um: 1,
@@ -103,10 +81,12 @@ const normalize = (value: string): string =>
         .toLowerCase()
         .replace(/[^a-z0-9]/g, '');
 
+// S2.1 Pro aceita instrucoes naturais em ingles, nao apenas uma allowlist.
+// Legendas e titulos usam sempre o texto humano, portanto toda direcao natural
+// valida deve ser retirada antes da reconciliacao (sem remover colchetes comuns
+// que nao tenham o formato de uma direcao Fish).
 const stripFishAudioTags = (value: string): string =>
-    String(value || '').replace(/\[([^\]]+)\]/g, (tag, contents: string) =>
-        FISH_AUDIO_TAGS.has(contents.trim().toLowerCase()) ? ' ' : tag
-    );
+    String(value || '').replace(/\[[a-z][a-z' -]{0,63}\]/g, ' ');
 
 const sourceTokensFromNarration = (narrationText: string): string[] =>
     // Símbolos precisam vir antes da alternativa genérica de letras. Caso

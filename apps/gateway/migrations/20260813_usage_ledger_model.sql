@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE usage_ledger
+    ADD COLUMN IF NOT EXISTS model TEXT;
+
+COMMIT;

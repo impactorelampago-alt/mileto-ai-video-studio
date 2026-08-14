@@ -27,6 +27,7 @@ const activityFactory = vm.runInNewContext(
 activityFactory(activityModule.exports, activityModule, require);
 const {
     createOpsExecutorHeartbeatQueue,
+    describeOpsExecutorMonitorError,
     transitionOpsExecutorMonitor,
     opsExecutorVisibleJobError,
 } = activityModule.exports;
@@ -241,7 +242,7 @@ test('resposta antiga do heartbeat nao sobrescreve a mais nova', () => {
     assert.ok((heartbeatSource.match(/if \(!isLatest\(\)\) return/g) || []).length >= 3);
 });
 
-test('checkpoint terminal nao anuncia job busy e validacao antecede a identidade ativa', () => {
+test('checkpoint terminal nao anuncia busy e preflight reclamado continua antes de qualquer geracao', () => {
     assert.match(
         coordinator,
         /initialPersistedJob\.status !== 'completed' && initialPersistedJob\.status !== 'failed'[\s\S]*initialPersistedJob\.jobId/,
@@ -252,8 +253,12 @@ test('checkpoint terminal nao anuncia job busy e validacao antecede a identidade
         'const poll = useCallback',
     );
     assert.ok(
-        executeSource.indexOf('await validateBeforeClaim') < executeSource.indexOf('currentJobRef.current = queued.job.id'),
-        'o job so fica busy depois de validar versao, empresa e assets',
+        executeSource.indexOf('currentJobRef.current = queued.job.id') < executeSource.indexOf('await validateBeforeClaim'),
+        'o job precisa estar persistido e reclamado para devolver falha estruturada do preflight',
+    );
+    assert.ok(
+        executeSource.indexOf('await validateBeforeClaim') < executeSource.indexOf('generateNarrationAndMix'),
+        'o preflight precisa terminar antes da geracao paga',
     );
     assert.doesNotMatch(pollSource, /currentJobRef\.current = queued\.job\.id/);
     assert.match(pollSource, /const blockedBeforeClaim = Boolean\(queued\)[\s\S]*updateRequired/);
@@ -279,4 +284,90 @@ test('codigo de erro so e renderizado para failed ou paused', () => {
     assert.match(mainLayout, /role="status"/);
     assert.match(mainLayout, /aria-live="polite"/);
     assert.match(mainLayout, /role="alert"/);
+});
+
+test('motivo do sinal diferencia indisponibilidade do Ops, reconexao e acesso', () => {
+    const unavailable = describeOpsExecutorMonitorError({
+        source: 'heartbeat',
+        code: 'ops_token_failed',
+        message: 'O Mileto Ops recusou a autenticacao.',
+    });
+    assert.equal(unavailable.statusLabel, 'Ops indisponível');
+    assert.equal(unavailable.title, 'Mileto Ops temporariamente indisponível');
+    assert.match(unavailable.detail, /serviço do Ops não conseguiu renovar a autenticação/i);
+    assert.match(unavailable.detail, /tentará novamente automaticamente/i);
+
+    const reconnect = describeOpsExecutorMonitorError({
+        source: 'heartbeat',
+        code: 'refresh_token_revoked',
+        message: 'Token revogado.',
+    });
+    assert.equal(reconnect.statusLabel, 'Reconectar Ops');
+    assert.match(reconnect.action, /Integrações/i);
+
+    const access = describeOpsExecutorMonitorError({
+        source: 'heartbeat',
+        code: 'ops_user_not_linked',
+        message: 'Usuario nao vinculado.',
+    });
+    assert.equal(access.statusLabel, 'Atualizar acesso');
+    assert.match(access.title, /Acesso ao Mileto Ops/i);
+
+    const unknown = describeOpsExecutorMonitorError({
+        source: 'heartbeat',
+        code: 'unexpected_failure',
+        message: 'Falha segura.',
+    });
+    assert.equal(unknown.statusLabel, 'Falha de conexão');
+    assert.match(unknown.detail, /Falha segura/);
+});
+
+test('sino contem somente atividades do app e sinal concentra todo o estado do Ops', () => {
+    const signalPanel = sourceBetween(
+        mainLayout,
+        '{isExecutorPanelOpen && (',
+        '{isDownloadPanelOpen && (',
+    );
+    assert.match(signalPanel, /executorMonitorExplanation/);
+    assert.match(signalPanel, /executorMonitorError\.code/);
+    assert.match(signalPanel, /executorActivity\.jobId/);
+    assert.match(signalPanel, /Mileto Ops/);
+
+    const bellPanel = sourceBetween(
+        mainLayout,
+        '{isDownloadPanelOpen && (',
+        '{\/\* Horizontal Stepper \*\/}',
+    );
+    assert.match(bellPanel, /notificationJobs/);
+    assert.match(bellPanel, /activeCount|totalActiveCount/);
+    assert.doesNotMatch(bellPanel, /executorActivity|executorMonitor|OPS_EXECUTOR|Wifi|Mileto Ops/);
+    assert.match(mainLayout, /const totalActiveCount = activeCount;/);
+    assert.match(mainLayout, /setIsExecutorPanelOpen\(false\);[\s\S]*setIsDownloadPanelOpen\(\(open\) => !open\)/);
+    assert.match(mainLayout, /setIsDownloadPanelOpen\(false\);[\s\S]*setIsExecutorPanelOpen\(\(open\) => !open\)/);
+});
+
+test('estado global preserva diagnostico estruturado e seguro do monitor do Ops', () => {
+    const activity = transitionOpsExecutorMonitor({
+        stage: 'queued',
+        status: 'idle',
+        percent: 0,
+        message: 'Aguardando.',
+        mode: 'foreground',
+        heartbeat: 'online',
+    }, {
+        type: 'monitor-failed',
+        source: 'poll',
+        code: 'local_api_failed',
+        message: 'Falha segura.',
+        phase: 'narration',
+        requestId: 'req-123',
+        retryable: true,
+    });
+
+    assert.equal(activity.monitorErrors.poll.source, 'poll');
+    assert.equal(activity.monitorErrors.poll.code, 'local_api_failed');
+    assert.equal(activity.monitorErrors.poll.message, 'Falha segura.');
+    assert.equal(activity.monitorErrors.poll.phase, 'narration');
+    assert.equal(activity.monitorErrors.poll.requestId, 'req-123');
+    assert.equal(activity.monitorErrors.poll.retryable, true);
 });

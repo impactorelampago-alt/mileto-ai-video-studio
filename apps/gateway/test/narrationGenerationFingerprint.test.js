@@ -25,7 +25,12 @@ factory(runtimeModule.exports, runtimeModule, require);
 
 const { narrationGenerationInputFingerprint } = runtimeModule.exports;
 const base = {
-    narrationText: 'Texto atual',
+    narrationPlainText: 'Texto atual',
+    narrationSynthesisText: '[confident] Texto atual',
+    ttsModel: 's2.1-pro',
+    directionMode: 'manual',
+    directionVersion: 'fish-s2.1-natural-v1',
+    voiceId: 'voice-a',
     selectedVoiceId: 'voice-a',
     selectedVoiceProvider: 'fishAudio',
     voiceSettings: {
@@ -33,7 +38,7 @@ const base = {
         volume: 2,
         stability: 0.4,
         similarityBoost: 0.75,
-        fishModel: 's2-pro',
+        fishModel: 's2.1-pro',
     },
 };
 
@@ -47,14 +52,18 @@ test('fingerprint permanece igual quando somente a música muda', () => {
 test('fingerprint muda com texto, voz, provedor ou qualquer ajuste enviado à TTS', () => {
     const fingerprint = narrationGenerationInputFingerprint(base);
     const variants = [
-        { ...base, narrationText: 'Outro texto' },
-        { ...base, selectedVoiceId: 'voice-b' },
+        { ...base, narrationPlainText: 'Outro texto' },
+        { ...base, narrationSynthesisText: '[confident] Outro texto' },
+        { ...base, voiceId: 'voice-b', selectedVoiceId: 'voice-b' },
         { ...base, selectedVoiceProvider: 'elevenLabs' },
+        { ...base, ttsModel: 's1' },
+        { ...base, directionMode: 'clean' },
+        { ...base, directionVersion: 'fish-s2.1-natural-v2' },
         { ...base, voiceSettings: { ...base.voiceSettings, speed: 1.1 } },
         { ...base, voiceSettings: { ...base.voiceSettings, volume: 3 } },
         { ...base, voiceSettings: { ...base.voiceSettings, stability: 0.5 } },
         { ...base, voiceSettings: { ...base.voiceSettings, similarityBoost: 0.8 } },
-        { ...base, voiceSettings: { ...base.voiceSettings, fishModel: 's1' } },
+        { ...base, ttsModel: undefined, voiceSettings: { ...base.voiceSettings, fishModel: 's1' } },
     ];
 
     for (const variant of variants) {

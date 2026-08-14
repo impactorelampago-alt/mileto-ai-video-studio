@@ -2,11 +2,7 @@ import { Request, Response } from 'express';
 import * as chatService from '../services/chatService';
 import { bearerFrom, gatewayChat, GatewayHttpError } from '../services/gatewayClient';
 
-const CHAT_AGENT_IDS = ['director', 'prompt_sales', 'image_director', 'video_director'] as const;
-type ChatAgentId = (typeof CHAT_AGENT_IDS)[number];
-
-const normalizeAgentId = (value: unknown): ChatAgentId =>
-    CHAT_AGENT_IDS.includes(value as ChatAgentId) ? (value as ChatAgentId) : 'director';
+const ACTIVE_CHAT_AGENT_ID = chatService.ACTIVE_CHAT_AGENT_ID;
 
 // A geração é um trabalho do servidor, não da janela de chat. Recolher o painel
 // ou navegar pelo app não deve descartar uma resposta que já está em andamento.
@@ -20,17 +16,6 @@ const respond = (req: Request, res: Response, status: number, payload: unknown) 
         res.status(status).json(payload);
     }
 };
-
-const SCRIPT_OUTPUT_INSTRUCTION = `<INSTRUCAO_DE_FORMATO_DO_APP>
-Responda ao pedido do usuário imediatamente anterior.
-Se a resposta contiver um roteiro final pronto para uso, gere também um título curto e use exatamente:
-===TITULO===
-Título do projeto em uma linha, sem tags, com no máximo 60 caracteres
-===ROTEIRO===
-Texto completo da narração
-===FIM===
-Se não houver roteiro final, não use esses marcadores.
-</INSTRUCAO_DE_FORMATO_DO_APP>`;
 
 // ─── Folder Endpoints ────────────────────────────────────────────────────────
 
@@ -92,7 +77,7 @@ export const getSessions = async (req: Request, res: Response) => {
 
 export const createSession = async (req: Request, res: Response) => {
     try {
-        const { title, folderId, model, agentId } = req.body;
+        const { title, folderId, model } = req.body;
         if (!title) {
             res.status(400).json({ ok: false, message: 'Title is required' });
             return;
@@ -103,7 +88,7 @@ export const createSession = async (req: Request, res: Response) => {
                 title,
                 folderId || null,
                 model || 'mileto-plus',
-                agentId ? normalizeAgentId(agentId) : 'prompt_sales'
+                ACTIVE_CHAT_AGENT_ID
             ),
         });
     } catch (err: unknown) {
@@ -231,14 +216,15 @@ export const sendMessage = async (req: Request, res: Response) => {
             respond(req, res, 409, { ok: false, message: 'Já existe uma resposta sendo preparada nesta conversa.' });
             return;
         }
-        const agentId = normalizeAgentId(req.body?.agentId || session.agentId);
+        // O agentId da sessao antiga continua armazenado para fins historicos,
+        // mas nao participa mais do roteamento de respostas novas.
+        const agentId = ACTIVE_CHAT_AGENT_ID;
         const userMsg = chatService.addMessage(sessionId, 'user', content);
 
         const token = bearerFrom(req);
         if (!token) {
-            const errMsg = chatService.addMessage(
+            const errMsg = chatService.addNarratorMessage(
                 sessionId,
-                'assistant',
                 '⚠️ Sessão expirada. Entre novamente para conversar com o assistente.'
             );
             respond(req, res, 200, { ok: true, userMessage: userMsg, assistantMessage: errMsg });
@@ -258,14 +244,11 @@ export const sendMessage = async (req: Request, res: Response) => {
                 return !content.startsWith('❌') && !content.startsWith('⚠️');
             })
             .map((m) => ({ role: m.role, content: m.content }));
-        const historyForGateway = history.map((message, index) =>
-            agentId === 'director' && index === history.length - 1 && message.role === 'user'
-                ? { ...message, content: `${message.content}\n\n${SCRIPT_OUTPUT_INSTRUCTION}` }
-                : message
-        );
+        const historyForGateway = history;
 
         let assistantContent = '';
         let assistantAgent: { id: string; label: string; version: number; tier: 'lite' | 'mileto' | 'ultra' } | undefined;
+        let narrationDirectionMode: 'automatic' | 'manual' | 'clean' | undefined;
         const controller = new AbortController();
         responseController = controller;
         activeResponseControllers.set(sessionId, controller);
@@ -294,6 +277,7 @@ export const sendMessage = async (req: Request, res: Response) => {
             }
             assistantContent = result.text.trim();
             assistantAgent = result.agent;
+            narrationDirectionMode = result.narrationDirectionMode;
         } catch (apiErr: unknown) {
             if (controller.signal.aborted || (apiErr instanceof GatewayHttpError && apiErr.status === 499)) {
                 respond(req, res, 499, { ok: false, message: 'Resposta interrompida pelo usuário.' });
@@ -315,11 +299,10 @@ export const sendMessage = async (req: Request, res: Response) => {
             }
         }
 
-        const assistantMsg = chatService.addMessage(sessionId, 'assistant', assistantContent, {
-            agentId: normalizeAgentId(assistantAgent?.id || agentId),
-            agentLabel: assistantAgent?.label,
+        const assistantMsg = chatService.addNarratorMessage(sessionId, assistantContent, {
             agentVersion: assistantAgent?.version,
             agentTier: assistantAgent?.tier,
+            narrationDirectionMode,
         });
         respond(req, res, 200, { ok: true, userMessage: userMsg, assistantMessage: assistantMsg });
     } catch (err: unknown) {

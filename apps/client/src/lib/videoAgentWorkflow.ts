@@ -19,6 +19,7 @@ import type {
 } from '../types';
 import { normalizeHydratedCaptionStyle } from './captionStyleMigration';
 import type { OpsExportMetadata } from '../context/ExportJobsContext';
+import { buildNarrationTtsRequest, contractFromTtsResponse } from './narrationContract';
 
 type ApiEnvelope<T> = {
     ok?: boolean;
@@ -61,20 +62,30 @@ const readApi = async <T>(response: Response): Promise<T & ApiEnvelope<T>> => {
 };
 
 export const generateNarrationAndMix = async (input: AdData): Promise<AdData> => {
-    const narrationText = input.narrationText.trim();
+    const narrationText = input.narrationPlainText.trim();
     if (!narrationText) throw new Error('agent_narration_missing: O agente não forneceu a narração final.');
+
+    const requestPayload = buildNarrationTtsRequest(
+        input,
+        input.opsCompany?.name ? [input.opsCompany.name] : [],
+    );
 
     const response = await fetch(`${API_BASE_URL}/api/tts/generate-narration`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
-        body: JSON.stringify({
-            text: narrationText,
-            voiceId: input.selectedVoiceId,
-            provider: input.selectedVoiceProvider || 'fishAudio',
-            voiceSettings: input.voiceSettings,
-        }),
+        body: JSON.stringify(requestPayload),
     });
-    const narration = await readApi<{ url?: string; duration?: number }>(response);
+    const narration = await readApi<{
+        url?: string;
+        duration?: number;
+        contract?: Record<string, unknown>;
+        narrationPlainText?: string;
+        narrationSynthesisText?: string;
+        ttsModel?: string;
+        voiceId?: string;
+        directionMode?: string;
+        directionVersion?: string;
+    }>(response);
     if (!narration.url) throw new Error('tts_audio_missing: A síntese terminou sem devolver o áudio.');
 
     const narrationUrl = /^https?:\/\//i.test(narration.url)
@@ -101,10 +112,11 @@ export const generateNarrationAndMix = async (input: AdData): Promise<AdData> =>
             trimEnd: backgroundTrimEnd,
         },
     };
+    const responseContract = contractFromTtsResponse(input, narration);
     let next: AdData = {
         ...input,
         ...invalidatedNarrationDerivatives(),
-        narrationText,
+        ...responseContract,
         narrationSource: 'tts',
         isNarrationGenerated: true,
         narrationAudioUrl: narrationUrl,

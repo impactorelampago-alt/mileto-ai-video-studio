@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import { VoiceSelector } from '../components/VoiceSelector';
 import { VoiceSettingsPanel } from '../components/VoiceSettingsPanel';
-import type { AdData, MusicTrack, TtsProvider } from '../types';
+import type { AdData, MusicTrack } from '../types';
 import { cn } from '../lib/utils';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { ArrowRight, Wand2, Loader2, Music2, Check, Pencil, Mic, Pause, Play, Trash2 } from 'lucide-react';
@@ -16,6 +16,12 @@ import { invalidatedNarrationDerivatives, narrationGenerationInputFingerprint } 
 import { backgroundTrimEndForNarration } from '../lib/audioAutoFit';
 import { refreshSharedAudioSourceUrl } from '../lib/sharedMediaRecovery';
 import { OpsProjectCompanyPicker, type OpsCompanyRequirementState } from '../components/OpsProjectCompanyPicker';
+import {
+    buildNarrationTtsRequest,
+    contractFromTtsResponse,
+    narrationContractFromPlainText,
+    normalizeNarrationContract,
+} from '../lib/narrationContract';
 
 const audioMixRequestIdentity = (data: AdData, musicId: string | null): string => JSON.stringify({
     musicId,
@@ -67,7 +73,7 @@ export const Step1 = () => {
     // Mantidos somente para o feedback visual dos campos; eles não bloqueiam
     // mais a navegação entre as etapas.
     const isTitleValid = !!adData.title?.trim();
-    const isTextValid = !!adData.narrationText?.trim();
+    const isTextValid = !!adData.narrationPlainText?.trim();
     const isAudioOperationBusy = isMixing || isGenerating || isRecording || isUploadingRec;
     const automaticMixConfigFingerprint = JSON.stringify(adData.audioConfig);
 
@@ -302,13 +308,11 @@ export const Step1 = () => {
             if (!auto) toast.info('Finalize a gravação antes de gerar outra narração.');
             return;
         }
-        if (!adData.narrationText) {
+        if (!adData.narrationPlainText) {
             toast.error('Digite o texto da narração');
             return;
         }
 
-        // A voz escolhida define o provedor; a chave da IA fica no gateway.
-        const provider: TtsProvider = adData.selectedVoiceProvider ?? 'fishAudio';
         const requestId = ++narrationGenerationRequestRef.current;
         const requestFingerprint = narrationGenerationInputFingerprint(adData);
         const requestIsObsolete = () => (
@@ -318,15 +322,14 @@ export const Step1 = () => {
 
         setIsGenerating(true);
         try {
+            const requestPayload = buildNarrationTtsRequest(
+                adData,
+                adData.opsCompany?.name ? [adData.opsCompany.name] : [],
+            );
             const response = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/tts/generate-narration`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
-                body: JSON.stringify({
-                    text: adData.narrationText,
-                    voiceId: adData.selectedVoiceId || '3cd37df623144626b4c9d12e22dbe898',
-                    provider,
-                    voiceSettings: adData.voiceSettings,
-                }),
+                body: JSON.stringify(requestPayload),
             });
 
             const data = await response.json();
@@ -339,7 +342,7 @@ export const Step1 = () => {
             if (!data.ok) throw new Error(data.message);
 
             const apiBase = (window as any).API_BASE_URL || 'http://localhost:3301';
-            const narrationUrl = `${apiBase}${data.url}`;
+            const narrationUrl = /^https?:\/\//i.test(data.url) ? data.url : `${apiBase}${data.url}`;
             const narrationDuration = Number(data.duration || 0);
             const latestAdData = latestAdDataRef.current;
             const latestSelectedMusicId = latestSelectedMusicIdRef.current;
@@ -363,9 +366,11 @@ export const Step1 = () => {
                     trimEnd: backgroundTrimEnd,
                 },
             };
+            const responseContract = contractFromTtsResponse(latestAdData, data);
 
             updateAdData({
                 ...invalidatedNarrationDerivatives(),
+                ...responseContract,
                 isNarrationGenerated: true,
                 narrationSource: 'tts',
                 narrationAudioUrl: narrationUrl,
@@ -689,17 +694,17 @@ export const Step1 = () => {
                                 Texto da Narração
                             </label>
                             <span className="text-xs text-brand-muted/70 font-mono">
-                                {adData.narrationText.length} CARACTERES
+                                {adData.narrationPlainText.length} CARACTERES
                             </span>
                         </div>
                         <textarea
-                            value={adData.narrationText}
+                            value={adData.narrationPlainText}
                             onChange={(e) =>
                                 // Mudou o texto → o áudio gerado ficou desatualizado. Invalida
                                 // para forçar regerar (senão avança e o vídeo fala o texto antigo).
                                 updateAdData({
                                     ...invalidatedNarrationDerivatives(),
-                                    narrationText: e.target.value,
+                                    ...narrationContractFromPlainText(adData, e.target.value),
                                     isNarrationGenerated: false,
                                     narrationAudioUrl: null,
                                     narrationAudioPath: null,
@@ -715,6 +720,30 @@ export const Step1 = () => {
                                     : 'focus:ring-brand-accent focus:border-brand-accent/40 hover:border-black/10 dark:border-white/10'
                             )}
                         />
+                        <details className="rounded-xl border border-black/5 bg-black/[0.02] px-3 py-2 dark:border-white/5 dark:bg-white/[0.02]">
+                            <summary className="cursor-pointer select-none text-[11px] font-bold text-brand-accent">
+                                Ver texto com tags enviado ao Fish Audio
+                            </summary>
+                            <div className="mt-3 space-y-2">
+                                <label
+                                    htmlFor="narration-synthesis-preview"
+                                    className="block text-[10px] font-bold uppercase tracking-wide text-brand-muted"
+                                >
+                                    Texto de síntese com tags · somente leitura
+                                </label>
+                                <textarea
+                                    id="narration-synthesis-preview"
+                                    aria-label="Texto de síntese com tags enviado ao Fish Audio"
+                                    value={normalizeNarrationContract(adData).narrationSynthesisText}
+                                    readOnly
+                                    spellCheck={false}
+                                    className="h-28 w-full resize-none rounded-lg border border-brand-accent/15 bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground shadow-inner focus:outline-none dark:border-brand-accent/20"
+                                />
+                                <p className="text-[10px] leading-relaxed text-brand-muted">
+                                    Esta prévia mostra exatamente o texto de síntese preparado para a voz. Edite o roteiro no campo principal acima.
+                                </p>
+                            </div>
+                        </details>
                     </div>
 
                     {/* Síntese — logo abaixo do roteiro, que é o insumo dela */}
@@ -731,7 +760,7 @@ export const Step1 = () => {
                                 <button
                                     onClick={() => handleGenerateNarration()}
                                     disabled={
-                                        !adData.narrationText ||
+                                        !adData.narrationPlainText ||
                                         !adData.selectedVoiceId ||
                                         isGenerating ||
                                         isRecording ||
@@ -747,7 +776,7 @@ export const Step1 = () => {
                                     Tornar Roteiro em Áudio
                                 </button>
                                 <p className="text-[11px] text-brand-muted text-center leading-snug">
-                                    {!adData.narrationText
+                                    {!adData.narrationPlainText
                                         ? 'Escreva o roteiro acima para liberar.'
                                         : !adData.selectedVoiceId
                                           ? 'Escolha uma voz ao lado para liberar.'

@@ -1,5 +1,6 @@
 import { query, pool } from './db.js';
 import { getMultiplier } from './settings.js';
+import { ttsProviderCostUsd } from './ttsModels.js';
 
 /**
  * Custo no fornecedor, em US$. Estes numeros sao o CUSTO (o que a plataforma paga).
@@ -7,11 +8,6 @@ import { getMultiplier } from './settings.js';
  *
  * TTS cobra por unidade de texto: Fish por BYTE UTF-8, ElevenLabs por caractere.
  */
-const PROVIDER_COST = {
-    fishAudio: { usdPerMillion: 15.0 }, // por byte
-    elevenLabs: { usdPerMillion: 165.0 }, // por caractere
-};
-
 /**
  * Custo de CHAT por MODELO real (US$ por 1M tokens, aproximacao input+output).
  * ⚠️ O tier Mileto resolve para um modelo real; cobrar todos a um preco unico
@@ -19,6 +15,10 @@ const PROVIDER_COST = {
  * Refine com os precos oficiais quando quiser separar input/output.
  */
 const MODEL_COST = {
+    // Luna: entrada US$ 0,20 / saída US$ 1,20 por MTok. Como o ledger
+    // histórico guarda tokens totais, usamos o teto de saída para nunca
+    // subcobrar; a reserva e a conciliação permanecem conservadoras.
+    'gpt-5.6-luna': 1.2,
     'gpt-5': 8.0,
     'gpt-5-mini': 1.6,
     'gpt-5-nano': 0.4,
@@ -67,10 +67,7 @@ const providerCostUsd = (provider, model, units, kind) => {
     let usd = 0;
     if (kind === 'stt') usd = units * STT_USD_PER_SECOND;
     else if (kind === 'chat') usd = (units / 1_000_000) * (MODEL_COST[model] ?? CHAT_DEFAULT_USD_PER_M);
-    else {
-        const t = PROVIDER_COST[provider];
-        usd = t ? (units / 1_000_000) * t.usdPerMillion : 0;
-    }
+    else if (kind === 'tts') usd = ttsProviderCostUsd(provider, model, units);
     return Number.isFinite(usd) ? usd : 0;
 };
 
@@ -157,9 +154,9 @@ export const settle = async ({ orgId, userId, provider, model, kind, units, demo
             ]);
         }
         await client.query(
-            `INSERT INTO usage_ledger (org_id, user_id, provider, kind, units, provider_cost, charged, demo)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-            [orgId, userId, provider, kind, units, providerCost.toFixed(6), finalCharge.toFixed(4), demo]
+            `INSERT INTO usage_ledger (org_id, user_id, provider, model, kind, units, provider_cost, charged, demo)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+            [orgId, userId, provider, model || null, kind, units, providerCost.toFixed(6), finalCharge.toFixed(4), demo]
         );
         const { rows } = await client.query('SELECT balance FROM credits WHERE org_id = $1', [orgId]);
         await client.query('COMMIT');
@@ -173,7 +170,7 @@ export const settle = async ({ orgId, userId, provider, model, kind, units, demo
 };
 
 /** Conciliação de uma geração síncrona cujo custo máximo foi configurado no agente. */
-export const settleFixed = async ({ orgId, userId, provider, kind, providerCost, charged, demo, reserved }) => {
+export const settleFixed = async ({ orgId, userId, provider, model = null, kind, providerCost, charged, demo, reserved }) => {
     const finalCharge = demo ? 0 : charged;
     const adjust = (reserved || 0) - finalCharge;
     const client = await pool.connect();
@@ -186,9 +183,9 @@ export const settleFixed = async ({ orgId, userId, provider, kind, providerCost,
             ]);
         }
         await client.query(
-            `INSERT INTO usage_ledger (org_id, user_id, provider, kind, units, provider_cost, charged, demo)
-             VALUES ($1,$2,$3,$4,1,$5,$6,$7)`,
-            [orgId, userId, provider, kind, Number(providerCost).toFixed(6), Number(finalCharge).toFixed(4), demo]
+            `INSERT INTO usage_ledger (org_id, user_id, provider, model, kind, units, provider_cost, charged, demo)
+             VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)`,
+            [orgId, userId, provider, model, kind, Number(providerCost).toFixed(6), Number(finalCharge).toFixed(4), demo]
         );
         const { rows } = await client.query('SELECT balance FROM credits WHERE org_id = $1', [orgId]);
         await client.query('COMMIT');

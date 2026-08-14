@@ -145,19 +145,28 @@ export interface VoiceSettings {
  * Modelos da Fish Audio. Vai no header `model` da requisição.
  * Só o S2 entende a sintaxe [bracket] de emoção — no S1 as tags são LIDAS em voz alta.
  */
-export type FishModel = 's2.1-pro-free' | 's2-pro' | 's1';
+export type FishModel = 's2.1-pro' | 's2.1-pro-free' | 's2-pro' | 's1';
+
+export type NarrationDirectionMode = 'automatic' | 'manual' | 'clean';
+export type NarrationDialect = 'fish-natural-v1' | 'mileto-ops-bracket-v1';
 
 export const FISH_MODELS: { id: FishModel; label: string; note: string; tags: boolean }[] = [
     {
-        id: 's2-pro',
-        label: 'S2 Pro · recomendado',
-        note: 'Melhor qualidade de voz, com SLA. É o padrão do Mileto para narração profissional.',
+        id: 's2.1-pro',
+        label: 'S2.1 Pro · pago · padrão',
+        note: 'Modelo profissional mais atual, com SLA. É o padrão do Mileto para todas as novas narrações.',
         tags: true,
     },
     {
         id: 's2.1-pro-free',
-        label: 'S2.1 Pro · econômico',
-        note: 'Mais barato, sem SLA — o áudio pode ser usado para treinar os modelos do fornecedor.',
+        label: 'S2.1 Pro Free · opcional',
+        note: 'Versão gratuita, sem SLA e sujeita às condições de retenção de dados do fornecedor. Só é usada quando selecionada explicitamente.',
+        tags: true,
+    },
+    {
+        id: 's2-pro',
+        label: 'S2 Pro · pago anterior',
+        note: 'Geração profissional anterior, preservada para projetos que já a selecionaram.',
         tags: true,
     },
     { id: 's1', label: 'S1 · legado', note: 'Modelo antigo. Não entende tags de emoção.', tags: false },
@@ -169,7 +178,7 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
     stability: 0.4, // preset "Conversational" da ElevenLabs
     similarityBoost: 0.75,
     // Pro por padrão: a voz é melhor. É o que o cliente enxerga como "Mileto".
-    fishModel: 's2-pro',
+    fishModel: 's2.1-pro',
 };
 
 export type VideoFormat = '9:16' | '16:9' | '4:5' | '1:1';
@@ -401,7 +410,20 @@ export interface OpsProjectCompany {
 export interface AdData {
     title: string;
     format: VideoFormat;
+    /** Texto humano, sem direcoes de interpretacao. Fonte de legendas, titulos e UI. */
+    narrationPlainText: string;
+    /** Texto exato preparado para o TTS, incluindo direcoes entre colchetes quando aplicavel. */
+    narrationSynthesisText: string;
+    /** Alias legado do texto limpo. Mantido para drafts, legendas e titulos anteriores ao contrato estruturado. */
     narrationText: string;
+    /** Modelo solicitado pelo projeto. Nunca deve ser inferido da conversa do Filmmaker. */
+    ttsModel: string;
+    /** Identificador estruturado da voz. Espelha selectedVoiceId durante a migracao. */
+    voiceId: string | null;
+    directionMode: NarrationDirectionMode;
+    directionVersion: string;
+    /** Semantica dos colchetes. Ausente/fish-natural preserva colchetes editoriais locais. */
+    narrationDialect?: NarrationDialect;
     selectedVoiceId: string | null;
     selectedVoiceProvider?: TtsProvider;
     voiceSettings?: VoiceSettings;
@@ -504,5 +526,7 @@ export interface ChatMessage {
     agentLabel?: string;
     agentVersion?: number;
     agentTier?: 'lite' | 'mileto' | 'ultra';
+    /** Metadado tecnico separado da conversa; preserva pedidos como sem tags. */
+    narrationDirectionMode?: NarrationDirectionMode;
     createdAt: string;
 }

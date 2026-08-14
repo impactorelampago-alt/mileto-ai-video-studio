@@ -38,6 +38,14 @@ const loadWorkflow = (fetchImpl) => {
         './captionStyleMigration': { normalizeHydratedCaptionStyle: (style) => style },
         './captionCurrency': { repairCaptionCurrencySegments: (segments) => segments },
         './gateway': { gatewayApi: {} },
+        './narrationContract': {
+            buildNarrationTtsRequest: () => {
+                throw new Error('narration TTS is outside this title-generation harness');
+            },
+            contractFromTtsResponse: () => {
+                throw new Error('narration TTS is outside this title-generation harness');
+            },
+        },
         './narrationState': {
             invalidatedNarrationDerivatives: () => ({}),
             narrationSourceKey: () => 'narration-source',

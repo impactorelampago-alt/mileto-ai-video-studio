@@ -3,6 +3,7 @@ import { API_BASE_URL } from './apiBase';
 import { authStorage } from './authStorage';
 
 const BASE = `${API_BASE_URL}/api/chat`;
+const ACTIVE_CHAT_AGENT_ID: ChatAgentId = 'prompt_sales';
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
     // O servidor local repassa este token ao gateway (que tem a chave da IA).
@@ -61,11 +62,13 @@ export async function createSession(
     title: string,
     folderId: string | null = null,
     model: string = 'mileto-plus',
-    agentId: ChatAgentId = 'prompt_sales'
+    _agentId: ChatAgentId = ACTIVE_CHAT_AGENT_ID
 ): Promise<ChatSession> {
     const data = await request<{ session: ChatSession }>(`${BASE}/sessions`, {
         method: 'POST',
-        body: JSON.stringify({ title, folderId, model, agentId }),
+        // A assinatura ainda aceita o cargo antigo para manter consumidores
+        // compativeis, mas toda conversa nova nasce com o Narrador.
+        body: JSON.stringify({ title, folderId, model, agentId: ACTIVE_CHAT_AGENT_ID }),
     });
     return data.session;
 }
@@ -131,14 +134,16 @@ export async function sendMessage(
     model: string,
     reasoning?: string,
     locale: string = 'pt-BR',
-    agentId: ChatAgentId = 'director',
+    _agentId: ChatAgentId = ACTIVE_CHAT_AGENT_ID,
     signal?: AbortSignal
 ): Promise<{ userMessage: ChatMessage; assistantMessage: ChatMessage }> {
     // `model` é o tier Mileto (mileto-lite/plus/ultra); o gateway resolve o modelo
     // real e injeta a persona. `reasoning` só vale para o Ultra.
     const data = await request<{ userMessage: ChatMessage; assistantMessage: ChatMessage }>(`${BASE}/message`, {
         method: 'POST',
-        body: JSON.stringify({ sessionId, content, model, reasoning, locale, agentId }),
+        // Conversas antigas podem ter outro agentId salvo. Isso e somente
+        // historico; toda resposta nova e resolvida pelo Narrador.
+        body: JSON.stringify({ sessionId, content, model, reasoning, locale, agentId: ACTIVE_CHAT_AGENT_ID }),
         signal,
     });
     return {

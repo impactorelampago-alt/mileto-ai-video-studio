@@ -2,7 +2,8 @@ import type { AdData } from '../types';
 
 type NarrationGenerationInput = Pick<
     AdData,
-    'narrationText' | 'selectedVoiceId' | 'selectedVoiceProvider' | 'voiceSettings'
+    'narrationPlainText' | 'narrationSynthesisText' | 'ttsModel' | 'voiceId'
+    | 'directionMode' | 'directionVersion' | 'selectedVoiceId' | 'selectedVoiceProvider' | 'voiceSettings'
 >;
 
 /**
@@ -11,15 +12,19 @@ type NarrationGenerationInput = Pick<
  * uma narração ainda válida.
  */
 export const narrationGenerationInputFingerprint = (adData: NarrationGenerationInput): string => JSON.stringify([
-    adData.narrationText,
-    adData.selectedVoiceId || '',
+    adData.narrationPlainText,
+    adData.narrationSynthesisText,
+    adData.ttsModel,
+    adData.directionMode,
+    adData.directionVersion,
+    adData.voiceId || adData.selectedVoiceId || '',
     adData.selectedVoiceProvider || 'fishAudio',
     {
         speed: adData.voiceSettings?.speed ?? null,
         volume: adData.voiceSettings?.volume ?? null,
         stability: adData.voiceSettings?.stability ?? null,
         similarityBoost: adData.voiceSettings?.similarityBoost ?? null,
-        fishModel: adData.voiceSettings?.fishModel ?? null,
+        fishModel: adData.ttsModel || adData.voiceSettings?.fishModel || null,
     },
 ]);
 
