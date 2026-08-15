@@ -230,6 +230,62 @@ export const runWithSoftwareEncoderFallback = async <T>(
     }
 };
 
+/**
+ * Recorta um trecho do vídeo com precisão de frame (re-encode com o encoder de
+ * hardware disponível e fallback para CPU). Grava em `<targetPath>.partial.mp4`
+ * e renomeia atomicamente no sucesso, para nunca deixar um corte pela metade
+ * visível na biblioteca.
+ */
+export const sliceVideoSegment = async (input: {
+    sourcePath: string;
+    startSec: number;
+    endSec: number;
+    targetPath: string;
+    timeoutMs?: number;
+}): Promise<{ encoder: HwEncoder; fallbackUsed: boolean }> => {
+    const partial = `${input.targetPath}.partial.mp4`;
+    const runSlice = (encoder: HwEncoder) => new Promise<void>((resolve, reject) => {
+        execFile(resolveFfmpegExe(), [
+            '-hide_banner',
+            '-y',
+            '-ss', input.startSec.toFixed(3),
+            '-to', input.endSec.toFixed(3),
+            '-i', input.sourcePath,
+            ...getVideoEncoderArgsFor(encoder, { quality: 18, speed: 'fast' }),
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-movflags', '+faststart',
+            partial,
+        ], {
+            windowsHide: true,
+            timeout: input.timeoutMs ?? 10 * 60_000,
+            maxBuffer: 32 * 1024 * 1024,
+        }, (error, _stdout, stderr) => {
+            if (error) {
+                reject(new Error(summarizeFfmpegStderr(String(stderr || error.message)) || 'Falha ao recortar o vídeo.'));
+                return;
+            }
+            resolve();
+        });
+    });
+
+    try {
+        const result = await runWithSoftwareEncoderFallback(detectBestEncoder(), runSlice, (failed) => {
+            console.warn(`[FFmpeg] Corte falhou no encoder ${failed}; tentando libx264.`);
+            if (fs.existsSync(partial)) fs.rmSync(partial, { force: true });
+        });
+        const stats = fs.existsSync(partial) ? fs.statSync(partial) : null;
+        if (!stats || stats.size < 1024) {
+            throw new Error('O corte gerou um arquivo vazio. Verifique o trecho selecionado.');
+        }
+        fs.renameSync(partial, input.targetPath);
+        return { encoder: result.encoder, fallbackUsed: result.fallbackUsed };
+    } catch (error) {
+        if (fs.existsSync(partial)) fs.rmSync(partial, { force: true });
+        throw error;
+    }
+};
+
 export interface VideoMetadata {
     duration: number;
     width?: number;

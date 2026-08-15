@@ -2,6 +2,7 @@ import express from 'express';
 import axios from 'axios';
 import * as ttsController from '../controllers/ttsController';
 import * as videoController from '../controllers/videoController';
+import * as videoSliceController from '../controllers/videoSliceController';
 import * as aiController from '../controllers/aiController';
 import * as chatController from '../controllers/chatController';
 import { upload } from '../middleware/upload';
@@ -83,6 +84,7 @@ router.post('/video/upload', upload.single('video'), videoController.uploadVideo
 router.post('/video/generate-titles', aiController.generateTitles);
 router.post('/video/plan-titles', aiController.planTitles);
 router.post('/video/mux', videoController.muxFinalExport);
+router.post('/video/slice', videoSliceController.sliceLibraryVideo);
 router.post('/video/export-hybrid', videoController.exportHybrid);
 
 // Music Library Routes

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
     AlertTriangle, ArrowDownToLine, Building2, Check, ChevronDown, ChevronRight,
-    CheckSquare, Crown, FileImage, FileVideo, Folder, FolderOpen, Grid2X2, Library, List, Loader2, Music2, Play,
+    CheckSquare, Crown, FileImage, FileVideo, Folder, FolderOpen, Grid2X2, Library, List, Loader2, Music2, Pencil, Play,
     Search, ShieldCheck, Sparkles, Square, Upload, UserRound, UsersRound, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -21,6 +21,7 @@ import { useWizard } from '../context/WizardContext';
 import type { MediaTake } from '../types';
 import { useDownloadJobs } from '../context/DownloadJobsContext';
 import { MiletoMediaPlayer } from './MiletoMediaPlayer';
+import { TrimModal } from './TrimModal';
 
 const absoluteLocalUrl = (url?: string | null) => {
     if (!url) return '';
@@ -834,6 +835,84 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         };
     };
 
+    // ─── Recorte de takes direto na biblioteca (lápis no card) ───
+    // Materializa o vídeo no cache local, abre o Editor de Cortes e cada trecho
+    // confirmado vira um MP4 novo enviado de volta à MESMA pasta do Ops. O
+    // arquivo original permanece intacto.
+    const [trimTarget, setTrimTarget] = useState<{ asset: OpsAsset; take: MediaTake } | null>(null);
+    const [trimBusyAssetId, setTrimBusyAssetId] = useState<string | null>(null);
+
+    const beginAssetTrim = async (asset: OpsAsset) => {
+        if (asset.kind !== 'video' || trimBusyAssetId) return;
+        setTrimBusyAssetId(asset.id);
+        const toastId = toast.loading(`Preparando "${asset.name}" para recorte...`);
+        try {
+            const take = await materializeAsset(asset);
+            toast.dismiss(toastId);
+            setTrimTarget({ asset, take });
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Não foi possível preparar o vídeo.', { id: toastId });
+        } finally {
+            setTrimBusyAssetId(null);
+        }
+    };
+
+    const handleTrimSave = (target: { asset: OpsAsset; take: MediaTake }) =>
+        async (_takeId: string, newTrims: Array<{ start: number; end: number }>) => {
+            setTrimTarget(null);
+            const segments = newTrims.map(({ start, end }) => ({ start, end }));
+            if (!segments.length) return;
+            const toastId = toast.loading(`Recortando "${target.asset.name}" (${segments.length} trecho${segments.length === 1 ? '' : 's'})...`);
+            try {
+                const sliceRes = await fetch(`${API_BASE_URL}/api/video/slice`, {
+                    method: 'POST',
+                    headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        backendPath: target.take.backendPath,
+                        sourceUrl: target.take.url,
+                        baseName: target.asset.name,
+                        segments,
+                    }),
+                });
+                const sliceData = await sliceRes.json().catch(() => ({}));
+                if (!sliceRes.ok || !sliceData.ok || !Array.isArray(sliceData.slices)) {
+                    throw new Error(sliceData.message || 'Falha ao recortar o vídeo.');
+                }
+
+                toast.loading('Enviando os cortes para a pasta do Mileto Ops...', { id: toastId });
+                const contextId = await ensureFreshOpsContext();
+                for (const slice of sliceData.slices) {
+                    const opsRes = await fetch(`${API_BASE_URL}/api/ops/files/import-local`, {
+                        method: 'POST',
+                        headers: {
+                            ...(await localAuthHeaders()),
+                            'Content-Type': 'application/json',
+                            ...(contextId ? { 'X-Ops-View-Context': contextId } : {}),
+                        },
+                        body: JSON.stringify({
+                            sourceUrl: absoluteLocalUrl(slice.publicUrl),
+                            backendPath: slice.filePath,
+                            fileName: slice.name,
+                            companyId: target.asset.companyId,
+                            folderId: target.asset.folderId || selectedFolder?.id || '',
+                        }),
+                    });
+                    const opsData = await opsRes.json().catch(() => ({}));
+                    if (!opsRes.ok || !opsData.ok) {
+                        throw new Error(opsData.message || 'Falha ao enviar um corte ao Mileto Ops.');
+                    }
+                }
+
+                toast.success(
+                    `${sliceData.slices.length} corte${sliceData.slices.length === 1 ? '' : 's'} de "${target.asset.name}" na pasta. O original foi mantido.`,
+                    { id: toastId, duration: 7000 },
+                );
+                void loadAssets();
+            } catch (error) {
+                toast.error(error instanceof Error ? error.message : 'Falha ao recortar.', { id: toastId });
+            }
+        };
+
     if (loading && !ready && companies.length === 0) {
         return <div className="h-full grid place-items-center text-brand-muted"><Loader2 className="w-6 h-6 animate-spin" /></div>;
     }
@@ -1209,6 +1288,16 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                     <span className="capitalize">{asset.kind}</span><span>{formatBytes(asset.sizeBytes)}</span>
                                                 </div>
                                                 <div className="flex gap-1.5">
+                                                    {asset.kind === 'video' && (
+                                                        <button
+                                                            onClick={() => void beginAssetTrim(asset)}
+                                                            disabled={trimBusyAssetId !== null}
+                                                            className="inline-flex items-center justify-center rounded-lg border border-white/10 p-1.5 text-brand-muted transition hover:border-brand-lime/40 hover:text-brand-lime disabled:opacity-40"
+                                                            title="Recortar takes deste vídeo"
+                                                        >
+                                                            {trimBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pencil className="h-3.5 w-3.5" />}
+                                                        </button>
+                                                    )}
                                                     <button onClick={() => void downloadAsset(asset)} className={`${pickerKind ? '' : 'flex-1 justify-center'} inline-flex items-center gap-1.5 rounded-lg border border-white/10 p-1.5 text-[10px] font-bold text-brand-muted hover:text-foreground`} title="Baixar para Arquivos">
                                                         <ArrowDownToLine className="h-3.5 w-3.5" /> {!pickerKind && 'Baixar'}
                                                     </button>
@@ -1257,6 +1346,16 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                             </button>
                                             <span className="text-[10px] capitalize text-brand-muted">{asset.kind}</span>
                                             <span className="flex justify-end gap-1.5">
+                                                {asset.kind === 'video' && (
+                                                    <button
+                                                        onClick={() => void beginAssetTrim(asset)}
+                                                        disabled={trimBusyAssetId !== null}
+                                                        className="rounded-lg border border-white/10 p-1.5 text-brand-muted transition hover:border-brand-lime/40 hover:text-brand-lime disabled:opacity-40"
+                                                        title="Recortar takes deste vídeo"
+                                                    >
+                                                        {trimBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pencil className="h-3.5 w-3.5" />}
+                                                    </button>
+                                                )}
                                                 <button onClick={() => void downloadAsset(asset)} className="rounded-lg border border-white/10 p-1.5 text-brand-muted hover:text-foreground" title="Baixar para Arquivos"><ArrowDownToLine className="h-3.5 w-3.5" /></button>
                                             </span>
                                         </div>
@@ -1289,6 +1388,14 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                         )}
                     </div>
                 </div>
+            )}
+
+            {trimTarget && (
+                <TrimModal
+                    take={trimTarget.take}
+                    onSave={handleTrimSave(trimTarget)}
+                    onClose={() => setTrimTarget(null)}
+                />
             )}
         </div>
     );
