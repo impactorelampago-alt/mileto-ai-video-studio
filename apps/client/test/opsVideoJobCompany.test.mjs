@@ -2,8 +2,55 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     normalizeOpsVideoJobProjectCompany,
+    paletteFromOpsProjectCompany,
     resolveOpsVideoJobCompany,
 } from '../src/lib/opsVideoJobCompany.ts';
+
+test('paleta inline do job vira BrandPalette com preenchimento leniente de slots', () => {
+    assert.deepEqual(
+        paletteFromOpsProjectCompany({ projectCompany: { palette: ['#0033AA', '#FFD400'] } }),
+        { primary: '#0033aa', secondary: '#ffd400', tertiary: '#ffd400', all: ['#0033aa', '#ffd400'] },
+    );
+    // Uma cor só: preenche os três slots.
+    assert.deepEqual(
+        paletteFromOpsProjectCompany({ projectCompany: { palette: ['#123456'] } }),
+        { primary: '#123456', secondary: '#123456', tertiary: '#123456', all: ['#123456'] },
+    );
+});
+
+test('paleta inline descarta entradas invalidas individualmente e limita a 6', () => {
+    const palette = paletteFromOpsProjectCompany({
+        projectCompany: {
+            palette: ['#0033AA', 'azul', '#GGGGGG', 42, '#ffd400', '#0033aa', '#111111', '#222222', '#333333', '#444444', '#555555'],
+        },
+    });
+    assert.equal(palette.primary, '#0033aa');
+    assert.equal(palette.all.length, 6);
+});
+
+test('paleta inline ausente, vazia ou toda invalida retorna null (default preservado)', () => {
+    assert.equal(paletteFromOpsProjectCompany(undefined), null);
+    assert.equal(paletteFromOpsProjectCompany({}), null);
+    assert.equal(paletteFromOpsProjectCompany({ projectCompany: {} }), null);
+    assert.equal(paletteFromOpsProjectCompany({ projectCompany: { palette: [] } }), null);
+    assert.equal(paletteFromOpsProjectCompany({ projectCompany: { palette: ['verde', 123] } }), null);
+});
+
+test('palette extra em settings.projectCompany NAO invalida o contrato da empresa', () => {
+    const resolution = resolveOpsVideoJobCompany({
+        companyId: 'agencia-legada',
+        settings: {
+            projectCompany: {
+                id: 'empresa-1',
+                name: 'Ótica Reis',
+                source: 'mileto_ops_company',
+                palette: ['#0033AA', '#FFD400'],
+            },
+        },
+    });
+    assert.equal(resolution.id, 'empresa-1');
+    assert.equal(resolution.authoritative, true);
+});
 
 test('settings.projectCompany vence a agencia ou empresa legada do job', () => {
     const job = {

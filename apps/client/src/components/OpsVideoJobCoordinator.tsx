@@ -88,6 +88,7 @@ import {
     type OpsJobHistoryContext,
 } from '../lib/opsJobHistory';
 import {
+    paletteFromOpsProjectCompany,
     resolveOpsVideoJobCompany,
     type OpsVideoJobCompanyResolution,
 } from '../lib/opsVideoJobCompany';
@@ -603,6 +604,7 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
     // v0.2): a chave é calculada localmente sobre o texto limpo recebido, então
     // o plano fica amarrado por construção à narração deste job.
     const opsPlannedTitles = plannedTitlesFromOpsJob(job.settings);
+    const inlinePalette = paletteFromOpsProjectCompany(job.settings);
     const initialAdData = createDefaultAdData({
         ...(opsPlannedTitles.length ? {
             plannedTitles: opsPlannedTitles,
@@ -634,8 +636,12 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
             viewContextIdentity: opsViewContextIdentity(context),
             viewContextLabel: context.label,
         },
-        brandPalette: company.palette || null,
-        brandPaletteUpdatedAt: company.paletteUpdatedAt || null,
+        // Prioridade: paleta inline enviada pelo Ops no proprio job (nao depende
+        // do contexto de visao) > paleta do diretorio remoto > sem paleta.
+        brandPalette: inlinePalette || company.palette || null,
+        brandPaletteUpdatedAt: inlinePalette
+            ? job.updatedAt || job.createdAt || null
+            : company.paletteUpdatedAt || null,
     });
     const hasCompleteExecutionPayload = Boolean(
         company.id?.trim()
@@ -1280,6 +1286,17 @@ export const OpsVideoJobCoordinator = () => {
             let titleWarning: string | null = null;
             let finalTakes: MediaTake[] = [];
             let captionStyle = { ...DEFAULT_CAPTION_STYLE };
+            // A legenda do job herda a paleta da empresa (mesma regra do seletor
+            // manual da Etapa 1): destaque na 1ª cor, letra branca, contorno preto.
+            // Sem paleta, permanece o padrão. Projetos retomados preservam o estilo salvo.
+            if (adData.brandPalette?.primary) {
+                captionStyle = {
+                    ...captionStyle,
+                    activeColor: adData.brandPalette.primary,
+                    baseColor: '#FFFFFF',
+                    strokeColor: '#000000',
+                };
+            }
             let selectedMusicId = readiness.musicId;
             const shouldLoadOriginalProject = persisted.resume.projectPrepared || isRevisionExecution;
             let savedProject: Awaited<ReturnType<typeof loadAutomatedProject>> = null;

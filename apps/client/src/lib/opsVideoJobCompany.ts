@@ -1,9 +1,41 @@
 import type { OpsVideoJob } from './gateway';
+import type { BrandPalette } from '../types';
 
 export type OpsVideoJobProjectCompany = {
     id: string;
     name: string;
     source: 'mileto_ops_company';
+    /** Paleta pronta enviada pelo Ops (hex, até 6; 1ª = principal). Opcional. */
+    palette?: string[];
+};
+
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+/**
+ * Paleta inline do job (settings.projectCompany.palette). Elimina a dependência
+ * do contexto de visão para pintar legendas e títulos: o Ops envia as cores
+ * exatas da empresa junto do job. Entradas inválidas são descartadas
+ * individualmente; sem nenhuma cor válida, retorna null (comportamento atual).
+ */
+export const paletteFromOpsProjectCompany = (settings: unknown): BrandPalette | null => {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return null;
+    const company = (settings as Record<string, unknown>).projectCompany;
+    if (!company || typeof company !== 'object' || Array.isArray(company)) return null;
+    const raw = (company as Record<string, unknown>).palette;
+    if (!Array.isArray(raw)) return null;
+    const colors = Array.from(new Set(
+        raw
+            .filter((value): value is string => typeof value === 'string')
+            .map((value) => value.trim().toLowerCase())
+            .filter((value) => HEX_COLOR.test(value))
+    )).slice(0, 6);
+    if (!colors.length) return null;
+    return {
+        primary: colors[0],
+        secondary: colors[1] ?? colors[0],
+        tertiary: colors[2] ?? colors[1] ?? colors[0],
+        all: colors,
+    };
 };
 
 export type OpsVideoJobCompanyResolution = {
