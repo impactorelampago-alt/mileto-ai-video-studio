@@ -282,8 +282,20 @@ export type OpsVideoJobStage =
     | 'completed'
     | 'failed';
 
+/**
+ * Título confirmado no chat do Filmmaker (Mileto Ops), validado editorialmente
+ * lá antes do envio. Contrato: CONTRATO-TITULOS-CHAT-FILMMAKER-v0.2 (§1.5).
+ */
+export interface OpsVideoJobPlannedTitle {
+    text: string;
+    sourceText: string;
+    triggerId: string;
+    triggerName?: string;
+}
+
 export interface OpsVideoJobSettings extends Record<string, unknown> {
     projectCompany?: OpsVideoJobProjectCompany;
+    plannedTitles?: OpsVideoJobPlannedTitle[];
 }
 
 export interface OpsVideoJob {

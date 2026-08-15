@@ -52,6 +52,12 @@ import {
     persistAutomatedProject,
     prepareOpsExportMetadata,
 } from '../lib/videoAgentWorkflow';
+import { plannedTitlesFromOpsJob } from '../lib/opsPlannedTitles';
+import { titlePlanningNarrationKey } from '../lib/titlePlanningKey';
+import {
+    materializeCurrentTitlePlan,
+    titlePlanMaterializationDecision,
+} from '../lib/titlePlanMaterialization';
 import { selectOpsTakesForNarration } from '../lib/opsTakeSelection';
 import { API_BASE_URL } from '../lib/apiBase';
 import {
@@ -593,7 +599,15 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
     const voiceId = typeof job.settings?.voiceId === 'string' && job.settings.voiceId.trim()
         ? job.settings.voiceId.trim()
         : voice.id;
+    // Títulos confirmados no chat do Filmmaker (CONTRATO-TITULOS-CHAT-FILMMAKER
+    // v0.2): a chave é calculada localmente sobre o texto limpo recebido, então
+    // o plano fica amarrado por construção à narração deste job.
+    const opsPlannedTitles = plannedTitlesFromOpsJob(job.settings);
     const initialAdData = createDefaultAdData({
+        ...(opsPlannedTitles.length ? {
+            plannedTitles: opsPlannedTitles,
+            plannedTitlesNarrationKey: titlePlanningNarrationKey(narrationPlainText),
+        } : {}),
         title: job.projectTitle,
         format: job.format,
         narrationText: narrationPlainText,
@@ -1417,14 +1431,17 @@ export const OpsVideoJobCoordinator = () => {
                 if (job.captions) adData = await generateAutomaticCaptions(adData);
                 await patch('captions', OPS_VIDEO_PROGRESS.captions.end, job.captions ? 'Legendas automaticas prontas.' : 'Etapa de legendas ignorada.');
 
+                const confirmedTitlePlan = titlePlanMaterializationDecision(adData);
                 await patch('titles', OPS_VIDEO_PROGRESS.titles.start, job.automaticTitles
-                    ? 'Aplicando gatilhos, modelos e paleta da empresa.'
+                    ? confirmedTitlePlan.shouldMaterialize
+                        ? 'Aplicando os titulos confirmados no chat do Filmmaker.'
+                        : 'Aplicando gatilhos, modelos e paleta da empresa.'
                     : 'Titulos automaticos nao solicitados.');
                 if (job.automaticTitles) {
                     const titleController = new AbortController();
                     titleGenerationAbortRef.current = titleController;
                     try {
-                        const titleResult = await generateAutomaticTitlesResilient(adData, {
+                        const titleGenerationOptions = {
                             signal: titleController.signal,
                             resolvedBrand: {
                                 required: true,
@@ -1435,7 +1452,7 @@ export const OpsVideoJobCoordinator = () => {
                                 palette: readiness.initialAdData.brandPalette || null,
                                 paletteUpdatedAt: readiness.initialAdData.brandPaletteUpdatedAt || null,
                             },
-                            onProgress: (progress) => {
+                            onProgress: (progress: { phase: string; message: string }) => {
                                 const fraction = progress.phase === 'brand'
                                     ? 0.1
                                     : progress.phase === 'ai'
@@ -1445,7 +1462,27 @@ export const OpsVideoJobCoordinator = () => {
                                         : 0.95;
                                 showLocalProgress('titles', progressWithinStage('titles', fraction), progress.message);
                             },
-                        });
+                        };
+                        // Plano confirmado no chat do Filmmaker: materialização exata
+                        // (texto byte a byte). Falha não-abortiva degrada para a
+                        // geração automática, nunca derruba o job.
+                        let titleResult: Awaited<ReturnType<typeof generateAutomaticTitlesResilient>> | null = null;
+                        if (confirmedTitlePlan.shouldMaterialize) {
+                            try {
+                                titleResult = await materializeCurrentTitlePlan(adData, titleGenerationOptions);
+                            } catch (error) {
+                                if (isTitleGenerationAbortError(error)) throw error;
+                                console.warn('[title-generation]', {
+                                    event: 'coordinator_planned_titles_fallback',
+                                    code: 'planned_titles_materialization_failed',
+                                    stage: 'titles',
+                                });
+                                titleResult = null;
+                            }
+                        }
+                        if (!titleResult) {
+                            titleResult = await generateAutomaticTitlesResilient(adData, titleGenerationOptions);
+                        }
                         adData = titleResult.adData;
                         titleWarning = titleResult.warning || null;
                     } catch (error) {
