@@ -92,7 +92,7 @@ const color = (value: unknown, fallback: string) => {
  * efetiva da organização. A configuração salva no gateway sempre tem prioridade.
  */
 // Padrão de fábrica gravado a partir da configuração real da agência
-// (2026-08-14). Regenerar via captura do gerador; não editar na mão.
+// (2026-08-15). Regenerar via captura do gerador; não editar na mão.
 export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
     "version": 5,
     "pipeline": "reviewed-v1",
@@ -140,17 +140,17 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                     "color": {
                         "mode": "brand",
                         "paletteSlot": "rotate",
-                        "primary": "#1de6d2",
+                        "primary": "#ff2d55",
                         "secondary": "#ffffff"
                     },
                     "layouts": {
                         "9:16": {
-                            "posX": 50.98039215686275,
-                            "posY": 52.93441413430607,
-                            "scale": 0.62,
+                            "posX": 51.046044349464765,
+                            "posY": 55.92610168457031,
+                            "scale": 0.48788895986124137,
                             "scaleX": 1,
                             "scaleY": 1,
-                            "textBoxWidthPct": 99.08370229812354
+                            "textBoxWidthPct": 134.2504390696589
                         },
                         "16:9": {
                             "posX": 50,
@@ -193,60 +193,12 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                     },
                     "layouts": {
                         "9:16": {
-                            "posX": 52.47888808566699,
-                            "posY": 58.775142261535855,
-                            "scale": 0.6037742372951541,
+                            "posX": 50.00718060661765,
+                            "posY": 54.14013896268957,
+                            "scale": 0.5462647440177159,
                             "scaleX": 1,
                             "scaleY": 1,
                             "textBoxWidthPct": 141.21884686492245
-                        },
-                        "16:9": {
-                            "posX": 50,
-                            "posY": 50,
-                            "scale": 0.58,
-                            "scaleX": 1,
-                            "scaleY": 1,
-                            "textBoxWidthPct": 64
-                        },
-                        "4:5": {
-                            "posX": 50,
-                            "posY": 55,
-                            "scale": 0.6,
-                            "scaleX": 1,
-                            "scaleY": 1,
-                            "textBoxWidthPct": 74
-                        },
-                        "1:1": {
-                            "posX": 50,
-                            "posY": 52,
-                            "scale": 0.58,
-                            "scaleX": 1,
-                            "scaleY": 1,
-                            "textBoxWidthPct": 70
-                        }
-                    }
-                },
-                {
-                    "id": "premium-swiss-modern",
-                    "name": "Swiss Modern",
-                    "styleId": "premium-swiss-modern",
-                    "fontFamily": "DM Sans",
-                    "durationSec": 2.5,
-                    "animationId": "pop",
-                    "color": {
-                        "mode": "brand",
-                        "paletteSlot": "rotate",
-                        "primary": "#ff4d36",
-                        "secondary": "#ffffff"
-                    },
-                    "layouts": {
-                        "9:16": {
-                            "posX": 50.534150562795475,
-                            "posY": 55.81249102424173,
-                            "scale": 0.664590240385214,
-                            "scaleX": 1,
-                            "scaleY": 1,
-                            "textBoxWidthPct": 88.54185114906177
                         },
                         "16:9": {
                             "posX": 50,
@@ -311,12 +263,12 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                     },
                     "layouts": {
                         "9:16": {
-                            "posX": 50,
-                            "posY": 62,
-                            "scale": 0.4053595161837049,
+                            "posX": 49.757750622429846,
+                            "posY": 61.3349609375,
+                            "scale": 0.3766585390971947,
                             "scaleX": 1,
                             "scaleY": 1,
-                            "textBoxWidthPct": 209.14742242749654
+                            "textBoxWidthPct": 191.44203659504024
                         },
                         "16:9": {
                             "posX": 50,
@@ -359,12 +311,12 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                     },
                     "layouts": {
                         "9:16": {
-                            "posX": 50.811757896343984,
-                            "posY": 60.84627577837776,
-                            "scale": 0.4385280868955116,
+                            "posX": 52.12322559232027,
+                            "posY": 61.35289001464844,
+                            "scale": 0.3987934229126527,
                             "scaleX": 1,
                             "scaleY": 1,
-                            "textBoxWidthPct": 217.1215292574055
+                            "textBoxWidthPct": 204.08951958590742
                         },
                         "16:9": {
                             "posX": 50,
@@ -547,9 +499,9 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                     },
                     "layouts": {
                         "9:16": {
-                            "posX": 86.16871384650499,
-                            "posY": 52.98928653492647,
-                            "scale": 0.8802814746958338,
+                            "posX": 88.87213414011438,
+                            "posY": 52.25342021268957,
+                            "scale": 0.8285706492857652,
                             "scaleX": 1,
                             "scaleY": 1,
                             "textBoxWidthPct": 78.51838423309633
@@ -595,9 +547,9 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                     },
                     "layouts": {
                         "9:16": {
-                            "posX": 48.45154934217438,
-                            "posY": 53.90726238097921,
-                            "scale": 0.8578738447442549,
+                            "posX": 51.976131473627426,
+                            "posY": 55.637867647058826,
+                            "scale": 0.9346533829514718,
                             "scaleX": 1,
                             "scaleY": 1,
                             "textBoxWidthPct": 78
@@ -643,9 +595,9 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                     },
                     "layouts": {
                         "9:16": {
-                            "posX": 48.73033384094682,
-                            "posY": 57.684939996619526,
-                            "scale": 0.7225521699762051,
+                            "posX": 50.3460722970123,
+                            "posY": 57.208849738625915,
+                            "scale": 0.73921584617403,
                             "scaleX": 1,
                             "scaleY": 1,
                             "textBoxWidthPct": 90.00287011726232
@@ -713,12 +665,12 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                     },
                     "layouts": {
                         "9:16": {
-                            "posX": 35.98660737081291,
-                            "posY": 10.016381990567673,
-                            "scale": 0.4743447340979309,
+                            "posX": 51.37435897435897,
+                            "posY": 57.70437771142036,
+                            "scale": 0.62,
                             "scaleX": 1,
                             "scaleY": 1,
-                            "textBoxWidthPct": 141.39948458953492
+                            "textBoxWidthPct": 152.9119836520216
                         },
                         "16:9": {
                             "posX": 50,
@@ -761,9 +713,9 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                     },
                     "layouts": {
                         "9:16": {
-                            "posX": 50,
-                            "posY": 55.18029184742802,
-                            "scale": 0.62,
+                            "posX": 51.065098439063874,
+                            "posY": 55.62306886560776,
+                            "scale": 0.7142653136840093,
                             "scaleX": 1,
                             "scaleY": 1,
                             "textBoxWidthPct": 100
@@ -949,12 +901,12 @@ export const DEFAULT_TITLE_GENERATOR_CONFIG: TitleGeneratorConfig = {
                     },
                     "layouts": {
                         "9:16": {
-                            "posX": 49.545878694015244,
-                            "posY": 61.06196324965533,
-                            "scale": 0.430581593096737,
+                            "posX": 51.435929699873206,
+                            "posY": 60.03382379868451,
+                            "scale": 0.512934874692452,
                             "scaleX": 1,
                             "scaleY": 1,
-                            "textBoxWidthPct": 147.41935566102174
+                            "textBoxWidthPct": 141.42299968735995
                         },
                         "16:9": {
                             "posX": 50,
