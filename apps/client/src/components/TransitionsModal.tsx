@@ -580,55 +580,87 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
     };
 
     const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
+        // Aceita vários arquivos de uma vez: dá pra selecionar a pasta inteira
+        // de uma família (ex.: todos os light leaks) num clique só.
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
 
         setIsUploading(true);
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('category', activeCategory);
-
         try {
             if (scope === 'shared') {
                 const category = safeCollectionName(activeCategory);
                 await ensureSharedTransitionFolder(category);
                 const headers = await localAuthHeaders();
-                const sharedForm = new FormData();
-                sharedForm.append('file', file);
-                sharedForm.append('parent', sharedCollectionPath(category));
-                sharedForm.append('preventDuplicate', 'true');
-                const response = await fetch(`${API}/api/shared/files/upload`, {
-                    method: 'POST',
-                    headers,
-                    body: sharedForm,
-                });
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok || !data.ok) {
-                    throw new Error(data.message || 'Falha ao enviar a transição para a equipe.');
+                let added = 0;
+                let duplicated = 0;
+                const failed: string[] = [];
+                for (const file of files) {
+                    try {
+                        const sharedForm = new FormData();
+                        sharedForm.append('file', file);
+                        sharedForm.append('parent', sharedCollectionPath(category));
+                        sharedForm.append('preventDuplicate', 'true');
+                        const response = await fetch(`${API}/api/shared/files/upload`, {
+                            method: 'POST',
+                            headers,
+                            body: sharedForm,
+                        });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok || !data.ok) {
+                            throw new Error(data.message || 'falha no envio');
+                        }
+                        if (data.deduplicated) duplicated += 1;
+                        else added += 1;
+                    } catch {
+                        failed.push(file.name);
+                    }
                 }
-                toast.success(
-                    data.deduplicated
-                        ? 'Esta transição já existia na coleção e não foi duplicada.'
-                        : `Transição adicionada à coleção ${category}.`
-                );
+                if (added) {
+                    toast.success(`${added} ${added === 1 ? 'transição adicionada' : 'transições adicionadas'} à coleção ${category}.`);
+                }
+                if (duplicated) {
+                    toast.info(`${duplicated} já ${duplicated === 1 ? 'existia' : 'existiam'} na coleção e não ${duplicated === 1 ? 'foi duplicada' : 'foram duplicadas'}.`);
+                }
+                if (failed.length) {
+                    toast.error(`${failed.length} não ${failed.length === 1 ? 'subiu' : 'subiram'}: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`);
+                }
                 await loadTransitions();
                 return;
             }
 
-            const res = await fetch(`${API}/api/transitions/upload`, {
-                method: 'POST',
-                body: formData,
-            });
-            const data = await res.json();
-
-            if (data.ok && data.transition) {
-                const newTransition = { ...data.transition, category: activeCategory };
-                setTransitions((prev) => [...prev, newTransition]);
-                toast.success('Video de transição carregado!');
-                toggleTransitionSelection(newTransition);
-            } else {
-                toast.error(data.message || 'Falha ao carregar transição');
+            let uploaded = 0;
+            let lastTransition: TransitionAsset | null = null;
+            const failed: string[] = [];
+            for (const file of files) {
+                try {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    formData.append('category', activeCategory);
+                    const res = await fetch(`${API}/api/transitions/upload`, {
+                        method: 'POST',
+                        body: formData,
+                    });
+                    const data = await res.json();
+                    if (data.ok && data.transition) {
+                        const newTransition = { ...data.transition, category: activeCategory };
+                        setTransitions((prev) => [...prev, newTransition]);
+                        lastTransition = newTransition;
+                        uploaded += 1;
+                    } else {
+                        failed.push(file.name);
+                    }
+                } catch {
+                    failed.push(file.name);
+                }
             }
+            if (uploaded) {
+                toast.success(uploaded === 1 ? 'Vídeo de transição carregado!' : `${uploaded} transições carregadas!`);
+            }
+            if (failed.length) {
+                toast.error(`${failed.length} ${failed.length === 1 ? 'falhou' : 'falharam'}: ${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''}`);
+            }
+            // Seleciona automaticamente só quando foi um único arquivo.
+            if (files.length === 1 && lastTransition) toggleTransitionSelection(lastTransition);
         } catch (err) {
             console.error(err);
             toast.error('Erro de conexão ao carregar transição');
@@ -996,6 +1028,7 @@ export const TransitionsModal: React.FC<TransitionsModalProps> = ({ isOpen, onCl
                                     <input
                                         type="file"
                                         accept="video/mp4,video/quicktime,.mp4,.mov"
+                                        multiple
                                         className="hidden"
                                         ref={fileInputRef}
                                         onChange={handleUpload}
