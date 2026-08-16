@@ -5,7 +5,9 @@ import {
     isApprovedTakesFolderName,
     markTakeTrimmed,
     nextTakeToTrim,
+    readStagedTrims,
     readTrimmedTakeIds,
+    writeStagedTrims,
 } from '../src/lib/opsTakeCuration.ts';
 
 const fakeStorage = () => {
@@ -88,4 +90,59 @@ test('take atual fora da fila comeca a busca do inicio', () => {
     const queue = [{ id: 'a' }, { id: 'b' }];
     assert.equal(nextTakeToTrim(queue, 'desconhecido', new Set())?.id, 'a');
     assert.equal(nextTakeToTrim(queue, 'desconhecido', new Set(['a']))?.id, 'b');
+});
+
+test('carrinho de cortes sobrevive ao ciclo gravar/reler (recarregamento do app)', () => {
+    const storage = fakeStorage();
+    const entry = {
+        asset: { id: 'asset-1', name: 'IMG_1.MOV', companyId: 'empresa-1', folderId: 'pasta-takes' },
+        take: { id: 'take-1', url: 'http://127.0.0.1/x.mp4', backendPath: 'C:/cache/x.mp4' },
+        trims: [{ start: 1, end: 3.5, kind: 'primary' }, { start: 5, end: 7, kind: 'created' }],
+        destinationFolderId: 'pasta-aprovados',
+        destinationLabel: 'TAKES APROVADOS',
+    };
+    writeStagedTrims(new Map([['asset-1', entry]]), storage);
+
+    const restored = readStagedTrims(storage);
+    assert.equal(restored.size, 1);
+    const back = restored.get('asset-1');
+    assert.deepEqual(back.trims, entry.trims);
+    assert.equal(back.destinationFolderId, 'pasta-aprovados');
+    assert.equal(back.asset.companyId, 'empresa-1');
+    assert.equal(back.take.backendPath, 'C:/cache/x.mp4');
+});
+
+test('carrinho vazio limpa o registro e dados corrompidos viram carrinho vazio', () => {
+    const storage = fakeStorage();
+    writeStagedTrims(new Map([['a', { trims: [{ start: 0, end: 1, kind: 'primary' }] }]]), storage);
+    writeStagedTrims(new Map(), storage);
+    assert.equal(storage.getItem('mileto_ops_staged_trims_v1'), null);
+
+    storage.setItem('mileto_ops_staged_trims_v1', '{quebrado');
+    assert.equal(readStagedTrims(storage).size, 0);
+    storage.setItem('mileto_ops_staged_trims_v1', JSON.stringify(['lista', 'errada']));
+    assert.equal(readStagedTrims(storage).size, 0);
+});
+
+test('entradas invalidas do carrinho sao descartadas individualmente', () => {
+    const storage = fakeStorage();
+    storage.setItem('mileto_ops_staged_trims_v1', JSON.stringify({
+        'sem-trims': { destinationFolderId: 'x' },
+        'trims-invalidos': { trims: [{ start: 'a', end: 'b' }, { start: 5, end: 2 }] },
+        'valido': { trims: [{ start: 0, end: 2, kind: 'created' }, { start: 9, end: 'x' }], savedAt: Date.now() },
+    }));
+
+    const restored = readStagedTrims(storage);
+    assert.deepEqual([...restored.keys()], ['valido']);
+    // O trim inválido do meio é filtrado; o válido permanece com o kind certo.
+    assert.deepEqual(restored.get('valido').trims, [{ start: 0, end: 2, kind: 'created' }]);
+});
+
+test('entradas muito antigas do carrinho expiram na leitura', () => {
+    const storage = fakeStorage();
+    storage.setItem('mileto_ops_staged_trims_v1', JSON.stringify({
+        'velho': { trims: [{ start: 0, end: 2, kind: 'primary' }], savedAt: Date.now() - 8 * 24 * 60 * 60 * 1000 },
+        'novo': { trims: [{ start: 0, end: 2, kind: 'primary' }], savedAt: Date.now() },
+    }));
+    assert.deepEqual([...readStagedTrims(storage).keys()], ['novo']);
 });

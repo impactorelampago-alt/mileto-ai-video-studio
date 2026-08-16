@@ -27,7 +27,9 @@ import {
     APPROVED_TAKES_FOLDER_LABEL,
     findApprovedTakesFolder,
     markTakeTrimmed,
+    readStagedTrims,
     readTrimmedTakeIds,
+    writeStagedTrims,
 } from '../lib/opsTakeCuration';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useWizard } from '../context/WizardContext';
@@ -129,6 +131,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     const [selectionMode, setSelectionMode] = useState(false);
     const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
     const selectedContextRef = useRef<OpsViewContext | null>(null);
+    const selectedCompanyRef = useRef<OpsCompany | null>(null);
     const contextExpiresAtRef = useRef(0);
     const contextRecoveryRef = useRef<Promise<void> | null>(null);
     const [preview, setPreview] = useState<{ asset: OpsAsset; url: string; delivery?: string } | null>(null);
@@ -145,6 +148,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     const resetNavigation = useCallback(() => {
         setCompanies([]);
         setSelectedCompany(null);
+        selectedCompanyRef.current = null;
         setFolders([]);
         setSelectedFolder(null);
         setAssets([]);
@@ -182,8 +186,13 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         return { context: next, selectionRemoved: Boolean(previous && !matching) };
     }, []);
 
-    const loadCompanies = useCallback(async () => {
-        setLoading(true);
+    // preserveNavigation: usado nas renovações de sessão em segundo plano — o
+    // usuário NUNCA pode ser expulso da pasta em que está trabalhando por causa
+    // de uma renovação automática. A navegação só é resetada se o acesso à
+    // empresa aberta realmente deixou de existir.
+    const loadCompanies = useCallback(async (options: { preserveNavigation?: boolean } = {}) => {
+        const preserve = Boolean(options.preserveNavigation) && Boolean(selectedCompanyRef.current);
+        if (!preserve) setLoading(true);
         try {
             const status = await gatewayApi.opsConnection();
             setReady(status.enabled && status.connection?.status === 'active');
@@ -196,16 +205,26 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                 return;
             }
             const { context, selectionRemoved } = await loadAuthorizedContexts();
-            resetNavigation();
             const response = await gatewayApi.opsCompanies('', context.contextId);
-            setCompanies(Array.isArray(response.data) ? response.data : []);
+            const list = Array.isArray(response.data) ? response.data : [];
+            const current = selectedCompanyRef.current;
+            const stillAllowed = Boolean(current && list.some((company) => company.id === current.id));
+            if (!preserve || selectionRemoved || !stillAllowed) {
+                resetNavigation();
+            }
+            setCompanies(list);
             if (selectionRemoved) {
                 toast.warning('Seu acesso no Mileto Ops mudou. Voltamos para Minha conta.');
             }
         } catch (error) {
-            toast.error(error instanceof GatewayError ? error.message : 'Não foi possível abrir a biblioteca do Ops.');
+            // Renovação em segundo plano falhou: fica em silêncio e mantém o
+            // usuário onde está — a próxima chamada com erro de contexto
+            // reativa a recuperação.
+            if (!options.preserveNavigation) {
+                toast.error(error instanceof GatewayError ? error.message : 'Não foi possível abrir a biblioteca do Ops.');
+            }
         } finally {
-            setLoading(false);
+            if (!preserve) setLoading(false);
         }
     }, [loadAuthorizedContexts, resetNavigation]);
 
@@ -216,7 +235,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     useEffect(() => {
         if (!contextExpiresAt || !ready || !linked) return;
         const delay = Math.max(15_000, contextExpiresAt - Date.now() - 30_000);
-        const timer = window.setTimeout(() => void loadCompanies(), delay);
+        const timer = window.setTimeout(() => void loadCompanies({ preserveNavigation: true }), delay);
         return () => window.clearTimeout(timer);
     }, [contextExpiresAt, linked, loadCompanies, ready]);
 
@@ -224,7 +243,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         if (!isViewContextError(error)) return false;
         if (!contextRecoveryRef.current) {
             toast.warning('Sua permissão no Mileto Ops mudou. Atualizamos as opções disponíveis.');
-            contextRecoveryRef.current = loadCompanies().finally(() => {
+            contextRecoveryRef.current = loadCompanies({ preserveNavigation: true }).finally(() => {
                 contextRecoveryRef.current = null;
             });
         }
@@ -253,6 +272,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
 
     const loadCompany = async (company: OpsCompany) => {
         setSelectedCompany(company);
+        selectedCompanyRef.current = company;
         setSelectedFolder(null);
         setAssetQuery('');
         setAssets([]);
@@ -932,7 +952,12 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     const [trimTarget, setTrimTarget] = useState<{ asset: OpsAsset; take: MediaTake } | null>(null);
     const [trimBusyAssetId, setTrimBusyAssetId] = useState<string | null>(null);
     const [trimmedTakeIds, setTrimmedTakeIds] = useState<ReadonlySet<string>>(() => readTrimmedTakeIds());
-    const [stagedTrims, setStagedTrims] = useState<Map<string, StagedTrimEntry>>(new Map());
+    // O carrinho nasce do disco e cada mudança volta pro disco: recarregamento,
+    // troca de aba ou reinício do app nunca perdem os ajustes de curadoria.
+    const [stagedTrims, setStagedTrims] = useState<Map<string, StagedTrimEntry>>(() => readStagedTrims<StagedTrimEntry>());
+    useEffect(() => {
+        writeStagedTrims(stagedTrims);
+    }, [stagedTrims]);
     const [confirmDiscardStaged, setConfirmDiscardStaged] = useState(false);
     const [stagedExitGuard, setStagedExitGuard] = useState<{ action: () => void } | null>(null);
 
@@ -958,10 +983,18 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         [stagedTrims]
     );
 
-    // Qualquer navegação que abandone a pasta com cortes salvos e não
-    // processados passa por aqui: o usuário decide se descarta ou permanece.
+    // O aviso de saída só vale quando o usuário está DENTRO da pasta onde os
+    // cortes foram salvos e navega para fora dela. Entrar/voltar nunca avisa —
+    // e como o carrinho é persistido em disco, só o "Sair e descartar" perde.
+    const stagedInOpenFolder = useMemo(() => {
+        if (!selectedCompany || stagedTrims.size === 0) return false;
+        const folderKey = selectedFolder?.id ?? null;
+        return [...stagedTrims.values()].some((entry) =>
+            entry.asset.companyId === selectedCompany.id && (entry.asset.folderId ?? null) === folderKey);
+    }, [selectedCompany, selectedFolder, stagedTrims]);
+
     const guardStagedExit = (action: () => void) => {
-        if (stagedTrims.size === 0) {
+        if (!stagedInOpenFolder) {
             action();
             return;
         }
@@ -1637,7 +1670,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                             )}
                         </div>
 
-                        {stagedTrims.size > 0 && (
+                        {!pickerKind && stagedTrims.size > 0 && (
                             <div className="shrink-0 border-t border-sky-400/20 bg-gradient-to-r from-sky-500/[0.09] via-card/85 to-emerald-500/[0.09] px-4 py-3 backdrop-blur">
                                 <div className="flex flex-wrap items-center justify-between gap-3">
                                     <div className="flex min-w-0 items-center gap-2.5">
@@ -1649,7 +1682,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                 {stagedTrims.size} take{stagedTrims.size === 1 ? '' : 's'} com cortes salvos
                                             </div>
                                             <div className="truncate text-[10px] text-brand-muted">
-                                                {stagedCutsTotal} corte{stagedCutsTotal === 1 ? '' : 's'} irão para {approvedTakesFolder ? APPROVED_TAKES_FOLDER_LABEL : 'a pasta original'}
+                                                {stagedCutsTotal} corte{stagedCutsTotal === 1 ? '' : 's'} irão para {[...stagedTrims.values()][0]?.destinationLabel ?? 'a pasta do take'}
                                             </div>
                                         </div>
                                     </div>
@@ -1706,7 +1739,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                     take={trimTarget.take}
                     initialTrims={stagedTrims.get(trimTarget.asset.id)?.trims}
                     onSave={handleTrimSave(trimTarget)}
-                    onStage={handleTrimStage(trimTarget)}
+                    onStage={pickerKind ? undefined : handleTrimStage(trimTarget)}
                     queue={trimQueueInfo ?? undefined}
                     onClose={() => setTrimTarget(null)}
                 />
