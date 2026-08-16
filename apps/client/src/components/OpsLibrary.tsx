@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
     AlertTriangle, ArrowDownToLine, Building2, Check, ChevronDown, ChevronRight,
     CheckSquare, Crown, FileImage, FileVideo, Folder, FolderOpen, Grid2X2, Library, List, Loader2, Music2, Pencil, Play,
-    Search, ShieldCheck, Sparkles, Square, Upload, UserRound, UsersRound, X,
+    Scissors, Search, ShieldCheck, Sparkles, Square, Upload, UserRound, UsersRound, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -27,9 +27,9 @@ import {
     APPROVED_TAKES_FOLDER_LABEL,
     findApprovedTakesFolder,
     markTakeTrimmed,
-    nextTakeToTrim,
     readTrimmedTakeIds,
 } from '../lib/opsTakeCuration';
+import { ConfirmDialog } from './ConfirmDialog';
 import { useWizard } from '../context/WizardContext';
 import type { MediaTake } from '../types';
 import { useDownloadJobs } from '../context/DownloadJobsContext';
@@ -480,7 +480,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
             <div key={folder.id}>
                 <button
                     type="button"
-                    onClick={() => setSelectedFolder(folder)}
+                    onClick={() => navigateToFolder(folder)}
                     style={{ paddingLeft: `${8 + depth * 12}px` }}
                     className={`flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-[11px] transition ${selectedFolder?.id === folder.id ? 'bg-brand-lime/10 text-brand-lime' : 'text-foreground/60 hover:bg-white/5 hover:text-foreground'}`}
                 >
@@ -498,7 +498,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         return (
             <div key={company.id}>
                 <button
-                    onClick={() => void loadCompany(company)}
+                    onClick={() => guardStagedExit(() => void loadCompany(company))}
                     className={`w-full flex items-center gap-1 rounded-lg px-1 py-1.5 text-left text-xs transition ${
                         expanded
                             ? 'bg-brand-accent/12 text-brand-accent'
@@ -517,7 +517,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                     <div className="ml-4 mt-0.5 space-y-0.5 border-l border-white/7 pl-2">
                         <button
                             type="button"
-                            onClick={() => setSelectedFolder(null)}
+                            onClick={() => navigateToFolder(null)}
                             className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] transition ${!selectedFolder ? 'bg-brand-lime/10 text-brand-lime' : 'text-foreground/60 hover:bg-white/5 hover:text-foreground'}`}
                         >
                             <FolderOpen className="h-3.5 w-3.5 shrink-0" />
@@ -914,16 +914,30 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     };
 
     // ─── Recorte de takes direto na biblioteca (lápis no card) ───
-    // Materializa o vídeo no cache local, abre o Editor de Cortes e cada trecho
-    // confirmado vira um MP4 novo enviado à pasta TAKES APROVADOS da empresa
-    // (sem ela, cai na pasta original do take). O arquivo original permanece
-    // intacto e o take fica marcado como cortado — lápis verde no card.
+    // Curadoria em lote: cada take ajustado no Editor de Cortes é SALVO no
+    // carrinho ("Salvar e escolher o próximo") — nada é processado na hora.
+    // O botão "Cortar todos os selecionados" transforma o carrinho em um job
+    // do sino de notificações: o app fica livre enquanto os takes são fatiados
+    // e enviados à pasta TAKES APROVADOS da empresa. Os originais permanecem
+    // intactos e cada take processado fica verde (registro local que sobrevive
+    // ao fechamento do app).
+    interface StagedTrimEntry {
+        asset: OpsAsset;
+        take: MediaTake;
+        trims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>;
+        destinationFolderId: string;
+        destinationLabel: string;
+    }
+
     const [trimTarget, setTrimTarget] = useState<{ asset: OpsAsset; take: MediaTake } | null>(null);
     const [trimBusyAssetId, setTrimBusyAssetId] = useState<string | null>(null);
     const [trimmedTakeIds, setTrimmedTakeIds] = useState<ReadonlySet<string>>(() => readTrimmedTakeIds());
+    const [stagedTrims, setStagedTrims] = useState<Map<string, StagedTrimEntry>>(new Map());
+    const [confirmDiscardStaged, setConfirmDiscardStaged] = useState(false);
+    const [stagedExitGuard, setStagedExitGuard] = useState<{ action: () => void } | null>(null);
 
     const approvedTakesFolder = useMemo(() => findApprovedTakesFolder(folders), [folders]);
-    // Fila do fluxo "Confirmar e ir para o próximo": os vídeos da pasta aberta, na ordem da tela.
+    // Fila da curadoria: os vídeos da pasta aberta, na ordem da tela.
     const curationQueue = useMemo(
         () => visibleAssets.filter((asset) => asset.kind === 'video'),
         [visibleAssets]
@@ -936,14 +950,36 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
             position: index + 1,
             total: curationQueue.length,
             approved: curationQueue.filter((asset) => trimmedTakeIds.has(asset.id)).length,
+            staged: curationQueue.filter((asset) => stagedTrims.has(asset.id)).length,
         };
-    }, [curationQueue, trimTarget, trimmedTakeIds]);
-    const trimNextAsset = trimTarget
-        ? nextTakeToTrim(curationQueue, trimTarget.asset.id, trimmedTakeIds)
-        : null;
+    }, [curationQueue, stagedTrims, trimTarget, trimmedTakeIds]);
+    const stagedCutsTotal = useMemo(
+        () => [...stagedTrims.values()].reduce((sum, entry) => sum + entry.trims.length, 0),
+        [stagedTrims]
+    );
+
+    // Qualquer navegação que abandone a pasta com cortes salvos e não
+    // processados passa por aqui: o usuário decide se descarta ou permanece.
+    const guardStagedExit = (action: () => void) => {
+        if (stagedTrims.size === 0) {
+            action();
+            return;
+        }
+        setStagedExitGuard({ action });
+    };
+    const navigateToFolder = (folder: OpsFolder | null) => {
+        if ((folder?.id ?? null) === (selectedFolder?.id ?? null)) return;
+        guardStagedExit(() => setSelectedFolder(folder));
+    };
 
     const beginAssetTrim = async (asset: OpsAsset) => {
         if (asset.kind !== 'video' || trimBusyAssetId) return;
+        const staged = stagedTrims.get(asset.id);
+        if (staged) {
+            // Reabre com os cortes salvos carregados, sem rematerializar nada.
+            setTrimTarget({ asset, take: staged.take });
+            return;
+        }
         setTrimBusyAssetId(asset.id);
         const toastId = toast.loading(`Preparando "${asset.name}" para recorte...`);
         try {
@@ -957,97 +993,174 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         }
     };
 
-    const performTrimSave = async (
+    // O destino é congelado no momento do salvamento: mesmo que o usuário
+    // navegue ou o contexto recarregue, o lote sabe para onde cada take vai.
+    const buildTrimEntry = (
         target: { asset: OpsAsset; take: MediaTake },
-        newTrims: Array<{ start: number; end: number }>,
-    ) => {
-        const segments = newTrims.map(({ start, end }) => ({ start, end }));
-        if (!segments.length) return;
-        const destinationFolderId = approvedTakesFolder?.id || target.asset.folderId || selectedFolder?.id || '';
-        const destinationLabel = approvedTakesFolder ? APPROVED_TAKES_FOLDER_LABEL : 'a pasta do take';
+        trims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>,
+    ): StagedTrimEntry => {
         if (!approvedTakesFolder) {
             toast.warning(`Esta empresa ainda não tem a pasta ${APPROVED_TAKES_FOLDER_LABEL} — os cortes irão para a pasta original.`);
         }
-        const toastId = toast.loading(`Recortando "${target.asset.name}" (${segments.length} trecho${segments.length === 1 ? '' : 's'})...`);
-        try {
-            const sliceRes = await fetch(`${API_BASE_URL}/api/video/slice`, {
-                method: 'POST',
-                headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    backendPath: target.take.backendPath,
-                    sourceUrl: target.take.url,
-                    baseName: target.asset.name,
-                    segments,
-                }),
-            });
-            const sliceData = await sliceRes.json().catch(() => ({}));
-            if (!sliceRes.ok || !sliceData.ok || !Array.isArray(sliceData.slices)) {
-                throw new Error(sliceData.message || 'Falha ao recortar o vídeo.');
-            }
-
-            toast.loading(`Enviando os cortes para ${destinationLabel}...`, { id: toastId });
-            const contextId = await ensureFreshOpsContext();
-            for (const slice of sliceData.slices) {
-                const opsRes = await fetch(`${API_BASE_URL}/api/ops/files/import-local`, {
-                    method: 'POST',
-                    headers: {
-                        ...(await localAuthHeaders()),
-                        'Content-Type': 'application/json',
-                        ...(contextId ? { 'X-Ops-View-Context': contextId } : {}),
-                    },
-                    body: JSON.stringify({
-                        sourceUrl: absoluteLocalUrl(slice.publicUrl),
-                        backendPath: slice.filePath,
-                        fileName: slice.name,
-                        companyId: target.asset.companyId,
-                        folderId: destinationFolderId,
-                    }),
-                });
-                const opsData = await opsRes.json().catch(() => ({}));
-                if (!opsRes.ok || !opsData.ok) {
-                    throw new Error(opsData.message || 'Falha ao enviar um corte ao Mileto Ops.');
-                }
-            }
-
-            toast.success(
-                `${sliceData.slices.length} corte${sliceData.slices.length === 1 ? '' : 's'} de "${target.asset.name}" em ${destinationLabel}. O original foi mantido.`,
-                { id: toastId, duration: 7000 },
-            );
-            const updatedTrimmed = markTakeTrimmed(target.asset.id);
-            setTrimmedTakeIds(updatedTrimmed);
-            if (curationQueue.length > 1 && curationQueue.every((asset) => updatedTrimmed.has(asset.id))) {
-                toast.success('Curadoria concluída! Todos os takes desta pasta já foram cortados.', { duration: 8000 });
-            }
-            // A pasta de destino ganhou arquivos: derruba o cache dela para a
-            // próxima abertura já buscar a listagem fresca.
-            if (selectedContext && selectedCompany) {
-                removeOpsListingCache(opsListingCacheKey(
-                    'assets',
-                    contextIdentity(selectedContext),
-                    selectedCompany.id,
-                    destinationFolderId || 'root',
-                ));
-            }
-            void loadAssets();
-        } catch (error) {
-            toast.error(error instanceof Error ? error.message : 'Falha ao recortar.', { id: toastId });
-        }
+        return {
+            asset: target.asset,
+            take: target.take,
+            trims: trims.map(({ start, end, kind }) => ({ start, end, kind })),
+            destinationFolderId: approvedTakesFolder?.id || target.asset.folderId || selectedFolder?.id || '',
+            destinationLabel: approvedTakesFolder ? APPROVED_TAKES_FOLDER_LABEL : 'a pasta do take',
+        };
     };
 
+    const sliceAndImportEntry = async (entry: StagedTrimEntry) => {
+        const sliceRes = await fetch(`${API_BASE_URL}/api/video/slice`, {
+            method: 'POST',
+            headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                backendPath: entry.take.backendPath,
+                sourceUrl: entry.take.url,
+                baseName: entry.asset.name,
+                segments: entry.trims.map(({ start, end }) => ({ start, end })),
+            }),
+        });
+        const sliceData = await sliceRes.json().catch(() => ({}));
+        if (!sliceRes.ok || !sliceData.ok || !Array.isArray(sliceData.slices)) {
+            throw new Error(sliceData.message || `Falha ao recortar "${entry.asset.name}".`);
+        }
+
+        const contextId = await ensureFreshOpsContext();
+        for (const slice of sliceData.slices) {
+            const opsRes = await fetch(`${API_BASE_URL}/api/ops/files/import-local`, {
+                method: 'POST',
+                headers: {
+                    ...(await localAuthHeaders()),
+                    'Content-Type': 'application/json',
+                    ...(contextId ? { 'X-Ops-View-Context': contextId } : {}),
+                },
+                body: JSON.stringify({
+                    sourceUrl: absoluteLocalUrl(slice.publicUrl),
+                    backendPath: slice.filePath,
+                    fileName: slice.name,
+                    companyId: entry.asset.companyId,
+                    folderId: entry.destinationFolderId,
+                }),
+            });
+            const opsData = await opsRes.json().catch(() => ({}));
+            if (!opsRes.ok || !opsData.ok) {
+                throw new Error(opsData.message || `Falha ao enviar um corte de "${entry.asset.name}".`);
+            }
+        }
+        return sliceData.slices.length as number;
+    };
+
+    // Processa um conjunto de takes como job do SINO: o app segue livre e o
+    // progresso ("Cortando take 2 de 5...") mora na central de notificações.
+    const runCutJob = async (entries: StagedTrimEntry[]) => {
+        if (!entries.length) return;
+        const destinationLabel = entries[0].destinationLabel;
+        const jobId = registerClientJob({
+            mode: 'video',
+            source: 'editor-import',
+            title: entries.length === 1
+                ? `Cortes de "${entries[0].asset.name}"`
+                : `Cortes de ${entries.length} takes`,
+            destination: destinationLabel === APPROVED_TAKES_FOLDER_LABEL
+                ? `Mileto Ops · ${APPROVED_TAKES_FOLDER_LABEL}`
+                : 'Mileto Ops',
+            statusText: 'Preparando os cortes...',
+        });
+        toast.success(
+            entries.length === 1 ? 'Corte em processamento.' : `${entries.length} takes em processamento.`,
+            { description: 'Acompanhe no sino de notificações — pode continuar usando o app.' },
+        );
+
+        const failures: StagedTrimEntry[] = [];
+        let sentCuts = 0;
+        for (let index = 0; index < entries.length; index += 1) {
+            const entry = entries[index];
+            updateClientJob(jobId, {
+                percent: Math.round((index / entries.length) * 100),
+                stepPercent: Math.round((index / entries.length) * 100),
+                statusText: `Cortando take ${index + 1} de ${entries.length} — ${entry.asset.name}`,
+            });
+            try {
+                sentCuts += await sliceAndImportEntry(entry);
+                setTrimmedTakeIds(markTakeTrimmed(entry.asset.id));
+                // A pasta de destino ganhou arquivos: derruba o cache dela para
+                // a próxima abertura já buscar a listagem fresca.
+                if (selectedContext) {
+                    removeOpsListingCache(opsListingCacheKey(
+                        'assets',
+                        contextIdentity(selectedContext),
+                        entry.asset.companyId,
+                        entry.destinationFolderId || 'root',
+                    ));
+                }
+            } catch {
+                failures.push(entry);
+            }
+        }
+
+        if (failures.length) {
+            // Os que falharam voltam ao carrinho para tentar de novo.
+            setStagedTrims((previous) => {
+                const next = new Map(previous);
+                for (const failure of failures) {
+                    if (!next.has(failure.asset.id)) next.set(failure.asset.id, failure);
+                }
+                return next;
+            });
+            updateClientJob(jobId, {
+                phase: 'error',
+                completedAt: Date.now(),
+                error: `${failures.length} de ${entries.length} take${entries.length === 1 ? '' : 's'} falhou — os cortes continuam salvos para tentar de novo.`,
+            });
+        } else {
+            updateClientJob(jobId, {
+                phase: 'done',
+                percent: 100,
+                stepPercent: 100,
+                completedAt: Date.now(),
+                statusText: `${sentCuts} corte${sentCuts === 1 ? '' : 's'} em ${destinationLabel}. Os originais foram mantidos.`,
+            });
+        }
+        void loadAssets();
+    };
+
+    // "Confirmar (N takes)": corte avulso — processa este take na hora, via sino.
     const handleTrimSave = (target: { asset: OpsAsset; take: MediaTake }) =>
-        (_takeId: string, newTrims: Array<{ start: number; end: number }>) => {
+        (_takeId: string, newTrims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>) => {
             setTrimTarget(null);
-            void performTrimSave(target, newTrims);
+            if (!newTrims.length) return;
+            const entry = buildTrimEntry(target, newTrims);
+            // Confirmado direto: sai do carrinho para não cortar em dobro no lote.
+            setStagedTrims((previous) => {
+                if (!previous.has(target.asset.id)) return previous;
+                const next = new Map(previous);
+                next.delete(target.asset.id);
+                return next;
+            });
+            void runCutJob([entry]);
         };
 
-    // Confirma este take e já abre o próximo sem corte — o envio dos cortes
-    // continua em segundo plano enquanto o usuário segue a curadoria.
-    const handleTrimSaveAndNext = (target: { asset: OpsAsset; take: MediaTake }, next: OpsAsset) =>
-        (_takeId: string, newTrims: Array<{ start: number; end: number }>) => {
+    // "Salvar e escolher o próximo": guarda os ajustes no carrinho e volta à
+    // pasta — o usuário escolhe o próximo take e processa tudo no final.
+    const handleTrimStage = (target: { asset: OpsAsset; take: MediaTake }) =>
+        (_takeId: string, newTrims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>) => {
             setTrimTarget(null);
-            void performTrimSave(target, newTrims);
-            void beginAssetTrim(next);
+            if (!newTrims.length) return;
+            const entry = buildTrimEntry(target, newTrims);
+            setStagedTrims((previous) => new Map(previous).set(target.asset.id, entry));
+            toast.success(`Cortes de "${target.asset.name}" salvos.`, {
+                description: 'Escolha o próximo take ou clique em "Cortar todos os selecionados".',
+            });
         };
+
+    const processStagedBatch = () => {
+        const entries = [...stagedTrims.values()];
+        if (!entries.length) return;
+        setStagedTrims(new Map());
+        void runCutJob(entries);
+    };
 
     if (loading && !ready && companies.length === 0) {
         return <div className="h-full grid place-items-center text-brand-muted"><Loader2 className="w-6 h-6 animate-spin" /></div>;
@@ -1144,7 +1257,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                     role="option"
                                                     aria-selected={active}
                                                     key={context.contextId}
-                                                    onClick={() => void chooseViewContext(context)}
+                                                    onClick={() => guardStagedExit(() => void chooseViewContext(context))}
                                                     className={`mb-1 flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition ${
                                                         active
                                                             ? 'border-brand-lime/25 bg-brand-lime/10'
@@ -1177,7 +1290,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                             role="option"
                                                             aria-selected={active}
                                                             key={context.contextId}
-                                                            onClick={() => void chooseViewContext(context)}
+                                                            onClick={() => guardStagedExit(() => void chooseViewContext(context))}
                                                             className={`mb-1 flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition ${
                                                                 active
                                                                     ? 'border-violet-400/25 bg-violet-500/10'
@@ -1238,7 +1351,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                         <div className="space-y-3 border-b border-black/5 px-4 py-3 dark:border-white/5">
                             <div className="flex flex-wrap items-center justify-between gap-3">
                                 <div className="flex min-w-0 items-center gap-2 text-sm">
-                                    <button onClick={() => setSelectedFolder(null)} className="truncate font-bold hover:text-brand-accent">
+                                    <button onClick={() => navigateToFolder(null)} className="truncate font-bold hover:text-brand-accent">
                                         {companyName(selectedCompany)}
                                     </button>
                                     {folderPath.map((folder, index) => {
@@ -1250,7 +1363,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                     <span className="truncate text-foreground/65">{folder.name}</span>
                                                 ) : (
                                                     <button
-                                                        onClick={() => setSelectedFolder(folder)}
+                                                        onClick={() => navigateToFolder(folder)}
                                                         className="truncate text-foreground/65 hover:text-brand-accent"
                                                     >
                                                         {folder.name}
@@ -1384,7 +1497,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                         <button
                                             type="button"
                                             key={folder.id}
-                                            onClick={() => setSelectedFolder(folder)}
+                                            onClick={() => navigateToFolder(folder)}
                                             className="group flex min-h-[108px] flex-col justify-between rounded-xl border border-white/8 bg-card/35 p-3 text-left transition hover:-translate-y-0.5 hover:border-brand-lime/25 hover:bg-brand-lime/[0.04]"
                                         >
                                             <div className="grid h-9 w-10 place-items-center rounded-lg border border-amber-300/15 bg-amber-300/10 text-amber-300">
@@ -1411,11 +1524,15 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                 <span className="absolute inset-0 grid place-items-center bg-black/30 opacity-0 transition group-hover:opacity-100">
                                                     <span className="rounded-full border border-white/15 bg-black/70 p-2.5"><Play className="h-4 w-4 fill-white text-white" /></span>
                                                 </span>
-                                                {asset.kind === 'video' && trimmedTakeIds.has(asset.id) && (
+                                                {asset.kind === 'video' && stagedTrims.has(asset.id) ? (
+                                                    <span className="absolute right-1.5 top-1.5 z-10 inline-flex items-center gap-1 rounded-full border border-sky-300/40 bg-sky-500/90 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider text-sky-950 shadow-lg">
+                                                        <Scissors className="h-2.5 w-2.5" strokeWidth={3} /> {stagedTrims.get(asset.id)?.trims.length} salvo{(stagedTrims.get(asset.id)?.trims.length ?? 0) === 1 ? '' : 's'}
+                                                    </span>
+                                                ) : asset.kind === 'video' && trimmedTakeIds.has(asset.id) ? (
                                                     <span className="absolute right-1.5 top-1.5 z-10 inline-flex items-center gap-1 rounded-full border border-emerald-300/40 bg-emerald-500/90 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider text-emerald-950 shadow-lg">
                                                         <Check className="h-2.5 w-2.5" strokeWidth={4} /> Cortado
                                                     </span>
-                                                )}
+                                                ) : null}
                                                 {selectionMode && (
                                                     <span
                                                         role="checkbox"
@@ -1440,10 +1557,12 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                         <button
                                                             onClick={() => void beginAssetTrim(asset)}
                                                             disabled={trimBusyAssetId !== null}
-                                                            className={`inline-flex items-center justify-center rounded-lg border p-1.5 transition disabled:opacity-40 ${trimmedTakeIds.has(asset.id)
-                                                                ? 'border-emerald-400/45 bg-emerald-500/15 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.28)] hover:border-emerald-300/70 hover:text-emerald-200'
-                                                                : 'border-white/10 text-brand-muted hover:border-brand-lime/40 hover:text-brand-lime'}`}
-                                                            title={trimmedTakeIds.has(asset.id) ? 'Take já cortado — abrir o Editor de Cortes novamente' : 'Recortar takes deste vídeo'}
+                                                            className={`inline-flex items-center justify-center rounded-lg border p-1.5 transition disabled:opacity-40 ${stagedTrims.has(asset.id)
+                                                                ? 'border-sky-400/50 bg-sky-500/15 text-sky-300 shadow-[0_0_12px_rgba(56,189,248,0.3)] hover:border-sky-300/70 hover:text-sky-200'
+                                                                : trimmedTakeIds.has(asset.id)
+                                                                    ? 'border-emerald-400/45 bg-emerald-500/15 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.28)] hover:border-emerald-300/70 hover:text-emerald-200'
+                                                                    : 'border-white/10 text-brand-muted hover:border-brand-lime/40 hover:text-brand-lime'}`}
+                                                            title={stagedTrims.has(asset.id) ? 'Cortes salvos — clique para ajustar' : trimmedTakeIds.has(asset.id) ? 'Take já cortado — abrir o Editor de Cortes novamente' : 'Recortar takes deste vídeo'}
                                                         >
                                                             {trimBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pencil className="h-3.5 w-3.5" />}
                                                         </button>
@@ -1465,7 +1584,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                         <button
                                             type="button"
                                             key={folder.id}
-                                            onClick={() => setSelectedFolder(folder)}
+                                            onClick={() => navigateToFolder(folder)}
                                             className="grid w-full grid-cols-[minmax(0,1fr)_100px_120px] items-center gap-3 border-b border-white/5 px-4 py-3 text-left hover:bg-white/[0.035]"
                                         >
                                             <span className="flex min-w-0 items-center gap-3"><Folder className="h-5 w-5 shrink-0 text-amber-300" /><span className="truncate text-xs font-semibold">{folder.name}</span></span>
@@ -1500,10 +1619,12 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                     <button
                                                         onClick={() => void beginAssetTrim(asset)}
                                                         disabled={trimBusyAssetId !== null}
-                                                        className={`rounded-lg border p-1.5 transition disabled:opacity-40 ${trimmedTakeIds.has(asset.id)
-                                                            ? 'border-emerald-400/45 bg-emerald-500/15 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.28)] hover:border-emerald-300/70 hover:text-emerald-200'
-                                                            : 'border-white/10 text-brand-muted hover:border-brand-lime/40 hover:text-brand-lime'}`}
-                                                        title={trimmedTakeIds.has(asset.id) ? 'Take já cortado — abrir o Editor de Cortes novamente' : 'Recortar takes deste vídeo'}
+                                                        className={`rounded-lg border p-1.5 transition disabled:opacity-40 ${stagedTrims.has(asset.id)
+                                                            ? 'border-sky-400/50 bg-sky-500/15 text-sky-300 shadow-[0_0_12px_rgba(56,189,248,0.3)] hover:border-sky-300/70 hover:text-sky-200'
+                                                            : trimmedTakeIds.has(asset.id)
+                                                                ? 'border-emerald-400/45 bg-emerald-500/15 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.28)] hover:border-emerald-300/70 hover:text-emerald-200'
+                                                                : 'border-white/10 text-brand-muted hover:border-brand-lime/40 hover:text-brand-lime'}`}
+                                                        title={stagedTrims.has(asset.id) ? 'Cortes salvos — clique para ajustar' : trimmedTakeIds.has(asset.id) ? 'Take já cortado — abrir o Editor de Cortes novamente' : 'Recortar takes deste vídeo'}
                                                     >
                                                         {trimBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pencil className="h-3.5 w-3.5" />}
                                                     </button>
@@ -1515,6 +1636,43 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                 </div>
                             )}
                         </div>
+
+                        {stagedTrims.size > 0 && (
+                            <div className="shrink-0 border-t border-sky-400/20 bg-gradient-to-r from-sky-500/[0.09] via-card/85 to-emerald-500/[0.09] px-4 py-3 backdrop-blur">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div className="flex min-w-0 items-center gap-2.5">
+                                        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-sky-400/30 bg-sky-500/15 text-sky-300 shadow-[0_0_14px_rgba(56,189,248,0.2)]">
+                                            <Scissors className="h-4 w-4" />
+                                        </span>
+                                        <div className="min-w-0">
+                                            <div className="truncate text-xs font-bold text-foreground">
+                                                {stagedTrims.size} take{stagedTrims.size === 1 ? '' : 's'} com cortes salvos
+                                            </div>
+                                            <div className="truncate text-[10px] text-brand-muted">
+                                                {stagedCutsTotal} corte{stagedCutsTotal === 1 ? '' : 's'} irão para {approvedTakesFolder ? APPROVED_TAKES_FOLDER_LABEL : 'a pasta original'}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="flex shrink-0 items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setConfirmDiscardStaged(true)}
+                                            className="rounded-lg border border-white/10 px-3 py-2 text-[11px] font-bold text-brand-muted transition hover:border-red-400/40 hover:text-red-300"
+                                        >
+                                            Descartar
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={processStagedBatch}
+                                            className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-2 text-[11px] font-black uppercase tracking-wide text-white shadow-lg shadow-emerald-900/30 transition hover:scale-[1.03] hover:from-emerald-500 hover:to-emerald-400 active:scale-95"
+                                        >
+                                            <Scissors className="h-3.5 w-3.5" />
+                                            Cortar todos os selecionados
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </>
                 )}
             </section>
@@ -1546,10 +1704,43 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                 <TrimModal
                     key={trimTarget.asset.id}
                     take={trimTarget.take}
+                    initialTrims={stagedTrims.get(trimTarget.asset.id)?.trims}
                     onSave={handleTrimSave(trimTarget)}
-                    onSaveAndNext={trimNextAsset ? handleTrimSaveAndNext(trimTarget, trimNextAsset) : undefined}
+                    onStage={handleTrimStage(trimTarget)}
                     queue={trimQueueInfo ?? undefined}
                     onClose={() => setTrimTarget(null)}
+                />
+            )}
+
+            {stagedExitGuard && (
+                <ConfirmDialog
+                    mode="confirm"
+                    title="Sair com cortes não processados?"
+                    message={`Você tem cortes salvos em ${stagedTrims.size} take${stagedTrims.size === 1 ? '' : 's'} que ainda não foram processados. Se sair agora, esses ajustes serão perdidos.`}
+                    confirmLabel="Sair e descartar"
+                    variant="danger"
+                    onConfirm={() => {
+                        const action = stagedExitGuard.action;
+                        setStagedTrims(new Map());
+                        setStagedExitGuard(null);
+                        action();
+                    }}
+                    onClose={() => setStagedExitGuard(null)}
+                />
+            )}
+
+            {confirmDiscardStaged && (
+                <ConfirmDialog
+                    mode="confirm"
+                    title="Descartar os cortes salvos?"
+                    message={`Os ajustes feitos em ${stagedTrims.size} take${stagedTrims.size === 1 ? '' : 's'} serão perdidos.`}
+                    confirmLabel="Descartar"
+                    variant="danger"
+                    onConfirm={() => {
+                        setStagedTrims(new Map());
+                        setConfirmDiscardStaged(false);
+                    }}
+                    onClose={() => setConfirmDiscardStaged(false)}
                 />
             )}
         </div>

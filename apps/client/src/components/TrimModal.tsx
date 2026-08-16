@@ -14,13 +14,18 @@ interface TrimModalProps {
         newTrims: Array<{ start: number; end: number; speedPresetId?: SpeedPresetType; kind: 'primary' | 'created' }>
     ) => void;
     onClose: () => void;
-    /** Fluxo de curadoria em série: confirma os cortes e abre o próximo take da pasta. */
-    onSaveAndNext?: (
+    /**
+     * Fluxo de curadoria em lote: salva os ajustes deste take (sem processar)
+     * e volta à pasta para o usuário escolher o próximo.
+     */
+    onStage?: (
         takeId: string,
         newTrims: Array<{ start: number; end: number; speedPresetId?: SpeedPresetType; kind: 'primary' | 'created' }>
     ) => void;
-    /** Progresso da curadoria exibido no cabeçalho (posição na fila e takes já aprovados). */
-    queue?: { position: number; total: number; approved: number };
+    /** Reabre o editor com cortes salvos anteriormente (carrinho da curadoria). */
+    initialTrims?: Array<{ start: number; end: number; kind: 'primary' | 'created' }>;
+    /** Progresso da curadoria exibido no cabeçalho (posição, aprovados e fila). */
+    queue?: { position: number; total: number; approved: number; staged?: number };
 }
 
 interface LocalSegment {
@@ -30,13 +35,13 @@ interface LocalSegment {
     kind: 'primary' | 'created';
 }
 
-export const TrimModal = ({ take, onSave, onClose, onSaveAndNext, queue }: TrimModalProps) => {
+export const TrimModal = ({ take, onSave, onClose, onStage, initialTrims, queue }: TrimModalProps) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const timelineRef = useRef<HTMLDivElement>(null);
 
     // State
     const [isPlaying, setIsPlaying] = useState(false);
-    const [currentTime, setCurrentTime] = useState(take.trim.start);
+    const [currentTime, setCurrentTime] = useState(initialTrims?.[0]?.start ?? take.trim.start);
     const [duration, setDuration] = useState(take.originalDurationSeconds || 0);
     const [confirmDialog, setConfirmDialog] = useState<{
         title: string;
@@ -47,15 +52,25 @@ export const TrimModal = ({ take, onSave, onClose, onSaveAndNext, queue }: TrimM
 
     const [localSpeedPreset] = useState<SpeedPresetType>(take.speedPresetId || 'normal');
 
-    // Init with the SINGLE trim from the take
-    const [segments, setSegments] = useState<LocalSegment[]>([
-        {
-            id: generateId(),
-            start: take.trim.start,
-            end: take.trim.end,
-            kind: 'primary',
-        },
-    ]);
+    // Init with the SINGLE trim from the take — ou com os cortes salvos no
+    // carrinho da curadoria, quando o take é reaberto para ajuste.
+    const [segments, setSegments] = useState<LocalSegment[]>(() => (
+        initialTrims && initialTrims.length
+            ? initialTrims.map((trim) => ({
+                id: generateId(),
+                start: trim.start,
+                end: trim.end,
+                kind: trim.kind,
+            }))
+            : [
+                {
+                    id: generateId(),
+                    start: take.trim.start,
+                    end: take.trim.end,
+                    kind: 'primary',
+                },
+            ]
+    ));
     const [activeSegmentId, setActiveSegmentId] = useState<string>(segments[0].id);
 
     // History for Undo
@@ -280,10 +295,10 @@ export const TrimModal = ({ take, onSave, onClose, onSaveAndNext, queue }: TrimM
         if (trims) onSave(take.id, trims);
     };
 
-    const handleSaveAndNext = () => {
-        if (!onSaveAndNext) return;
+    const handleStage = () => {
+        if (!onStage) return;
         const trims = collectValidTrims();
-        if (trims) onSaveAndNext(take.id, trims);
+        if (trims) onStage(take.id, trims);
     };
 
     // --- DRAGGING HANDLES & SCRUBBING ---
@@ -447,6 +462,12 @@ export const TrimModal = ({ take, onSave, onClose, onSaveAndNext, queue }: TrimM
                                         <Sparkles className="h-3 w-3" />
                                         {queue.approved} aprovado{queue.approved === 1 ? '' : 's'}
                                     </span>
+                                    {(queue.staged ?? 0) > 0 && (
+                                        <span className="inline-flex items-center gap-1 text-sky-300">
+                                            <Scissors className="h-3 w-3" />
+                                            {queue.staged} na fila
+                                        </span>
+                                    )}
                                 </span>
                             )}
                         </h3>
@@ -730,13 +751,13 @@ export const TrimModal = ({ take, onSave, onClose, onSaveAndNext, queue }: TrimM
                         <Check className="w-4 h-4" />
                         Confirmar ({segments.length} {segments.length === 1 ? 'take' : 'takes'})
                     </button>
-                    {onSaveAndNext && (
+                    {onStage && (
                         <button
-                            onClick={handleSaveAndNext}
+                            onClick={handleStage}
                             className="px-6 py-2 bg-gradient-to-r from-blue-600 to-sky-500 hover:from-blue-500 hover:to-sky-400 text-white font-bold rounded-lg transition-transform hover:scale-105 active:scale-95 flex items-center gap-2 text-sm shadow-lg shadow-blue-900/30"
-                            title="Confirma os cortes deste take e abre o próximo vídeo da pasta"
+                            title="Salva os ajustes deste take (sem processar) e volta à pasta para você escolher o próximo"
                         >
-                            Confirmar e ir para o próximo
+                            Salvar e escolher o próximo
                             <ArrowRight className="w-4 h-4" />
                         </button>
                     )}
