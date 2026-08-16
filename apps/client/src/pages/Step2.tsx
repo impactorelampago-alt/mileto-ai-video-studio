@@ -606,7 +606,8 @@ export const Step2 = () => {
             updateAdData({
                 globalTransition: quickEdit.transition,
                 transitionPath: quickEdit.transition.filePath,
-                transitionRotation: 0,
+                // Preserva o giro que o usuário já escolheu no painel de transições.
+                transitionRotation: adData.transitionRotation ?? 0,
                 transitionVolume: 1,
                 transitionMuted: false,
             });

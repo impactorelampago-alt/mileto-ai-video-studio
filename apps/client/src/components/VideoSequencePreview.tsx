@@ -553,6 +553,20 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             return currentTake.transition?.asset || adData.globalTransition;
         }, [currentTake, adData.globalTransition]);
 
+        // Giro da transição (0/90/180/270): o mesmo transpose que o ffmpeg aplica
+        // no render final, refletido aqui no preview. Em 90/270 a área girada
+        // precisa de um scale extra para continuar cobrindo o palco inteiro.
+        const transitionRotation = adData.transitionRotation ?? 0;
+        const transitionQuarterTurn = transitionRotation === 90 || transitionRotation === 270;
+        const stageRatio = adData.format === '1:1'
+            ? 1
+            : adData.format === '16:9'
+                ? 16 / 9
+                : adData.format === '4:5'
+                    ? 4 / 5
+                    : 9 / 16;
+        const transitionRotateScale = transitionQuarterTurn ? Math.max(stageRatio, 1 / stageRatio) : 1;
+
         // Calculate total duration (approximated for progress bar)
         const [audioDuration, setAudioDuration] = useState<number>(0);
 
@@ -1681,19 +1695,21 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                 // Draw with 'screen' blend mode — matching the CSS mixBlendMode: 'screen'
                                 ctx.globalCompositeOperation = 'screen';
 
-                                // Scale transition to Cover the main frame, ensuring no empty margins break the screen blend
+                                // Cover + rotação: espelha o transpose que o ffmpeg aplica no
+                                // render final. Em 90/270 o espaço a cobrir troca de eixo.
                                 const tvW = tVid.videoWidth;
                                 const tvH = tVid.videoHeight;
                                 if (tvW > 0 && tvH > 0) {
-                                    const ratioW = TARGET_W / tvW;
-                                    const ratioH = TARGET_H / tvH;
-                                    const scale = Math.max(ratioW, ratioH);
-                                    const drawW = tvW * scale;
-                                    const drawH = tvH * scale;
-                                    const drawX = (TARGET_W - drawW) / 2;
-                                    const drawY = (TARGET_H - drawH) / 2;
-
-                                    ctx.drawImage(tVid, drawX, drawY, drawW, drawH);
+                                    const rotation = adData.transitionRotation ?? 0;
+                                    const quarterTurn = rotation === 90 || rotation === 270;
+                                    const coverW = quarterTurn ? TARGET_H : TARGET_W;
+                                    const coverH = quarterTurn ? TARGET_W : TARGET_H;
+                                    const scale = Math.max(coverW / tvW, coverH / tvH);
+                                    ctx.save();
+                                    ctx.translate(TARGET_W / 2, TARGET_H / 2);
+                                    if (rotation) ctx.rotate((rotation * Math.PI) / 180);
+                                    ctx.drawImage(tVid, (-tvW * scale) / 2, (-tvH * scale) / 2, tvW * scale, tvH * scale);
+                                    ctx.restore();
                                 } else {
                                     ctx.drawImage(tVid, 0, 0, TARGET_W, TARGET_H);
                                 }
@@ -2025,11 +2041,17 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     <video
                         ref={transitionRef}
                         className={cn(
-                            'absolute top-0 left-0 w-full h-full object-contain pointer-events-none z-20',
+                            // object-cover: a transição expande para preencher a proporção
+                            // do vídeo (igual ao render final), sem margens vazias.
+                            'absolute top-0 left-0 w-full h-full object-cover pointer-events-none z-20',
                             isHybridMode ? 'opacity-0' : activeTransitionUrl ? 'opacity-100' : 'opacity-0'
                         )}
                         crossOrigin="anonymous"
-                        style={{ mixBlendMode: 'screen' }} // The magic happens here!
+                        style={{
+                            mixBlendMode: 'screen', // The magic happens here!
+                            transform: `rotate(${transitionRotation}deg) scale(${transitionRotateScale})`,
+                            transformOrigin: '50% 50%',
+                        }}
                         playsInline
                         preload="auto"
                         onEnded={() => {
