@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Play, Check, RotateCcw, Trash2, Scissors, Split, Undo2, GripVertical, CopyPlus } from 'lucide-react';
+import { X, Play, Check, RotateCcw, Trash2, Scissors, Split, Undo2, GripVertical, CopyPlus, ArrowRight, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { MediaTake } from '../types';
 import { cn, generateId } from '../lib/utils';
@@ -14,6 +14,13 @@ interface TrimModalProps {
         newTrims: Array<{ start: number; end: number; speedPresetId?: SpeedPresetType; kind: 'primary' | 'created' }>
     ) => void;
     onClose: () => void;
+    /** Fluxo de curadoria em série: confirma os cortes e abre o próximo take da pasta. */
+    onSaveAndNext?: (
+        takeId: string,
+        newTrims: Array<{ start: number; end: number; speedPresetId?: SpeedPresetType; kind: 'primary' | 'created' }>
+    ) => void;
+    /** Progresso da curadoria exibido no cabeçalho (posição na fila e takes já aprovados). */
+    queue?: { position: number; total: number; approved: number };
 }
 
 interface LocalSegment {
@@ -23,7 +30,7 @@ interface LocalSegment {
     kind: 'primary' | 'created';
 }
 
-export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
+export const TrimModal = ({ take, onSave, onClose, onSaveAndNext, queue }: TrimModalProps) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const timelineRef = useRef<HTMLDivElement>(null);
 
@@ -95,7 +102,8 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
 
     const handleTimeUpdate = () => {
         if (!videoRef.current) return;
-        if (isDragging === 'playhead' || isDragging === 'range') return;
+        // Durante qualquer arraste quem manda na agulha é o mouse, não o vídeo.
+        if (isDragging) return;
 
         const time = videoRef.current.currentTime;
         setCurrentTime(time);
@@ -156,7 +164,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
         const activeSeg = segments.find((s) => s.id === activeSegmentId);
         if (!activeSeg) return;
         if (activeSeg.kind === 'created') {
-            toast.info('O novo take mantém a mesma duração do recorte de origem. Arraste a faixa azul para escolher outro trecho.');
+            toast.info('A faixa azul não pode ser dividida. Arraste-a para posicionar e use as alças para ajustar a duração.');
             return;
         }
 
@@ -209,7 +217,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
         setCurrentTime(created.start);
         if (videoRef.current) videoRef.current.currentTime = created.start;
         toast.success('Faixa azul criada.', {
-            description: 'Arraste-a para o trecho que deseja transformar em um novo take.',
+            description: 'Arraste para posicionar e use as alças laterais para aumentar ou diminuir a duração.',
         });
     };
 
@@ -251,118 +259,155 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
     };
 
     // --- SAVE ---
-    const handleSave = () => {
+    const collectValidTrims = () => {
         const validSegments = segments
             .filter((segment) => segment.end - segment.start >= 0.2)
             .sort((first, second) => first.start - second.start);
         if (validSegments.length === 0) {
             toast.error('Mantenha ao menos um trecho válido antes de confirmar.');
-            return;
+            return null;
         }
-
-        onSave(take.id, validSegments.map((segment) => ({
+        return validSegments.map((segment) => ({
             start: segment.start,
             end: segment.end,
             speedPresetId: localSpeedPreset,
             kind: segment.kind,
-        })));
+        }));
+    };
+
+    const handleSave = () => {
+        const trims = collectValidTrims();
+        if (trims) onSave(take.id, trims);
+    };
+
+    const handleSaveAndNext = () => {
+        if (!onSaveAndNext) return;
+        const trims = collectValidTrims();
+        if (trims) onSaveAndNext(take.id, trims);
     };
 
     // --- DRAGGING HANDLES & SCRUBBING ---
-    const [isDragging, setIsDragging] = useState<'start' | 'end' | 'playhead' | 'range' | null>(null);
+    // Motor de arraste 1:1: os movimentos do mouse são coalescidos em um frame
+    // de animação (nunca mais de uma atualização por frame) e o seek do vídeo
+    // nunca enfileira — a agulha e as alças seguem o mouse na hora e o preview
+    // busca o frame mais recente que o decoder conseguir entregar.
+    type DragType = 'start' | 'end' | 'playhead' | 'range';
+    const [isDragging, setIsDragging] = useState<DragType | null>(null);
+    const draggingRef = useRef<DragType | null>(null);
+    const dragPointerX = useRef(0);
+    const dragFrameRef = useRef<number | null>(null);
+    const pendingSeekRef = useRef<number | null>(null);
     const dragStartSegments = useRef<LocalSegment[]>([]);
     const rangeDragStartMouseTime = useRef<number>(0);
     const rangeDragStartSegmentStart = useRef<number>(0);
+    const segmentsRef = useRef(segments);
+    useEffect(() => {
+        segmentsRef.current = segments;
+    }, [segments]);
 
-    const handleMouseDown = (e: React.MouseEvent, type: 'playhead') => {
-        setIsDragging(type);
-        handleMouseMove(e.nativeEvent);
-    };
-
-    const handleHandleMouseDown = (e: React.MouseEvent, type: 'start' | 'end') => {
-        e.stopPropagation();
-        setIsDragging(type);
-        dragStartSegments.current = segments;
-    };
-
-    const handleMouseMove = useCallback(
-        (e: MouseEvent) => {
-            if (!isDragging || !timelineRef.current || duration <= 0) return;
-
-            const rect = timelineRef.current.getBoundingClientRect();
-            const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-            const percentage = x / rect.width;
-            const newTime = percentage * duration;
-
-            if (isDragging === 'range') {
-                const deltaSeconds = newTime - rangeDragStartMouseTime.current;
-                const finalStart = rangeDragStartSegmentStart.current + deltaSeconds;
-
-                setSegments((prev) =>
-                    prev.map((s) => {
-                        if (s.id !== activeSegmentId) return s;
-
-                        const durationLen = s.end - s.start;
-                        let newStart = finalStart;
-                        let newEnd = finalStart + durationLen;
-
-                        // Boundary checks
-                        if (newStart < 0) {
-                            newStart = 0;
-                            newEnd = durationLen;
-                        } else if (newEnd > duration) {
-                            newEnd = duration;
-                            newStart = duration - durationLen;
-                        }
-
-                        // Sync video preview to the NEW START of the take
-                        if (videoRef.current) {
-                            videoRef.current.currentTime = newStart;
-                        }
-
-                        return { ...s, start: newStart, end: newEnd };
-                    })
-                );
-                return;
-            }
-
-            setSegments((prev) =>
-                prev.map((s) => {
-                    if (s.id !== activeSegmentId) return s;
-
-                    if (isDragging === 'start') {
-                        const newStart = Math.min(newTime, s.end - 0.2);
-                        return { ...s, start: newStart };
-                    } else if (isDragging === 'end') {
-                        const newEnd = Math.max(newTime, s.start + 0.2);
-                        return { ...s, end: newEnd };
-                    }
-                    return s;
-                })
-            );
-
-            if (videoRef.current) videoRef.current.currentTime = newTime;
-        },
-        [isDragging, duration, activeSegmentId, currentTime]
-    );
-
-    const handleMouseUp = useCallback(() => {
-        if (isDragging === 'start' || isDragging === 'end' || isDragging === 'range') {
-            setHistory((prev) => [...prev, dragStartSegments.current]);
+    const seekPreview = useCallback((time: number) => {
+        const video = videoRef.current;
+        if (!video) return;
+        if (video.seeking) {
+            pendingSeekRef.current = time;
+            return;
         }
-        setIsDragging(null);
-    }, [isDragging]);
+        pendingSeekRef.current = null;
+        video.currentTime = time;
+    }, []);
+
+    const handleSeeked = () => {
+        if (pendingSeekRef.current === null) return;
+        const next = pendingSeekRef.current;
+        pendingSeekRef.current = null;
+        if (videoRef.current) videoRef.current.currentTime = next;
+    };
+
+    const applyDragFrame = useCallback(() => {
+        dragFrameRef.current = null;
+        const type = draggingRef.current;
+        if (!type || !timelineRef.current || duration <= 0) return;
+
+        const rect = timelineRef.current.getBoundingClientRect();
+        const x = Math.max(0, Math.min(dragPointerX.current - rect.left, rect.width));
+        const newTime = (x / rect.width) * duration;
+
+        if (type === 'playhead') {
+            setCurrentTime(newTime);
+            seekPreview(newTime);
+            return;
+        }
+
+        const current = segmentsRef.current;
+        const active = current.find((s) => s.id === activeSegmentId);
+        if (!active) return;
+
+        if (type === 'range') {
+            const length = active.end - active.start;
+            const wanted = rangeDragStartSegmentStart.current + (newTime - rangeDragStartMouseTime.current);
+            const newStart = Math.max(0, Math.min(wanted, duration - length));
+            if (Math.abs(newStart - active.start) < 0.0001) return;
+            setSegments(current.map((s) => (s.id === active.id ? { ...s, start: newStart, end: newStart + length } : s)));
+            setCurrentTime(newStart);
+            seekPreview(newStart);
+            return;
+        }
+
+        if (type === 'start') {
+            const newStart = Math.max(0, Math.min(newTime, active.end - 0.2));
+            setSegments(current.map((s) => (s.id === active.id ? { ...s, start: newStart } : s)));
+            setCurrentTime(newStart);
+            seekPreview(newStart);
+            return;
+        }
+
+        const newEnd = Math.min(duration, Math.max(newTime, active.start + 0.2));
+        setSegments(current.map((s) => (s.id === active.id ? { ...s, end: newEnd } : s)));
+        setCurrentTime(newEnd);
+        seekPreview(newEnd);
+    }, [activeSegmentId, duration, seekPreview]);
+
+    const scheduleDragFrame = useCallback(() => {
+        if (dragFrameRef.current !== null) return;
+        dragFrameRef.current = requestAnimationFrame(applyDragFrame);
+    }, [applyDragFrame]);
+
+    const beginDrag = (event: React.PointerEvent, type: DragType) => {
+        draggingRef.current = type;
+        setIsDragging(type);
+        dragStartSegments.current = segmentsRef.current;
+        dragPointerX.current = event.clientX;
+        scheduleDragFrame();
+    };
 
     useEffect(() => {
-        if (isDragging) {
-            window.addEventListener('mousemove', handleMouseMove);
-            window.addEventListener('mouseup', handleMouseUp);
-        } else {
-            window.removeEventListener('mousemove', handleMouseMove);
-            window.removeEventListener('mouseup', handleMouseUp);
-        }
-        return () => window.removeEventListener('mousemove', handleMouseMove);
-    }, [isDragging, handleMouseMove, handleMouseUp]);
+        if (!isDragging) return;
+        const onPointerMove = (event: PointerEvent) => {
+            dragPointerX.current = event.clientX;
+            scheduleDragFrame();
+        };
+        const endDrag = () => {
+            if (dragFrameRef.current !== null) {
+                cancelAnimationFrame(dragFrameRef.current);
+                dragFrameRef.current = null;
+            }
+            applyDragFrame();
+            const type = draggingRef.current;
+            if (type && type !== 'playhead') {
+                setHistory((prev) => [...prev, dragStartSegments.current]);
+            }
+            draggingRef.current = null;
+            setIsDragging(null);
+        };
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', endDrag);
+        window.addEventListener('pointercancel', endDrag);
+        return () => {
+            window.removeEventListener('pointermove', onPointerMove);
+            window.removeEventListener('pointerup', endDrag);
+            window.removeEventListener('pointercancel', endDrag);
+        };
+    }, [applyDragFrame, isDragging, scheduleDragFrame]);
 
     // Helpers
     const formatTime = (seconds: number) => {
@@ -389,6 +434,21 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                         <h3 className="font-semibold text-foreground flex items-center gap-2">
                             <Scissors className="w-4 h-4 text-primary" />
                             Editor de Cortes
+                            {queue && (
+                                <span className="ml-1 inline-flex items-center gap-2 rounded-full border border-blue-400/25 bg-blue-500/10 px-2.5 py-0.5 text-[10px] font-bold tracking-wide">
+                                    <span className="text-blue-300">Take {queue.position} de {queue.total}</span>
+                                    <span className="h-1 w-16 overflow-hidden rounded-full bg-white/10">
+                                        <span
+                                            className="block h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-300 transition-[width] duration-500"
+                                            style={{ width: `${Math.round((queue.approved / Math.max(1, queue.total)) * 100)}%` }}
+                                        />
+                                    </span>
+                                    <span className="inline-flex items-center gap-1 text-emerald-300">
+                                        <Sparkles className="h-3 w-3" />
+                                        {queue.approved} aprovado{queue.approved === 1 ? '' : 's'}
+                                    </span>
+                                </span>
+                            )}
                         </h3>
                         {take.fileName && (
                             <span className="text-xs text-muted-foreground ml-6 truncate max-w-[300px]">
@@ -435,6 +495,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                 className="h-full w-auto max-w-full object-contain rounded-lg shadow-2xl bg-black"
                                 onTimeUpdate={handleTimeUpdate}
                                 onLoadedMetadata={handleLoadedMetadata}
+                                onSeeked={handleSeeked}
                                 onClick={togglePlay}
                                 onEnded={handleEnded}
                             />
@@ -521,7 +582,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                 <div
                                     className="pb-4 select-none relative w-full"
                                     ref={timelineRef}
-                                    onMouseDown={(e) => handleMouseDown(e, 'playhead')}
+                                    onPointerDown={(e) => beginDrag(e, 'playhead')}
                                 >
                                     <div className="mb-2 flex items-center gap-4 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
                                         <span className="inline-flex items-center gap-1.5">
@@ -531,7 +592,7 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                         {segments.some((segment) => segment.kind === 'created') && (
                                             <span className="inline-flex items-center gap-1.5 text-blue-300">
                                                 <span className="h-2.5 w-2.5 rounded-sm border border-blue-400 bg-blue-500/35" />
-                                                Novo take · arraste para escolher o trecho
+                                                Novo take · arraste e ajuste a duração pelas alças
                                             </span>
                                         )}
                                     </div>
@@ -551,7 +612,9 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                                 <div
                                                     key={seg.id}
                                                     className={cn(
-                                                        'absolute top-2 bottom-2 rounded-md border cursor-pointer transition-all overflow-visible',
+                                                        // Sem transição de posição/tamanho: o segmento precisa colar no
+                                                        // mouse durante o arraste, sem efeito elástico.
+                                                        'absolute top-2 bottom-2 rounded-md border cursor-pointer transition-colors overflow-visible',
                                                         isActive
                                                             ? isCreated
                                                                 ? 'z-20 border-blue-300 bg-blue-500/35 shadow-[0_0_18px_rgba(59,130,246,0.45)]'
@@ -564,19 +627,17 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                                         left: `${getPercent(seg.start)}%`,
                                                         width: `${getPercent(seg.end - seg.start)}%`,
                                                     }}
-                                                    onMouseDown={(e) => {
+                                                    onPointerDown={(e) => {
                                                         e.stopPropagation();
                                                         setActiveSegmentId(seg.id);
                                                         if (isActive) {
-                                                            setIsDragging('range');
-                                                            dragStartSegments.current = segments;
                                                             const rect = timelineRef.current?.getBoundingClientRect();
                                                             if (rect) {
                                                                 const x = e.clientX - rect.left;
-                                                                const mouseTime = (x / rect.width) * duration;
-                                                                rangeDragStartMouseTime.current = mouseTime;
+                                                                rangeDragStartMouseTime.current = (x / rect.width) * duration;
                                                                 rangeDragStartSegmentStart.current = seg.start;
                                                             }
+                                                            beginDrag(e, 'range');
                                                         }
                                                     }}
                                                 >
@@ -587,23 +648,39 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                                         </span>
                                                     </div>
 
-                                                    {/* Drag Handles */}
-                                                    {isActive && !isCreated && (
+                                                    {/* Drag Handles — a faixa azul (novo take) também é redimensionável */}
+                                                    {isActive && (
                                                         <>
                                                             <div
                                                                 className="absolute top-1/2 -translate-y-1/2 left-0 w-8 -ml-4 h-12 cursor-ew-resize flex items-center justify-center group/handle z-20 select-none touch-none"
-                                                                onMouseDown={(e) => handleHandleMouseDown(e, 'start')}
+                                                                onPointerDown={(e) => {
+                                                                    e.stopPropagation();
+                                                                    beginDrag(e, 'start');
+                                                                }}
                                                             >
-                                                                <div className="relative h-8 w-4 bg-red-500 rounded-l-sm group-hover/handle:bg-orange-500 transition-colors shadow-lg flex items-center justify-center scale-90 group-hover/handle:scale-105 transition-transform">
+                                                                <div className={cn(
+                                                                    'relative h-8 w-4 rounded-l-sm transition-colors shadow-lg flex items-center justify-center scale-90 group-hover/handle:scale-105 transition-transform',
+                                                                    isCreated
+                                                                        ? 'bg-blue-500 group-hover/handle:bg-sky-400'
+                                                                        : 'bg-red-500 group-hover/handle:bg-orange-500'
+                                                                )}>
                                                                     <div className="w-0 h-0 border-t-[4px] border-t-transparent border-b-[4px] border-b-transparent border-r-[6px] border-r-white/50" />
                                                                 </div>
                                                             </div>
 
                                                             <div
                                                                 className="absolute top-1/2 -translate-y-1/2 right-0 w-8 -mr-4 h-12 cursor-ew-resize flex items-center justify-center group/handle z-20 select-none touch-none"
-                                                                onMouseDown={(e) => handleHandleMouseDown(e, 'end')}
+                                                                onPointerDown={(e) => {
+                                                                    e.stopPropagation();
+                                                                    beginDrag(e, 'end');
+                                                                }}
                                                             >
-                                                                <div className="relative h-8 w-4 bg-red-500 rounded-r-sm group-hover/handle:bg-orange-500 transition-colors shadow-lg flex items-center justify-center scale-90 group-hover/handle:scale-105 transition-transform">
+                                                                <div className={cn(
+                                                                    'relative h-8 w-4 rounded-r-sm transition-colors shadow-lg flex items-center justify-center scale-90 group-hover/handle:scale-105 transition-transform',
+                                                                    isCreated
+                                                                        ? 'bg-blue-500 group-hover/handle:bg-sky-400'
+                                                                        : 'bg-red-500 group-hover/handle:bg-orange-500'
+                                                                )}>
                                                                     <div className="w-0 h-0 border-t-[4px] border-t-transparent border-b-[4px] border-b-transparent border-l-[6px] border-l-white/50" />
                                                                 </div>
                                                             </div>
@@ -620,9 +697,9 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                                         >
                                             <div
                                                 className="absolute -left-4 -right-4 top-0 bottom-0 cursor-grab active:cursor-grabbing flex justify-center group touch-none"
-                                                onMouseDown={(e) => {
+                                                onPointerDown={(e) => {
                                                     e.stopPropagation();
-                                                    handleMouseDown(e, 'playhead');
+                                                    beginDrag(e, 'playhead');
                                                 }}
                                             >
                                                 <div className="w-0.5 h-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.8)] relative">
@@ -653,6 +730,16 @@ export const TrimModal = ({ take, onSave, onClose }: TrimModalProps) => {
                         <Check className="w-4 h-4" />
                         Confirmar ({segments.length} {segments.length === 1 ? 'take' : 'takes'})
                     </button>
+                    {onSaveAndNext && (
+                        <button
+                            onClick={handleSaveAndNext}
+                            className="px-6 py-2 bg-gradient-to-r from-blue-600 to-sky-500 hover:from-blue-500 hover:to-sky-400 text-white font-bold rounded-lg transition-transform hover:scale-105 active:scale-95 flex items-center gap-2 text-sm shadow-lg shadow-blue-900/30"
+                            title="Confirma os cortes deste take e abre o próximo vídeo da pasta"
+                        >
+                            Confirmar e ir para o próximo
+                            <ArrowRight className="w-4 h-4" />
+                        </button>
+                    )}
                 </div>
             </div>
 
