@@ -673,6 +673,13 @@ export const gatewayApi = {
         );
     },
 
+    async deleteOpsAsset(assetId: string, viewContextId?: string | null): Promise<void> {
+        await gatewayFetch(
+            `/v1/integrations/mileto-ops/assets/${encodeURIComponent(assetId)}`,
+            { method: 'DELETE', headers: opsContextHeaders(viewContextId) }
+        );
+    },
+
     async opsAssets(
         companyId: string,
         options: { folderId?: string | null; q?: string; cursor?: string | null; viewContextId?: string | null } = {}

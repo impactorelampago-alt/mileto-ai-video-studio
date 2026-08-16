@@ -568,7 +568,11 @@ const prepareEntry = async (
     filePath: string,
     localSha256: string,
     effectiveMimeType: string,
-    delivery: string | null
+    delivery: string | null,
+    // O Editor de Cortes não usa o proxy re-encodado; pular a geração corta o
+    // passo mais caro do materialize. O caminho do editor gera depois (upgrade
+    // preguiçoso no cache-hit) sem degradar nada.
+    skipProxy = false
 ): Promise<CacheEntry> => {
     const kind = reference.kind === 'image' ? 'image' : reference.kind === 'audio' ? 'audio' : 'video';
     let duration = kind === 'image' ? 3.5 : 0;
@@ -576,12 +580,14 @@ const prepareEntry = async (
     if (kind === 'video') {
         const metadata = await getVideoMetadata(filePath);
         duration = Number(metadata.duration || 0);
-        proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview.mp4');
-        if (path.resolve(proxyPath) === path.resolve(filePath)) {
-            proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview-2.mp4');
-        }
-        if (!(await generateProxy(filePath, proxyPath))) {
-            proxyPath = null;
+        if (!skipProxy) {
+            proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview.mp4');
+            if (path.resolve(proxyPath) === path.resolve(filePath)) {
+                proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview-2.mp4');
+            }
+            if (!(await generateProxy(filePath, proxyPath))) {
+                proxyPath = null;
+            }
         }
     }
     const stat = fs.statSync(filePath);
@@ -624,6 +630,7 @@ export const materialize = async (req: Request, res: Response) => {
     if (!/^[0-9a-f-]{36}$/i.test(referenceId)) {
         return res.status(400).json({ ok: false, message: 'Referência do Mileto Ops inválida.' });
     }
+    const skipProxy = req.body?.skipProxy === true;
 
     const downloadAbort = new AbortController();
     const abortOnClose = () => {
@@ -656,6 +663,18 @@ export const materialize = async (req: Request, res: Response) => {
             if (existing) {
                 existing.lastAccessedAt = new Date().toISOString();
                 ensureAccessCapability(existing);
+                // Upgrade preguiçoso: se o arquivo foi materializado sem proxy
+                // (fluxo de recorte) e agora o editor precisa dele, gera aqui.
+                if (!skipProxy && existing.kind === 'video' && !existing.proxyPath) {
+                    let proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview.mp4');
+                    if (path.resolve(proxyPath) === path.resolve(existing.filePath)) {
+                        proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview-2.mp4');
+                    }
+                    if (await generateProxy(existing.filePath, proxyPath)) {
+                        existing.proxyPath = proxyPath;
+                        existing.sizeBytes = fs.statSync(existing.filePath).size + fs.statSync(proxyPath).size;
+                    }
+                }
                 writeIndex(existingIndex);
                 return res.json({ ok: true, cached: true, source: responseSource(existing, reference) });
             }
@@ -725,7 +744,8 @@ export const materialize = async (req: Request, res: Response) => {
                 finalPath,
                 localSha256,
                 downloaded.effectiveMimeType,
-                latest.download.delivery || null
+                latest.download.delivery || null,
+                skipProxy
             );
             const next = readIndex().filter((item) => item.cacheId !== cacheId);
             next.push(entry);

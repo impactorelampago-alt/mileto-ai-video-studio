@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
     AlertTriangle, ArrowDownToLine, Building2, Check, ChevronDown, ChevronRight,
     CheckSquare, Crown, FileImage, FileVideo, Folder, FolderOpen, Grid2X2, Library, List, Loader2, Music2, Pencil, Play,
-    Scissors, Search, ShieldCheck, Sparkles, Square, Upload, UserRound, UsersRound, X,
+    Scissors, Search, ShieldCheck, Sparkles, Square, Trash2, Upload, UserRound, UsersRound, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -856,7 +856,8 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     const materializeAsset = async (
         asset: OpsAsset,
         existingReference: OpsExternalReference | null = null,
-        takeId: string = crypto.randomUUID()
+        takeId: string = crypto.randomUUID(),
+        options: { skipProxy?: boolean } = {}
     ): Promise<MediaTake> => {
         if (!['video', 'image'].includes(asset.kind)) {
             throw new Error('Por enquanto, somente vídeos e imagens entram como take no editor.');
@@ -877,7 +878,10 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                         'Content-Type': 'application/json',
                         ...(contextId ? { 'X-Ops-View-Context': contextId } : {}),
                     },
-                    body: JSON.stringify({ referenceId: reference.id }),
+                    body: JSON.stringify({
+                        referenceId: reference.id,
+                        ...(options.skipProxy ? { skipProxy: true } : {}),
+                    }),
                 });
                 const result = await response.json().catch(() => ({}));
                 if (response.ok && result.ok && result.source) {
@@ -1005,6 +1009,30 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         guardStagedExit(() => setSelectedFolder(folder));
     };
 
+    // Cache em memória dos takes já materializados nesta sessão + promessas em
+    // voo (o pré-carregamento e o clique no lápis compartilham o mesmo download).
+    const materializedTakeCacheRef = useRef(new Map<string, MediaTake>());
+    const materializePromiseRef = useRef(new Map<string, Promise<MediaTake>>());
+
+    const materializeForTrim = (asset: OpsAsset): Promise<MediaTake> => {
+        const cached = materializedTakeCacheRef.current.get(asset.id);
+        if (cached) return Promise.resolve(cached);
+        const pending = materializePromiseRef.current.get(asset.id);
+        if (pending) return pending;
+        // skipProxy: o Editor de Cortes toca o arquivo original — o proxy
+        // re-encodado (o passo mais caro do materialize) fica para o editor.
+        const promise = materializeAsset(asset, null, crypto.randomUUID(), { skipProxy: true })
+            .then((take) => {
+                materializedTakeCacheRef.current.set(asset.id, take);
+                return take;
+            })
+            .finally(() => {
+                materializePromiseRef.current.delete(asset.id);
+            });
+        materializePromiseRef.current.set(asset.id, promise);
+        return promise;
+    };
+
     const beginAssetTrim = async (asset: OpsAsset) => {
         if (asset.kind !== 'video' || trimBusyAssetId) return;
         const staged = stagedTrims.get(asset.id);
@@ -1014,17 +1042,54 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
             return;
         }
         setTrimBusyAssetId(asset.id);
-        const toastId = toast.loading(`Preparando "${asset.name}" para recorte...`);
+        const alreadyReady = materializedTakeCacheRef.current.has(asset.id);
+        const toastId = alreadyReady ? null : toast.loading(`Preparando "${asset.name}" para recorte...`);
         try {
-            const take = await materializeAsset(asset);
-            toast.dismiss(toastId);
+            const take = await materializeForTrim(asset);
+            if (toastId) toast.dismiss(toastId);
             setTrimTarget({ asset, take });
         } catch (error) {
-            toast.error(error instanceof Error ? error.message : 'Não foi possível preparar o vídeo.', { id: toastId });
+            const message = error instanceof Error ? error.message : 'Não foi possível preparar o vídeo.';
+            if (toastId) toast.error(message, { id: toastId });
+            else toast.error(message);
         } finally {
             setTrimBusyAssetId(null);
         }
     };
+
+    // Pré-carrega em segundo plano os próximos takes ainda sem corte enquanto o
+    // usuário edita o atual: o próximo lápis abre na hora.
+    const TRIM_PREFETCH_AHEAD = 2;
+    useEffect(() => {
+        if (!trimTarget || pickerKind) return;
+        const currentId = trimTarget.asset.id;
+        const index = curationQueue.findIndex((asset) => asset.id === currentId);
+        if (index === -1) return;
+        const upcoming: OpsAsset[] = [];
+        for (let offset = 1; offset <= curationQueue.length && upcoming.length < TRIM_PREFETCH_AHEAD; offset += 1) {
+            const candidate = curationQueue[(index + offset) % curationQueue.length];
+            if (candidate.id === currentId) continue;
+            if (trimmedTakeIds.has(candidate.id) || stagedTrims.has(candidate.id)) continue;
+            if (materializedTakeCacheRef.current.has(candidate.id)) continue;
+            upcoming.push(candidate);
+        }
+        if (!upcoming.length) return;
+        let cancelled = false;
+        void (async () => {
+            for (const candidate of upcoming) {
+                if (cancelled) return;
+                try {
+                    await materializeForTrim(candidate);
+                } catch {
+                    // Pré-carregamento é melhor esforço; o clique real tenta de novo.
+                }
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [trimTarget?.asset.id]);
 
     // O destino é congelado no momento do salvamento: mesmo que o usuário
     // navegue ou o contexto recarregue, o lote sabe para onde cada take vai.
@@ -1193,6 +1258,60 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         if (!entries.length) return;
         setStagedTrims(new Map());
         void runCutJob(entries);
+    };
+
+    // ─── Exclusão de arquivos do acervo (seleção em massa ou card a card) ───
+    // A remoção acontece no Mileto Ops via gateway; sempre atrás de confirmação.
+    const [confirmDeleteAssets, setConfirmDeleteAssets] = useState<OpsAsset[] | null>(null);
+    const [deletingAssets, setDeletingAssets] = useState(false);
+
+    const performDeleteAssets = async (targets: OpsAsset[]) => {
+        if (!targets.length) return;
+        setDeletingAssets(true);
+        const toastId = toast.loading(`Apagando ${targets.length} arquivo${targets.length === 1 ? '' : 's'} do Mileto Ops...`);
+        let removed = 0;
+        const failures: string[] = [];
+        try {
+            for (const asset of targets) {
+                try {
+                    const contextId = await ensureFreshOpsContext();
+                    await gatewayApi.deleteOpsAsset(asset.id, contextId);
+                    removed += 1;
+                    materializedTakeCacheRef.current.delete(asset.id);
+                    setStagedTrims((previous) => {
+                        if (!previous.has(asset.id)) return previous;
+                        const next = new Map(previous);
+                        next.delete(asset.id);
+                        return next;
+                    });
+                } catch (error) {
+                    // Recupera o contexto (quando for o caso) para os próximos itens.
+                    await recoverViewContext(error);
+                    failures.push(asset.name);
+                }
+            }
+        } finally {
+            setDeletingAssets(false);
+        }
+        if (failures.length) {
+            const shown = failures.slice(0, 3).join(', ');
+            toast.error(
+                `${removed} apagado${removed === 1 ? '' : 's'}; falhou em: ${shown}${failures.length > 3 ? '…' : ''}`,
+                { id: toastId, duration: 8000 },
+            );
+        } else {
+            toast.success(`${removed} arquivo${removed === 1 ? '' : 's'} apagado${removed === 1 ? '' : 's'} do Mileto Ops.`, { id: toastId });
+        }
+        setSelectedAssetIds(new Set());
+        if (selectedContext && selectedCompany) {
+            removeOpsListingCache(opsListingCacheKey(
+                'assets',
+                contextIdentity(selectedContext),
+                selectedCompany.id,
+                selectedFolder?.id || 'root',
+            ));
+        }
+        void loadAssets();
     };
 
     if (loading && !ready && companies.length === 0) {
@@ -1495,6 +1614,16 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                     )}
                                     <div className="flex items-center gap-3">
                                         <span className="text-[10px] font-bold text-brand-muted">{selectedAssets.length} selecionado(s)</span>
+                                        {!pickerKind && !onTakePicked && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setConfirmDeleteAssets(selectedAssets)}
+                                                disabled={!selectedAssets.length || deletingAssets}
+                                                className="inline-flex items-center gap-1.5 rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2 text-[10px] font-black text-red-300 transition hover:border-red-400/60 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-35"
+                                            >
+                                                <Trash2 className="h-3.5 w-3.5" /> Apagar {selectedAssets.length || ''}
+                                            </button>
+                                        )}
                                         <button
                                             type="button"
                                             onClick={confirmSelection}
@@ -1603,6 +1732,16 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                     <button onClick={() => void downloadAsset(asset)} className={`${pickerKind ? '' : 'flex-1 justify-center'} inline-flex items-center gap-1.5 rounded-lg border border-white/10 p-1.5 text-[10px] font-bold text-brand-muted hover:text-foreground`} title="Baixar para Arquivos">
                                                         <ArrowDownToLine className="h-3.5 w-3.5" /> {!pickerKind && 'Baixar'}
                                                     </button>
+                                                    {!pickerKind && !onTakePicked && (
+                                                        <button
+                                                            onClick={() => setConfirmDeleteAssets([asset])}
+                                                            disabled={deletingAssets}
+                                                            className="inline-flex items-center justify-center rounded-lg border border-white/10 p-1.5 text-brand-muted transition hover:border-red-400/50 hover:text-red-300 disabled:opacity-40"
+                                                            title="Apagar do Mileto Ops"
+                                                        >
+                                                            <Trash2 className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    )}
                                                 </div>
                                             </div>
                                         </article>
@@ -1663,6 +1802,16 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                     </button>
                                                 )}
                                                 <button onClick={() => void downloadAsset(asset)} className="rounded-lg border border-white/10 p-1.5 text-brand-muted hover:text-foreground" title="Baixar para Arquivos"><ArrowDownToLine className="h-3.5 w-3.5" /></button>
+                                                {!pickerKind && !onTakePicked && (
+                                                    <button
+                                                        onClick={() => setConfirmDeleteAssets([asset])}
+                                                        disabled={deletingAssets}
+                                                        className="rounded-lg border border-white/10 p-1.5 text-brand-muted transition hover:border-red-400/50 hover:text-red-300 disabled:opacity-40"
+                                                        title="Apagar do Mileto Ops"
+                                                    >
+                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                    </button>
+                                                )}
                                             </span>
                                         </div>
                                     ))}
@@ -1759,6 +1908,24 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                         action();
                     }}
                     onClose={() => setStagedExitGuard(null)}
+                />
+            )}
+
+            {confirmDeleteAssets && (
+                <ConfirmDialog
+                    mode="confirm"
+                    title={confirmDeleteAssets.length === 1 ? 'Apagar este arquivo?' : `Apagar ${confirmDeleteAssets.length} arquivos?`}
+                    message={confirmDeleteAssets.length === 1
+                        ? `"${confirmDeleteAssets[0].name}" será removido do acervo do Mileto Ops para toda a equipe.`
+                        : `${confirmDeleteAssets.length} arquivos serão removidos do acervo do Mileto Ops para toda a equipe.`}
+                    confirmLabel="Apagar"
+                    variant="danger"
+                    onConfirm={() => {
+                        const targets = confirmDeleteAssets;
+                        setConfirmDeleteAssets(null);
+                        void performDeleteAssets(targets);
+                    }}
+                    onClose={() => setConfirmDeleteAssets(null)}
                 />
             )}
 

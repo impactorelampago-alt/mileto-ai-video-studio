@@ -536,6 +536,7 @@ app.post('/v1/integrations/mileto-ops/video-jobs/:jobId/retry', authed, asyncHan
 app.patch('/v1/integrations/mileto-ops/video-jobs/:jobId', authed, asyncHandler(opsIntegration.updateVideoJob));
 app.post('/v1/integrations/mileto-ops/companies/:companyId/assets/export', authed, opsExportUpload.single('file'), asyncHandler(opsIntegration.uploadExport));
 app.get('/v1/integrations/mileto-ops/assets/:assetId', authed, asyncHandler(opsIntegration.getAsset));
+app.delete('/v1/integrations/mileto-ops/assets/:assetId', authed, asyncHandler(opsIntegration.deleteAsset));
 app.post('/v1/integrations/mileto-ops/assets/:assetId/:kind-url', authed, asyncHandler(opsIntegration.getAssetUrl));
 app.post('/v1/integrations/mileto-ops/references', authed, asyncHandler(opsIntegration.createReference));
 app.get('/v1/integrations/mileto-ops/references/:referenceId', authed, asyncHandler(opsIntegration.getReference));

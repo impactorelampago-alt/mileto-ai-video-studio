@@ -1189,6 +1189,28 @@ export const deleteFolder = async (req, res) => {
     res.status(204).end();
 };
 
+// Exclusão de arquivo do acervo — mesmo scope de escrita usado pelas pastas.
+// A remoção acontece no Mileto Ops (fonte da verdade); cópias locais em cache
+// nos apps continuam válidas para projetos que já importaram o take.
+export const deleteAsset = async (req, res) => {
+    const assetId = String(req.params.assetId || '').trim();
+    if (!assetId) throw httpError(400, 'invalid_asset', 'Arquivo invalido.');
+    const { connection } = await withDelegatedAccess(req, async ({ connection, accessToken }) => {
+        assertAssetsWriteScope(connection);
+        await opsApi(accessToken, `/v1/assets/${encodeURIComponent(assetId)}`, { method: 'DELETE' });
+        return { connection };
+    });
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: 'ops.asset.deleted',
+        resourceType: 'asset',
+        resourceId: assetId,
+        result: 'success',
+    });
+    res.status(204).end();
+};
+
 export const listAssets = async (req, res) => {
     const companyId = encodeURIComponent(String(req.params.companyId));
     const folderId = normalizeOpsFolderScope(req.query.folderId);
