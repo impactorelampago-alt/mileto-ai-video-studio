@@ -120,9 +120,13 @@ export const selectOpsTakesForNarration = (
     const batchId = typeof batchSettings.id === 'string' && batchSettings.id.trim()
         ? batchSettings.id.trim()
         : job.id;
+    // takeSelection.order: "random" pede seleção aleatória dos takes num vídeo
+    // único (CONTRATO v0.4). O embaralho é determinístico por job de propósito:
+    // cada job sai diferente, mas retry/retomada re-renderiza o mesmo vídeo.
+    const randomOrderRequested = takeSettings.order === 'random';
 
     if (mode === 'explicit') {
-        const takes = job.shuffleTakes
+        const takes = job.shuffleTakes || randomOrderRequested
             ? deterministicShuffle(pool, `${batchId}:${batchIndex}:${job.id}:${job.projectId}:explicit`)
             : pool;
         return {
@@ -148,7 +152,7 @@ export const selectOpsTakesForNarration = (
         const offset = batchIndex % shuffled.length;
         const fallback = [...shuffled.slice(offset), ...shuffled.slice(0, offset)];
         orderedPool = uniqueById([...primary, ...fallback]);
-    } else if (job.shuffleTakes) {
+    } else if (job.shuffleTakes || randomOrderRequested) {
         orderedPool = deterministicShuffle(pool, `${job.id}:${job.projectId}:automatic`);
     }
 
