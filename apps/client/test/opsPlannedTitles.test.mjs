@@ -75,8 +75,10 @@ test('coordenador liga o plano do job ao fluxo exact-plan existente', () => {
     // Ingestão: plano + chave calculada localmente sobre o texto limpo.
     assert.match(coordinator, /plannedTitlesFromOpsJob\(job\.settings\)/);
     assert.match(coordinator, /plannedTitlesNarrationKey:\s*titlePlanningNarrationKey\(narrationPlainText\)/);
-    // Materialização exata quando há plano; automática como fallback.
-    assert.match(coordinator, /titlePlanMaterializationDecision\(adData\)/);
-    assert.match(coordinator, /materializeCurrentTitlePlan\(adData,\s*titleGenerationOptions\)/);
+    // Job com plano confirmado é AUTORIDADE (vínculo por construção): materializa
+    // com force, sem depender da chave de narração; a automática só existe no
+    // ramo sem plano.
+    assert.match(coordinator, /const planDriven = selectedPlannedTitles\.length > 0/);
+    assert.match(coordinator, /materializeCurrentTitlePlan\(\s*adData,\s*titleGenerationOptions,\s*\{ force: true \}/);
     assert.match(coordinator, /generateAutomaticTitlesResilient\(adData,\s*titleGenerationOptions\)/);
 });

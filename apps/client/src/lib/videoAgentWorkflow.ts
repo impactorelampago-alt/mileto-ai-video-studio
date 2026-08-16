@@ -481,8 +481,11 @@ export const generateAutomaticTitlesResilient = async (
                 });
                 return readApi<TitleResponse>(response);
             }, positiveDeadline(
-                isAi ? options.aiDeadlineMs : options.localFallbackDeadlineMs,
-                isAi ? TITLE_AI_REQUEST_DEADLINE_MS : TITLE_LOCAL_FALLBACK_DEADLINE_MS,
+                // A materialização exata é o caminho AUTORITATIVO de um plano
+                // confirmado (não um fallback): recebe o prazo amplo, não o
+                // curto do fallback local, para não desistir e cair no automático.
+                (isAi || isExactPlan) ? options.aiDeadlineMs : options.localFallbackDeadlineMs,
+                (isAi || isExactPlan) ? TITLE_AI_REQUEST_DEADLINE_MS : TITLE_LOCAL_FALLBACK_DEADLINE_MS,
             ), options.signal, isExactPlan ? 'exact_plan_materialization' : isAi ? 'ai' : 'local_fallback');
         } finally {
             if (isExactPlan) materializationRequestMs = elapsedMs(startedAt);

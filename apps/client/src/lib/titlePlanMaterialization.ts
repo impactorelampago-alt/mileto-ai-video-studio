@@ -109,11 +109,23 @@ export const assertExactTitlePlanMaterialization = (
  * The original plan is deliberately restored on the returned AdData so callers
  * can persist the whole outcome without losing the user's editorial choices.
  */
+/**
+ * `force` bypasses the narration-key gate. It is meant for the Ops executor,
+ * where the plan and the narration arrive together in one immutable job payload
+ * and are therefore bound by construction — the key check only guards the
+ * interactive editor against a stale chat proposal attaching to a newer script.
+ */
 export const materializeCurrentTitlePlan = async (
     input: AdData,
     options: AutomaticTitleGenerationOptions = {},
+    { force = false }: { force?: boolean } = {},
 ): Promise<CurrentTitlePlanMaterializationOutcome> => {
-    const decision = titlePlanMaterializationDecision(input);
+    const forcedPlannedTitles = (input.plannedTitles || []).filter((title) => (
+        title.selected !== false && String(title.text || '').trim().length > 0
+    ));
+    const decision = force
+        ? { shouldMaterialize: forcedPlannedTitles.length > 0, plannedTitles: forcedPlannedTitles }
+        : titlePlanMaterializationDecision(input);
     if (!decision.shouldMaterialize) {
         return {
             attempted: false,

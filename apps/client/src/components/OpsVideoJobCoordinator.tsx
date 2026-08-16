@@ -54,10 +54,7 @@ import {
 } from '../lib/videoAgentWorkflow';
 import { plannedTitlesFromOpsJob } from '../lib/opsPlannedTitles';
 import { titlePlanningNarrationKey } from '../lib/titlePlanningKey';
-import {
-    materializeCurrentTitlePlan,
-    titlePlanMaterializationDecision,
-} from '../lib/titlePlanMaterialization';
+import { materializeCurrentTitlePlan } from '../lib/titlePlanMaterialization';
 import { selectOpsTakesForNarration } from '../lib/opsTakeSelection';
 import { API_BASE_URL } from '../lib/apiBase';
 import {
@@ -96,6 +93,10 @@ import {
 const POLL_INTERVAL_MS = 12_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const EXPORT_TIMEOUT_MS = 60 * 60 * 1_000;
+// Um plano de títulos confirmado que não pôde ser materializado sai SEM títulos:
+// é preferível a exibir títulos automáticos diferentes dos aprovados no chat.
+const PLANNED_TITLES_UNAVAILABLE_WARNING =
+    'Os títulos confirmados no chat não puderam ser aplicados; o vídeo foi finalizado sem títulos para não exibir textos diferentes dos aprovados.';
 
 type QueuedJob = { job: OpsVideoJob; context: OpsViewContext; resume?: PersistedOpsVideoWorkerJob | null };
 type OpsExportEvent = {
@@ -1448,9 +1449,17 @@ export const OpsVideoJobCoordinator = () => {
                 if (job.captions) adData = await generateAutomaticCaptions(adData);
                 await patch('captions', OPS_VIDEO_PROGRESS.captions.end, job.captions ? 'Legendas automaticas prontas.' : 'Etapa de legendas ignorada.');
 
-                const confirmedTitlePlan = titlePlanMaterializationDecision(adData);
+                // Plano confirmado no chat do Filmmaker (CONTRATO v0.2): quando o
+                // job traz plannedTitles, o plano é AUTORIDADE — veio amarrado a
+                // esta narração no mesmo payload. Não usamos a chave de narração
+                // como gate aqui (ela só protege o editor interativo); no executor
+                // o vínculo é por construção.
+                const selectedPlannedTitles = (adData.plannedTitles || []).filter(
+                    (title) => title.selected !== false && String(title.text || '').trim().length > 0,
+                );
+                const planDriven = selectedPlannedTitles.length > 0;
                 await patch('titles', OPS_VIDEO_PROGRESS.titles.start, job.automaticTitles
-                    ? confirmedTitlePlan.shouldMaterialize
+                    ? planDriven
                         ? 'Aplicando os titulos confirmados no chat do Filmmaker.'
                         : 'Aplicando gatilhos, modelos e paleta da empresa.'
                     : 'Titulos automaticos nao solicitados.');
@@ -1480,28 +1489,62 @@ export const OpsVideoJobCoordinator = () => {
                                 showLocalProgress('titles', progressWithinStage('titles', fraction), progress.message);
                             },
                         };
-                        // Plano confirmado no chat do Filmmaker: materialização exata
-                        // (texto byte a byte). Falha não-abortiva degrada para a
-                        // geração automática, nunca derruba o job.
                         let titleResult: Awaited<ReturnType<typeof generateAutomaticTitlesResilient>> | null = null;
-                        if (confirmedTitlePlan.shouldMaterialize) {
-                            try {
-                                titleResult = await materializeCurrentTitlePlan(adData, titleGenerationOptions);
-                            } catch (error) {
-                                if (isTitleGenerationAbortError(error)) throw error;
+                        if (planDriven) {
+                            // Plano confirmado: materialização exata (texto byte a
+                            // byte), com nova tentativa. Se ela falhar, o vídeo sai
+                            // SEM títulos — nunca com automáticos, que exibiriam
+                            // textos diferentes dos aprovados com o cliente.
+                            for (let attempt = 1; attempt <= 2 && !titleResult; attempt += 1) {
+                                try {
+                                    titleResult = await materializeCurrentTitlePlan(
+                                        adData,
+                                        titleGenerationOptions,
+                                        { force: true },
+                                    );
+                                } catch (error) {
+                                    if (isTitleGenerationAbortError(error)) throw error;
+                                    console.warn('[title-generation]', {
+                                        event: 'coordinator_planned_titles_retry',
+                                        code: 'planned_titles_materialization_failed',
+                                        attempt,
+                                        stage: 'titles',
+                                    });
+                                }
+                            }
+                            if (titleResult) {
+                                adData = titleResult.adData;
+                                titleWarning = titleResult.warning || null;
+                            } else {
+                                adData = {
+                                    ...adData,
+                                    dynamicTitles: [],
+                                    titleGenerationSummary: {
+                                        requested: true,
+                                        outcome: 'none',
+                                        titleCount: 0,
+                                        warning: PLANNED_TITLES_UNAVAILABLE_WARNING,
+                                        warnings: [{
+                                            code: 'planned_titles_unavailable',
+                                            message: PLANNED_TITLES_UNAVAILABLE_WARNING,
+                                        }],
+                                        diagnostic: { code: 'planned_titles_unavailable', phase: 'titles' },
+                                        generatedAt: new Date().toISOString(),
+                                    },
+                                };
+                                titleWarning = PLANNED_TITLES_UNAVAILABLE_WARNING;
                                 console.warn('[title-generation]', {
-                                    event: 'coordinator_planned_titles_fallback',
-                                    code: 'planned_titles_materialization_failed',
+                                    event: 'coordinator_planned_titles_unavailable',
+                                    code: 'planned_titles_unavailable',
                                     stage: 'titles',
                                 });
-                                titleResult = null;
                             }
-                        }
-                        if (!titleResult) {
+                        } else {
+                            // Sem plano confirmado: geração automática normal.
                             titleResult = await generateAutomaticTitlesResilient(adData, titleGenerationOptions);
+                            adData = titleResult.adData;
+                            titleWarning = titleResult.warning || null;
                         }
-                        adData = titleResult.adData;
-                        titleWarning = titleResult.warning || null;
                     } catch (error) {
                         if (isTitleGenerationAbortError(error)) throw error;
                         // Títulos são um enriquecimento opcional. Uma falha inesperada não pode

@@ -58,6 +58,39 @@ test('helper reutilizável não chama a geração nem altera o projeto sem plano
     assert.strictEqual(result.adData, input);
 });
 
+test('force materializa o plano do executor mesmo com a chave de narração divergente', async () => {
+    // No executor, plano e narração chegam juntos no mesmo job (vínculo por
+    // construção): a chave nunca deve bloquear a materialização.
+    const input = {
+        narrationText: 'Nova narração.',
+        narrationPlainText: 'Nova narração.',
+        plannedTitlesNarrationKey: titlePlanningNarrationKey('Narração anterior.'),
+        plannedTitles: [suggestion()],
+    };
+
+    // Sem force: a chave diverge → não tenta (atalho seguro do editor).
+    const skipped = await materializeCurrentTitlePlan(input);
+    assert.equal(skipped.attempted, false);
+
+    // Com force: tenta de fato (chega a exigir materialização exata e falha por
+    // não haver legendas/servidor) — o essencial é que NÃO tomou o atalho.
+    await assert.rejects(() => materializeCurrentTitlePlan(input, {}, { force: true }));
+});
+
+test('executor materializa o plano confirmado e nunca cai em títulos automáticos', () => {
+    const coord = readFileSync(new URL('../src/components/OpsVideoJobCoordinator.tsx', import.meta.url), 'utf8');
+    assert.match(coord, /const planDriven = selectedPlannedTitles\.length > 0/);
+    assert.match(coord, /materializeCurrentTitlePlan\(\s*adData,\s*titleGenerationOptions,\s*\{ force: true \}/);
+    // O caminho com plano confirmado retenta e sai SEM títulos na falha —
+    // jamais gera automáticos (que só existem no ramo "sem plano").
+    assert.match(coord, /Sem plano confirmado: geração automática normal\.\s*\n\s*titleResult = await generateAutomaticTitlesResilient/);
+    assert.match(coord, /PLANNED_TITLES_UNAVAILABLE_WARNING/);
+
+    // A materialização exata usa o prazo amplo (não o curto do fallback local).
+    const workflow = readFileSync(new URL('../src/lib/videoAgentWorkflow.ts', import.meta.url), 'utf8');
+    assert.match(workflow, /\(isAi \|\| isExactPlan\)\s*\?\s*TITLE_AI_REQUEST_DEADLINE_MS/);
+});
+
 test('helper exige materialização exata e envia somente o plano selecionado', () => {
     const source = readFileSync(new URL('../src/lib/titlePlanMaterialization.ts', import.meta.url), 'utf8');
     assert.match(source, /baseTitles:\s*decision\.plannedTitles/);
