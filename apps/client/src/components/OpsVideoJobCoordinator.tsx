@@ -97,6 +97,9 @@ const EXPORT_TIMEOUT_MS = 60 * 60 * 1_000;
 // é preferível a exibir títulos automáticos diferentes dos aprovados no chat.
 const PLANNED_TITLES_UNAVAILABLE_WARNING =
     'Os títulos confirmados no chat não puderam ser aplicados; o vídeo foi finalizado sem títulos para não exibir textos diferentes dos aprovados.';
+// Falhas do executor que um novo render limpo (com chave nova) resolve. São
+// reportadas como retryable para o Ops exibir "Tentar novamente" sozinho.
+const RETRYABLE_EXECUTOR_ERROR_CODES = new Set(['idempotency_key_conflict']);
 
 type QueuedJob = { job: OpsVideoJob; context: OpsViewContext; resume?: PersistedOpsVideoWorkerJob | null };
 type OpsExportEvent = {
@@ -185,36 +188,39 @@ const errorParts = (error: unknown) => {
         };
     }
     if (error instanceof GatewayError) {
+        const code = safeErrorIdentifier(
+            error.code || (error.status ? `http_${error.status}` : 'gateway_unavailable'),
+            'gateway_unavailable',
+        );
         return {
-            code: safeErrorIdentifier(
-                error.code || (error.status ? `http_${error.status}` : 'gateway_unavailable'),
-                'gateway_unavailable',
-            ),
+            code,
             message: safeErrorMessage(error),
             phase: error.phase ? safeErrorIdentifier(error.phase, '') || undefined : undefined,
             requestId: error.requestId ? safeErrorIdentifier(error.requestId, '') || undefined : undefined,
-            retryable: typeof error.retryable === 'boolean'
+            retryable: RETRYABLE_EXECUTOR_ERROR_CODES.has(code) || (typeof error.retryable === 'boolean'
                 ? error.retryable
-                : error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500,
+                : error.status === 0 || error.status === 408 || error.status === 429 || error.status >= 500),
         };
     }
     const message = safeErrorMessage(error);
     const match = message.match(/^([a-z0-9_]+):\s*(.+)$/i);
-    return match
-        ? {
-            code: safeErrorIdentifier(match[1], 'ai_video_failed'),
+    if (match) {
+        const code = safeErrorIdentifier(match[1], 'ai_video_failed');
+        return {
+            code,
             message: match[2].slice(0, 2_000),
             phase: undefined,
             requestId: undefined,
-            retryable: false,
-        }
-        : {
-            code: 'ai_video_failed',
-            message,
-            phase: undefined,
-            requestId: undefined,
-            retryable: false,
+            retryable: RETRYABLE_EXECUTOR_ERROR_CODES.has(code),
         };
+    }
+    return {
+        code: 'ai_video_failed',
+        message,
+        phase: undefined,
+        requestId: undefined,
+        retryable: false,
+    };
 };
 
 type ParsedOpsError = ReturnType<typeof errorParts>;
@@ -1614,12 +1620,21 @@ export const OpsVideoJobCoordinator = () => {
 
             await patch('export', OPS_VIDEO_PROGRESS.export.start, 'Renderizando a versao final e preparando o envio ao Ops.');
             const metadata = await prepareOpsExportMetadata(job.projectId, adData, finalTakes.length);
-            let uploadIdempotencyKey = requiresFreshRender
-                ? String(persisted.resume.uploadIdempotencyKey || '').trim()
-                : '';
-            if (requiresFreshRender && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uploadIdempotencyKey)) {
-                uploadIdempotencyKey = crypto.randomUUID();
-                persisted = updatePersistedOpsVideoJob({ resume: { uploadIdempotencyKey } }) || persisted;
+            let uploadIdempotencyKey = '';
+            if (requiresFreshRender) {
+                const persistedKey = String(persisted.resume.uploadIdempotencyKey || '').trim();
+                const validPersistedKey = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(persistedKey);
+                // Reusa a chave persistida SOMENTE ao retomar um render já
+                // despachado (dedup do upload retomado do MESMO arquivo). Um render
+                // novo — inclusive um re-render após mudança de inputs (ex.: voz
+                // trocada) — recebe chave fresca, para nunca colidir com o
+                // upload-intent de um arquivo anterior.
+                uploadIdempotencyKey = persisted.resume.renderStarted === true && validPersistedKey
+                    ? persistedKey
+                    : crypto.randomUUID();
+                if (uploadIdempotencyKey !== persistedKey) {
+                    persisted = updatePersistedOpsVideoJob({ resume: { uploadIdempotencyKey } }) || persisted;
+                }
             }
             const exportJobId = startExport({
                 fileName: technicalFileName(job.projectTitle),
@@ -1727,6 +1742,22 @@ export const OpsVideoJobCoordinator = () => {
                 }));
                 toast.warning(`A revisão de "${job.projectTitle}" será renderizada novamente com um upload novo.`, { duration: 12_000 });
                 return;
+            }
+            if (parsed.code === 'idempotency_key_conflict') {
+                // A mesma Idempotency-Key foi usada para arquivos diferentes (um
+                // re-render trocou o binário entre a intenção e o envio). Descarta
+                // o checkpoint de upload para que a próxima tentativa gere uma
+                // chave nova e nunca colida de novo. O erro segue para o caminho de
+                // falha abaixo, que reporta errorRetryable=true ao Ops (fix #2).
+                updatePersistedOpsVideoJob({
+                    resume: {
+                        renderStarted: false,
+                        exportJobId: null,
+                        outputAssetId: null,
+                        uploadIdempotencyKey: null,
+                        renderResult: null,
+                    },
+                });
             }
             if (isRecoverableInterruption(error, parsed.code)) {
                 const interruptionStage = current.stage === 'queued' ? 'narration' : current.stage;
