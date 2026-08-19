@@ -11,6 +11,7 @@ import { DownloadJobsProvider } from './context/DownloadJobsContext';
 import { ExportJobsProvider } from './context/ExportJobsContext';
 import { OpsCompanyGuard } from './components/OpsCompanyGuard';
 import { OpsVideoJobCoordinator } from './components/OpsVideoJobCoordinator';
+import { OpsVoiceCatalogSync } from './components/OpsVoiceCatalogSync';
 
 const Home = lazy(() => import('./pages/Home').then((m) => ({ default: m.Home })));
 const Downloads = lazy(() => import('./pages/Downloads').then((m) => ({ default: m.Downloads })));
@@ -49,6 +50,7 @@ function App() {
                 <DownloadJobsProvider>
                     <ExportJobsProvider>
                         <OpsVideoJobCoordinator />
+                        <OpsVoiceCatalogSync />
                         <Suspense
                             fallback={
                                 <div className="flex h-screen w-full items-center justify-center text-foreground/50">

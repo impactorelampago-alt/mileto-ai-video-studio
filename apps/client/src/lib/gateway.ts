@@ -680,6 +680,29 @@ export const gatewayApi = {
         );
     },
 
+    async putOpsVoiceCatalog(payload: {
+        catalogVersion: number;
+        voices: Array<{ voiceId: string; name: string; isCustom: boolean; description?: string }>;
+    }): Promise<{ ok?: boolean; applied?: boolean; catalogVersion?: number; voiceCount?: number }> {
+        return gatewayFetch('/v1/integrations/mileto-ops/voice-catalog', {
+            method: 'PUT',
+            body: JSON.stringify(payload),
+        });
+    },
+
+    async opsVoiceCatalogHeartbeat(catalogVersion: number): Promise<{
+        ok?: boolean;
+        inSync?: boolean;
+        needsSnapshot?: boolean;
+        storedVersion?: number | null;
+        receivedVersion?: number;
+    }> {
+        return gatewayFetch('/v1/integrations/mileto-ops/voice-catalog/heartbeat', {
+            method: 'POST',
+            body: JSON.stringify({ catalogVersion }),
+        });
+    },
+
     async opsAssets(
         companyId: string,
         options: { folderId?: string | null; q?: string; cursor?: string | null; viewContextId?: string | null } = {}

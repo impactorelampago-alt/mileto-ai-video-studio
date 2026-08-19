@@ -358,7 +358,11 @@ test('novo render usa novo exportJobId e chave de upload persistida pela revisã
     assert.match(coordinator, /waitForOpsExport\(job\.projectId, exportJobId\)/);
     assert.match(coordinator, /detail\.exportJobId !== exportJobId/);
     assert.match(coordinator, /persisted\.resume\.uploadIdempotencyKey/);
-    assert.match(coordinator, /uploadIdempotencyKey = crypto\.randomUUID\(\)/);
+    // A chave persistida só é reusada ao retomar um render já despachado; um
+    // render novo (ou re-render) recebe uma chave fresca. Ver fix da colisão
+    // de Idempotency-Key.
+    assert.match(coordinator, /persisted\.resume\.renderStarted === true && validPersistedKey/);
+    assert.match(coordinator, /:\s*crypto\.randomUUID\(\)/);
     assert.match(exportJobs, /idempotencyKey: activeExport\.uploadIdempotencyKey/);
     assert.match(opsController, /idempotencyKey \? \{ idempotencyKey \} : \{\}/);
 });

@@ -408,6 +408,9 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         setCustomVoices((prev) => {
             const updated = [...prev, normalized];
             localStorage.setItem('mileto_custom_voices', JSON.stringify(updated));
+            // Avisa o sincronizador do catálogo de vozes (Mileto Ops) para
+            // empurrar o snapshot atualizado.
+            try { window.dispatchEvent(new Event('mileto:custom-voices-changed')); } catch { /* ambiente sem window */ }
             return updated;
         });
     };
@@ -418,6 +421,9 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         setCustomVoices((prev) => {
             const updated = prev.filter((v) => v.id !== id);
             localStorage.setItem('mileto_custom_voices', JSON.stringify(updated));
+            // Avisa o sincronizador do catálogo de vozes (Mileto Ops) para
+            // empurrar o snapshot atualizado.
+            try { window.dispatchEvent(new Event('mileto:custom-voices-changed')); } catch { /* ambiente sem window */ }
             return updated;
         });
     };
@@ -437,6 +443,9 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 ? normalized
                 : current);
             localStorage.setItem('mileto_custom_voices', JSON.stringify(updated));
+            // Avisa o sincronizador do catálogo de vozes (Mileto Ops) para
+            // empurrar o snapshot atualizado.
+            try { window.dispatchEvent(new Event('mileto:custom-voices-changed')); } catch { /* ambiente sem window */ }
             return updated;
         });
     };

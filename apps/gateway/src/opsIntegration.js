@@ -27,6 +27,10 @@ import {
     createOpsExportIdempotencyKey,
 } from './opsExportContract.js';
 import {
+    normalizeVoiceCatalogPayload,
+    normalizeVoiceCatalogVersion,
+} from './opsVoiceCatalog.js';
+import {
     normalizeOpsIdempotencyKey,
     normalizeVideoJobRetryInput,
 } from './opsVideoJobRevision.js';
@@ -1035,6 +1039,73 @@ export const confirmUserLink = async (req, res) => {
         }
         throw error;
     }
+};
+
+// Vínculo confirmado do usuário autenticado (mesmo par connection+ai_user_id
+// usado no user-links). O catálogo de vozes usa o mesmo token de conexão.
+const confirmedUserLinkId = async (orgId, connectionId, aiUserId) => (
+    await query(
+        `SELECT id FROM ops_user_links
+         WHERE connection_id = $1 AND ai_user_id = $2 AND org_id = $3 AND status = 'confirmed'`,
+        [connectionId, aiUserId, orgId]
+    )
+).rows[0]?.id || null;
+
+// PUT /v1/integrations/mileto-ops/voice-catalog — empurra o snapshot de vozes
+// custom do usuário autenticado para o Ops (substituição total, idempotente por
+// catalogVersion). aiVideoUserId = o próprio usuário autenticado.
+export const putVoiceCatalog = async (req, res) => {
+    const aiUserId = Number(req.user.id);
+    if (!Number.isSafeInteger(aiUserId) || aiUserId <= 0) {
+        return res.status(400).json({ ok: false, message: 'Usuário AI inválido.' });
+    }
+    const payload = normalizeVoiceCatalogPayload(req.body);
+    const { connection, accessToken } = await activeConnectionWithToken(req.user.orgId);
+    if (!(await confirmedUserLinkId(req.user.orgId, connection.id, aiUserId))) {
+        return res.status(409).json({
+            ok: false,
+            code: 'ops_user_link_missing',
+            message: 'Vincule sua conta ao Mileto Ops antes de sincronizar as vozes.',
+        });
+    }
+    const response = await opsApi(accessToken, `/v1/voice-catalogs/${encodeURIComponent(String(aiUserId))}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+    });
+    const data = unwrapOpsData(response) || response || {};
+    await audit({
+        req,
+        connectionId: connection.id,
+        action: 'ops.voice_catalog.pushed',
+        resourceType: 'user',
+        resourceId: String(aiUserId),
+        result: 'success',
+        detail: { catalogVersion: payload.catalogVersion, voiceCount: payload.voices.length, applied: data.applied === true },
+    });
+    res.json({ ok: true, ...data });
+};
+
+// POST /v1/integrations/mileto-ops/voice-catalog/heartbeat — evita PUT redundante:
+// o Ops responde needsSnapshot/storedVersion e o cliente só empurra quando precisa.
+export const voiceCatalogHeartbeat = async (req, res) => {
+    const aiUserId = Number(req.user.id);
+    if (!Number.isSafeInteger(aiUserId) || aiUserId <= 0) {
+        return res.status(400).json({ ok: false, message: 'Usuário AI inválido.' });
+    }
+    const catalogVersion = normalizeVoiceCatalogVersion(req.body?.catalogVersion);
+    const { connection, accessToken } = await activeConnectionWithToken(req.user.orgId);
+    if (!(await confirmedUserLinkId(req.user.orgId, connection.id, aiUserId))) {
+        return res.status(409).json({
+            ok: false,
+            code: 'ops_user_link_missing',
+            message: 'Vincule sua conta ao Mileto Ops antes de sincronizar as vozes.',
+        });
+    }
+    const response = await opsApi(accessToken, `/v1/voice-catalogs/${encodeURIComponent(String(aiUserId))}/heartbeat`, {
+        method: 'POST',
+        body: JSON.stringify({ catalogVersion }),
+    });
+    res.json({ ok: true, ...(unwrapOpsData(response) || response || {}) });
 };
 
 export const removeUserLink = async (req, res) => {

@@ -520,6 +520,10 @@ app.post('/v1/integrations/mileto-ops/sync/users', authed, requireOwner, asyncHa
 app.get('/v1/integrations/mileto-ops/sync/conflicts', authed, requireOwner, asyncHandler(opsIntegration.listConflicts));
 app.put('/v1/integrations/mileto-ops/user-links/:aiUserId', authed, requireOwner, asyncHandler(opsIntegration.confirmUserLink));
 app.delete('/v1/integrations/mileto-ops/user-links/:aiUserId', authed, requireOwner, asyncHandler(opsIntegration.removeUserLink));
+// Catálogo de vozes: cada usuário vinculado empurra o PRÓPRIO snapshot (não é
+// owner-only). Resolve o aiVideoUserId do usuário autenticado e repassa ao Ops.
+app.put('/v1/integrations/mileto-ops/voice-catalog', authed, asyncHandler(opsIntegration.putVoiceCatalog));
+app.post('/v1/integrations/mileto-ops/voice-catalog/heartbeat', authed, asyncHandler(opsIntegration.voiceCatalogHeartbeat));
 app.get('/v1/integrations/mileto-ops/view-contexts', authed, asyncHandler(opsIntegration.listViewContexts));
 app.get('/v1/integrations/mileto-ops/companies', authed, asyncHandler(opsIntegration.listCompanies));
 app.get('/v1/integrations/mileto-ops/companies/:companyId', authed, asyncHandler(opsIntegration.getCompany));
