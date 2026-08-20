@@ -955,6 +955,8 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         trims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>;
         destinationFolderId: string;
         destinationLabel: string;
+        // Enquadramento 1:1 definido no editor; propagado para cada clipe aprovado.
+        framing?: TakeFramingRecord;
     }
 
     const [trimTarget, setTrimTarget] = useState<{ asset: OpsAsset; take: MediaTake } | null>(null);
@@ -1131,16 +1133,19 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     const buildTrimEntry = (
         target: { asset: OpsAsset; take: MediaTake },
         trims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>,
+        framing?: TakeFramingRecord,
     ): StagedTrimEntry => {
         if (!approvedTakesFolder) {
             toast.warning(`Esta empresa ainda não tem a pasta ${APPROVED_TAKES_FOLDER_LABEL} — os cortes irão para a pasta original.`);
         }
+        const hasFraming = Boolean(framing && (framing.framing || framing.ignoreSquare));
         return {
             asset: target.asset,
             take: target.take,
             trims: trims.map(({ start, end, kind }) => ({ start, end, kind })),
             destinationFolderId: approvedTakesFolder?.id || target.asset.folderId || selectedFolder?.id || '',
             destinationLabel: approvedTakesFolder ? APPROVED_TAKES_FOLDER_LABEL : 'a pasta do take',
+            ...(hasFraming ? { framing } : {}),
         };
     };
 
@@ -1180,6 +1185,12 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
             const opsData = await opsRes.json().catch(() => ({}));
             if (!opsRes.ok || !opsData.ok) {
                 throw new Error(opsData.message || `Falha ao enviar um corte de "${entry.asset.name}".`);
+            }
+            // Enquadramento do editor viaja para o clipe aprovado recém-criado:
+            // o Ops devolve o assetId do novo asset em data.assetId.
+            const newAssetId = String(opsData?.data?.assetId || '').trim();
+            if (newAssetId && entry.framing && (entry.framing.framing || entry.framing.ignoreSquare)) {
+                writeTakeFraming(newAssetId, entry.framing);
             }
         }
         return sliceData.slices.length as number;
@@ -1256,15 +1267,17 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                 statusText: `${sentCuts} corte${sentCuts === 1 ? '' : 's'} em ${destinationLabel}. Os originais foram mantidos.`,
             });
         }
+        // Clipes aprovados podem ter recebido enquadramento — reflete os selos.
+        setTakeFramingMap(readTakeFramingMap());
         void loadAssets();
     };
 
     // "Confirmar (N takes)": corte avulso — processa este take na hora, via sino.
     const handleTrimSave = (target: { asset: OpsAsset; take: MediaTake }) =>
-        (_takeId: string, newTrims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>) => {
+        (_takeId: string, newTrims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>, framing?: TakeFramingRecord) => {
             setTrimTarget(null);
             if (!newTrims.length) return;
-            const entry = buildTrimEntry(target, newTrims);
+            const entry = buildTrimEntry(target, newTrims, framing);
             // Confirmado direto: sai do carrinho para não cortar em dobro no lote.
             setStagedTrims((previous) => {
                 if (!previous.has(target.asset.id)) return previous;
@@ -1278,10 +1291,10 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     // "Salvar e escolher o próximo": guarda os ajustes no carrinho e volta à
     // pasta — o usuário escolhe o próximo take e processa tudo no final.
     const handleTrimStage = (target: { asset: OpsAsset; take: MediaTake }) =>
-        (_takeId: string, newTrims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>) => {
+        (_takeId: string, newTrims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>, framing?: TakeFramingRecord) => {
             setTrimTarget(null);
             if (!newTrims.length) return;
-            const entry = buildTrimEntry(target, newTrims);
+            const entry = buildTrimEntry(target, newTrims, framing);
             setStagedTrims((previous) => new Map(previous).set(target.asset.id, entry));
             toast.success(`Cortes de "${target.asset.name}" salvos.`, {
                 description: 'Escolha o próximo take ou clique em "Cortar todos os selecionados".',
@@ -1689,7 +1702,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                             ) : visibleAssets.length === 0 && childFolders(selectedFolder?.id ?? null).length === 0 ? (
                                 <div className="grid h-full place-items-center text-sm text-brand-muted">Nenhum arquivo encontrado.</div>
                             ) : viewMode === 'grid' ? (
-                                <div className="grid grid-cols-[repeat(auto-fill,minmax(145px,1fr))] gap-2">
+                                <div className="grid grid-cols-[repeat(auto-fill,minmax(184px,1fr))] gap-2.5">
                                     {childFolders(selectedFolder?.id ?? null).map((folder) => (
                                         <button
                                             type="button"
@@ -1758,7 +1771,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                 <div className="flex justify-between gap-2 text-[9px] text-brand-muted">
                                                     <span className="capitalize">{asset.kind}</span><span>{formatBytes(asset.sizeBytes)}</span>
                                                 </div>
-                                                <div className="flex gap-1.5">
+                                                <div className="flex flex-wrap items-center gap-1.5">
                                                     {asset.kind === 'video' && (
                                                         <button
                                                             onClick={() => void beginAssetTrim(asset)}
@@ -1773,7 +1786,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                             {trimBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pencil className="h-3.5 w-3.5" />}
                                                         </button>
                                                     )}
-                                                    {asset.kind === 'video' && (
+                                                    {asset.kind === 'video' && !pickerKind && !onTakePicked && (
                                                         <button
                                                             onClick={() => void beginAssetFraming(asset)}
                                                             disabled={framingBusyAssetId !== null}
@@ -1787,8 +1800,8 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                             {framingBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Crop className="h-3.5 w-3.5" />}
                                                         </button>
                                                     )}
-                                                    <button onClick={() => void downloadAsset(asset)} className={`${pickerKind ? '' : 'flex-1 justify-center'} inline-flex items-center gap-1.5 rounded-lg border border-white/10 p-1.5 text-[10px] font-bold text-brand-muted hover:text-foreground`} title="Baixar para Arquivos">
-                                                        <ArrowDownToLine className="h-3.5 w-3.5" /> {!pickerKind && 'Baixar'}
+                                                    <button onClick={() => void downloadAsset(asset)} className={`${pickerKind || onTakePicked ? 'flex-1 justify-center' : ''} inline-flex items-center justify-center rounded-lg border border-white/10 p-1.5 text-brand-muted transition hover:text-foreground`} title="Baixar para Arquivos">
+                                                        <ArrowDownToLine className="h-3.5 w-3.5" />
                                                     </button>
                                                     {!pickerKind && !onTakePicked && (
                                                         <button
@@ -1859,7 +1872,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                         {trimBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pencil className="h-3.5 w-3.5" />}
                                                     </button>
                                                 )}
-                                                {asset.kind === 'video' && (
+                                                {asset.kind === 'video' && !pickerKind && !onTakePicked && (
                                                     <button
                                                         onClick={() => void beginAssetFraming(asset)}
                                                         disabled={framingBusyAssetId !== null}
@@ -1962,6 +1975,9 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                     onSave={handleTrimSave(trimTarget)}
                     onStage={pickerKind ? undefined : handleTrimStage(trimTarget)}
                     queue={trimQueueInfo ?? undefined}
+                    framingEnabled={!pickerKind && !onTakePicked}
+                    initialFraming={stagedTrims.get(trimTarget.asset.id)?.framing?.framing}
+                    initialIgnoreSquare={stagedTrims.get(trimTarget.asset.id)?.framing?.ignoreSquare}
                     onClose={() => setTrimTarget(null)}
                 />
             )}

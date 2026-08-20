@@ -1,17 +1,25 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Play, Check, RotateCcw, Trash2, Scissors, Split, Undo2, GripVertical, CopyPlus, ArrowRight, Sparkles } from 'lucide-react';
+import { X, Play, Check, RotateCcw, Trash2, Scissors, Split, Undo2, GripVertical, CopyPlus, ArrowRight, Sparkles, Crop, Ban } from 'lucide-react';
 import { toast } from 'sonner';
 import { MediaTake } from '../types';
 import { cn, generateId } from '../lib/utils';
 import { SpeedPresetType } from '../lib/speedRemapping';
 import { ConfirmDialog } from './ConfirmDialog';
+import { FramingEditor } from './FramingEditor';
+
+/** Enquadramento 1:1 opcional emitido pelo editor junto dos cortes. */
+export interface TrimFramingPayload {
+    framing?: { x: number; y: number };
+    ignoreSquare?: boolean;
+}
 
 interface TrimModalProps {
     take: MediaTake;
     onSave: (
         takeId: string,
-        newTrims: Array<{ start: number; end: number; speedPresetId?: SpeedPresetType; kind: 'primary' | 'created' }>
+        newTrims: Array<{ start: number; end: number; speedPresetId?: SpeedPresetType; kind: 'primary' | 'created' }>,
+        framing?: TrimFramingPayload
     ) => void;
     onClose: () => void;
     /**
@@ -20,12 +28,17 @@ interface TrimModalProps {
      */
     onStage?: (
         takeId: string,
-        newTrims: Array<{ start: number; end: number; speedPresetId?: SpeedPresetType; kind: 'primary' | 'created' }>
+        newTrims: Array<{ start: number; end: number; speedPresetId?: SpeedPresetType; kind: 'primary' | 'created' }>,
+        framing?: TrimFramingPayload
     ) => void;
     /** Reabre o editor com cortes salvos anteriormente (carrinho da curadoria). */
     initialTrims?: Array<{ start: number; end: number; kind: 'primary' | 'created' }>;
     /** Progresso da curadoria exibido no cabeçalho (posição, aprovados e fila). */
     queue?: { position: number; total: number; approved: number; staged?: number };
+    /** Habilita o modo de enquadramento 1:1 (só na curadoria do acervo). */
+    framingEnabled?: boolean;
+    initialFraming?: { x: number; y: number };
+    initialIgnoreSquare?: boolean;
 }
 
 interface LocalSegment {
@@ -35,12 +48,16 @@ interface LocalSegment {
     kind: 'primary' | 'created';
 }
 
-export const TrimModal = ({ take, onSave, onClose, onStage, initialTrims, queue }: TrimModalProps) => {
+export const TrimModal = ({ take, onSave, onClose, onStage, initialTrims, queue, framingEnabled = false, initialFraming, initialIgnoreSquare = false }: TrimModalProps) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const timelineRef = useRef<HTMLDivElement>(null);
 
     // State
     const [isPlaying, setIsPlaying] = useState(false);
+    // Enquadramento 1:1 (curadoria): modo aberto + centro do crop + "ignorar".
+    const [framingMode, setFramingMode] = useState(false);
+    const [framing, setFraming] = useState<{ x: number; y: number } | undefined>(initialFraming);
+    const [ignoreSquare, setIgnoreSquare] = useState<boolean>(initialIgnoreSquare);
     const [currentTime, setCurrentTime] = useState(initialTrims?.[0]?.start ?? take.trim.start);
     const [duration, setDuration] = useState(take.originalDurationSeconds || 0);
     const [confirmDialog, setConfirmDialog] = useState<{
@@ -290,15 +307,18 @@ export const TrimModal = ({ take, onSave, onClose, onStage, initialTrims, queue 
         }));
     };
 
+    const framingPayload = (): TrimFramingPayload | undefined =>
+        framingEnabled ? { framing, ignoreSquare } : undefined;
+
     const handleSave = () => {
         const trims = collectValidTrims();
-        if (trims) onSave(take.id, trims);
+        if (trims) onSave(take.id, trims, framingPayload());
     };
 
     const handleStage = () => {
         if (!onStage) return;
         const trims = collectValidTrims();
-        if (trims) onStage(take.id, trims);
+        if (trims) onStage(take.id, trims, framingPayload());
     };
 
     // --- DRAGGING HANDLES & SCRUBBING ---
@@ -478,6 +498,29 @@ export const TrimModal = ({ take, onSave, onClose, onStage, initialTrims, queue 
                         )}
                     </div>
                     <div className="flex items-center gap-2">
+                        {framingEnabled && (
+                            <button
+                                onClick={() => {
+                                    const next = !framingMode;
+                                    setFramingMode(next);
+                                    if (next) {
+                                        videoRef.current?.pause();
+                                        setIsPlaying(false);
+                                    }
+                                }}
+                                className={cn(
+                                    'mr-1 inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold transition',
+                                    framingMode
+                                        ? 'border-violet-400/50 bg-violet-500/20 text-violet-200'
+                                        : 'border-white/10 text-muted-foreground hover:border-violet-400/40 hover:text-violet-300'
+                                )}
+                                title="Definir o enquadramento 1:1 deste take (vale para os cortes aprovados)"
+                            >
+                                <Crop className="w-4 h-4" />
+                                <span className="hidden sm:inline">Enquadrar 1:1</span>
+                                {(framing || ignoreSquare) && <Check className="w-3 h-3" />}
+                            </button>
+                        )}
                         <button
                             onClick={handleUndo}
                             disabled={history.length === 0}
@@ -537,6 +580,41 @@ export const TrimModal = ({ take, onSave, onClose, onStage, initialTrims, queue 
                                     <Play className="w-8 h-8 text-foreground fill-white ml-1" />
                                 </div>
                             </button>
+                        )}
+
+                        {framingEnabled && framingMode && (
+                            <div className="absolute inset-0 z-30 flex flex-col gap-2 bg-black p-4">
+                                <div className="relative min-h-0 flex-1">
+                                    <FramingEditor
+                                        src={take.url}
+                                        type={take.type}
+                                        value={framing}
+                                        onChange={setFraming}
+                                        disabled={ignoreSquare}
+                                    />
+                                </div>
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-[11px] text-white/70">
+                                        Arraste o quadrado — a faixa dentro dele é o que aparece quando o vídeo for 1:1.
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setIgnoreSquare((value) => !value)}
+                                        className={cn(
+                                            'inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-bold transition',
+                                            ignoreSquare
+                                                ? 'border-red-400/50 bg-red-500/15 text-red-200'
+                                                : 'border-white/10 text-white/70 hover:border-red-400/40 hover:text-red-300'
+                                        )}
+                                    >
+                                        <Ban className="w-4 h-4" />
+                                        Ignorar no 1:1
+                                        <span className={cn('relative h-4 w-8 rounded-full transition', ignoreSquare ? 'bg-red-500' : 'bg-white/20')}>
+                                            <span className={cn('absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all', ignoreSquare ? 'right-0.5' : 'left-0.5')} />
+                                        </span>
+                                    </button>
+                                </div>
+                            </div>
                         )}
                     </div>
 

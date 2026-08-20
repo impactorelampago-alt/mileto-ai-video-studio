@@ -12,6 +12,7 @@ interface FramingEditorProps {
     onChange: (value: { x: number; y: number }) => void;
     /** Quando "ignorar 1:1" está ligado, a janela fica inerte e apagada. */
     disabled?: boolean;
+    /** Altura fixa em px. Se ausente, o palco preenche 100% do pai (fill). */
     heightPx?: number;
 }
 
@@ -23,10 +24,10 @@ export const FramingEditor: React.FC<FramingEditorProps> = ({
     value,
     onChange,
     disabled = false,
-    heightPx = 320,
+    heightPx,
 }) => {
     const stageRef = useRef<HTMLDivElement>(null);
-    const [stageW, setStageW] = useState(0);
+    const [size, setSize] = useState({ w: 0, h: 0 });
     // Proporção intrínseca da mídia (largura/altura). Padrão vertical até carregar.
     const [aspect, setAspect] = useState(9 / 16);
     const aspectRef = useRef(aspect);
@@ -39,18 +40,20 @@ export const FramingEditor: React.FC<FramingEditorProps> = ({
     useLayoutEffect(() => {
         const el = stageRef.current;
         if (!el) return;
-        const measure = () => setStageW(el.clientWidth);
+        const measure = () => setSize({ w: el.clientWidth, h: el.clientHeight });
         measure();
         const ro = new ResizeObserver(measure);
         ro.observe(el);
         return () => ro.disconnect();
     }, []);
 
-    // Geometria da caixa "contain" e da janela quadrada (para render).
-    const stageH = heightPx;
+    // Geometria da caixa "contain" e da janela quadrada (para render). Mede a
+    // altura real do palco — funciona tanto com altura fixa quanto em fill.
+    const stageW = size.w;
+    const stageH = size.h;
     let innerW = stageW;
     let innerH = stageH;
-    if (stageW > 0) {
+    if (stageW > 0 && stageH > 0) {
         if (stageW / stageH > aspect) {
             innerH = stageH;
             innerW = stageH * aspect;
@@ -129,9 +132,13 @@ export const FramingEditor: React.FC<FramingEditorProps> = ({
             onPointerUp={stopDragging}
             onPointerCancel={stopDragging}
             style={{
-                position: 'relative',
-                width: '100%',
-                height: stageH,
+                // Com altura fixa, ocupa o próprio bloco; sem ela, preenche o pai
+                // (que precisa ser position:relative) via inset:0 — robusto contra
+                // os quirks de height:100% dentro de flexbox.
+                ...(heightPx
+                    ? { position: 'relative', width: '100%', height: heightPx }
+                    : { position: 'absolute', inset: 0 }),
+                minHeight: 0,
                 background: '#000',
                 borderRadius: 10,
                 overflow: 'hidden',
