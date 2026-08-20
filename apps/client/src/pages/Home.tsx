@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Wand2, Scissors, Clock, Trash2, CheckCircle2, Loader2, HardDrive, Users, Share2, Pencil, Film, Check, X, Copy, Play } from 'lucide-react';
+import { ArrowRight, Wand2, Scissors, Clock, Trash2, CheckCircle2, Loader2, HardDrive, Users, Share2, Pencil, Film, Frame, Check, X, Copy, Play } from 'lucide-react';
 import { toast } from 'sonner';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
@@ -88,7 +88,6 @@ export const Home = () => {
     const [editingTitle, setEditingTitle] = useState('');
     const [renamingId, setRenamingId] = useState<string | null>(null);
     const [scope, setScope] = useState<'local' | 'shared'>('local');
-    const [newDraftTitle, setNewDraftTitle] = useState('');
 
     // Rascunhos locais cuja mídia é do Mileto Ops guardam só a referência (externalMedia),
     // sem URL — então o servidor não gera capa. Resolvemos a capa aqui, sob demanda, pedindo
@@ -214,9 +213,13 @@ export const Home = () => {
     }, [refreshDrafts]);
 
     const handleNewProject = () => {
-        startNewDraft({ scope: 'local', title: newDraftTitle });
-        setNewDraftTitle('');
+        startNewDraft({ scope: 'local' });
         navigate('/wizard/step/1');
+    };
+
+    // "Criar Vídeo Moldura" ainda é só front — o fluxo real entra depois.
+    const handleNewMoldura = () => {
+        toast.info('Criar Vídeo Moldura chega em breve.');
     };
 
     const handleShare = async (event: React.MouseEvent, id: string) => {
@@ -392,31 +395,21 @@ export const Home = () => {
             </div>
 
             {/* Criar */}
-            <div className="flex flex-col sm:flex-row sm:items-end gap-3">
-                <label className="flex-1 max-w-lg space-y-1.5">
-                    <span className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                        <span>Título do novo rascunho</span>
-                        <span className="inline-flex items-center gap-1 normal-case tracking-normal text-brand-lime/80">
-                            <HardDrive className="h-3 w-3" /> Salvo localmente
-                        </span>
-                    </span>
-                    <input
-                        type="text"
-                        value={newDraftTitle}
-                        onChange={(event) => setNewDraftTitle(event.target.value)}
-                        onKeyDown={(event) => {
-                            if (event.key === 'Enter') handleNewProject();
-                        }}
-                        placeholder="Ex.: Campanha de julho"
-                        className="w-full h-11 rounded-xl border border-border bg-card px-4 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-brand-lime/60"
-                    />
-                </label>
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                 <button
                     onClick={handleNewProject}
-                    className="group inline-flex items-center gap-2.5 rounded-xl bg-brand-lime px-5 py-3 text-sm font-bold text-[#0a0f12] transition-all hover:brightness-110 hover:shadow-[0_0_30px_rgba(0,230,118,0.25)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-lime"
+                    className="group inline-flex items-center justify-center gap-2.5 rounded-xl bg-brand-lime px-5 py-3 text-sm font-bold text-[#0a0f12] transition-all hover:brightness-110 hover:shadow-[0_0_30px_rgba(0,230,118,0.25)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-lime"
                 >
                     <Wand2 className="w-4 h-4" />
-                    Criar
+                    Criar Vídeo Takes
+                    <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+                </button>
+                <button
+                    onClick={handleNewMoldura}
+                    className="group inline-flex items-center justify-center gap-2.5 rounded-xl border border-brand-accent/30 bg-brand-accent/10 px-5 py-3 text-sm font-bold text-brand-accent transition-all hover:border-brand-accent/50 hover:bg-brand-accent/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-accent"
+                >
+                    <Frame className="w-4 h-4" />
+                    Criar Vídeo Moldura
                     <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
                 </button>
             </div>
