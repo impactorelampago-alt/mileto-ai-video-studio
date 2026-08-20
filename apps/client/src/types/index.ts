@@ -92,6 +92,18 @@ export interface MediaTake {
     objectUrl?: string; // Local blob URL (temporary)
     type: 'video' | 'image';
     objectFit?: 'cover' | 'contain';
+    /**
+     * Centro do recorte quando o take é usado numa saída 1:1 (quadrada).
+     * Normalizado 0..1 no estilo de `object-position` (0 = topo/esquerda,
+     * 1 = base/direita). Ausente = 0.5/0.5 (centralizado, comportamento atual).
+     * Só afeta a saída 1:1; em 9:16 é ignorado.
+     */
+    squareFraming?: { x: number; y: number };
+    /**
+     * Marca o take como impróprio para saída 1:1 (a IA não deve escolhê-lo;
+     * rede de segurança local em opsTakeSelection). Não altera o render.
+     */
+    excludeFromSquare?: boolean;
     // Single Segment Data
     trim: {
         start: number;

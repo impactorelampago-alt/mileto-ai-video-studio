@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-    AlertTriangle, ArrowDownToLine, Building2, Check, ChevronDown, ChevronRight,
-    CheckSquare, Crown, FileImage, FileVideo, Folder, FolderOpen, Grid2X2, Library, List, Loader2, Music2, Pencil, Play,
+    AlertTriangle, ArrowDownToLine, Ban, Building2, Check, ChevronDown, ChevronRight,
+    CheckSquare, Crop, Crown, FileImage, FileVideo, Folder, FolderOpen, Grid2X2, Library, List, Loader2, Music2, Pencil, Play,
     Scissors, Search, ShieldCheck, Sparkles, Square, Trash2, Upload, UserRound, UsersRound, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -28,8 +28,11 @@ import {
     findApprovedTakesFolder,
     markTakeTrimmed,
     readStagedTrims,
+    readTakeFramingMap,
     readTrimmedTakeIds,
     writeStagedTrims,
+    writeTakeFraming,
+    type TakeFramingRecord,
 } from '../lib/opsTakeCuration';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useWizard } from '../context/WizardContext';
@@ -37,6 +40,7 @@ import type { MediaTake } from '../types';
 import { useDownloadJobs } from '../context/DownloadJobsContext';
 import { MiletoMediaPlayer } from './MiletoMediaPlayer';
 import { TrimModal } from './TrimModal';
+import { FramingModal } from './FramingModal';
 
 const absoluteLocalUrl = (url?: string | null) => {
     if (!url) return '';
@@ -955,6 +959,10 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
 
     const [trimTarget, setTrimTarget] = useState<{ asset: OpsAsset; take: MediaTake } | null>(null);
     const [trimBusyAssetId, setTrimBusyAssetId] = useState<string | null>(null);
+    // Enquadramento 1:1 + "ignorar" por asset (persistido por dispositivo).
+    const [takeFramingMap, setTakeFramingMap] = useState<Record<string, TakeFramingRecord>>(() => readTakeFramingMap());
+    const [framingTarget, setFramingTarget] = useState<{ asset: OpsAsset; take: MediaTake } | null>(null);
+    const [framingBusyAssetId, setFramingBusyAssetId] = useState<string | null>(null);
     const [trimmedTakeIds, setTrimmedTakeIds] = useState<ReadonlySet<string>>(() => readTrimmedTakeIds());
     // O carrinho nasce do disco e cada mudança volta pro disco: recarregamento,
     // troca de aba ou reinício do app nunca perdem os ajustes de curadoria.
@@ -1055,6 +1063,33 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         } finally {
             setTrimBusyAssetId(null);
         }
+    };
+
+    // Abre o modal de enquadramento 1:1 do card (aprovado ou original). Reaproveita
+    // o mesmo materialize do editor de cortes só para ter uma fonte tocável.
+    const beginAssetFraming = async (asset: OpsAsset) => {
+        if (asset.kind !== 'video' || framingBusyAssetId) return;
+        setFramingBusyAssetId(asset.id);
+        const alreadyReady = materializedTakeCacheRef.current.has(asset.id);
+        const toastId = alreadyReady ? null : toast.loading(`Preparando "${asset.name}" para enquadrar...`);
+        try {
+            const take = await materializeForTrim(asset);
+            if (toastId) toast.dismiss(toastId);
+            setFramingTarget({ asset, take });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Não foi possível preparar o vídeo.';
+            if (toastId) toast.error(message, { id: toastId });
+            else toast.error(message);
+        } finally {
+            setFramingBusyAssetId(null);
+        }
+    };
+
+    // Grava o enquadramento (ou limpa, quando fica vazio) e atualiza o selo.
+    const saveAssetFraming = (assetId: string, record: TakeFramingRecord) => {
+        writeTakeFraming(assetId, record);
+        setTakeFramingMap(readTakeFramingMap());
+        setFramingTarget(null);
     };
 
     // Pré-carrega em segundo plano os próximos takes ainda sem corte enquanto o
@@ -1695,6 +1730,15 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                         <Check className="h-2.5 w-2.5" strokeWidth={4} /> Cortado
                                                     </span>
                                                 ) : null}
+                                                {asset.kind === 'video' && takeFramingMap[asset.id]?.ignoreSquare ? (
+                                                    <span className="absolute bottom-1.5 left-1.5 z-10 inline-flex items-center gap-1 rounded-full border border-red-300/40 bg-red-500/90 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider text-red-950 shadow-lg">
+                                                        <Ban className="h-2.5 w-2.5" strokeWidth={3} /> 1:1
+                                                    </span>
+                                                ) : asset.kind === 'video' && takeFramingMap[asset.id]?.framing ? (
+                                                    <span className="absolute bottom-1.5 left-1.5 z-10 inline-flex items-center gap-1 rounded-full border border-violet-300/40 bg-violet-500/90 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider text-violet-950 shadow-lg">
+                                                        <Crop className="h-2.5 w-2.5" strokeWidth={3} /> 1:1
+                                                    </span>
+                                                ) : null}
                                                 {selectionMode && (
                                                     <span
                                                         role="checkbox"
@@ -1727,6 +1771,20 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                             title={stagedTrims.has(asset.id) ? 'Cortes salvos — clique para ajustar' : trimmedTakeIds.has(asset.id) ? 'Take já cortado — abrir o Editor de Cortes novamente' : 'Recortar takes deste vídeo'}
                                                         >
                                                             {trimBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pencil className="h-3.5 w-3.5" />}
+                                                        </button>
+                                                    )}
+                                                    {asset.kind === 'video' && (
+                                                        <button
+                                                            onClick={() => void beginAssetFraming(asset)}
+                                                            disabled={framingBusyAssetId !== null}
+                                                            className={`inline-flex items-center justify-center rounded-lg border p-1.5 transition disabled:opacity-40 ${takeFramingMap[asset.id]?.ignoreSquare
+                                                                ? 'border-red-400/50 bg-red-500/15 text-red-300 hover:border-red-300/70 hover:text-red-200'
+                                                                : takeFramingMap[asset.id]?.framing
+                                                                    ? 'border-violet-400/50 bg-violet-500/15 text-violet-300 shadow-[0_0_12px_rgba(139,92,246,0.28)] hover:border-violet-300/70 hover:text-violet-200'
+                                                                    : 'border-white/10 text-brand-muted hover:border-violet-400/40 hover:text-violet-300'}`}
+                                                            title="Enquadramento 1:1"
+                                                        >
+                                                            {framingBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Crop className="h-3.5 w-3.5" />}
                                                         </button>
                                                     )}
                                                     <button onClick={() => void downloadAsset(asset)} className={`${pickerKind ? '' : 'flex-1 justify-center'} inline-flex items-center gap-1.5 rounded-lg border border-white/10 p-1.5 text-[10px] font-bold text-brand-muted hover:text-foreground`} title="Baixar para Arquivos">
@@ -1799,6 +1857,20 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                         title={stagedTrims.has(asset.id) ? 'Cortes salvos — clique para ajustar' : trimmedTakeIds.has(asset.id) ? 'Take já cortado — abrir o Editor de Cortes novamente' : 'Recortar takes deste vídeo'}
                                                     >
                                                         {trimBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pencil className="h-3.5 w-3.5" />}
+                                                    </button>
+                                                )}
+                                                {asset.kind === 'video' && (
+                                                    <button
+                                                        onClick={() => void beginAssetFraming(asset)}
+                                                        disabled={framingBusyAssetId !== null}
+                                                        className={`rounded-lg border p-1.5 transition disabled:opacity-40 ${takeFramingMap[asset.id]?.ignoreSquare
+                                                            ? 'border-red-400/50 bg-red-500/15 text-red-300 hover:border-red-300/70 hover:text-red-200'
+                                                            : takeFramingMap[asset.id]?.framing
+                                                                ? 'border-violet-400/50 bg-violet-500/15 text-violet-300 shadow-[0_0_12px_rgba(139,92,246,0.28)] hover:border-violet-300/70 hover:text-violet-200'
+                                                                : 'border-white/10 text-brand-muted hover:border-violet-400/40 hover:text-violet-300'}`}
+                                                        title="Enquadramento 1:1"
+                                                    >
+                                                        {framingBusyAssetId === asset.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Crop className="h-3.5 w-3.5" />}
                                                     </button>
                                                 )}
                                                 <button onClick={() => void downloadAsset(asset)} className="rounded-lg border border-white/10 p-1.5 text-brand-muted hover:text-foreground" title="Baixar para Arquivos"><ArrowDownToLine className="h-3.5 w-3.5" /></button>
@@ -1891,6 +1963,18 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                     onStage={pickerKind ? undefined : handleTrimStage(trimTarget)}
                     queue={trimQueueInfo ?? undefined}
                     onClose={() => setTrimTarget(null)}
+                />
+            )}
+
+            {framingTarget && (
+                <FramingModal
+                    key={`framing-${framingTarget.asset.id}`}
+                    fileName={framingTarget.asset.name}
+                    src={framingTarget.take.proxyUrl || framingTarget.take.url}
+                    type={framingTarget.take.type}
+                    initial={takeFramingMap[framingTarget.asset.id]}
+                    onSave={(record) => saveAssetFraming(framingTarget.asset.id, record)}
+                    onClose={() => setFramingTarget(null)}
                 />
             )}
 

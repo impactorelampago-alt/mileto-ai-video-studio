@@ -56,6 +56,7 @@ import { plannedTitlesFromOpsJob } from '../lib/opsPlannedTitles';
 import { titlePlanningNarrationKey } from '../lib/titlePlanningKey';
 import { materializeCurrentTitlePlan } from '../lib/titlePlanMaterialization';
 import { selectOpsTakesForNarration } from '../lib/opsTakeSelection';
+import { readTakeFraming, readTakeFramingMap } from '../lib/opsTakeCuration';
 import { API_BASE_URL } from '../lib/apiBase';
 import {
     createOpsExecutorHeartbeatQueue,
@@ -1398,8 +1399,17 @@ export const OpsVideoJobCoordinator = () => {
                 showLocalProgress('narration', 8, 'Gerando a narracao e preparando a trilha de fundo.');
                 adData = await generateNarrationAndMix(adData);
                 await patch('narration', OPS_VIDEO_PROGRESS.narration.end, 'Narracao final pronta e validada.');
+                // Rede de segurança do enquadramento 1:1: quando a saída é
+                // quadrada, descarta os takes marcados como "ignorar" na curadoria
+                // local. Se TODOS estiverem marcados, mantém o acervo original para
+                // não estrangular o job (a marca é um hint, não uma trava dura).
+                const framingMap = readTakeFramingMap();
+                const eligibleForSquare = job.format === '1:1'
+                    ? readiness.eligibleAssets.filter((asset) => !framingMap[asset.id]?.ignoreSquare)
+                    : readiness.eligibleAssets;
+                const poolForSelection = eligibleForSquare.length ? eligibleForSquare : readiness.eligibleAssets;
                 const selection = selectOpsTakesForNarration(
-                    readiness.eligibleAssets,
+                    poolForSelection,
                     Number(adData.narrationDuration || 0),
                     job,
                 );
@@ -1416,6 +1426,10 @@ export const OpsVideoJobCoordinator = () => {
                     let materialized = materializedByAssetId.get(asset.id);
                     if (!materialized) {
                         materialized = await materializeOpsTake(asset, queued.context, takeId);
+                        // Enquadramento 1:1 salvo na curadoria: viaja com o take para
+                        // o render (o bake respeita o centro só quando a saída é 1:1).
+                        const framing = readTakeFraming(asset.id);
+                        if (framing?.framing) materialized = { ...materialized, squareFraming: framing.framing };
                         materializedByAssetId.set(asset.id, materialized);
                     }
                     finalTakes.push(materialized.id === takeId ? materialized : { ...materialized, id: takeId });

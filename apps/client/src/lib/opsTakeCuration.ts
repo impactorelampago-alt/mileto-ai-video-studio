@@ -147,6 +147,111 @@ export const writeStagedTrims = <T>(
     }
 };
 
+// ─── Enquadramento 1:1 + "ignorar" por take ───
+// Por dispositivo (localStorage), no mesmo espírito do selo "Cortado". A chave
+// é o asset.id (original OU aprovado). É lido no card (selo), no modal de
+// enquadrar, na materialização do render (o worker respeita o centro) e como
+// rede de segurança da seleção automática. Campos prontos para, no futuro,
+// subirem como metadata durável no próprio asset do Ops.
+
+export interface TakeFramingRecord {
+    // Centro do recorte 1:1 no estilo object-position (0..1). Ausente = centro.
+    framing?: { x: number; y: number };
+    // Take impróprio para 1:1 — a IA não deve escolhê-lo.
+    ignoreSquare?: boolean;
+}
+
+const FRAMING_KEY = 'mileto_ops_take_framing_v1';
+const MAX_FRAMING_ENTRIES = 2000;
+
+const clampFraction01 = (value: unknown): number => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.5;
+};
+
+const sanitizeFramingRecord = (value: unknown): TakeFramingRecord | null => {
+    if (!value || typeof value !== 'object') return null;
+    const record: TakeFramingRecord = {};
+    const framing = (value as { framing?: unknown }).framing;
+    if (framing && typeof framing === 'object') {
+        const { x, y } = framing as { x?: unknown; y?: unknown };
+        if (x != null || y != null) record.framing = { x: clampFraction01(x), y: clampFraction01(y) };
+    }
+    if ((value as { ignoreSquare?: unknown }).ignoreSquare === true) record.ignoreSquare = true;
+    // Registro sem enquadramento e sem "ignorar" não vale a pena guardar.
+    if (!record.framing && !record.ignoreSquare) return null;
+    return record;
+};
+
+interface StoredFraming extends TakeFramingRecord {
+    savedAt?: number;
+}
+
+const readStoredFramingRaw = (storage: StorageLike | null): Record<string, StoredFraming> => {
+    if (!storage) return {};
+    try {
+        const raw = storage.getItem(FRAMING_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw) as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        const map: Record<string, StoredFraming> = {};
+        for (const [assetId, value] of Object.entries(parsed as Record<string, unknown>)) {
+            if (!assetId) continue;
+            const record = sanitizeFramingRecord(value);
+            if (!record) continue;
+            const savedAt = Number((value as { savedAt?: unknown }).savedAt);
+            map[assetId] = { ...record, savedAt: Number.isFinite(savedAt) ? savedAt : 0 };
+        }
+        return map;
+    } catch {
+        return {};
+    }
+};
+
+export const readTakeFramingMap = (
+    storage: StorageLike | null = defaultStorage(),
+): Record<string, TakeFramingRecord> => {
+    const raw = readStoredFramingRaw(storage);
+    const map: Record<string, TakeFramingRecord> = {};
+    for (const [assetId, value] of Object.entries(raw)) {
+        const record: TakeFramingRecord = {};
+        if (value.framing) record.framing = value.framing;
+        if (value.ignoreSquare) record.ignoreSquare = true;
+        map[assetId] = record;
+    }
+    return map;
+};
+
+export const readTakeFraming = (
+    assetId: string,
+    storage: StorageLike | null = defaultStorage(),
+): TakeFramingRecord | null => (assetId ? readTakeFramingMap(storage)[assetId] ?? null : null);
+
+// Grava (ou remove, quando o registro fica vazio) o enquadramento de um asset.
+export const writeTakeFraming = (
+    assetId: string,
+    record: TakeFramingRecord | null,
+    storage: StorageLike | null = defaultStorage(),
+): void => {
+    if (!assetId || !storage) return;
+    const raw = readStoredFramingRaw(storage);
+    const sanitized = sanitizeFramingRecord(record);
+    if (!sanitized) delete raw[assetId];
+    else raw[assetId] = { ...sanitized, savedAt: Date.now() };
+    try {
+        const entries = Object.entries(raw)
+            .sort((first, second) => (second[1].savedAt ?? 0) - (first[1].savedAt ?? 0))
+            .slice(0, MAX_FRAMING_ENTRIES);
+        if (!entries.length) {
+            storage.removeItem(FRAMING_KEY);
+            return;
+        }
+        storage.setItem(FRAMING_KEY, JSON.stringify(Object.fromEntries(entries)));
+    } catch {
+        // Sem espaço: o enquadramento da sessão atual continua via estado em memória.
+    }
+};
+
 // Próximo take da fila ainda sem corte, varrendo para frente a partir do take
 // atual e dando a volta na pasta. Takes já cortados (verdes) são pulados.
 export const nextTakeToTrim = <T extends { id: string }>(

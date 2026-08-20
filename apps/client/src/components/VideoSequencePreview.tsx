@@ -39,6 +39,20 @@ import {
 const OVERLAY_DESIGN_WIDTH = 360;
 const OVERLAY_DESIGN_HEIGHT_PORTRAIT = 640;
 
+// Fração de enquadramento no estilo object-position (0..1), com padrão 0.5.
+const clampFraction = (value: number | undefined | null): number =>
+    typeof value === 'number' && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0.5;
+
+// Offset do "cover" a partir do centro de enquadramento. `(alvo - desenho) * f`
+// generaliza o antigo `(alvo - desenho) / 2` (f=0.5 = centralizado de sempre).
+const squareCoverOffset = (
+    take: Pick<MediaTake, 'squareFraming'>,
+    isSquare: boolean,
+): { fx: number; fy: number } =>
+    isSquare
+        ? { fx: clampFraction(take.squareFraming?.x), fy: clampFraction(take.squareFraming?.y) }
+        : { fx: 0.5, fy: 0.5 };
+
 export interface VideoSequencePreviewRef {
     seekToTime: (globalTime: number) => void;
     seekToTake: (index: number) => void;
@@ -240,6 +254,14 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             : '50% 50%';
         const currentTakeId = currentTake?.id ?? null;
         const currentObjectFit = currentTake?.objectFit ?? 'cover';
+        // Enquadramento 1:1: só vale quando a saída é quadrada. Em 9:16 o crop
+        // fica centralizado (0.5) como sempre. `object-position` no preview DOM
+        // espelha exatamente o offset do bake de export (mesma fração 0..1).
+        const isSquareOutput = adData.format === '1:1';
+        const currentObjectPosition =
+            isSquareOutput && currentTake?.squareFraming
+                ? `${clampFraction(currentTake.squareFraming.x) * 100}% ${clampFraction(currentTake.squareFraming.y) * 100}%`
+                : undefined;
         // Vídeos nativos podem usar uma superfície de hardware separada no
         // Chromium/Electron. Escalar essa superfície durante a reprodução é o
         // que causa a vibração percebida no preview. Para takes com movimento,
@@ -1603,8 +1625,11 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
                             const drawW = vidW * scale;
                             const drawH = vidH * scale;
-                            const drawX = (TARGET_W - drawW) / 2;
-                            const drawY = (TARGET_H - drawH) / 2;
+                            // Enquadramento 1:1: desloca o crop conforme o centro salvo
+                            // no take (só quando a saída é quadrada; senão fica no centro).
+                            const { fx, fy } = squareCoverOffset(take, TARGET_W === TARGET_H);
+                            const drawX = (TARGET_W - drawW) * fx;
+                            const drawY = (TARGET_H - drawH) * fy;
 
                             drawMediaWithMotion(vid, drawX, drawY, drawW, drawH);
                         }
@@ -1626,8 +1651,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             const scale = Math.max(ratioW, ratioH);
                             const drawW = imgW * scale;
                             const drawH = imgH * scale;
-                            const drawX = (TARGET_W - drawW) / 2;
-                            const drawY = (TARGET_H - drawH) / 2;
+                            const { fx, fy } = squareCoverOffset(take, TARGET_W === TARGET_H);
+                            const drawX = (TARGET_W - drawW) * fx;
+                            const drawY = (TARGET_H - drawH) * fy;
 
                             drawMediaWithMotion(img, drawX, drawY, drawW, drawH);
                         }
@@ -1978,6 +2004,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             style={{
                                 display: 'block',
                                 backfaceVisibility: 'hidden',
+                                objectPosition: currentObjectPosition,
                                 opacity: isCanvasMotionPreviewReady && activeVideo === 1 ? 0 : 1,
                             }}
                             playsInline
@@ -2037,6 +2064,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             style={{
                                 display: 'block',
                                 backfaceVisibility: 'hidden',
+                                objectPosition: currentObjectPosition,
                                 opacity: isCanvasMotionPreviewReady && activeVideo === 2 ? 0 : 1,
                             }}
                             playsInline
@@ -2110,7 +2138,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                     'h-full w-full',
                                     currentTake.objectFit === 'contain' ? 'object-contain' : 'object-cover'
                                 )}
-                                style={{ display: 'block', backfaceVisibility: 'hidden' }}
+                                style={{ display: 'block', backfaceVisibility: 'hidden', objectPosition: currentObjectPosition }}
                                 crossOrigin="anonymous"
                                 alt="Preview"
                             />
