@@ -518,6 +518,8 @@ export interface AdData {
     customOverlayUrl?: string; // Imagem customizada de logo/título no Step4
     /** PNG de tela inteira sobreposto ao vídeo, com referência persistente da origem. */
     frameOverlay?: MediaTake;
+    /** Animação sutil da moldura durante o vídeo (proposital e discreta). */
+    frameOverlayAnimation?: 'none' | 'vibrate' | 'bounce';
     /**
      * Modelo do vídeo. 'takes' = fluxo completo (4 etapas, com legenda e título).
      * 'moldura' = fluxo de 2 etapas (narração + takes com uma moldura PNG por cima),

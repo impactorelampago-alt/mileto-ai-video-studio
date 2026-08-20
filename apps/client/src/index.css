@@ -464,3 +464,17 @@ html {
     word-break: normal;
     text-overflow: clip;
 }
+
+/* Animação sutil da moldura (Vídeo Moldura) — proposital e "fraca".
+   Espelha a matemática do bake de export em VideoSequencePreview. */
+@keyframes mileto-moldura-vibrate {
+    0%   { transform: translateX(0.16%) rotate(0.5deg) scale(1.006); }
+    50%  { transform: translateX(-0.16%) rotate(-0.5deg) scale(0.994); }
+    100% { transform: translateX(0.16%) rotate(0.5deg) scale(1.006); }
+}
+@keyframes mileto-moldura-bounce {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-1.2%); }
+}
+.mileto-moldura-vibrate { animation: mileto-moldura-vibrate 0.16s linear infinite; }
+.mileto-moldura-bounce  { animation: mileto-moldura-bounce 0.66s ease-in-out infinite; }

@@ -26,8 +26,9 @@ import {
     Zap,
     Shuffle,
     CopyPlus,
-    Image as ImageIcon,
     Download,
+    Frame,
+    Check,
 } from 'lucide-react';
 import { TransitionsModal } from '../components/TransitionsModal';
 import { MediaSourceModal } from '../components/MediaSourceModal';
@@ -275,6 +276,13 @@ const SortableTake = ({ take, index, onRemove, onEdit, onDuplicate, onToggleFit,
         </div>
     );
 };
+
+// Animações sutis da moldura (Vídeo Moldura) — de propósito discretas.
+const MOLDURA_ANIMATIONS = [
+    { id: 'none' as const, label: 'Nenhuma' },
+    { id: 'vibrate' as const, label: 'Vibrar' },
+    { id: 'bounce' as const, label: 'Saltitar' },
+];
 
 export const Step2 = () => {
     const navigate = useNavigate();
@@ -767,6 +775,25 @@ export const Step2 = () => {
                                         )}
                                     </button>
 
+                                    {isMoldura && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsFramePickerOpen(true)}
+                                            className={cn(
+                                                'mr-1 inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-[10px] font-black uppercase tracking-wider transition',
+                                                adData.frameOverlay
+                                                    ? 'border-violet-400/50 bg-violet-500/20 text-violet-100 shadow-[0_0_14px_rgba(139,92,246,0.25)] hover:bg-violet-500/28'
+                                                    : 'border-violet-400/25 bg-violet-500/[0.09] text-violet-300 hover:border-violet-400/45 hover:bg-violet-500/16'
+                                            )}
+                                            title={adData.frameOverlay ? 'Trocar a moldura do vídeo' : 'Escolher a moldura PNG — fica por cima de todos os takes'}
+                                            aria-label="Moldura"
+                                        >
+                                            <Frame className="h-4 w-4" />
+                                            Moldura
+                                            {adData.frameOverlay && <Check className="h-3 w-3" />}
+                                        </button>
+                                    )}
+
                                     <button
                                         type="button"
                                         onClick={handleShuffleTakes}
@@ -991,40 +1018,56 @@ export const Step2 = () => {
                 {/* Footer Navigation */}
                 {isMoldura ? (
                     <div className="fixed bottom-0 right-0 left-0 z-40 flex h-16 items-center justify-between gap-3 border-t border-border bg-background/95 px-5 pr-24 backdrop-blur-xl">
-                        {/* Moldura (esquerda) */}
+                        {/* Moldura (esquerda): chip da imagem + seletor de animação sutil */}
                         <div className="flex min-w-0 items-center gap-2">
-                            <button
-                                type="button"
-                                onClick={() => setIsFramePickerOpen(true)}
-                                className={cn(
-                                    'inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold transition active:scale-95',
-                                    adData.frameOverlay
-                                        ? 'border-brand-accent/55 bg-brand-accent/10 text-brand-accent'
-                                        : 'border-white/10 text-foreground/75 hover:border-violet-400/50 hover:bg-violet-500/10 hover:text-violet-300'
-                                )}
-                            >
-                                <ImageIcon className="h-4 w-4" />
-                                {adData.frameOverlay ? 'Trocar moldura' : 'Escolher moldura PNG'}
-                            </button>
-                            {adData.frameOverlay && (
-                                <div className="flex min-w-0 items-center gap-2 rounded-lg border border-brand-accent/30 bg-brand-accent/[.07] px-2 py-1.5">
-                                    <img
-                                        src={adData.frameOverlay.proxyUrl || adData.frameOverlay.fileUrl || adData.frameOverlay.url}
-                                        alt="Moldura selecionada"
-                                        className="h-7 w-7 shrink-0 rounded bg-black/30 object-contain"
-                                    />
-                                    <span className="max-w-[160px] truncate text-[11px] font-semibold text-foreground">
-                                        {adData.frameOverlay.fileName}
-                                    </span>
-                                    <button
-                                        type="button"
-                                        onClick={() => updateAdData({ frameOverlay: undefined })}
-                                        title="Remover moldura"
-                                        className="grid h-6 w-6 place-items-center rounded text-red-300 transition hover:bg-red-500/15"
-                                    >
-                                        <Trash2 className="h-3.5 w-3.5" />
-                                    </button>
-                                </div>
+                            {adData.frameOverlay ? (
+                                <>
+                                    <div className="flex min-w-0 items-center gap-2 rounded-lg border border-violet-400/30 bg-violet-500/[.09] px-2 py-1.5">
+                                        <img
+                                            src={adData.frameOverlay.proxyUrl || adData.frameOverlay.fileUrl || adData.frameOverlay.url}
+                                            alt="Moldura selecionada"
+                                            className="h-7 w-7 shrink-0 rounded bg-black/30 object-contain"
+                                        />
+                                        <span className="max-w-[130px] truncate text-[11px] font-semibold text-foreground">
+                                            {adData.frameOverlay.fileName}
+                                        </span>
+                                        <button
+                                            type="button"
+                                            onClick={() => updateAdData({ frameOverlay: undefined, frameOverlayAnimation: 'none' })}
+                                            title="Remover moldura"
+                                            className="grid h-6 w-6 place-items-center rounded text-red-300 transition hover:bg-red-500/15"
+                                        >
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
+                                    </div>
+                                    {/* Animação sutil */}
+                                    <div className="flex items-center gap-0.5 rounded-lg border border-white/8 bg-white/[.03] py-1 pr-1 pl-1.5">
+                                        <span className="px-1 text-[9px] font-black uppercase tracking-wider text-brand-muted">Animação</span>
+                                        {MOLDURA_ANIMATIONS.map((opt) => {
+                                            const active = (adData.frameOverlayAnimation ?? 'none') === opt.id;
+                                            return (
+                                                <button
+                                                    key={opt.id}
+                                                    type="button"
+                                                    onClick={() => updateAdData({ frameOverlayAnimation: opt.id })}
+                                                    className={cn(
+                                                        'rounded-md px-2 py-1 text-[10px] font-bold transition',
+                                                        active
+                                                            ? 'bg-violet-500/25 text-violet-100 shadow-[0_0_10px_rgba(139,92,246,0.2)]'
+                                                            : 'text-brand-muted hover:bg-white/5 hover:text-foreground'
+                                                    )}
+                                                >
+                                                    {opt.label}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </>
+                            ) : (
+                                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-brand-muted">
+                                    <Frame className="h-3.5 w-3.5 text-violet-300" />
+                                    Escolha a <span className="font-bold text-violet-300">Moldura</span> na barra acima
+                                </span>
                             )}
                         </div>
                         {/* Export (direita) */}

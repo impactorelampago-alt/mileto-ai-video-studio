@@ -109,6 +109,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const frameOverlaySource = adData.frameOverlay
             ? adData.frameOverlay.proxyUrl || adData.frameOverlay.fileUrl || adData.frameOverlay.url
             : '';
+        // Animação sutil da moldura (vibrar/saltitar) — proposital e "fraca".
+        const frameOverlayAnimation = adData.frameOverlayAnimation || 'none';
         const isDebugMode = debugModeOverride ?? wizard.isDebugMode;
         const enhancementFilterId = `mileto-sharpness-${useId().replace(/:/g, '')}`;
 
@@ -1795,7 +1797,27 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             const scale = Math.min(TARGET_W / frameW, TARGET_H / frameH);
                             const drawW = frameW * scale;
                             const drawH = frameH * scale;
-                            ctx.drawImage(frame, (TARGET_W - drawW) / 2, (TARGET_H - drawH) / 2, drawW, drawH);
+                            // Animação sutil (mesma matemática do preview ao vivo). O tempo
+                            // global do frame torna o efeito determinístico no export.
+                            const t = targetGlobalTime;
+                            let animScale = 1;
+                            let animDX = 0;
+                            let animDY = 0;
+                            let animRot = 0;
+                            if (frameOverlayAnimation === 'vibrate') {
+                                const w = Math.sin(t * Math.PI * 2 * 7);
+                                animScale = 1 + 0.006 * Math.sin(t * Math.PI * 2 * 6.3);
+                                animRot = (0.5 * Math.PI) / 180 * w;
+                                animDX = 0.0016 * TARGET_W * w;
+                            } else if (frameOverlayAnimation === 'bounce') {
+                                animDY = -0.012 * TARGET_H * Math.abs(Math.sin(t * Math.PI * 2 * 1.5));
+                            }
+                            ctx.save();
+                            ctx.translate(TARGET_W / 2 + animDX, TARGET_H / 2 + animDY);
+                            if (animRot) ctx.rotate(animRot);
+                            if (animScale !== 1) ctx.scale(animScale, animScale);
+                            ctx.drawImage(frame, -drawW / 2, -drawH / 2, drawW, drawH);
+                            ctx.restore();
                         }
                     } catch (frameError) {
                         console.warn('[DOMCapture] Falha ao rasterizar a moldura:', frameError);
@@ -2344,7 +2366,16 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             alt=""
                             aria-hidden="true"
                             crossOrigin="anonymous"
-                            className="pointer-events-none absolute inset-0 z-40 h-full w-full object-contain"
+                            className={cn(
+                                'pointer-events-none absolute inset-0 z-40 h-full w-full object-contain',
+                                frameOverlayAnimation === 'vibrate' && 'mileto-moldura-vibrate',
+                                frameOverlayAnimation === 'bounce' && 'mileto-moldura-bounce'
+                            )}
+                            style={
+                                frameOverlayAnimation !== 'none'
+                                    ? { animationPlayState: isPlaying ? 'running' : 'paused', transformOrigin: '50% 50%' }
+                                    : undefined
+                            }
                         />
                     )}
 
