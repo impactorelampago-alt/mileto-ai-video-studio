@@ -197,9 +197,23 @@ test('job com moldura valida PNG, materializa o overlay e preserva flags opciona
     assert.match(coordinator, /frameAsset\.mimeType\?\.toLowerCase\(\) !== 'image\/png'/);
     assert.match(coordinator, /materializeOpsTake\([\s\S]*readiness\.frameAsset/);
     assert.match(coordinator, /frameOverlay = \{ \.\.\.materializedFrame, objectFit: 'contain' \}/);
-    assert.match(coordinator, /if \(job\.captions\) adData = await generateAutomaticCaptions/);
-    assert.match(coordinator, /if \(job\.automaticTitles\)/);
+    assert.match(coordinator, /if \(wantCaptions\) adData = await generateAutomaticCaptions/);
+    assert.match(coordinator, /if \(wantTitles\)/);
     assert.match(workerState, /settings: job\.settings/);
+});
+
+test('Video Moldura: sinal settings.videoModel liga o modo forte (1:1, sem titulo/legenda, moldura obrigatoria)', () => {
+    // Sinal explicito e retrocompativel dentro de settings (aberto).
+    assert.match(coordinator, /const isMoldura = job\.settings\?\.videoModel === 'moldura'/);
+    // Coage 1:1 e marca o adData como moldura.
+    assert.match(coordinator, /const effectiveFormat = isMoldura \? \('1:1' as const\)/);
+    assert.match(coordinator, /videoModel: isMoldura \? 'moldura' : 'takes'/);
+    // Moldura obrigatoria + ao menos um take.
+    assert.match(coordinator, /ops_frame_required/);
+    assert.match(coordinator, /ops_take_required/);
+    // Pula legenda e titulo de proposito, independente das flags do job.
+    assert.match(coordinator, /const wantCaptions = !isMoldura && job\.captions/);
+    assert.match(coordinator, /const wantTitles = !isMoldura && job\.automaticTitles/);
 });
 
 test('executor converte o contrato atual de narracao do Ops sem perder tags e aceita o legado', () => {

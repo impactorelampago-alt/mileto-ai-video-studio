@@ -133,6 +133,9 @@ type PreparedJob = {
     initialAdData: AdData;
     musicId: string | null;
     hasCompleteExecutionPayload: boolean;
+    // Vídeo Moldura (job.settings.videoModel==='moldura'): 1:1, moldura obrigatória,
+    // sem título/legenda. O executor honra tudo isso via este flag.
+    isMoldura: boolean;
 };
 
 const IDLE_DISPLAY = IDLE_OPS_EXECUTOR_ACTIVITY;
@@ -554,6 +557,10 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
     if (eligibleAssets.some((asset) => asset.companyId !== job.companyId)) {
         throw new Error('ops_take_company_mismatch: O Ops devolveu um take que nao pertence a empresa do job.');
     }
+    // Vídeo Moldura: sinal explícito e retrocompatível dentro de settings (aberto).
+    const isMoldura = job.settings?.videoModel === 'moldura';
+    // Moldura é sempre quadrada — coage 1:1 mesmo se o Ops mandar outro formato.
+    const effectiveFormat = isMoldura ? ('1:1' as const) : job.format;
     const settingsFrameId = typeof job.settings?.frameOverlayAssetId === 'string'
         ? job.settings.frameOverlayAssetId
         : null;
@@ -568,6 +575,13 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
         || frameAsset.mimeType?.toLowerCase() !== 'image/png'
     )) {
         throw new Error('ops_frame_invalid: A moldura precisa ser um PNG autorizado da empresa do job.');
+    }
+    // Modo forte da moldura: sem moldura ou sem take não há Vídeo Moldura válido.
+    if (isMoldura && !frameAsset) {
+        throw new Error('ops_frame_required: Video Moldura exige uma moldura PNG (frameAssetId) da empresa.');
+    }
+    if (isMoldura && eligibleAssets.length === 0) {
+        throw new Error('ops_take_required: Video Moldura exige ao menos 1 take selecionado.');
     }
     const voiceSynthesis = job.settings?.voiceSynthesis
         && typeof job.settings.voiceSynthesis === 'object'
@@ -611,7 +625,8 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
     // Títulos confirmados no chat do Filmmaker (CONTRATO-TITULOS-CHAT-FILMMAKER
     // v0.2): a chave é calculada localmente sobre o texto limpo recebido, então
     // o plano fica amarrado por construção à narração deste job.
-    const opsPlannedTitles = plannedTitlesFromOpsJob(job.settings);
+    // Moldura não tem títulos — nem semeia plano de títulos, mesmo que venha no job.
+    const opsPlannedTitles = isMoldura ? [] : plannedTitlesFromOpsJob(job.settings);
     const inlinePalette = paletteFromOpsProjectCompany(job.settings);
     const initialAdData = createDefaultAdData({
         ...(opsPlannedTitles.length ? {
@@ -619,7 +634,8 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
             plannedTitlesNarrationKey: titlePlanningNarrationKey(narrationPlainText),
         } : {}),
         title: job.projectTitle,
-        format: job.format,
+        format: effectiveFormat,
+        videoModel: isMoldura ? 'moldura' : 'takes',
         narrationText: narrationPlainText,
         narrationPlainText,
         narrationSynthesisText: narrationSynthesisText || narrationPlainText,
@@ -668,6 +684,7 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
         initialAdData,
         musicId: music?.id || null,
         hasCompleteExecutionPayload,
+        isMoldura,
     };
 };
 
@@ -1291,6 +1308,15 @@ export const OpsVideoJobCoordinator = () => {
             }
 
             let adData: AdData = { ...readiness.initialAdData, frameOverlay };
+            // Vídeo Moldura: anima a moldura se o Ops pedir (senão estática) e
+            // pula legenda/título de propósito — independente das flags do job.
+            const isMoldura = readiness.isMoldura;
+            if (isMoldura) {
+                const anim = job.settings?.frameOverlayAnimation;
+                if (anim === 'vibrate' || anim === 'bounce') adData = { ...adData, frameOverlayAnimation: anim };
+            }
+            const wantCaptions = !isMoldura && job.captions;
+            const wantTitles = !isMoldura && job.automaticTitles;
             let titleWarning: string | null = null;
             let finalTakes: MediaTake[] = [];
             let captionStyle = { ...DEFAULT_CAPTION_STYLE };
@@ -1343,7 +1369,7 @@ export const OpsVideoJobCoordinator = () => {
                 && savedProject.title === job.projectTitle.trim()
                 && savedProject.adData.opsCompany?.id === job.companyId
                 && savedProject.adData.narrationPlainText.trim() === readiness.initialAdData.narrationPlainText.trim()
-                && savedProject.adData.format === job.format
+                && savedProject.adData.format === readiness.initialAdData.format
                 && (savedProject.adData.frameOverlay?.externalMedia?.assetId || null) === (readiness.frameAsset?.id || null)
                 && savedProject.mediaTakes.length > 0,
             );
@@ -1404,7 +1430,7 @@ export const OpsVideoJobCoordinator = () => {
                 // local. Se TODOS estiverem marcados, mantém o acervo original para
                 // não estrangular o job (a marca é um hint, não uma trava dura).
                 const framingMap = readTakeFramingMap();
-                const eligibleForSquare = job.format === '1:1'
+                const eligibleForSquare = adData.format === '1:1'
                     ? readiness.eligibleAssets.filter((asset) => !framingMap[asset.id]?.ignoreSquare)
                     : readiness.eligibleAssets;
                 const poolForSelection = eligibleForSquare.length ? eligibleForSquare : readiness.eligibleAssets;
@@ -1442,10 +1468,14 @@ export const OpsVideoJobCoordinator = () => {
                 const reuseMessage = selection.reusedCount > 0
                     ? ` ${selection.reusedCount} ${selection.reusedCount === 1 ? 'repetição foi necessária' : 'repetições foram necessárias'} porque o acervo recente era menor que a duração do áudio.`
                     : '';
+                // Vídeo Moldura: mostra qual moldura o Ops escolheu, pra conferência.
+                const molduraMessage = isMoldura && readiness.frameAsset
+                    ? ` Moldura: "${readiness.frameAsset.name}".`
+                    : '';
                 await patch(
                     'takes',
                     OPS_VIDEO_PROGRESS.takes.end,
-                    `${finalTakes.length} ${finalTakes.length === 1 ? 'corte montado' : 'cortes montados'} com ${selection.uniqueAssetCount} ${selection.uniqueAssetCount === 1 ? 'take importado e validado' : 'takes importados e validados'}.${reuseMessage}`,
+                    `${finalTakes.length} ${finalTakes.length === 1 ? 'corte montado' : 'cortes montados'} com ${selection.uniqueAssetCount} ${selection.uniqueAssetCount === 1 ? 'take importado e validado' : 'takes importados e validados'}.${reuseMessage}${molduraMessage}`,
                 );
 
                 await patch('quick_edit', OPS_VIDEO_PROGRESS.quick_edit.start, job.quickEdit
@@ -1463,11 +1493,11 @@ export const OpsVideoJobCoordinator = () => {
                 }
                 await patch('quick_edit', OPS_VIDEO_PROGRESS.quick_edit.end, 'Cortes e acabamento dos takes concluidos.');
 
-                await patch('captions', OPS_VIDEO_PROGRESS.captions.start, job.captions
+                await patch('captions', OPS_VIDEO_PROGRESS.captions.start, wantCaptions
                     ? 'Gerando e revisando as legendas automaticas.'
-                    : 'Legendas automaticas nao solicitadas.');
-                if (job.captions) adData = await generateAutomaticCaptions(adData);
-                await patch('captions', OPS_VIDEO_PROGRESS.captions.end, job.captions ? 'Legendas automaticas prontas.' : 'Etapa de legendas ignorada.');
+                    : isMoldura ? 'Video Moldura: sem legendas.' : 'Legendas automaticas nao solicitadas.');
+                if (wantCaptions) adData = await generateAutomaticCaptions(adData);
+                await patch('captions', OPS_VIDEO_PROGRESS.captions.end, wantCaptions ? 'Legendas automaticas prontas.' : 'Etapa de legendas ignorada.');
 
                 // Plano confirmado no chat do Filmmaker (CONTRATO v0.2): quando o
                 // job traz plannedTitles, o plano é AUTORIDADE — veio amarrado a
@@ -1478,12 +1508,12 @@ export const OpsVideoJobCoordinator = () => {
                     (title) => title.selected !== false && String(title.text || '').trim().length > 0,
                 );
                 const planDriven = selectedPlannedTitles.length > 0;
-                await patch('titles', OPS_VIDEO_PROGRESS.titles.start, job.automaticTitles
+                await patch('titles', OPS_VIDEO_PROGRESS.titles.start, wantTitles
                     ? planDriven
                         ? 'Aplicando os titulos confirmados no chat do Filmmaker.'
                         : 'Aplicando gatilhos, modelos e paleta da empresa.'
-                    : 'Titulos automaticos nao solicitados.');
-                if (job.automaticTitles) {
+                    : isMoldura ? 'Video Moldura: sem titulos.' : 'Titulos automaticos nao solicitados.');
+                if (wantTitles) {
                     const titleController = new AbortController();
                     titleGenerationAbortRef.current = titleController;
                     try {
@@ -1608,7 +1638,7 @@ export const OpsVideoJobCoordinator = () => {
                         },
                     };
                 }
-                await patch('titles', OPS_VIDEO_PROGRESS.titles.end, job.automaticTitles
+                await patch('titles', OPS_VIDEO_PROGRESS.titles.end, wantTitles
                     ? titleWarning || 'Titulos automaticos prontos.'
                     : 'Etapa de titulos ignorada.');
 
@@ -1655,7 +1685,7 @@ export const OpsVideoJobCoordinator = () => {
                 outputFolder: `Mileto Ops > ${companyName}`,
                 fps: 30,
                 totalDuration: Number(adData.narrationDuration || 0),
-                targetDims: job.format === '1:1' ? { w: 1080, h: 1080 } : { w: 1080, h: 1920 },
+                targetDims: adData.format === '1:1' ? { w: 1080, h: 1080 } : { w: 1080, h: 1920 },
                 mediaTakes: finalTakes,
                 masterAudioUrl: adData.masterAudioUrl,
                 transitionPath: adData.globalTransition?.filePath,
