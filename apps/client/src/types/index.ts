@@ -518,6 +518,12 @@ export interface AdData {
     customOverlayUrl?: string; // Imagem customizada de logo/título no Step4
     /** PNG de tela inteira sobreposto ao vídeo, com referência persistente da origem. */
     frameOverlay?: MediaTake;
+    /**
+     * Modelo do vídeo. 'takes' = fluxo completo (4 etapas, com legenda e título).
+     * 'moldura' = fluxo de 2 etapas (narração + takes com uma moldura PNG por cima),
+     * sem legenda nem título. Ausente = 'takes' (retrocompatível).
+     */
+    videoModel?: 'takes' | 'moldura';
 }
 
 export interface CaptionStyle {

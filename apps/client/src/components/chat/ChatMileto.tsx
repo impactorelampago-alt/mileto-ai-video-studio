@@ -241,6 +241,8 @@ interface NarrationCardProps {
     onApplyAndCreateTitles: () => void;
     titlePlanningNode?: React.ReactNode;
     actionsDisabled?: boolean;
+    /** Vídeo Moldura não tem títulos on-screen: esconde "Aplicar e criar títulos". */
+    hideCreateTitles?: boolean;
 }
 
 const NarrationCard = ({
@@ -249,6 +251,7 @@ const NarrationCard = ({
     onApplyAndCreateTitles,
     titlePlanningNode,
     actionsDisabled = false,
+    hideCreateTitles = false,
 }: NarrationCardProps) => {
     const delivery = parseChatNarrationDelivery(content);
     if (!delivery) return null;
@@ -321,15 +324,17 @@ const NarrationCard = ({
                     >
                         Aplicar narração
                     </button>
-                    <button
-                        type="button"
-                        data-narration-action="apply-and-create-titles"
-                        onClick={onApplyAndCreateTitles}
-                        disabled={actionsDisabled}
-                        className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-brand-accent px-3 text-[10px] font-bold text-[#07110d] transition hover:brightness-105 disabled:cursor-wait disabled:opacity-45"
-                    >
-                        <Wand2 className="h-3.5 w-3.5" /> Aplicar e criar títulos
-                    </button>
+                    {!hideCreateTitles && (
+                        <button
+                            type="button"
+                            data-narration-action="apply-and-create-titles"
+                            onClick={onApplyAndCreateTitles}
+                            disabled={actionsDisabled}
+                            className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-brand-accent px-3 text-[10px] font-bold text-[#07110d] transition hover:brightness-105 disabled:cursor-wait disabled:opacity-45"
+                        >
+                            <Wand2 className="h-3.5 w-3.5" /> Aplicar e criar títulos
+                        </button>
+                    )}
                 </footer>
             </section>
 
@@ -351,6 +356,7 @@ interface StructuredAgentResponseProps {
     onApplyAndCreateTitles: () => void;
     titlePlanningNode?: React.ReactNode;
     actionsDisabled?: boolean;
+    hideCreateTitles?: boolean;
 }
 
 const StructuredAgentResponse = ({
@@ -359,6 +365,7 @@ const StructuredAgentResponse = ({
     onApplyAndCreateTitles,
     titlePlanningNode,
     actionsDisabled = false,
+    hideCreateTitles = false,
 }: StructuredAgentResponseProps) => {
     const delivery = parseChatNarrationDelivery(content);
     if (delivery) {
@@ -369,6 +376,7 @@ const StructuredAgentResponse = ({
                 onApplyAndCreateTitles={onApplyAndCreateTitles}
                 titlePlanningNode={titlePlanningNode}
                 actionsDisabled={actionsDisabled}
+                hideCreateTitles={hideCreateTitles}
             />
         );
     }
@@ -2096,6 +2104,7 @@ export const ChatMileto: React.FC = () => {
                                                 onApply={() => handleUseAsScript(msg)}
                                                 onApplyAndCreateTitles={() => handleApplyAndCreateTitles(msg)}
                                                 actionsDisabled={isLoading}
+                                                hideCreateTitles={adData.videoModel === 'moldura'}
                                                 titlePlanningNode={titlePlans[msg.id]?.busy ? (
                                                     <div className="mt-3 rounded-xl border border-brand-accent/15 bg-brand-accent/[.035] px-3 py-2 text-[10px] text-brand-muted">
                                                         Planejamento em andamento no campo principal do chat.

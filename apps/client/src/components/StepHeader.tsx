@@ -5,17 +5,24 @@ import { toast } from 'sonner';
 import { useWizard } from '../context/WizardContext';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 
-const STEPS = [
+const TAKES_STEPS = [
     { id: 1, label: 'Informações', path: '/wizard/step/1' },
     { id: 2, label: 'Takes & Cortes', path: '/wizard/step/2' },
     { id: 3, label: 'Estilo', path: '/wizard/step/3' },
     { id: 4, label: 'Títulos & Export', path: '/wizard/step/4' },
 ];
 
+// Vídeo Moldura: só narração + takes/moldura & export (sem legenda/título).
+const MOLDURA_STEPS = [
+    { id: 1, label: 'Narração', path: '/wizard/step/1' },
+    { id: 2, label: 'Moldura & Export', path: '/wizard/step/2' },
+];
+
 export const StepHeader = () => {
     const location = useLocation();
     const navigate = useNavigate();
     const { adData, mediaTakes } = useWizard();
+    const STEPS = adData.videoModel === 'moldura' ? MOLDURA_STEPS : TAKES_STEPS;
     const currentPath = location.pathname;
 
     // Only render on wizard/step pages

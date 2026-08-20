@@ -4,7 +4,7 @@ import { MainLayout } from './layouts/MainLayout';
 import { DebugProvider } from './context/DebugContext';
 import { DebugPanel } from './components/DebugPanel';
 import { ChatMileto } from './components/chat/ChatMileto';
-import { SHOW_DEBUG_FEATURES } from './context/WizardContext';
+import { SHOW_DEBUG_FEATURES, useWizard } from './context/WizardContext';
 import { useAuth } from './context/AuthContext';
 import { LoginScreen } from './components/LoginScreen';
 import { DownloadJobsProvider } from './context/DownloadJobsContext';
@@ -25,6 +25,14 @@ const Step1 = lazy(() => import('./pages/Step1').then((m) => ({ default: m.Step1
 const Step2 = lazy(() => import('./pages/Step2').then((m) => ({ default: m.Step2 })));
 const Step3 = lazy(() => import('./pages/Step3').then((m) => ({ default: m.Step3 })));
 const Step4 = lazy(() => import('./pages/Step4').then((m) => ({ default: m.Step4 })));
+
+// O Vídeo Moldura tem só 2 etapas. As etapas de estilo (legenda) e títulos não
+// existem nesse modelo — se acessadas por URL/rota antiga, voltam para a etapa 2.
+function TakesOnlyRoute({ children }: { children: React.ReactElement }) {
+    const { adData } = useWizard();
+    if (adData.videoModel === 'moldura') return <Navigate to="/wizard/step/2" replace />;
+    return children;
+}
 
 function App() {
     const { status, user } = useAuth();
@@ -70,8 +78,8 @@ function App() {
                                     <Route path="ai/title-generator" element={user?.role === 'owner' ? <AiTitleGeneratorSettings /> : <Navigate to="/" replace />} />
                                     <Route path="wizard/step/1" element={<Step1 />} />
                                     <Route path="wizard/step/2" element={<OpsCompanyGuard><Step2 /></OpsCompanyGuard>} />
-                                    <Route path="wizard/step/3" element={<OpsCompanyGuard><Step3 /></OpsCompanyGuard>} />
-                                    <Route path="wizard/step/4" element={<OpsCompanyGuard><Step4 /></OpsCompanyGuard>} />
+                                    <Route path="wizard/step/3" element={<OpsCompanyGuard><TakesOnlyRoute><Step3 /></TakesOnlyRoute></OpsCompanyGuard>} />
+                                    <Route path="wizard/step/4" element={<OpsCompanyGuard><TakesOnlyRoute><Step4 /></TakesOnlyRoute></OpsCompanyGuard>} />
                                     {/* Legacy paths → redirect to new wizard paths */}
                                     <Route path="step/1" element={<Navigate to="/wizard/step/1" replace />} />
                                     <Route path="step/2" element={<Navigate to="/wizard/step/2" replace />} />

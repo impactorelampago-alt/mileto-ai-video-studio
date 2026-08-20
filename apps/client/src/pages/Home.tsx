@@ -217,9 +217,11 @@ export const Home = () => {
         navigate('/wizard/step/1');
     };
 
-    // "Criar Vídeo Moldura" ainda é só front — o fluxo real entra depois.
+    // Vídeo Moldura: fluxo de 2 etapas (narração + takes com moldura PNG por cima),
+    // sem legenda nem título. O tipo fica marcado no rascunho desde a criação.
     const handleNewMoldura = () => {
-        toast.info('Criar Vídeo Moldura chega em breve.');
+        startNewDraft({ scope: 'local', videoModel: 'moldura' });
+        navigate('/wizard/step/1');
     };
 
     const handleShare = async (event: React.MouseEvent, id: string) => {

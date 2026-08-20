@@ -90,7 +90,7 @@ interface WizardContextType {
     setDraftTitle: (_title: string) => void;
     saveProject: (_opts?: { exported?: boolean; keepalive?: boolean; lastStep?: number }) => Promise<boolean>;
     loadProject: () => Promise<void>;
-    startNewDraft: (_opts?: { id?: string; scope?: 'local' | 'shared'; title?: string }) => string;
+    startNewDraft: (_opts?: { id?: string; scope?: 'local' | 'shared'; title?: string; videoModel?: 'takes' | 'moldura' }) => string;
     applyProjectSnapshot: (_snapshot: {
         projectId: string;
         title: string;
@@ -208,6 +208,7 @@ const defaultAdData: AdData = {
     transitionRotation: 0,
     transitionVolume: 1.0,
     transitionMuted: false,
+    videoModel: 'takes',
 };
 
 export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
@@ -1281,7 +1282,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         initialDraftLoadCompleteRef.current = true;
     }, [invalidatePendingMusicSelection, setDraftScope]);
 
-    const startNewDraft = React.useCallback((opts?: { id?: string; scope?: 'local' | 'shared'; title?: string }): string => {
+    const startNewDraft = React.useCallback((opts?: { id?: string; scope?: 'local' | 'shared'; title?: string; videoModel?: 'takes' | 'moldura' }): string => {
         invalidatePendingMusicSelection();
         initialDraftLoadCompleteRef.current = false;
         if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
@@ -1297,7 +1298,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         } catch {
             // ignore
         }
-        setAdData({ ...defaultAdData, title });
+        setAdData({ ...defaultAdData, title, videoModel: opts?.videoModel ?? 'takes' });
         setMediaTakes([]);
         setCaptionStyle({ ...DEFAULT_CAPTION_STYLE });
         setSelectedMusicIdState(SYSTEM_MUSIC_IDS.batida);

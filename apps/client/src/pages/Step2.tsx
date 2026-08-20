@@ -26,8 +26,12 @@ import {
     Zap,
     Shuffle,
     CopyPlus,
+    Image as ImageIcon,
+    Download,
 } from 'lucide-react';
 import { TransitionsModal } from '../components/TransitionsModal';
+import { MediaSourceModal } from '../components/MediaSourceModal';
+import { ExportModal } from '../components/ExportModal';
 import { cn, generateId } from '../lib/utils';
 import {
     DndContext,
@@ -287,6 +291,10 @@ export const Step2 = () => {
     const [targetTakeId, setTargetTakeId] = useState<string | null>(null);
     const [confirmClear, setConfirmClear] = useState(false);
     const [isQuickEditing, setIsQuickEditing] = useState(false);
+    // Vídeo Moldura: esta é a última etapa (upload da moldura PNG + export).
+    const isMoldura = adData.videoModel === 'moldura';
+    const [isFramePickerOpen, setIsFramePickerOpen] = useState(false);
+    const [showExportModal, setShowExportModal] = useState(false);
     const previewRef = useRef<VideoSequencePreviewRef>(null);
     const opsSourceRepairsRef = useRef(new Set<string>());
 
@@ -378,6 +386,30 @@ export const Step2 = () => {
         const missing = missingBeforeStep(3, adData, mediaTakes);
         if (missing.length) toast.warning(pendingWarningText(missing), { duration: 7000 });
         navigate('/wizard/step/3');
+    };
+
+    // Vídeo Moldura: a moldura PNG vira o overlay (mesma camada que os títulos
+    // usam no modelo de takes). Não há legenda nem título.
+    const handleFramePicked = (take: MediaTake) => {
+        if (!/\.png$/i.test(take.fileName || '')) {
+            toast.error('A moldura precisa ser um arquivo PNG com transparência.');
+            return;
+        }
+        updateAdData({ frameOverlay: { ...take, objectFit: 'contain' } });
+        setIsFramePickerOpen(false);
+        toast.success('Moldura aplicada ao vídeo inteiro.');
+    };
+
+    const handleOpenExportMoldura = () => {
+        if (mediaTakes.length === 0) {
+            toast.warning('Adicione pelo menos um take antes de exportar.');
+            return;
+        }
+        if (!adData.frameOverlay) {
+            toast.warning('Escolha uma moldura PNG antes de exportar.');
+            return;
+        }
+        setShowExportModal(true);
     };
 
     const handleMuteToggle = (takeId: string) => {
@@ -957,15 +989,83 @@ export const Step2 = () => {
                 )}
 
                 {/* Footer Navigation */}
-                <div className="fixed bottom-0 right-0 left-0 z-40 flex h-16 items-center justify-end border-t border-border bg-background/95 px-5 pr-24 backdrop-blur-xl">
-                    <button
-                        onClick={handleNext}
-                        className="px-8 py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground font-bold rounded-lg text-sm transition-all flex items-center gap-2 shadow-lg shadow-green-900/10"
-                    >
-                        Próximo: Estilo
-                        <ArrowRight className="w-4 h-4" />
-                    </button>
-                </div>
+                {isMoldura ? (
+                    <div className="fixed bottom-0 right-0 left-0 z-40 flex h-16 items-center justify-between gap-3 border-t border-border bg-background/95 px-5 pr-24 backdrop-blur-xl">
+                        {/* Moldura (esquerda) */}
+                        <div className="flex min-w-0 items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setIsFramePickerOpen(true)}
+                                className={cn(
+                                    'inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold transition active:scale-95',
+                                    adData.frameOverlay
+                                        ? 'border-brand-accent/55 bg-brand-accent/10 text-brand-accent'
+                                        : 'border-white/10 text-foreground/75 hover:border-violet-400/50 hover:bg-violet-500/10 hover:text-violet-300'
+                                )}
+                            >
+                                <ImageIcon className="h-4 w-4" />
+                                {adData.frameOverlay ? 'Trocar moldura' : 'Escolher moldura PNG'}
+                            </button>
+                            {adData.frameOverlay && (
+                                <div className="flex min-w-0 items-center gap-2 rounded-lg border border-brand-accent/30 bg-brand-accent/[.07] px-2 py-1.5">
+                                    <img
+                                        src={adData.frameOverlay.proxyUrl || adData.frameOverlay.fileUrl || adData.frameOverlay.url}
+                                        alt="Moldura selecionada"
+                                        className="h-7 w-7 shrink-0 rounded bg-black/30 object-contain"
+                                    />
+                                    <span className="max-w-[160px] truncate text-[11px] font-semibold text-foreground">
+                                        {adData.frameOverlay.fileName}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => updateAdData({ frameOverlay: undefined })}
+                                        title="Remover moldura"
+                                        className="grid h-6 w-6 place-items-center rounded text-red-300 transition hover:bg-red-500/15"
+                                    >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                        {/* Export (direita) */}
+                        <button
+                            onClick={handleOpenExportMoldura}
+                            className="flex items-center gap-2.5 rounded-xl bg-linear-to-r from-brand-lime to-brand-accent px-8 py-2.5 text-xs font-extrabold uppercase tracking-widest text-[#0a0f12] transition-transform hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(0,230,118,0.4)] active:scale-[0.98]"
+                        >
+                            <Download className="h-5 w-5 shrink-0" />
+                            <span>Exportar e Concluir</span>
+                        </button>
+                    </div>
+                ) : (
+                    <div className="fixed bottom-0 right-0 left-0 z-40 flex h-16 items-center justify-end border-t border-border bg-background/95 px-5 pr-24 backdrop-blur-xl">
+                        <button
+                            onClick={handleNext}
+                            className="px-8 py-2.5 bg-primary hover:bg-primary/90 text-primary-foreground font-bold rounded-lg text-sm transition-all flex items-center gap-2 shadow-lg shadow-green-900/10"
+                        >
+                            Próximo: Estilo
+                            <ArrowRight className="w-4 h-4" />
+                        </button>
+                    </div>
+                )}
+
+                {/* Vídeo Moldura: picker do PNG + export (reaproveita o pipeline de overlay) */}
+                {isMoldura && isFramePickerOpen && (
+                    <MediaSourceModal
+                        kind="image"
+                        title="Escolher moldura PNG"
+                        onClose={() => setIsFramePickerOpen(false)}
+                        onTakePicked={handleFramePicked}
+                    />
+                )}
+                {isMoldura && showExportModal && (
+                    <ExportModal
+                        onClose={() => setShowExportModal(false)}
+                        mediaTakes={mediaTakes}
+                        masterAudioUrl={adData.masterAudioUrl || adData.narrationAudioUrl || undefined}
+                        transitionPath={adData.globalTransition?.filePath || undefined}
+                        transitionRotation={adData.transitionRotation ?? 0}
+                    />
+                )}
             </div>
 
             {/* Transitions Modal */}
