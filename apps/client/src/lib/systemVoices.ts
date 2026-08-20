@@ -22,12 +22,21 @@ const createPreset = (
     speed: number,
     volume: number,
     musicTrackId: string | null,
+    // Volumes de mixagem do preset (0..N). Ausente = padrão global
+    // (narração 100%, música 30%).
+    audioVolumes?: { narration?: number; background?: number },
 ): VoicePreset => ({
     voiceSettings: { ...DEFAULT_VOICE_SETTINGS, speed, volume },
     musicTrackId,
     audioConfig: {
-        narration: { ...DEFAULT_PRESET_AUDIO_CONFIG.narration },
-        background: { ...DEFAULT_PRESET_AUDIO_CONFIG.background },
+        narration: {
+            ...DEFAULT_PRESET_AUDIO_CONFIG.narration,
+            ...(audioVolumes?.narration !== undefined ? { volume: audioVolumes.narration } : {}),
+        },
+        background: {
+            ...DEFAULT_PRESET_AUDIO_CONFIG.background,
+            ...(audioVolumes?.background !== undefined ? { volume: audioVolumes.background } : {}),
+        },
     },
 });
 
@@ -58,7 +67,8 @@ export const SYSTEM_VOICES: SystemVoice[] = [
         name: 'Rodeio',
         desc: 'Locução animada, eventos',
         provider: 'fishAudio',
-        preset: createPreset(1, 0, SYSTEM_MUSIC_IDS.rodeio),
+        // Padrão do Rodeio: narração 110%, música de fundo 25%.
+        preset: createPreset(1, 0, SYSTEM_MUSIC_IDS.rodeio, { narration: 1.1, background: 0.25 }),
     },
     {
         id: '5c7c62ef7fc545908c8de8feab76a272',

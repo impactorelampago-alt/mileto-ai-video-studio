@@ -1298,7 +1298,14 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         } catch {
             // ignore
         }
-        setAdData({ ...defaultAdData, title, videoModel: opts?.videoModel ?? 'takes' });
+        const videoModel = opts?.videoModel ?? 'takes';
+        setAdData({
+            ...defaultAdData,
+            title,
+            videoModel,
+            // Vídeo Moldura nasce em 1:1 por padrão (o usuário ainda pode trocar).
+            ...(videoModel === 'moldura' ? { format: '1:1' as const } : {}),
+        });
         setMediaTakes([]);
         setCaptionStyle({ ...DEFAULT_CAPTION_STYLE });
         setSelectedMusicIdState(SYSTEM_MUSIC_IDS.batida);
