@@ -33,7 +33,9 @@ const mediaDurationJobs = new Map<string, Promise<DurationMeasurement | undefine
 // Categorias padrão (pastas raiz fixas).
 export const CATEGORIES = ['Músicas', 'Imagens', 'Vídeos'] as const;
 export type Category = (typeof CATEGORIES)[number];
-export const DEFAULT_ROOT_FOLDERS = [...CATEGORIES, 'Geração por IA'] as const;
+// 'Moldura' guarda os PNGs de moldura (Vídeo Moldura). Não é uma "categoria"
+// com regras de extensão — é uma pasta raiz padrão, como 'Geração por IA'.
+export const DEFAULT_ROOT_FOLDERS = [...CATEGORIES, 'Geração por IA', 'Moldura'] as const;
 
 /** Extensões suportadas por categoria (fonte: MediaTake.type + multer). */
 const EXT_BY_CATEGORY: Record<Category, string[]> = {

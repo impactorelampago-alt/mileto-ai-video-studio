@@ -12,7 +12,7 @@ import { pool, query } from './db.js';
 import { collectSharedDraftAssetIds } from './sharedDraftAssets.js';
 import { sharedDownloadContentDisposition } from './sharedDownloadCapability.js';
 
-const CATEGORIES = ['Imagens', 'Músicas', 'Vídeos', 'Geração por IA'];
+const CATEGORIES = ['Imagens', 'Músicas', 'Vídeos', 'Geração por IA', 'Moldura'];
 const TRASH_DAYS = 30;
 
 const s3 = config.r2.enabled
@@ -70,7 +70,7 @@ const cleanPath = (value, { allowRoot = true } = {}) => {
         throw error;
     }
     if (segments.length && !CATEGORIES.includes(segments[0])) {
-        const error = new Error('O caminho deve começar por Imagens, Músicas, Vídeos ou Geração por IA.');
+        const error = new Error(`O caminho deve começar por ${CATEGORIES.join(', ')}.`);
         error.status = 400;
         throw error;
     }
@@ -79,7 +79,7 @@ const cleanPath = (value, { allowRoot = true } = {}) => {
 
 const mediaType = (category, mimeType = '', name = '') => {
     if (category === 'Músicas') return 'audio';
-    if (category === 'Imagens') return 'image';
+    if (category === 'Imagens' || category === 'Moldura') return 'image';
     if (category === 'Vídeos') return 'video';
     const mime = String(mimeType).toLowerCase();
     if (mime.startsWith('image/')) return 'image';

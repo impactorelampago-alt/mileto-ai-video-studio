@@ -18,7 +18,7 @@ type SavedMediaTake = {
 };
 
 type SavedProjectData = {
-    adData?: { title?: string; narrationText?: string };
+    adData?: { title?: string; narrationText?: string; videoModel?: 'takes' | 'moldura' };
     mediaTakes?: SavedMediaTake[];
     updatedAt?: string;
     exported?: boolean;
@@ -82,6 +82,7 @@ export const listProjects = async (_req: Request, res: Response) => {
             mediaCount: number;
             duration: number;
             cover: { url: string; type: 'image' | 'video' } | null;
+            videoModel: 'takes' | 'moldura';
         }> = [];
 
         for (const entry of entries) {
@@ -125,6 +126,7 @@ export const listProjects = async (_req: Request, res: Response) => {
                     mediaCount,
                     duration,
                     cover: coverForDraft(entry.name, firstVisual),
+                    videoModel: parsed.adData?.videoModel === 'moldura' ? 'moldura' : 'takes',
                 });
             } catch (err) {
                 console.warn('[Projects] Falha ao ler rascunho', entry.name, err);

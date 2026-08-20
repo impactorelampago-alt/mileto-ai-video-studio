@@ -111,10 +111,13 @@ test('biblioteca compartilhada sempre inclui as três faixas oficiais sem depend
     }
 });
 
-test('Rodeio nasce com a própria música no catálogo global', () => {
+test('Rodeio nasce com a própria música e volumes 110% / 25% no catálogo global', () => {
     const rodeioAt = systemVoices.indexOf("name: 'Rodeio'");
     assert.ok(rodeioAt >= 0);
-    assert.match(systemVoices.slice(rodeioAt, rodeioAt + 260), /createPreset\(1, 0, SYSTEM_MUSIC_IDS\.rodeio\)/);
+    assert.match(
+        systemVoices.slice(rodeioAt, rodeioAt + 340),
+        /createPreset\(1, 0, SYSTEM_MUSIC_IDS\.rodeio, \{ narration: 1\.1, background: 0\.25 \}\)/,
+    );
     assert.match(systemVoices, /mileto_system_voice_presets_v2/);
 });
 

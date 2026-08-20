@@ -18,6 +18,7 @@ interface DraftSummary {
     duration: number;
     author?: string | null;
     cover?: { url: string; type: 'image' | 'video' } | null;
+    videoModel?: 'takes' | 'moldura';
 }
 
 const API_BASE = (window as unknown as { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
@@ -171,6 +172,9 @@ export const Home = () => {
                         duration,
                         cover,
                         author: draft.authorName || draft.authorEmail || null,
+                        videoModel: data && isRecord(data.adData) && data.adData.videoModel === 'moldura'
+                            ? 'moldura' as const
+                            : 'takes' as const,
                     };
                 }));
                 setDrafts(hydratedDrafts);
@@ -492,6 +496,19 @@ export const Home = () => {
                                     )}
                                 >
                                     <div className="relative aspect-[9/16] w-[84px] shrink-0 overflow-hidden bg-black sm:w-[94px]" aria-hidden="true">
+                                        {/* Diferencia o tipo de projeto (Moldura x Takes) */}
+                                        <span
+                                            className={cn(
+                                                'absolute left-1.5 top-1.5 z-10 inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider shadow-lg backdrop-blur-sm',
+                                                d.videoModel === 'moldura'
+                                                    ? 'border-violet-300/40 bg-violet-500/85 text-white'
+                                                    : 'border-brand-lime/40 bg-brand-lime/85 text-[#06110c]'
+                                            )}
+                                        >
+                                            {d.videoModel === 'moldura'
+                                                ? <><Frame className="h-2.5 w-2.5" /> Moldura</>
+                                                : <><Wand2 className="h-2.5 w-2.5" /> Takes</>}
+                                        </span>
                                         {d.cover?.type === 'image' ? (
                                             <img src={d.cover.url} alt="" className="h-full w-full object-cover" />
                                         ) : d.cover?.type === 'video' ? (
