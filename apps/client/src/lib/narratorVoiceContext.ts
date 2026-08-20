@@ -70,11 +70,19 @@ export const migrateCustomVoices = (
     input: unknown,
     keyFactory: () => string = createCustomVoiceCatalogKey,
 ): { voices: CustomVoice[]; changed: boolean } => {
-    if (!Array.isArray(input)) return { voices: [], changed: input !== undefined && input !== null };
-    const voices = input.map((item) => normalizeCustomVoiceForStorage(
-        item && typeof item === 'object' ? item as CustomVoice : { id: '', name: '' },
-        keyFactory,
-    ));
+    // Valor corrompido/não-array: NUNCA regravar por cima — regravar [] aqui
+    // zerava TODAS as vozes salvas. Preserva o storage para recuperação futura.
+    if (!Array.isArray(input)) return { voices: [], changed: false };
+    // Só entradas com id real viram voz; lixo é ignorado em vez de virar
+    // card-fantasma { id:'', name:'' }. Voz sem descrição sobrevive (fica pendente).
+    const voices = input
+        .filter((item): item is CustomVoice => Boolean(
+            item
+            && typeof item === 'object'
+            && typeof (item as CustomVoice).id === 'string'
+            && (item as CustomVoice).id.trim(),
+        ))
+        .map((item) => normalizeCustomVoiceForStorage(item, keyFactory));
     return { voices, changed: JSON.stringify(voices) !== JSON.stringify(input) };
 };
 

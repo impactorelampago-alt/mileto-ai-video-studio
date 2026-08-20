@@ -88,6 +88,11 @@ export const VoiceSelector = () => {
     const presetMusicName = (id?: string | null) =>
         [...SYSTEM_MUSIC_TRACKS, ...musicLibrary].find((track) => track.id === id)?.displayName;
 
+    // Seleção é EXCLUSIVA por (id + provider). Comparar só o id acendia dois
+    // cards quando existiam vozes com o mesmo reference id.
+    const isVoiceSelected = (id: string, provider: TtsProvider): boolean =>
+        adData.selectedVoiceId === id && (adData.selectedVoiceProvider ?? 'fishAudio') === provider;
+
     const selectVoice = (id: string, provider: TtsProvider) => {
         const systemVoice = SYSTEM_VOICES.find((voice) => voice.id === id);
         const customVoice = customVoices.find((voice) => voice.id === id);
@@ -249,6 +254,12 @@ export const VoiceSelector = () => {
             toast.error('Descreva em pelo menos 8 caracteres como essa voz soa ou quando deve ser usada.');
             return;
         }
+        // Exclusividade real: um mesmo reference id não pode virar dois cards
+        // (senão os dois acendem ao selecionar). Mesma trava do editor de preset.
+        if (SYSTEM_VOICE_IDS.has(newVoiceId) || customVoices.some((voice) => voice.id === newVoiceId)) {
+            toast.error('Já existe uma voz com esse ID.');
+            return;
+        }
         addCustomVoice({
             id: newVoiceId,
             name: newVoiceName,
@@ -357,7 +368,7 @@ export const VoiceSelector = () => {
                         onClick={() => selectVoice(voice.id, voice.provider)}
                         className={cn(
                             'group relative flex min-h-[96px] cursor-pointer flex-col justify-between gap-2 rounded-xl border p-3 transition-all hover:border-brand-accent/50 hover:bg-black/5 dark:hover:bg-white/5',
-                            adData.selectedVoiceId === voice.id
+                            isVoiceSelected(voice.id, voice.provider)
                                 ? 'border-brand-accent/50 bg-brand-accent/10 shadow-[0_0_15px_rgba(0,230,118,0.05)]'
                                 : 'border-black/5 dark:border-white/5 bg-background'
                         )}
@@ -393,7 +404,7 @@ export const VoiceSelector = () => {
                             )}
                         </div>
 
-                        {adData.selectedVoiceId === voice.id && (
+                        {isVoiceSelected(voice.id, voice.provider) && (
                             <div className="absolute bottom-4 right-4 pointer-events-none">
                                 <span className="flex h-2 w-2">
                                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-accent opacity-75"></span>
@@ -418,7 +429,7 @@ export const VoiceSelector = () => {
                                 onClick={() => selectVoice(voice.id, provider)}
                                 className={cn(
                                     'group relative flex min-h-[96px] cursor-pointer flex-col justify-between gap-2 rounded-xl border p-3 transition-all hover:border-brand-accent/50 hover:bg-black/5 dark:hover:bg-white/5',
-                                    adData.selectedVoiceId === voice.id
+                                    isVoiceSelected(voice.id, provider)
                                         ? 'border-brand-accent/50 bg-brand-accent/10 shadow-[0_0_15px_rgba(0,230,118,0.05)]'
                                         : 'border-black/5 dark:border-white/5 bg-background'
                                 )}
@@ -497,7 +508,7 @@ export const VoiceSelector = () => {
                                 </button>
 
                                 {/* Selection Indicator (Bottom Right if Selected) */}
-                                {adData.selectedVoiceId === voice.id && (
+                                {isVoiceSelected(voice.id, provider) && (
                                     <div className="absolute bottom-3 right-3 pointer-events-none">
                                         <span className="flex h-2 w-2">
                                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-accent opacity-75"></span>

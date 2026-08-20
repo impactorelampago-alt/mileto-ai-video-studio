@@ -175,7 +175,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
         if (bgmTrack) {
             if (adData.musicAudioUrl) {
                 const currentClip = bgmTrack.clips[0];
-                if (!currentClip || currentClip.sourceUrl !== adData.musicAudioUrl) {
+                if (!currentClip) {
                     bgmTrack.clips = [
                         {
                             id: uuidv4(),
@@ -189,6 +189,11 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                             volume: 1,
                         },
                     ];
+                } else if (currentClip.sourceUrl !== adData.musicAudioUrl) {
+                    // URL assinada renovada (faixas de biblioteca/Ops): mantém o
+                    // recorte salvo (inSec/outSec/startSec) e só atualiza a fonte,
+                    // em vez de descartar o trim que o usuário acabou de fazer.
+                    bgmTrack.clips = [{ ...currentClip, sourceUrl: adData.musicAudioUrl }];
                 }
             } else {
                 // User deleted music -> Remove from timeline
@@ -579,7 +584,8 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                                 pause();
                                 onClose();
                             }}
-                            className="p-2 text-slate-400 hover:text-foreground rounded-full hover:bg-black/5 dark:bg-white/5 transition-colors"
+                            title="Fechar"
+                            className="grid h-9 w-9 place-items-center rounded-full border border-black/10 text-brand-muted transition-colors hover:bg-black/5 hover:text-foreground dark:border-white/10 dark:hover:bg-white/10"
                         >
                             <span className="sr-only">Fechar</span>
                             <X size={20} />

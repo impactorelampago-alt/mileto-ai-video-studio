@@ -878,7 +878,10 @@ export const Step1 = () => {
                                     </button>
                                 </div>
                                 <div className="bg-background rounded-2xl p-4 border border-black/5 dark:border-white/5 shadow-inner">
-                                    <AudioPlayer src={adData.masterAudioUrl || adData.narrationAudioUrl || ''} />
+                                    {/* Player da Etapa 1 = narração SECA (só voz). A mistura com a
+                                        música de fundo (masterAudioUrl) só vale no Ajuste Fino de
+                                        Trilhas e no preview do vídeo, nunca aqui. */}
+                                    <AudioPlayer src={adData.narrationAudioUrl || ''} />
                                 </div>
                                 <button
                                     onClick={handleResynthesizeNarration}

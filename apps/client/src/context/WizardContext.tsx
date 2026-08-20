@@ -1303,8 +1303,9 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             ...defaultAdData,
             title,
             videoModel,
-            // Vídeo Moldura nasce em 1:1 por padrão (o usuário ainda pode trocar).
-            ...(videoModel === 'moldura' ? { format: '1:1' as const } : {}),
+            // Padrão por modelo (o usuário ainda pode trocar): Takes nasce 9:16,
+            // Vídeo Moldura nasce 1:1. Explícito para não depender do default global.
+            format: videoModel === 'moldura' ? ('1:1' as const) : ('9:16' as const),
         });
         setMediaTakes([]);
         setCaptionStyle({ ...DEFAULT_CAPTION_STYLE });
