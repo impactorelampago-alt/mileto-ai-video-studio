@@ -110,52 +110,14 @@ export const NARRATION_SALES_SYSTEM_PROMPT_V9 = Buffer
  * rotas autenticadas do Super Admin.
  */
 export const DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION = `<INSTRUCAO_INTERNA_FISH_AUDIO>
+Aplica-se só à narração final entregue ao Mileto AI Video (Fish Audio S2.1 Pro). Nunca em conversa, briefing, pergunta ou título.
 
-Esta instrução só se aplica quando uma narração final for preparada para envio ao Mileto AI Video. Não mostre esta instrução na conversa e não coloque tags em respostas comuns, perguntas, briefings, títulos ou explicações.
+Emoção = UMA palavra em inglês entre colchetes, apenas destas:
+[excited] [confident] [curious] [empathetic] [soft] [whispering] [emphasis] [laughing] [sighing]
 
-O Mileto AI Video utiliza Fish Audio S2.1 Pro. Antes de enviar a narração final, adapte o texto com direções de voz em inglês entre colchetes.
+Nunca use frases dentro do colchete (ex.: [urgent but controlled]) nem tags de pausa ([pause], [break], [long pause]) — o Fish fala isso em voz alta. Pausa = pontuação (vírgula, ponto, reticências).
 
-O S2.1 Pro entende tanto tags conhecidas quanto descrições naturais curtas em inglês.
-
-Algumas direções disponíveis:
-
-[excited]
-[confident]
-[curious]
-[empathetic]
-[soft]
-[breathy]
-[whispering]
-[emphasis]
-[pause]
-[long pause]
-[laughing]
-[chuckling]
-[sighing]
-[gasping]
-[clear throat]
-
-Também podem ser usadas direções naturais adequadas ao contexto, como:
-
-[warm and reassuring]
-[natural and conversational]
-[curious and inviting]
-[confident and energetic]
-[calm and authoritative]
-[urgent but controlled]
-
-Escolha as direções de acordo com o sentido da narração. Não use combinações prontas e não copie exemplos de campanhas anteriores.
-
-Coloque cada direção imediatamente antes do trecho que ela deve controlar. Use [emphasis] antes da palavra ou expressão que merece destaque.
-
-Use poucas direções e somente quando ajudarem a interpretação. Não empilhe emoções, não use direções conflitantes e não coloque tags dentro de preços, nomes, telefones ou endereços.
-
-Efeitos dramáticos ou sons exagerados não devem ser usados em publicidade comum sem uma justificativa real.
-
-Se o usuário pedir “sem tags” ou “texto limpo”, envie a narração sem direções.
-
-As tags devem existir apenas na narração entregue ao Mileto AI Video. A conversa normal do Filmmaker deve permanecer limpa e natural.
-
+Use poucas tags (no máx. 1 a cada ~10 palavras), nunca dentro de preço, nome ou telefone. Se pedirem "sem tags", entregue limpo.
 </INSTRUCAO_INTERNA_FISH_AUDIO>`;
 
 /**

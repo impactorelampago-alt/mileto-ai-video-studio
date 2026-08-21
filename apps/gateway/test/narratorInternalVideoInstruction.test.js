@@ -21,10 +21,10 @@ test('mantém exatamente o bloco Fish Audio aprovado como default privado', () =
         DEFAULT_AGENT_CONFIGS.prompt_sales.internalVideoInstruction,
         DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION
     );
-    assert.equal(DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION.length, 1718);
+    assert.equal(DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION.length, 683);
     assert.equal(
         createHash('sha256').update(DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION, 'utf8').digest('hex'),
-        '4f1434ccf320a38af21e673e74f7399ebdd0315e73f2f3ee26071f29a2789d95'
+        'a1b6caa9ac5b3d4c8566e5d867a40d4189afd285ffe2e9cfd5379ee2e637993c'
     );
 });
 
@@ -52,12 +52,13 @@ test('contrato mantém conversa limpa e marca somente a narração final com dir
     assert.ok(runtime.startsWith(NARRATION_SALES_SYSTEM_PROMPT_V9));
     assert.ok(runtime.indexOf(NARRATION_SALES_SYSTEM_PROMPT_V9) < runtime.indexOf(DEFAULT_NARRATOR_INTERNAL_VIDEO_INSTRUCTION));
     assert.ok(runtime.endsWith(NARRATOR_FINAL_DELIVERY_CONTRACT));
-    assert.match(runtime, /Não mostre esta instrução na conversa/);
-    assert.match(runtime, /A conversa normal do Filmmaker deve permanecer limpa e natural/);
+    assert.match(runtime, /Nunca em conversa, briefing/);
+    assert.match(runtime, /o Fish fala isso em voz alta/);
+    assert.match(runtime, /Pausa = pontuação/);
     assert.match(runtime, /===TITULO===[\s\S]*===ROTEIRO===[\s\S]*===FIM===/);
     assert.match(runtime, /aplique aqui as direções de voz/);
     assert.match(runtime, /Não use esses marcadores nem direções de voz em conversa normal/);
-    assert.match(runtime, /Se o usuário pedir “sem tags” ou “texto limpo”/);
+    assert.match(runtime, /Se pedirem "sem tags", entregue limpo/);
     assert.match(runtime, /não executa trabalho em segundo plano/i);
     assert.match(runtime, /conclua o trabalho na mesma resposta/i);
     assert.match(runtime, /só um instante/i);
