@@ -35,6 +35,7 @@ import {
     resolveTakeSharpness,
     sharpnessKernel,
 } from '../lib/videoEnhancement';
+import { hasCurrentTakeIsolation, normalizeTakeAudio } from '../lib/audioIsolation';
 
 const OVERLAY_DESIGN_WIDTH = 360;
 const OVERLAY_DESIGN_HEIGHT_PORTRAIT = 640;
@@ -52,6 +53,12 @@ const squareCoverOffset = (
     isSquare
         ? { fx: clampFraction(take.squareFraming?.x), fy: clampFraction(take.squareFraming?.y) }
         : { fx: 0.5, fy: 0.5 };
+
+const configureNativeTakeAudio = (video: HTMLVideoElement, take: MediaTake) => {
+    const audio = normalizeTakeAudio(take.audio);
+    video.muted = audio.mode !== 'original';
+    video.volume = audio.volume;
+};
 
 export interface VideoSequencePreviewRef {
     seekToTime: (globalTime: number) => void;
@@ -138,6 +145,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const motionCanvasRef2 = useRef<HTMLCanvasElement>(null);
         const transitionRef = useRef<HTMLVideoElement>(null);
         const audioMasterRef = useRef<HTMLAudioElement>(null);
+        const isolatedTakeAudioRef = useRef<HTMLAudioElement>(null);
         const progressIntervalRef = useRef<number>(0);
         const motionAnimationRef = useRef<Animation | null>(null);
         const advancingRef = useRef(false);
@@ -207,6 +215,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         // Derived
         const currentTake = takes.length > 0 ? takes[currentTakeIndex] : null;
+        const currentTakeAudio = normalizeTakeAudio(currentTake?.audio);
+        const currentIsolatedTakeAudioUrl = currentTake
+            && currentTakeAudio.mode === 'isolated'
+            && hasCurrentTakeIsolation(currentTake)
+            ? currentTakeAudio.isolatedAudioUrl || null
+            : null;
         const isStandaloneTakePreview = standaloneTakeIndex === currentTakeIndex;
         const currentSharpness = currentTake ? resolveTakeSharpness(currentTake, adData.videoEnhancement) : 0;
         const currentEnhancement = currentTake
@@ -277,7 +291,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             canvasReadyTakeId === currentTakeId &&
             canvasFallbackTakeId !== currentTakeId
         );
-        const allMuted = takes.length > 0 && takes.every((t) => t.muteOriginalAudio);
+        const allMuted = takes.length > 0 && takes.every((take) => normalizeTakeAudio(take.audio).mode === 'off');
         const playbackSourceFor = useCallback(
             (take: MediaTake) => playbackSourceOverrides[take.id] || take.proxyUrl || take.url,
             [playbackSourceOverrides]
@@ -646,7 +660,29 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 // Modern browsers handle this internally. pause() returns void, so we just call it.
                 audioMasterRef.current.pause();
             }
+            if (isolatedTakeAudioRef.current && !isolatedTakeAudioRef.current.paused) {
+                isolatedTakeAudioRef.current.pause();
+            }
         }, []);
+
+        const playIsolatedTakeAudio = useCallback(() => {
+            const audio = isolatedTakeAudioRef.current;
+            if (!audio || !currentTake || !currentIsolatedTakeAudioUrl || currentTakeAudio.mode !== 'isolated') return;
+            const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+            const targetTime = video && currentTake.type === 'video'
+                ? video.currentTime
+                : currentTake.trim.start + currentTimeInTake;
+            if (Math.abs(audio.currentTime - targetTime) > 0.12) audio.currentTime = targetTime;
+            audio.volume = currentTakeAudio.volume;
+            audio.playbackRate = video?.playbackRate || 1;
+            if (audio.paused && !audio.ended) {
+                audio.play().catch((error) => {
+                    if (error.name !== 'AbortError' && error.name !== 'NotAllowedError') {
+                        console.error('[audio] Isolated take play failed:', error.message);
+                    }
+                });
+            }
+        }, [activeVideo, currentIsolatedTakeAudioUrl, currentTake, currentTakeAudio.mode, currentTakeAudio.volume, currentTimeInTake]);
 
         const playAudio = useCallback(() => {
             if (
@@ -667,7 +703,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     });
                 }
             }
-        }, [masterAudioUrl]);
+            playIsolatedTakeAudio();
+        }, [masterAudioUrl, playIsolatedTakeAudio]);
 
         // Eventos `waiting` de poucos frames são normais ao trocar o decoder
         // pré-carregado. Só interrompemos a faixa mestre se a espera for real.
@@ -690,8 +727,11 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const finishBuffering = useCallback(() => {
             cancelDeferredAudioPause();
             setIsBuffering(false);
-            if (isPlaying && !isStandaloneTakePreview) playAudio();
-        }, [cancelDeferredAudioPause, isPlaying, isStandaloneTakePreview, playAudio]);
+            if (isPlaying) {
+                if (!isStandaloneTakePreview) playAudio();
+                else playIsolatedTakeAudio();
+            }
+        }, [cancelDeferredAudioPause, isPlaying, isStandaloneTakePreview, playAudio, playIsolatedTakeAudio]);
 
         useEffect(() => cancelDeferredAudioPause, [cancelDeferredAudioPause]);
 
@@ -725,11 +765,12 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             setIsPlaying(true);
             // If there are takes, play the video.
             if (vid && currentTake && !isImageTake) vid.play().catch(() => {});
+            playIsolatedTakeAudio();
             // If we ONLY have audio (no takes) or video is not buffering, play audio
             if (!isStandaloneTakePreview && (!currentTake || !isBuffering)) {
                 playAudio();
             }
-        }, [activeVideo, currentTake, currentTimeInTake, isBuffering, isImageTake, isStandaloneTakePreview, playAudio]);
+        }, [activeVideo, currentTake, currentTimeInTake, isBuffering, isImageTake, isStandaloneTakePreview, playAudio, playIsolatedTakeAudio]);
 
         const pause = useCallback(() => {
             rangePreviewRef.current = null;
@@ -754,6 +795,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 transitionRef.current.currentTime = 0;
             }
             if (audioMasterRef.current) audioMasterRef.current.currentTime = 0;
+            if (isolatedTakeAudioRef.current) isolatedTakeAudioRef.current.currentTime = takes[0]?.trim.start || 0;
         }, [stopAll, takes]);
 
         // ─── Take Switching Logic ───────────────────────────────────────────
@@ -843,7 +885,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 pendingSeekTimeRef.current = null;
                 transitionTriggeredRef.current = false; // Reset trigger for new take
                 vid.playbackRate = 1; // Reset speed
-                vid.muted = !!currentTake.muteOriginalAudio;
+                configureNativeTakeAudio(vid, currentTake);
 
                 const positionCurrentTake = () => {
                     const targetTime = currentTake.trim.start + startOffset;
@@ -1054,6 +1096,22 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         if (vid.playbackRate !== 1) vid.playbackRate = 1;
                     }
 
+                    const isolatedAudio = isolatedTakeAudioRef.current;
+                    if (
+                        isolatedAudio
+                        && currentTakeAudio.mode === 'isolated'
+                        && currentIsolatedTakeAudioUrl
+                    ) {
+                        if (Math.abs(isolatedAudio.currentTime - now) > 0.12) {
+                            isolatedAudio.currentTime = now;
+                        }
+                        isolatedAudio.volume = currentTakeAudio.volume;
+                        isolatedAudio.playbackRate = vid.playbackRate;
+                        if (isolatedAudio.paused && !isolatedAudio.ended) {
+                            isolatedAudio.play().catch(() => {});
+                        }
+                    }
+
                     // Check Transition Trigger
                     if (currentTransition && !transitionTriggeredRef.current) {
                         let speedAtEnd = 1.0;
@@ -1132,7 +1190,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         const finishSwap = () => {
                             const currentVid = activeVideo === 1 ? videoRef1.current : videoRef2.current;
                             currentVid?.pause();
-                            nextVid.muted = !!nextT.muteOriginalAudio;
+                            configureNativeTakeAudio(nextVid, nextT);
                             nextVid.playbackRate = 1;
                             setActiveVideo((prev) => (prev === 1 ? 2 : 1));
                             setCurrentTakeIndex(nextIndex);
@@ -1171,7 +1229,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                         const presentPreparedFrame = () => {
                             if (!advancingRef.current || startedPresentation || !isPrepared()) return;
                             startedPresentation = true;
-                            nextVid.muted = !!nextT.muteOriginalAudio;
+                            configureNativeTakeAudio(nextVid, nextT);
                             nextVid.playbackRate = 1;
                             cleanup();
                             finishSwap();
@@ -1263,6 +1321,9 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             isStandaloneTakePreview,
             currentTimeInTake,
             masterAudioUrl,
+            currentIsolatedTakeAudioUrl,
+            currentTakeAudio.mode,
+            currentTakeAudio.volume,
             seekToGlobalTime,
         ]);
 
@@ -1291,13 +1352,13 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             return () => clearInterval(interval);
         }, [isPlaying, isBuffering, isStandaloneTakePreview, masterAudioUrl, activeVideo]);
 
-        // Update mute state immediately if changed in UI
+        // Atualiza imediatamente a variante/volume do take sem inferir opt-in legado.
         useEffect(() => {
             const vid = activeVideo === 1 ? videoRef1.current : videoRef2.current;
             if (vid && currentTake) {
-                vid.muted = !!currentTake.muteOriginalAudio; // Force bool
+                configureNativeTakeAudio(vid, currentTake);
             }
-        }, [currentTake?.muteOriginalAudio, activeVideo]);
+        }, [currentTake, currentTakeAudio.mode, currentTakeAudio.volume, activeVideo]);
 
         // ─── Audio Elements Setup ───────────────────────────────────────────
         useEffect(() => {
@@ -1308,6 +1369,44 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 audioMasterRef.current.volume = 1; // Mixed volumes are baked in
             }
         }, [masterAudioUrl]);
+
+        useEffect(() => {
+            const audio = isolatedTakeAudioRef.current;
+            if (!audio) return;
+            if (!currentTake || !currentIsolatedTakeAudioUrl || currentTakeAudio.mode !== 'isolated') {
+                audio.pause();
+                audio.removeAttribute('src');
+                audio.load();
+                return;
+            }
+            if (audio.getAttribute('src') !== currentIsolatedTakeAudioUrl) {
+                audio.setAttribute('src', currentIsolatedTakeAudioUrl);
+                audio.load();
+            }
+            const video = activeVideo === 1 ? videoRef1.current : videoRef2.current;
+            const targetTime = video && currentTake.type === 'video'
+                ? video.currentTime
+                : currentTake.trim.start + currentTimeInTake;
+            const positionAndMaybePlay = () => {
+                if (Math.abs(audio.currentTime - targetTime) > 0.12) audio.currentTime = targetTime;
+                audio.volume = currentTakeAudio.volume;
+                audio.playbackRate = video?.playbackRate || 1;
+                if (isPlaying) playIsolatedTakeAudio();
+            };
+            if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) positionAndMaybePlay();
+            else audio.addEventListener('loadedmetadata', positionAndMaybePlay, { once: true });
+            return () => audio.removeEventListener('loadedmetadata', positionAndMaybePlay);
+        }, [
+            activeVideo,
+            currentIsolatedTakeAudioUrl,
+            currentTake?.id,
+            currentTake?.trim.start,
+            currentTake?.type,
+            currentTakeAudio.mode,
+            currentTakeAudio.volume,
+            isPlaying,
+            playIsolatedTakeAudio,
+        ]);
 
         // ─── Timeline Seeking ───────────────────────────────────────────────\n        // (Handled by scrubbing system below: seekToClientX + handleScrubStart)\n
         // ─── Scrubbing (Drag Timeline) ──────────────────────────────────────
@@ -2158,6 +2257,18 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             toast.error('Áudio master falhou ao carregar.', { duration: 3000 });
                         }}
                     />
+                    <audio
+                        ref={isolatedTakeAudioRef}
+                        crossOrigin="anonymous"
+                        preload="auto"
+                        onError={(event) => {
+                            const audio = event.currentTarget;
+                            console.error(`[audio-take-isolated] Load error src=${audio.src}`);
+                            toast.error('A voz isolada deste take não pôde ser reproduzida. O original permanece intacto.', {
+                                duration: 4500,
+                            });
+                        }}
+                    />
 
                     {/* ━━━ Overlay Container for Export Capture (Captions + Titles) ━━━ */}
                     <div
@@ -2577,13 +2688,13 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                                         }}
                                         className={cn(
                                             'shrink-0 p-1.5 rounded-lg transition-colors border',
-                                            take.muteOriginalAudio
+                                            normalizeTakeAudio(take.audio).mode === 'off'
                                                 ? 'text-yellow-500 bg-yellow-500/10 border-yellow-500/20'
                                                 : 'text-brand-muted hover:text-foreground hover:bg-black/10 dark:bg-white/10 border-transparent'
                                         )}
-                                        title={take.muteOriginalAudio ? 'Áudio Mudo' : 'Silenciar Mídia'}
+                                        title={normalizeTakeAudio(take.audio).mode === 'off' ? 'Áudio desligado' : 'Desligar áudio do take'}
                                     >
-                                        {take.muteOriginalAudio ? (
+                                        {normalizeTakeAudio(take.audio).mode === 'off' ? (
                                             <VolumeX className="w-3.5 h-3.5" />
                                         ) : (
                                             <Volume2 className="w-3.5 h-3.5" />

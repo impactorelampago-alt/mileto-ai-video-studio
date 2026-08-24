@@ -106,6 +106,7 @@ export const applyQuickEdit = async (
         ...take,
         transition: undefined,
         muteOriginalAudio: true,
+        audio: { mode: 'off', volume: 1 },
         objectFit: 'cover',
         sharpness: { mode: 'custom', amount: QUICK_EDIT_SHARPNESS },
         motionEffect: {

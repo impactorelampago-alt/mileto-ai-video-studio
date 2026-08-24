@@ -29,6 +29,7 @@ import {
     Download,
     Frame,
     Check,
+    AudioLines,
 } from 'lucide-react';
 import { TransitionsModal } from '../components/TransitionsModal';
 import { MediaSourceModal } from '../components/MediaSourceModal';
@@ -51,7 +52,7 @@ import {
     verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { MediaTake } from '../types';
+import type { MediaTake, TakeAudioMode } from '../types';
 import { SpeedPresetType } from '../lib/speedRemapping';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ZoomEffectsModal } from '../components/ZoomEffectsModal';
@@ -60,7 +61,16 @@ import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 import { VideoEnhancementModal } from '../components/VideoEnhancementModal';
 import { normalizeVideoEnhancement, sharpnessLabel } from '../lib/videoEnhancement';
 import { recoverOpsTakeSource } from '../lib/opsMediaRecovery';
+import { prepareOpsTakeForExport } from '../lib/opsMediaRecovery';
+import { refreshSharedTakeForExport } from '../lib/sharedMediaRecovery';
 import { applyQuickEdit } from '../lib/quickEdit';
+import {
+    hasCurrentTakeIsolation,
+    normalizeTakeAudio,
+    resolveEffectiveNarrationAudio,
+    takeOriginalSourceKey,
+} from '../lib/audioIsolation';
+import { isolateAudioSource } from '../lib/audioIsolationApi';
 
 const copyTakeFileName = (fileName: string, label: string) => {
     const extensionIndex = fileName.lastIndexOf('.');
@@ -85,6 +95,7 @@ const cloneMediaTake = (
     motionEffect: take.motionEffect ? { ...take.motionEffect } : undefined,
     enhancement: take.enhancement ? { ...take.enhancement } : undefined,
     sharpness: take.sharpness ? { ...take.sharpness } : undefined,
+    audio: take.audio ? { ...take.audio } : undefined,
     // A transição pertence ao encontro entre duas posições da sequência; um
     // clone nasce sem uma transição individual para não herdar um vínculo antigo.
     transition: undefined,
@@ -101,12 +112,15 @@ interface SortableTakeProps {
     onZoom: (_id: string) => void;
     onTransition: (_id: string) => void;
     onMute: (_id: string) => void;
+    onAudioMode: (_id: string, _mode: TakeAudioMode) => void;
+    onAudioVolume: (_id: string, _volume: number) => void;
+    isIsolatingAudio: boolean;
     onSeek: (_index: number) => void;
     isLast: boolean;
     format: string;
 }
 
-const SortableTake = ({ take, index, onRemove, onEdit, onDuplicate, onToggleFit, onEnhance, onZoom, onTransition, onMute, onSeek, isLast, format }: SortableTakeProps) => {
+const SortableTake = ({ take, index, onRemove, onEdit, onDuplicate, onToggleFit, onEnhance, onZoom, onTransition, onMute, onAudioMode, onAudioVolume, isIsolatingAudio, onSeek, isLast, format }: SortableTakeProps) => {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
         id: take.id,
     });
@@ -118,6 +132,7 @@ const SortableTake = ({ take, index, onRemove, onEdit, onDuplicate, onToggleFit,
     };
 
     const duration = take.trim.end - take.trim.start;
+    const audio = normalizeTakeAudio(take.audio);
 
     return (
         <div
@@ -125,7 +140,7 @@ const SortableTake = ({ take, index, onRemove, onEdit, onDuplicate, onToggleFit,
             style={style}
             onClick={(event) => {
                 const target = event.target as HTMLElement;
-                if (target.closest('button,[data-drag-handle]')) return;
+                if (target.closest('button,input,select,[data-drag-handle]')) return;
                 onSeek(index);
             }}
             className={cn(
@@ -191,6 +206,53 @@ const SortableTake = ({ take, index, onRemove, onEdit, onDuplicate, onToggleFit,
                         </span>
                     )}
                 </div>
+                {take.type === 'video' && (
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
+                        <span className="mr-0.5 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-brand-muted">
+                            <AudioLines className="h-3 w-3" /> Áudio
+                        </span>
+                        {([
+                            ['off', 'Desligado'],
+                            ['original', 'Original'],
+                            ['isolated', isIsolatingAudio ? 'Isolando...' : 'Voz isolada'],
+                        ] as const).map(([mode, label]) => (
+                            <button
+                                key={mode}
+                                type="button"
+                                disabled={isIsolatingAudio}
+                                onClick={() => onAudioMode(take.id, mode)}
+                                className={cn(
+                                    'rounded-md border px-2 py-1 text-[9px] font-bold transition disabled:cursor-wait disabled:opacity-45',
+                                    audio.mode === mode
+                                        ? mode === 'isolated'
+                                            ? 'border-violet-400/35 bg-violet-500/12 text-violet-200'
+                                            : mode === 'original'
+                                                ? 'border-brand-lime/30 bg-brand-lime/10 text-brand-lime'
+                                                : 'border-amber-400/25 bg-amber-400/10 text-amber-300'
+                                        : 'border-black/5 text-brand-muted hover:text-foreground dark:border-white/8'
+                                )}
+                            >
+                                {mode === 'isolated' && isIsolatingAudio && <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />}
+                                {label}
+                            </button>
+                        ))}
+                        {audio.mode !== 'off' && (
+                            <label className="ml-1 inline-flex min-w-[126px] flex-1 items-center gap-2 text-[9px] font-bold text-brand-muted">
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="2"
+                                    step="0.05"
+                                    value={audio.volume}
+                                    onChange={(event) => onAudioVolume(take.id, Number(event.target.value))}
+                                    className="h-1 min-w-[70px] flex-1 accent-brand-lime"
+                                    aria-label={`Volume do áudio de ${take.fileName}`}
+                                />
+                                <span className="w-8 text-right font-mono">{Math.round(audio.volume * 100)}%</span>
+                            </label>
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* Duration */}
@@ -220,16 +282,17 @@ const SortableTake = ({ take, index, onRemove, onEdit, onDuplicate, onToggleFit,
                 </button>
                 <button
                     onClick={() => onMute(take.id)}
+                    disabled={take.type !== 'video'}
                     className={cn(
-                        'grid h-8 w-8 place-items-center rounded-lg transition',
-                        take.muteOriginalAudio
+                        'grid h-8 w-8 place-items-center rounded-lg transition disabled:cursor-not-allowed disabled:opacity-25',
+                        audio.mode === 'off'
                             ? 'bg-amber-400/10 text-amber-300 hover:bg-amber-400/15'
                             : 'text-brand-muted hover:bg-brand-lime/10 hover:text-brand-lime'
                     )}
-                    title={take.muteOriginalAudio ? 'Ativar som deste take' : 'Silenciar este take'}
-                    aria-label={take.muteOriginalAudio ? 'Ativar som deste take' : 'Silenciar este take'}
+                    title={take.type !== 'video' ? 'Imagens não possuem faixa de áudio' : audio.mode === 'off' ? 'Ativar áudio original deste take' : 'Desligar áudio deste take'}
+                    aria-label={audio.mode === 'off' ? 'Ativar áudio original deste take' : 'Desligar áudio deste take'}
                 >
-                    {take.muteOriginalAudio ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                    {audio.mode === 'off' ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
                 </button>
                 <button
                     onClick={() => onToggleFit(take.id)}
@@ -299,12 +362,15 @@ export const Step2 = () => {
     const [targetTakeId, setTargetTakeId] = useState<string | null>(null);
     const [confirmClear, setConfirmClear] = useState(false);
     const [isQuickEditing, setIsQuickEditing] = useState(false);
+    const [isolatingTakeId, setIsolatingTakeId] = useState<string | null>(null);
     // Vídeo Moldura: esta é a última etapa (upload da moldura PNG + export).
     const isMoldura = adData.videoModel === 'moldura';
     const [isFramePickerOpen, setIsFramePickerOpen] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
     const previewRef = useRef<VideoSequencePreviewRef>(null);
     const opsSourceRepairsRef = useRef(new Set<string>());
+    const latestMediaTakesRef = useRef(mediaTakes);
+    latestMediaTakesRef.current = mediaTakes;
 
     // Fast Refresh pode preservar o estado React enquanto troca o código. Se o
     // projeto já estava aberto com URLs expiradas/vazias, recupera os cards no
@@ -327,6 +393,8 @@ export const Step2 = () => {
                         motionEffect: candidate.motionEffect,
                         transition: candidate.transition,
                         enhancement: candidate.enhancement,
+                        sharpness: candidate.sharpness,
+                        audio: candidate.audio,
                         muteOriginalAudio: candidate.muteOriginalAudio,
                     } : candidate));
                 })
@@ -355,7 +423,10 @@ export const Step2 = () => {
         return acc + duration;
     }, 0);
     const narrationDuration = adData.narrationDuration || 0;
-    const allTakesMuted = mediaTakes.length > 0 && mediaTakes.every((take) => take.muteOriginalAudio);
+    const allTakesMuted = mediaTakes.length > 0 && mediaTakes.every(
+        (take) => normalizeTakeAudio(take.audio).mode === 'off',
+    );
+    const effectiveNarration = resolveEffectiveNarrationAudio(adData);
     const selectedMusic = musicLibrary.find((music) => music.id === selectedMusicId);
     const narrationTrackDuration = (() => {
         if (adData.audioConfig?.narration?.enabled === false) return 0;
@@ -420,10 +491,89 @@ export const Step2 = () => {
         setShowExportModal(true);
     };
 
+    const handleTakeAudioMode = async (takeId: string, mode: TakeAudioMode) => {
+        const take = latestMediaTakesRef.current.find((candidate) => candidate.id === takeId);
+        if (!take) return;
+        if (take.type !== 'video') {
+            toast.error('Somente takes de vídeo podem fornecer áudio.');
+            return;
+        }
+
+        if (mode !== 'isolated' || hasCurrentTakeIsolation(take)) {
+            setMediaTakes((current) => current.map((candidate) => candidate.id === takeId
+                ? {
+                    ...candidate,
+                    audio: { ...normalizeTakeAudio(candidate.audio), mode },
+                    muteOriginalAudio: mode !== 'original',
+                }
+                : candidate));
+            return;
+        }
+
+        if (isolatingTakeId) return;
+        setIsolatingTakeId(takeId);
+        const toastId = toast.loading(`Isolando a voz de ${take.fileName}...`);
+        const sourceKey = takeOriginalSourceKey(take);
+        try {
+            const prepared = take.sharedAssetId
+                ? await refreshSharedTakeForExport(take)
+                : take.externalMedia?.source === 'mileto_ops'
+                    ? await prepareOpsTakeForExport(take)
+                    : take;
+            const result = await isolateAudioSource({
+                sourceUrl: prepared.fileUrl || prepared.url,
+                sourcePath: prepared.backendPath,
+                sourceType: 'take',
+            });
+            const latestTake = latestMediaTakesRef.current.find((candidate) => candidate.id === takeId);
+            if (!latestTake || takeOriginalSourceKey(latestTake) !== sourceKey) {
+                throw new Error('A mídia mudou durante o isolamento. O resultado antigo foi descartado.');
+            }
+            setMediaTakes((current) => current.map((candidate) => candidate.id === takeId
+                ? {
+                    ...candidate,
+                    url: prepared.url,
+                    backendPath: prepared.backendPath,
+                    fileUrl: prepared.fileUrl,
+                    proxyUrl: prepared.proxyUrl,
+                    externalMedia: prepared.externalMedia,
+                    audio: {
+                        ...normalizeTakeAudio(candidate.audio),
+                        mode: 'isolated',
+                        isolatedAudioUrl: result.outputUrl,
+                        isolatedAudioPath: result.outputPath,
+                        isolationSourceKey: sourceKey,
+                    },
+                    muteOriginalAudio: true,
+                }
+                : candidate));
+            toast.success(
+                result.cacheHit ? 'Voz isolada recuperada e ativada.' : 'Voz isolada e ativada. O take original foi preservado.',
+                { id: toastId },
+            );
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Erro desconhecido';
+            toast.error(`Não foi possível isolar este take: ${message}`, {
+                id: toastId,
+                description: 'A configuração anterior permaneceu ativa e o arquivo original não foi alterado.',
+                duration: 9000,
+            });
+        } finally {
+            setIsolatingTakeId(null);
+        }
+    };
+
+    const handleTakeAudioVolume = (takeId: string, volume: number) => {
+        setMediaTakes((current) => current.map((take) => take.id === takeId
+            ? { ...take, audio: { ...normalizeTakeAudio(take.audio), volume } }
+            : take));
+    };
+
     const handleMuteToggle = (takeId: string) => {
-        setMediaTakes((prev) =>
-            prev.map((t) => (t.id === takeId ? { ...t, muteOriginalAudio: !t.muteOriginalAudio } : t))
-        );
+        const take = latestMediaTakesRef.current.find((candidate) => candidate.id === takeId);
+        if (!take || take.type !== 'video') return;
+        const nextMode: TakeAudioMode = normalizeTakeAudio(take.audio).mode === 'off' ? 'original' : 'off';
+        void handleTakeAudioMode(takeId, nextMode);
     };
 
     const handleToggleFit = (takeId: string) => {
@@ -435,7 +585,14 @@ export const Step2 = () => {
     };
 
     const handleMuteAll = (muted: boolean) => {
-        setMediaTakes((prev) => prev.map((t) => ({ ...t, muteOriginalAudio: muted })));
+        setMediaTakes((prev) => prev.map((take) => ({
+            ...take,
+            muteOriginalAudio: muted,
+            audio: {
+                ...normalizeTakeAudio(take.audio),
+                mode: muted || take.type !== 'video' ? 'off' : 'original',
+            },
+        })));
     };
 
     const seekToTakeStart = (index: number) => {
@@ -954,6 +1111,11 @@ export const Step2 = () => {
                                                         setShowTransitionsModal(true);
                                                     }}
                                                     onMute={handleMuteToggle}
+                                                    onAudioMode={(takeId, mode) => {
+                                                        void handleTakeAudioMode(takeId, mode);
+                                                    }}
+                                                    onAudioVolume={handleTakeAudioVolume}
+                                                    isIsolatingAudio={isolatingTakeId === take.id}
                                                     onSeek={seekToTakeStart}
                                                     isLast={index === mediaTakes.length - 1}
                                                     format={adData.format}
@@ -1104,7 +1266,7 @@ export const Step2 = () => {
                     <ExportModal
                         onClose={() => setShowExportModal(false)}
                         mediaTakes={mediaTakes}
-                        masterAudioUrl={adData.masterAudioUrl || adData.narrationAudioUrl || undefined}
+                        masterAudioUrl={adData.masterAudioUrl || effectiveNarration.url || undefined}
                         transitionPath={adData.globalTransition?.filePath || undefined}
                         transitionRotation={adData.transitionRotation ?? 0}
                     />

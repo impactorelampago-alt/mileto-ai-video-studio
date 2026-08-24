@@ -32,6 +32,7 @@ import {
     type PersistedRenderFailure,
     type ServerRenderDiagnostics,
 } from '../lib/exportIntegrity';
+import { buildTakeAudioMixItems, resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
 
 export interface OpsExportMetadata {
     title: string;
@@ -252,7 +253,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                 }
                 await flushRepeatedFrames();
 
-                updateProgress(67, 'Preparando áudio e montagem final');
+                updateProgress(67, 'Revalidando mídias e áudio da exportação');
                 const hasConfiguredBackgroundAudio = Boolean(
                     activeExport.adData.musicAudioUrl || activeExport.adData.sharedMusicAssetId,
                 );
@@ -264,28 +265,35 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                         'export_audio_mix_required: A música de fundo ainda não foi mixada. Volte à etapa de áudio e prepare a trilha antes de exportar.',
                     );
                 }
-                const sharedExportAudioAssetId = activeExport.adData.sharedMasterAssetId
-                    || (!activeExport.adData.masterAudioUrl
-                        ? activeExport.adData.sharedNarrationAssetId
-                        : undefined);
-                const exportMasterAudioUrl = sharedExportAudioAssetId
-                    ? await refreshSharedMasterAudioForExport(sharedExportAudioAssetId)
-                    : activeExport.masterAudioUrl;
+                const effectiveNarration = resolveEffectiveNarrationAudio(activeExport.adData);
+                let baseMasterAudioUrl: string | undefined;
+                if (activeExport.adData.sharedMasterAssetId) {
+                    baseMasterAudioUrl = await refreshSharedMasterAudioForExport(
+                        activeExport.adData.sharedMasterAssetId,
+                    );
+                } else {
+                    baseMasterAudioUrl = activeExport.masterAudioUrl || activeExport.adData.masterAudioUrl;
+                }
+                if (!baseMasterAudioUrl && effectiveNarration.variant === 'original' && effectiveNarration.sharedAssetId) {
+                    baseMasterAudioUrl = await refreshSharedMasterAudioForExport(effectiveNarration.sharedAssetId);
+                }
+                if (!baseMasterAudioUrl) baseMasterAudioUrl = effectiveNarration.url || undefined;
+
                 const finishResult = (await engine.finish(
                     `${API_BASE_URL}/api`,
-                    exportMasterAudioUrl,
+                    baseMasterAudioUrl,
                     `${activeExport.fileName}_overlay`,
                     ''
                 )) as { videoPath: string; audioPath: string };
                 if (!finishResult.videoPath || !finishResult.audioPath) {
                     throw new Error('Os arquivos temporários da exportação não foram criados.');
                 }
+                temporaryExportPaths = [finishResult.videoPath, finishResult.audioPath];
 
-                updateProgress(68, 'Revalidando mídias da exportação');
                 const preparedMediaTakes: MediaTake[] = [];
-                // Usa o snapshot do início do job para preservar cortes e efeitos.
-                // A preparação sequencial também evita duas materializações
-                // concorrentes quando o mesmo ativo aparece mais de uma vez.
+                // Faz a materialização somente depois de finalizar a captura. Isso
+                // reduz o tempo entre a renovação da mídia e o consumo pelo FFmpeg.
+                // O snapshot do início do job continua preservando cortes e efeitos.
                 for (const take of activeExport.mediaTakes) {
                     if (take.sharedAssetId) {
                         preparedMediaTakes.push(await refreshSharedTakeForExport(take));
@@ -309,13 +317,72 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                     }
                 }
 
+                const takeAudioItems = buildTakeAudioMixItems(preparedMediaTakes);
+                let exportAudioPath = finishResult.audioPath;
+                if (takeAudioItems.length) {
+                    updateProgress(68, `Mixando áudio de ${takeAudioItems.length} take${takeAudioItems.length === 1 ? '' : 's'}`);
+                    let mixResponse: Response;
+                    try {
+                        mixResponse = await fetch(`${API_BASE_URL}/api/audio/mix-takes`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
+                            body: JSON.stringify({
+                                ...(baseMasterAudioUrl
+                                    ? { masterUrl: baseMasterAudioUrl }
+                                    : { masterPath: finishResult.audioPath }),
+                                duration: activeExport.totalDuration,
+                                takes: takeAudioItems,
+                            }),
+                        });
+                    } catch (error) {
+                        const reason = error instanceof Error ? error.message : String(error);
+                        throw new Error(
+                            `take_audio_mix_failed: Não foi possível somar o áudio dos takes (${reason}). O master original foi preservado e a exportação foi bloqueada.`,
+                        );
+                    }
+                    const mixData = await mixResponse.json() as {
+                        ok?: boolean;
+                        message?: string;
+                        masterAudioPath?: string;
+                        outputPath?: string;
+                        duration?: number;
+                        includedTakeIds?: string[];
+                    };
+                    if (!mixResponse.ok || !mixData.ok) {
+                        throw new Error(
+                            `take_audio_mix_failed: ${mixData.message || 'O servidor recusou a mixagem dos takes.'} O master original foi preservado e a exportação foi bloqueada.`,
+                        );
+                    }
+                    const mixedPath = String(mixData.masterAudioPath || mixData.outputPath || '').trim();
+                    const mixedDuration = Number(mixData.duration);
+                    const durationTolerance = Math.max(0.12, 2 / activeExport.fps);
+                    if (!mixedPath || !(mixedDuration > 0) || Math.abs(mixedDuration - activeExport.totalDuration) > durationTolerance) {
+                        throw new Error(
+                            'take_audio_mix_drift: A duração da mixagem dos takes divergiu da timeline. O master original foi preservado e a exportação foi bloqueada.',
+                        );
+                    }
+                    const expectedIds = takeAudioItems.map((item) => item.id).sort();
+                    const includedIds = Array.isArray(mixData.includedTakeIds)
+                        ? mixData.includedTakeIds.map(String).sort()
+                        : [];
+                    if (
+                        expectedIds.length !== includedIds.length
+                        || expectedIds.some((id, index) => id !== includedIds[index])
+                    ) {
+                        throw new Error(
+                            'take_audio_mix_incomplete: Nem todos os takes autorizados entraram na mixagem. O master original foi preservado e a exportação foi bloqueada.',
+                        );
+                    }
+                    exportAudioPath = mixedPath;
+                }
+
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const os = (window as any).require('os');
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const path = (window as any).require('path');
                 const safeName = activeExport.fileName.replace(/[\\/:*?"<>|]/g, '_');
                 const tempFinalPath = path.join(os.tmpdir(), `mileto-final-${Date.now()}-${crypto.randomUUID()}.mp4`);
-                temporaryExportPaths = [finishResult.videoPath, finishResult.audioPath, tempFinalPath];
+                temporaryExportPaths = [...temporaryExportPaths, tempFinalPath];
 
                 updateProgress(70, 'Montando takes, efeitos e áudio');
                 const resolvedTransitionPath = await resolveTransitionPathForExport(
@@ -346,7 +413,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                         })),
                         transitionPath: resolvedTransitionPath,
                         transitionRotation: activeExport.transitionRotation,
-                        audioPath: finishResult.audioPath,
+                        audioPath: exportAudioPath,
                         overlayPath: finishResult.videoPath,
                         finalPath: tempFinalPath,
                         duration: activeExport.totalDuration,

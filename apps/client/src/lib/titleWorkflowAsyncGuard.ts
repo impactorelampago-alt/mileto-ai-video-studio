@@ -9,6 +9,7 @@ type TitleWorkflowAsyncSource = Pick<
     | 'narrationAudioUrl'
     | 'narrationAudioPath'
     | 'sharedNarrationAssetId'
+    | 'narrationIsolation'
     | 'plannedTitles'
     | 'plannedTitlesNarrationKey'
     | 'captions'

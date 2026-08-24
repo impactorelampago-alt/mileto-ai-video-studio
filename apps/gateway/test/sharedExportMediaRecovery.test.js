@@ -127,18 +127,18 @@ test('renova o master compartilhado e recusa uma CDN fora do R2 privado', async 
     );
 });
 
-test('contrato renova compartilhados depois do finish e envia somente a URL fresca', () => {
+test('contrato renova o áudio antes do finish e os takes depois, perto do FFmpeg', () => {
     const finishIndex = exportSource.indexOf('const finishResult = (await engine.finish');
     const audioRefreshIndex = exportSource.indexOf('await refreshSharedMasterAudioForExport', 0);
-    const refreshIndex = exportSource.indexOf('await refreshSharedTakeForExport(take)', finishIndex);
+    const refreshIndex = exportSource.indexOf('await refreshSharedTakeForExport(take)');
     const postIndex = exportSource.indexOf('/api/video/export-hybrid', refreshIndex);
     assert.ok(audioRefreshIndex >= 0 && audioRefreshIndex < finishIndex);
-    assert.ok(finishIndex >= 0 && refreshIndex > finishIndex && postIndex > refreshIndex);
+    assert.ok(refreshIndex >= 0 && refreshIndex > finishIndex && postIndex > refreshIndex);
     assert.match(
         exportSource,
-        /sharedMasterAssetId[\s\S]{0,180}!activeExport\.adData\.masterAudioUrl[\s\S]{0,120}sharedNarrationAssetId/,
+        /sharedMasterAssetId[\s\S]{0,500}effectiveNarration\.variant === 'original'[\s\S]{0,180}effectiveNarration\.sharedAssetId/,
     );
-    assert.match(exportSource, /engine\.finish\([\s\S]{0,120}exportMasterAudioUrl/);
+    assert.match(exportSource, /engine\.finish\([\s\S]{0,120}baseMasterAudioUrl/);
     assert.match(exportSource, /if \(take\.sharedAssetId\)[\s\S]{0,180}refreshSharedTakeForExport\(take\)/);
     assert.match(
         exportSource,
@@ -154,7 +154,7 @@ test('contrato renova compartilhados depois do finish e envia somente a URL fres
 
 test('export não usa narração pura quando existe música sem master preparado', () => {
     const guardIndex = exportSource.indexOf('hasConfiguredBackgroundAudio && !hasPreparedMasterAudio');
-    const narrationFallbackIndex = exportSource.indexOf('activeExport.adData.sharedNarrationAssetId');
+    const narrationFallbackIndex = exportSource.indexOf("effectiveNarration.variant === 'original'");
     const finishIndex = exportSource.indexOf('const finishResult = (await engine.finish');
 
     assert.ok(guardIndex >= 0, 'o export deve detectar música sem mixagem pronta');

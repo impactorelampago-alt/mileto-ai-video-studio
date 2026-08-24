@@ -1,4 +1,5 @@
 import type { AdData } from '../types';
+import { resolveEffectiveNarrationAudio } from './audioIsolation.ts';
 
 type NarrationGenerationInput = Pick<
     AdData,
@@ -35,8 +36,12 @@ export const narrationGenerationInputFingerprint = (adData: NarrationGenerationI
  * troca de roteiro). Guardar uma assinatura leve evita reaproveitar legendas e
  * títulos pertencentes à locução anterior.
  */
-export const narrationSourceKey = (adData: Pick<AdData, 'narrationText' | 'narrationAudioUrl' | 'narrationAudioPath' | 'sharedNarrationAssetId'>) => {
-    const audioIdentity = adData.sharedNarrationAssetId || adData.narrationAudioPath || adData.narrationAudioUrl || '';
+export const narrationSourceKey = (adData: Pick<
+    AdData,
+    'narrationText' | 'narrationAudioUrl' | 'narrationAudioPath' | 'sharedNarrationAssetId'
+> & Partial<Pick<AdData, 'narrationIsolation'>>) => {
+    const effective = resolveEffectiveNarrationAudio(adData);
+    const audioIdentity = effective.sharedAssetId || effective.path || effective.url || '';
     const source = `${audioIdentity}\u0000${adData.narrationText.trim()}`;
     let hash = 2166136261;
     for (let index = 0; index < source.length; index += 1) {
@@ -79,8 +84,20 @@ export const invalidatedNarrationDerivatives = (): Partial<AdData> => ({
     narrationSource: undefined,
     narrationAudioUrl: null,
     narrationAudioPath: null,
+    narrationIsolation: undefined,
     sharedNarrationAssetId: undefined,
     narrationDuration: 0,
+    audioTimeline: undefined,
+    captions: undefined,
+    dynamicTitles: [],
+    dynamicTitlesSourceKey: undefined,
+    titleGenerationSummary: undefined,
+    masterAudioUrl: undefined,
+    sharedMasterAssetId: undefined,
+});
+
+/** Derivados temporizados/mixados ao trocar Original ↔ Isolada, sem apagar o original. */
+export const invalidatedNarrationVariantDerivatives = (): Partial<AdData> => ({
     audioTimeline: undefined,
     captions: undefined,
     dynamicTitles: [],

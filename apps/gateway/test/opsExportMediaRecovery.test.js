@@ -351,9 +351,9 @@ test('servidor identifica 422 transitórios de integridade com códigos estávei
     assert.match(serverOpsSource, /'ops_download_checksum_mismatch'/);
 });
 
-test('integração prepara o snapshot depois da captura e exige backendPath para take Ops', () => {
+test('integração prepara o snapshot depois do áudio final e exige backendPath para take Ops', () => {
     const finishIndex = exportSource.indexOf('const finishResult = (await engine.finish');
-    const prepareIndex = exportSource.indexOf('await prepareOpsTakeForExport(take)', finishIndex);
+    const prepareIndex = exportSource.indexOf('await prepareOpsTakeForExport(take)');
     const postIndex = exportSource.indexOf('/api/video/export-hybrid', prepareIndex);
     assert.ok(finishIndex >= 0 && prepareIndex > finishIndex && postIndex > prepareIndex);
     assert.match(exportSource, /takes:\s*preparedMediaTakes\.map/);

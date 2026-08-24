@@ -39,6 +39,14 @@ const CHAT_DEFAULT_USD_PER_M = 8.0;
 /** Whisper-1: US$ 0,006/min = US$ 0,0001/segundo. */
 const STT_USD_PER_SECOND = 0.0001;
 
+/** ElevenLabs Audio Isolation: US$ 0,12 por minuto de áudio de entrada. */
+export const AUDIO_ISOLATION_USD_PER_MINUTE = 0.12;
+export const audioIsolationProviderCostUsd = (durationSeconds) => {
+    const seconds = Number(durationSeconds);
+    if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+    return (seconds / 60) * AUDIO_ISOLATION_USD_PER_MINUTE;
+};
+
 /** 1 credito Mileto = US$ 0,001 de custo de fornecedor. Escala so de exibicao. */
 const CREDITS_PER_USD = 1000;
 
@@ -66,6 +74,7 @@ export const estimateUnits = (provider, kind, text) => {
 const providerCostUsd = (provider, model, units, kind) => {
     let usd = 0;
     if (kind === 'stt') usd = units * STT_USD_PER_SECOND;
+    else if (kind === 'audio_isolation') usd = audioIsolationProviderCostUsd(units);
     else if (kind === 'chat') usd = (units / 1_000_000) * (MODEL_COST[model] ?? CHAT_DEFAULT_USD_PER_M);
     else if (kind === 'tts') usd = ttsProviderCostUsd(provider, model, units);
     return Number.isFinite(usd) ? usd : 0;
@@ -144,6 +153,10 @@ export const settle = async ({ orgId, userId, provider, model, kind, units, demo
     const { providerCost, charged } = await priceOf(provider, model, units, kind);
     const finalCharge = demo ? 0 : charged;
     const adjust = (reserved || 0) - finalCharge; // >0 devolve, <0 cobra a mais
+    // O custo pode ser proporcional a uma duração fracionária, mas o ledger
+    // histórico usa INTEGER. Arredondamos somente a unidade de auditoria; preço e
+    // conciliação continuam usando a duração real recebida acima.
+    const ledgerUnits = Math.max(0, Math.ceil(Number(units) || 0));
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -156,7 +169,7 @@ export const settle = async ({ orgId, userId, provider, model, kind, units, demo
         await client.query(
             `INSERT INTO usage_ledger (org_id, user_id, provider, model, kind, units, provider_cost, charged, demo)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-            [orgId, userId, provider, model || null, kind, units, providerCost.toFixed(6), finalCharge.toFixed(4), demo]
+            [orgId, userId, provider, model || null, kind, ledgerUnits, providerCost.toFixed(6), finalCharge.toFixed(4), demo]
         );
         const { rows } = await client.query('SELECT balance FROM credits WHERE org_id = $1', [orgId]);
         await client.query('COMMIT');

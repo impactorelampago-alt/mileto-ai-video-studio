@@ -424,6 +424,7 @@ export const CREDIT_FEATURES = [
     { kind: 'tts', label: 'Narração (voz)', help: 'Síntese de voz (Fish/ElevenLabs).' },
     { kind: 'chat', label: 'Chat e roteiros', help: 'Assistente e geração de texto.' },
     { kind: 'stt', label: 'Legendas', help: 'Transcrição de áudio (Whisper).' },
+    { kind: 'audio_isolation', label: 'Isolamento de voz', help: 'Separação de voz e ruído/música (ElevenLabs).' },
     { kind: 'image', label: 'Imagem (em breve)', help: 'Geração de imagem — v2 (Banana/Gemini).' },
     { kind: 'video', label: 'Vídeo (em breve)', help: 'Geração de vídeo — v2 (Seedance).' },
 ];

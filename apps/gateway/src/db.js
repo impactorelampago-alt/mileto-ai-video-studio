@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
     user_id       BIGINT REFERENCES users(id) ON DELETE SET NULL,
     provider      TEXT NOT NULL,
     model         TEXT,
-    kind          TEXT NOT NULL,        -- tts | chat
+    kind          TEXT NOT NULL,        -- tts | chat | stt | audio_isolation | image | video
     units         INTEGER NOT NULL,
     provider_cost NUMERIC(14,6) NOT NULL,
     charged       NUMERIC(14,4) NOT NULL,

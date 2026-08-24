@@ -57,6 +57,35 @@ export interface TakeEnhancementSettings {
     intensity: VideoEnhancementIntensity;
 }
 
+/** Áudio do arquivo-fonte que será somado ao master. Ausente sempre equivale a `off`. */
+export type TakeAudioMode = 'off' | 'original' | 'isolated';
+
+export interface TakeAudioSettings {
+    /** Opt-in explícito. Projetos anteriores, sem este objeto, não exportam áudio dos takes. */
+    mode: TakeAudioMode;
+    /** Ganho linear de 0 a 2. */
+    volume: number;
+    /** Resultado derivado; a mídia original nunca é substituída. */
+    isolatedAudioUrl?: string | null;
+    isolatedAudioPath?: string | null;
+    /** Identidade da fonte usada no isolamento, para impedir reutilização após troca da mídia. */
+    isolationSourceKey?: string;
+}
+
+export type NarrationAudioVariant = 'original' | 'isolated';
+
+export interface NarrationIsolationSettings {
+    /** Variante usada em mixagem, STT e derivados. Ausente equivale a `original`. */
+    activeVariant: NarrationAudioVariant;
+    /** Resultado derivado; narrationAudioUrl/narrationAudioPath continuam sendo o original. */
+    isolatedAudioUrl?: string | null;
+    isolatedAudioPath?: string | null;
+    /** Identidade do original que gerou esta variante. */
+    isolationSourceKey?: string;
+    sourceDuration?: number;
+    outputDuration?: number;
+}
+
 export interface ExternalMediaReference {
     source: 'mileto_ops';
     referenceId: string;
@@ -111,6 +140,7 @@ export interface MediaTake {
     };
     speedPresetId?: SpeedPresetType;
     muteOriginalAudio?: boolean;
+    audio?: TakeAudioSettings;
     motionEffect?: TakeMotionEffect;
     enhancement?: TakeEnhancementSettings;
     sharpness?: TakeSharpnessSettings;
@@ -494,6 +524,7 @@ export interface AdData {
     narrationVoiceId?: string;
     narrationAudioUrl: string | null;
     narrationAudioPath: string | null; // For backend reference
+    narrationIsolation?: NarrationIsolationSettings;
     /** Distingue a síntese baseada no roteiro de uma gravação sem transcrição confiável. */
     narrationSource?: 'tts' | 'recording';
     sharedNarrationAssetId?: string;

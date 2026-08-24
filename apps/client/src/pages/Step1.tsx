@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useWizard } from '../context/WizardContext';
 import { VoiceSelector } from '../components/VoiceSelector';
@@ -6,13 +6,17 @@ import { VoiceSettingsPanel } from '../components/VoiceSettingsPanel';
 import type { AdData, MusicTrack } from '../types';
 import { cn } from '../lib/utils';
 import { localAuthHeaders } from '../lib/serverAuth';
-import { ArrowRight, Wand2, Loader2, Music2, Check, Pencil, Mic, Pause, Play, Trash2 } from 'lucide-react';
+import { ArrowRight, Wand2, Loader2, Music2, Check, Pencil, Mic, Pause, Play, Trash2, AudioLines, RotateCcw } from 'lucide-react';
 import { TimelineEditor } from '../components/timeline/TimelineEditor';
 import { toast } from 'sonner';
 import { AudioPlayer } from '../components/AudioPlayer';
 import { MusicLibrary } from '../components/MusicLibrary';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
-import { invalidatedNarrationDerivatives, narrationGenerationInputFingerprint } from '../lib/narrationState';
+import {
+    invalidatedNarrationDerivatives,
+    invalidatedNarrationVariantDerivatives,
+    narrationGenerationInputFingerprint,
+} from '../lib/narrationState';
 import { backgroundTrimEndForNarration } from '../lib/audioAutoFit';
 import { refreshSharedAudioSourceUrl } from '../lib/sharedMediaRecovery';
 import { OpsProjectCompanyPicker, type OpsCompanyRequirementState } from '../components/OpsProjectCompanyPicker';
@@ -22,19 +26,38 @@ import {
     narrationContractFromPlainText,
     normalizeNarrationContract,
 } from '../lib/narrationContract';
+import {
+    narrationOriginalSourceKey,
+    resolveEffectiveNarrationAudio,
+} from '../lib/audioIsolation';
+import { isolateAudioSource } from '../lib/audioIsolationApi';
 
 const audioMixRequestIdentity = (data: AdData, musicId: string | null): string => JSON.stringify({
     musicId,
-    narrationSource: data.sharedNarrationAssetId || data.narrationAudioUrl || null,
+    narrationSource: (() => {
+        const source = resolveEffectiveNarrationAudio(data);
+        return source.path || source.url || source.sharedAssetId || null;
+    })(),
     musicSource: data.sharedMusicAssetId || data.musicAudioUrl || null,
     audioConfig: data.audioConfig,
 });
+
+const narrationUrlForMix = async (data: AdData): Promise<string | null> => {
+    const source = resolveEffectiveNarrationAudio(data);
+    if (source.variant === 'isolated') return source.url;
+    return (await refreshSharedAudioSourceUrl(
+        source.sharedAssetId,
+        source.url,
+        'shared_narration_source_unavailable',
+    )) || null;
+};
 
 export const Step1 = () => {
     const { adData, updateAdData, selectedMusicId, setSelectedMusicId, musicLibrary } = useWizard();
     const navigate = useNavigate();
     const [isGenerating, setIsGenerating] = useState(false);
     const [isMixing, setIsMixing] = useState(false);
+    const [isIsolatingNarration, setIsIsolatingNarration] = useState(false);
     const [isAudioEditorOpen, setIsAudioEditorOpen] = useState(false);
     const [audioEditorFocus, setAudioEditorFocus] = useState<'bgm' | null>(null);
     const [audioEditorTrackName, setAudioEditorTrackName] = useState<string | null>(null);
@@ -74,7 +97,22 @@ export const Step1 = () => {
     // mais a navegação entre as etapas.
     const isTitleValid = !!adData.title?.trim();
     const isTextValid = !!adData.narrationPlainText?.trim();
-    const isAudioOperationBusy = isMixing || isGenerating || isRecording || isUploadingRec;
+    const effectiveNarration = useMemo(
+        () => resolveEffectiveNarrationAudio(adData),
+        [
+            adData.narrationAudioPath,
+            adData.narrationAudioUrl,
+            adData.narrationIsolation,
+            adData.sharedNarrationAssetId,
+        ],
+    );
+    const originalNarrationSourceKey = narrationOriginalSourceKey(adData);
+    const isolatedNarrationIsCurrent = Boolean(
+        originalNarrationSourceKey
+        && adData.narrationIsolation?.isolationSourceKey === originalNarrationSourceKey
+        && (adData.narrationIsolation?.isolatedAudioUrl || adData.narrationIsolation?.isolatedAudioPath)
+    );
+    const isAudioOperationBusy = isMixing || isGenerating || isRecording || isUploadingRec || isIsolatingNarration;
     const automaticMixConfigFingerprint = JSON.stringify(adData.audioConfig);
 
     useLayoutEffect(() => {
@@ -91,8 +129,8 @@ export const Step1 = () => {
     useEffect(() => {
         if (
             isAudioEditorOpen
-            || (!adData.narrationAudioUrl && !adData.sharedNarrationAssetId)
-            || (!adData.musicAudioUrl && !adData.sharedMusicAssetId)
+            || (!effectiveNarration.url && !effectiveNarration.sharedAssetId
+                && !adData.musicAudioUrl && !adData.sharedMusicAssetId)
             || adData.masterAudioUrl
         ) return;
 
@@ -104,11 +142,7 @@ export const Step1 = () => {
         void (async () => {
             try {
                 const [narrationUrl, musicUrl] = await Promise.all([
-                    refreshSharedAudioSourceUrl(
-                        adData.sharedNarrationAssetId,
-                        adData.narrationAudioUrl,
-                        'shared_narration_source_unavailable',
-                    ),
+                    narrationUrlForMix(adData),
                     refreshSharedAudioSourceUrl(
                         adData.sharedMusicAssetId,
                         adData.musicAudioUrl,
@@ -116,8 +150,8 @@ export const Step1 = () => {
                     ),
                 ]);
                 if (controller.signal.aborted || requestId !== automaticMixRequestRef.current) return;
-                if (!narrationUrl || !musicUrl) {
-                    throw new Error('A narração ou a música de fundo não está disponível.');
+                if (!narrationUrl && !musicUrl) {
+                    throw new Error('Nenhuma fonte de áudio está disponível para a mixagem.');
                 }
                 const response = await fetch(`${apiBase}/api/audio/mix`, {
                     method: 'POST',
@@ -140,7 +174,9 @@ export const Step1 = () => {
                 updateAdData({
                     masterAudioUrl,
                     sharedMasterAssetId: undefined,
-                    ...(adData.sharedNarrationAssetId ? { narrationAudioUrl: narrationUrl } : {}),
+                    ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
+                        ? { narrationAudioUrl: narrationUrl }
+                        : {}),
                     ...(adData.sharedMusicAssetId ? { musicAudioUrl: musicUrl } : {}),
                 });
             } catch (error) {
@@ -166,9 +202,13 @@ export const Step1 = () => {
         adData.masterAudioUrl,
         adData.musicAudioUrl,
         adData.narrationAudioUrl,
+        adData.narrationIsolation,
         adData.sharedMusicAssetId,
         adData.sharedNarrationAssetId,
         automaticMixConfigFingerprint,
+        effectiveNarration.sharedAssetId,
+        effectiveNarration.url,
+        effectiveNarration.variant,
         isAudioEditorOpen,
         selectedMusicId,
         updateAdData,
@@ -209,9 +249,10 @@ export const Step1 = () => {
         // Sem fonte de áudio não há o que mixar. Isso não bloqueia mais a
         // montagem visual: o usuário pode estruturar o restante primeiro.
         if (
-            !adData.narrationAudioUrl &&
+            !effectiveNarration.url &&
+            !effectiveNarration.path &&
             !adData.musicAudioUrl &&
-            !adData.sharedNarrationAssetId &&
+            !effectiveNarration.sharedAssetId &&
             !adData.sharedMusicAssetId
         ) {
             updateAdData({ masterAudioUrl: undefined, sharedMasterAssetId: undefined });
@@ -234,11 +275,7 @@ export const Step1 = () => {
 
         try {
             const [narrationUrl, musicUrl] = await Promise.all([
-                refreshSharedAudioSourceUrl(
-                    adData.sharedNarrationAssetId,
-                    adData.narrationAudioUrl,
-                    'shared_narration_source_unavailable',
-                ),
+                narrationUrlForMix(adData),
                 refreshSharedAudioSourceUrl(
                     adData.sharedMusicAssetId,
                     adData.musicAudioUrl,
@@ -280,7 +317,9 @@ export const Step1 = () => {
                 updateAdData({
                     masterAudioUrl,
                     sharedMasterAssetId: undefined,
-                    ...(adData.sharedNarrationAssetId ? { narrationAudioUrl: narrationUrl } : {}),
+                    ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
+                        ? { narrationAudioUrl: narrationUrl }
+                        : {}),
                     ...(adData.sharedMusicAssetId ? { musicAudioUrl: musicUrl } : {}),
                 });
             } else {
@@ -407,6 +446,89 @@ export const Step1 = () => {
         } finally {
             if (requestId === narrationGenerationRequestRef.current) setIsGenerating(false);
         }
+    };
+
+    const activateNarrationVariant = (variant: 'original' | 'isolated') => {
+        if (variant === 'isolated' && !isolatedNarrationIsCurrent) {
+            toast.error('Isole a voz atual antes de ativar esta variante.');
+            return;
+        }
+        if (effectiveNarration.variant === variant) return;
+        updateAdData({
+            ...invalidatedNarrationVariantDerivatives(),
+            narrationIsolation: {
+                activeVariant: variant,
+                isolatedAudioUrl: adData.narrationIsolation?.isolatedAudioUrl || null,
+                isolatedAudioPath: adData.narrationIsolation?.isolatedAudioPath || null,
+                isolationSourceKey: adData.narrationIsolation?.isolationSourceKey,
+                sourceDuration: adData.narrationIsolation?.sourceDuration,
+                outputDuration: adData.narrationIsolation?.outputDuration,
+            },
+        });
+        toast.success(
+            variant === 'isolated'
+                ? 'Voz isolada ativada. Mixagem, legendas e títulos serão refeitos.'
+                : 'Áudio original restaurado. Mixagem, legendas e títulos serão refeitos.',
+        );
+    };
+
+    const handleIsolateNarration = async () => {
+        if (isIsolatingNarration) return;
+        const sourceKey = narrationOriginalSourceKey(adData);
+        if (!sourceKey) {
+            toast.error('Gere ou grave uma narração antes de isolar a voz.');
+            return;
+        }
+
+        setIsIsolatingNarration(true);
+        const toastId = toast.loading('Isolando a voz sem alterar o original...');
+        try {
+            const sourceUrl = await refreshSharedAudioSourceUrl(
+                adData.sharedNarrationAssetId,
+                adData.narrationAudioUrl,
+                'shared_narration_source_unavailable',
+            );
+            const result = await isolateAudioSource({
+                sourceUrl,
+                sourcePath: adData.narrationAudioPath,
+                sourceType: 'narration',
+            });
+            if (narrationOriginalSourceKey(latestAdDataRef.current) !== sourceKey) {
+                throw new Error('A narração mudou durante o isolamento. O resultado antigo foi descartado.');
+            }
+            updateAdData({
+                ...invalidatedNarrationVariantDerivatives(),
+                narrationIsolation: {
+                    activeVariant: 'isolated',
+                    isolatedAudioUrl: result.outputUrl,
+                    isolatedAudioPath: result.outputPath,
+                    isolationSourceKey: sourceKey,
+                    sourceDuration: result.sourceDuration,
+                    outputDuration: result.outputDuration,
+                },
+            });
+            toast.success(
+                result.cacheHit ? 'Voz isolada recuperada e ativada.' : 'Voz isolada e ativada. O original foi preservado.',
+                { id: toastId },
+            );
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Erro desconhecido';
+            toast.error(`Não foi possível isolar a voz: ${message}`, {
+                id: toastId,
+                description: 'O áudio original continua ativo e não foi alterado.',
+                duration: 9000,
+            });
+        } finally {
+            setIsIsolatingNarration(false);
+        }
+    };
+
+    const handleRemoveNarrationIsolation = () => {
+        updateAdData({
+            ...invalidatedNarrationVariantDerivatives(),
+            narrationIsolation: undefined,
+        });
+        toast.success('Versão isolada removida. O áudio original foi restaurado.');
     };
 
     // ─── Gravar a própria voz ────────────────────────────────────────────────
@@ -881,7 +1003,71 @@ export const Step1 = () => {
                                     {/* Player da Etapa 1 = narração SECA (só voz). A mistura com a
                                         música de fundo (masterAudioUrl) só vale no Ajuste Fino de
                                         Trilhas e no preview do vídeo, nunca aqui. */}
-                                    <AudioPlayer src={adData.narrationAudioUrl || ''} />
+                                    <AudioPlayer src={effectiveNarration.url || adData.narrationAudioUrl || ''} />
+                                </div>
+                                <div className="space-y-2 rounded-xl border border-black/5 bg-background/60 p-3 dark:border-white/5">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div>
+                                            <p className="text-[10px] font-black uppercase tracking-wider text-foreground">Comparar voz</p>
+                                            <p className="mt-0.5 text-[9px] text-brand-muted">O original nunca é substituído.</p>
+                                        </div>
+                                        {isIsolatingNarration && <Loader2 className="h-4 w-4 animate-spin text-brand-accent" />}
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => activateNarrationVariant('original')}
+                                            className={cn(
+                                                'rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition',
+                                                effectiveNarration.variant === 'original'
+                                                    ? 'border-brand-accent/35 bg-brand-accent/12 text-brand-accent'
+                                                    : 'border-black/5 text-brand-muted hover:text-foreground dark:border-white/8'
+                                            )}
+                                        >
+                                            A · Original
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => activateNarrationVariant('isolated')}
+                                            disabled={!isolatedNarrationIsCurrent || isIsolatingNarration}
+                                            className={cn(
+                                                'rounded-lg border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition disabled:cursor-not-allowed disabled:opacity-35',
+                                                effectiveNarration.variant === 'isolated'
+                                                    ? 'border-violet-400/40 bg-violet-500/12 text-violet-200'
+                                                    : 'border-black/5 text-brand-muted hover:text-foreground dark:border-white/8'
+                                            )}
+                                        >
+                                            B · Isolada
+                                        </button>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleIsolateNarration()}
+                                        disabled={isIsolatingNarration || isGenerating || isRecording || isUploadingRec}
+                                        className="flex w-full items-center justify-center gap-2 rounded-lg border border-violet-400/25 bg-violet-500/8 px-3 py-2 text-[11px] font-bold text-violet-200 transition hover:bg-violet-500/15 disabled:cursor-not-allowed disabled:opacity-45"
+                                    >
+                                        {isIsolatingNarration ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}
+                                        {isIsolatingNarration ? 'Isolando voz...' : 'Isolar voz'}
+                                    </button>
+                                    {effectiveNarration.variant === 'isolated' && (
+                                        <button
+                                            type="button"
+                                            onClick={() => activateNarrationVariant('original')}
+                                            className="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-1.5 text-[10px] font-bold text-brand-muted transition hover:bg-black/5 hover:text-foreground dark:hover:bg-white/5"
+                                        >
+                                            <RotateCcw className="h-3.5 w-3.5" />
+                                            Restaurar original / desativar
+                                        </button>
+                                    )}
+                                    {isolatedNarrationIsCurrent && effectiveNarration.variant === 'original' && (
+                                        <button
+                                            type="button"
+                                            onClick={handleRemoveNarrationIsolation}
+                                            className="w-full px-3 py-1 text-[9px] font-bold uppercase tracking-wider text-brand-muted/70 transition hover:text-red-300"
+                                        >
+                                            Remover versão isolada
+                                        </button>
+                                    )}
                                 </div>
                                 <button
                                     onClick={handleResynthesizeNarration}
@@ -953,6 +1139,8 @@ export const Step1 = () => {
                                 ? 'Gerando narração...'
                                 : isUploadingRec
                                     ? 'Salvando gravação...'
+                                    : isIsolatingNarration
+                                        ? 'Isolando voz...'
                                     : isMixing
                                         ? 'Preparando Motor...'
                                         : 'Próximo Passo'}

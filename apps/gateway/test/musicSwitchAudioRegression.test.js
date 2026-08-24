@@ -16,6 +16,8 @@ const section = (source, start, end) => {
     return source.slice(from, to);
 };
 
+const narrationMixHelper = section(step1, 'const narrationUrlForMix', 'export const Step1');
+
 test('geração da narração calcula o corte da música com a regra temporal compartilhada', () => {
     const generate = section(step1, 'const handleGenerateNarration', '// ─── Gravar a própria voz');
     const nextAudioConfig = section(generate, 'const nextAudioConfig', 'updateAdData({');
@@ -65,10 +67,11 @@ test('trocar a música com narração pronta remixa e ignora resposta obsoleta',
         'a troca da identidade compartilhada também precisa disparar a remistura',
     );
     assert.match(
-        remixEffect.body,
-        /refreshSharedAudioSourceUrl\(\s*adData\.sharedNarrationAssetId,\s*adData\.narrationAudioUrl,\s*'shared_narration_source_unavailable'/,
+        narrationMixHelper,
+        /resolveEffectiveNarrationAudio\(data\)[\s\S]*?refreshSharedAudioSourceUrl\(\s*source\.sharedAssetId,\s*source\.url,\s*'shared_narration_source_unavailable'/,
         'a narração compartilhada deve ser renovada no momento do uso',
     );
+    assert.match(remixEffect.body, /narrationUrlForMix\(adData\)/);
     assert.match(
         remixEffect.body,
         /refreshSharedAudioSourceUrl\(\s*adData\.sharedMusicAssetId,\s*adData\.musicAudioUrl,\s*'shared_music_source_unavailable'/,
@@ -84,7 +87,7 @@ test('trocar a música com narração pronta remixa e ignora resposta obsoleta',
         /updateAdData\(\{\s*masterAudioUrl,\s*sharedMasterAssetId:\s*undefined,/,
         'um master local novo não pode conservar a identidade do master compartilhado antigo',
     );
-    assert.match(remixEffect.body, /sharedNarrationAssetId\s*\?\s*\{\s*narrationAudioUrl:\s*narrationUrl\s*\}/);
+    assert.match(remixEffect.body, /effectiveNarration\.variant === 'original'[\s\S]*?sharedNarrationAssetId[\s\S]*?narrationAudioUrl:\s*narrationUrl/);
     assert.match(remixEffect.body, /sharedMusicAssetId\s*\?\s*\{\s*musicAudioUrl:\s*musicUrl\s*\}/);
     assert.match(
         remixEffect.body,
@@ -110,9 +113,10 @@ test('avançar renova áudios compartilhados e nunca reutiliza o master anterior
         'uma resposta antiga não pode aplicar master nem avançar depois da troca de fonte',
     );
     assert.match(
-        handleNext,
-        /refreshSharedAudioSourceUrl\(\s*adData\.sharedNarrationAssetId,\s*adData\.narrationAudioUrl,\s*'shared_narration_source_unavailable'/,
+        narrationMixHelper,
+        /resolveEffectiveNarrationAudio\(data\)[\s\S]*?refreshSharedAudioSourceUrl\(\s*source\.sharedAssetId,\s*source\.url,\s*'shared_narration_source_unavailable'/,
     );
+    assert.match(handleNext, /narrationUrlForMix\(adData\)/);
     assert.match(
         handleNext,
         /refreshSharedAudioSourceUrl\(\s*adData\.sharedMusicAssetId,\s*adData\.musicAudioUrl,\s*'shared_music_source_unavailable'/,

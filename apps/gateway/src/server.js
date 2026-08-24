@@ -18,6 +18,10 @@ import * as account from './account.js';
 import * as shared from './shared.js';
 import * as opsIntegration from './opsIntegration.js';
 import * as generation from './generation.js';
+import {
+    AUDIO_ISOLATION_MAX_BYTES,
+    audioIsolationHandler,
+} from './audioIsolation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -25,6 +29,10 @@ app.use(express.json({ limit: '10mb' }));
 
 // Upload de áudio das legendas em memória (limite do Whisper = 25MB).
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+const audioIsolationUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: AUDIO_ISOLATION_MAX_BYTES, files: 1, fields: 2, fieldSize: 128 },
+});
 const opsExportUpload = multer({
     storage: multer.diskStorage({ destination: os.tmpdir() }),
     limits: { fileSize: Number(process.env.OPS_EXPORT_MAX_BYTES || 512 * 1024 * 1024) },
@@ -32,6 +40,24 @@ const opsExportUpload = multer({
 
 /** Envolve handler/middleware async para que rejeições virem o error-middleware (Express 4 não faz isso). */
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// O middleware global mantém a mensagem histórica do upload do Ops. Esta borda
+// traduz apenas os erros multipart do isolamento para o contrato correto.
+const parseAudioIsolationUpload = (req, res, next) => {
+    audioIsolationUpload.single('audio')(req, res, (error) => {
+        if (!error) return next();
+        if (error.code === 'LIMIT_FILE_SIZE') {
+            return res.status(413).json({
+                ok: false,
+                code: 'audio_isolation_too_large',
+                message: 'O áudio excede o limite de 20 MB.',
+            });
+        }
+        error.status = 400;
+        error.code = 'audio_isolation_invalid_multipart';
+        return next(error);
+    });
+};
 
 /**
  * Mantém proxies reversos informados enquanto um modelo de raciocínio trabalha.
@@ -459,6 +485,13 @@ app.post(
 
         res.json({ ok: true, words: result.words, demo: result.demo, charged: meta.charged, balance: meta.balanceAfter });
     })
+);
+
+app.post(
+    '/v1/audio-isolation',
+    asyncHandler(requireAuth),
+    parseAudioIsolationUpload,
+    asyncHandler(audioIsolationHandler)
 );
 
 // Mídia gerada por agentes. Chaves, modelos e URLs do fornecedor permanecem no gateway.

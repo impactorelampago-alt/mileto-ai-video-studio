@@ -10,6 +10,22 @@ const source = fs.readFileSync(
     new URL('../../client/src/lib/narrationState.ts', import.meta.url),
     'utf8',
 );
+const audioIsolationSource = fs.readFileSync(
+    new URL('../../client/src/lib/audioIsolation.ts', import.meta.url),
+    'utf8',
+);
+const compileCommonJs = (typescriptSource) => ts.transpileModule(typescriptSource, {
+    compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2020,
+    },
+}).outputText;
+const audioIsolationModule = { exports: {} };
+const audioIsolationFactory = vm.runInNewContext(
+    `(function(exports,module,require){${compileCommonJs(audioIsolationSource)}\n})`,
+    { console },
+);
+audioIsolationFactory(audioIsolationModule.exports, audioIsolationModule, require);
 const compiled = ts.transpileModule(source, {
     compilerOptions: {
         module: ts.ModuleKind.CommonJS,
@@ -21,7 +37,11 @@ const factory = vm.runInNewContext(
     `(function(exports,module,require){${compiled}\n})`,
     { console },
 );
-factory(runtimeModule.exports, runtimeModule, require);
+factory(runtimeModule.exports, runtimeModule, (specifier) => (
+    specifier === './audioIsolation.ts' || specifier === './audioIsolation'
+        ? audioIsolationModule.exports
+        : require(specifier)
+));
 
 const { narrationGenerationInputFingerprint } = runtimeModule.exports;
 const base = {

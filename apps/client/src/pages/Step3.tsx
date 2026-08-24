@@ -21,6 +21,7 @@ import {
     titleWorkflowAsyncFingerprintKey,
     type TitleWorkflowAsyncFingerprint,
 } from '../lib/titleWorkflowAsyncGuard';
+import { normalizeTakeAudio, resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
 
 export const Step3 = () => {
     const { adData, updateAdData, mediaTakes, setMediaTakes, captionStyle, setCaptionStyle } = useWizard();
@@ -34,6 +35,7 @@ export const Step3 = () => {
         fingerprint: TitleWorkflowAsyncFingerprint;
     } | null>(null);
     const currentSourceKey = narrationSourceKey(adData);
+    const effectiveNarration = resolveEffectiveNarrationAudio(adData);
     const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
     const currentWorkflowFingerprintKey = titleWorkflowAsyncFingerprintKey(
         captureTitleWorkflowAsyncFingerprint(adData),
@@ -122,7 +124,13 @@ export const Step3 = () => {
         if (captionGenerationRef.current) return;
 
         const operationAdData = latestAdDataRef.current;
-        if (!operationAdData.masterAudioUrl && !operationAdData.narrationAudioUrl) {
+        const operationNarration = resolveEffectiveNarrationAudio(operationAdData);
+        if (
+            !operationAdData.masterAudioUrl
+            && !operationNarration.url
+            && !operationNarration.path
+            && !operationNarration.sharedAssetId
+        ) {
             toast.error('Nenhum áudio encontrado. Volte ao Step 1 e gere a narração.');
             return;
         }
@@ -151,10 +159,10 @@ export const Step3 = () => {
         try {
             // Pick the best available audio for transcription:
             // Preferably narration-only (cleaner for STT), fallback to master if needed
-            let audioToTranscribe = operationAdData.narrationAudioUrl || operationAdData.masterAudioUrl;
-            const sharedAudioAssetId = operationAdData.narrationAudioUrl
-                ? operationAdData.sharedNarrationAssetId
-                : operationAdData.sharedMasterAssetId;
+            let audioToTranscribe = operationNarration.url || operationAdData.masterAudioUrl;
+            const sharedAudioAssetId = operationNarration.variant === 'original' && operationNarration.sharedAssetId
+                ? operationNarration.sharedAssetId
+                : (!operationNarration.url ? operationAdData.sharedMasterAssetId : undefined);
             if (sharedAudioAssetId) {
                 audioToTranscribe = await materializeSharedAudioForCaptions(sharedAudioAssetId);
                 assertOperationIsCurrent();
@@ -345,7 +353,7 @@ export const Step3 = () => {
                         {mediaTakes && mediaTakes.length > 0 ? (
                             <VideoSequencePreview
                                 takes={mediaTakes}
-                                masterAudioUrl={adData.masterAudioUrl || adData.narrationAudioUrl || undefined}
+                                masterAudioUrl={adData.masterAudioUrl || effectiveNarration.url || undefined}
                                 captions={currentCaptions}
                                 captionEditingEnabled={Boolean(currentCaptions?.segments?.length)}
                                 onCaptionStyleChange={(updates) => {
@@ -355,12 +363,27 @@ export const Step3 = () => {
                                 onMuteToggle={(id) => {
                                     setMediaTakes(
                                         mediaTakes.map((t) =>
-                                            t.id === id ? { ...t, muteOriginalAudio: !t.muteOriginalAudio } : t
+                                            t.id === id && t.type === 'video'
+                                                ? {
+                                                    ...t,
+                                                    muteOriginalAudio: normalizeTakeAudio(t.audio).mode !== 'off',
+                                                    audio: normalizeTakeAudio(t.audio).mode === 'off'
+                                                        ? { ...normalizeTakeAudio(t.audio), mode: 'original' }
+                                                        : { ...normalizeTakeAudio(t.audio), mode: 'off' },
+                                                }
+                                                : t
                                         )
                                     );
                                 }}
                                 onMuteAll={(muted) => {
-                                    setMediaTakes(mediaTakes.map((t) => ({ ...t, muteOriginalAudio: muted })));
+                                    setMediaTakes(mediaTakes.map((t) => ({
+                                        ...t,
+                                        muteOriginalAudio: muted || t.type !== 'video',
+                                        audio: {
+                                            ...normalizeTakeAudio(t.audio),
+                                            mode: muted || t.type !== 'video' ? 'off' : 'original',
+                                        },
+                                    })));
                                 }}
                             />
                         ) : (

@@ -70,6 +70,7 @@ import {
     titleWorkflowAsyncFingerprintKey,
     type TitleWorkflowAsyncFingerprint,
 } from '../lib/titleWorkflowAsyncGuard';
+import { resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -256,6 +257,7 @@ export const Step4 = () => {
     latestAdDataRef.current = adData;
 
     const currentSourceKey = narrationSourceKey(adData);
+    const effectiveNarration = resolveEffectiveNarrationAudio(adData);
     const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
     const currentWorkflowFingerprintKey = titleWorkflowAsyncFingerprintKey(
         captureTitleWorkflowAsyncFingerprint(adData),
@@ -1945,7 +1947,7 @@ export const Step4 = () => {
                     <ExportModal
                         onClose={() => setShowExportModal(false)}
                         mediaTakes={mediaTakes}
-                        masterAudioUrl={adData.masterAudioUrl || adData.narrationAudioUrl || undefined}
+                        masterAudioUrl={adData.masterAudioUrl || effectiveNarration.url || undefined}
                         transitionPath={adData.globalTransition?.filePath || undefined}
                         transitionRotation={adData.transitionRotation ?? 0}
                     />

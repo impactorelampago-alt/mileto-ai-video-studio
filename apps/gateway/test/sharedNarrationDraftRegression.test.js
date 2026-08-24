@@ -6,6 +6,7 @@ import ts from 'typescript';
 const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const wizard = read('../../client/src/context/WizardContext.tsx');
 const narrationState = read('../../client/src/lib/narrationState.ts');
+const audioIsolation = read('../../client/src/lib/audioIsolation.ts');
 const step3 = read('../../client/src/pages/Step3.tsx');
 const sharedRecovery = read('../../client/src/lib/sharedMediaRecovery.ts');
 const sharedController = read('../../server/src/controllers/sharedController.ts');
@@ -42,9 +43,16 @@ test('hidratação recupera derivados ocultos pelo bug de transporte da v1.4.33'
 });
 
 test('helper puro recupera o caso real sem alterar os 18 segmentos nem os 4 títulos', async () => {
-    const javascript = ts.transpileModule(narrationState, {
+    const audioIsolationJavascript = ts.transpileModule(audioIsolation, {
         compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
     }).outputText;
+    const audioIsolationModuleUrl = `data:text/javascript;base64,${Buffer.from(audioIsolationJavascript).toString('base64')}`;
+    const javascript = ts.transpileModule(narrationState, {
+        compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+    }).outputText.replace(
+        /from ['"]\.\/audioIsolation(?:\.ts)?['"]/,
+        `from '${audioIsolationModuleUrl}'`,
+    );
     const moduleUrl = `data:text/javascript;base64,${Buffer.from(javascript).toString('base64')}`;
     const { narrationSourceKey, rebindNarrationDerivativeSourceKeys } = await import(moduleUrl);
 
@@ -99,7 +107,8 @@ test('uma narração realmente nova não herda caminho nem identidade compartilh
 
 test('Step 3 materializa o asset compartilhado antes de chamar STT', () => {
     const stepGenerate = section(step3, 'const handleGenerateCaptions', 'const handleNext');
-    assert.match(stepGenerate, /narrationAudioUrl[\s\S]*?sharedNarrationAssetId[\s\S]*?sharedMasterAssetId/);
+    assert.match(stepGenerate, /resolveEffectiveNarrationAudio\(operationAdData\)/);
+    assert.match(stepGenerate, /operationNarration\.variant === 'original'[\s\S]*?operationNarration\.sharedAssetId[\s\S]*?sharedMasterAssetId/);
     const materializeAt = stepGenerate.indexOf('await materializeSharedAudioForCaptions(sharedAudioAssetId)');
     const sttAt = stepGenerate.indexOf('/api/stt/generate-captions');
     assert.ok(materializeAt >= 0 && sttAt > materializeAt);

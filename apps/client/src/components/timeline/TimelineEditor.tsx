@@ -8,6 +8,7 @@ import { TimeRuler } from './TimeRuler.tsx';
 import { useAudioEngine } from '../../hooks/useAudioEngine';
 import { timeToX } from './timelineUtils';
 import { toast } from 'sonner';
+import { resolveEffectiveNarrationAudio } from '../../lib/audioIsolation';
 
 interface TimelineEditorProps {
     isOpen: boolean;
@@ -26,6 +27,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
     initialTrackLabel = null,
 }) => {
     const { adData, updateAdData } = useWizard();
+    const effectiveNarrationUrl = resolveEffectiveNarrationAudio(adData).url;
     const [timeline, setTimeline] = useState<AudioTimeline | null>(null);
     const [history, setHistory] = useState<AudioTimeline[]>([]);
 
@@ -146,14 +148,14 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
         // 1. Sync Narration
         const narrTrack = initialTimeline.tracks.find((t) => t.id === 'narration');
         if (narrTrack) {
-            if (adData.narrationAudioUrl) {
+            if (effectiveNarrationUrl) {
                 const currentClip = narrTrack.clips[0];
                 // If no clip, or different URL, replace it
-                if (!currentClip || currentClip.sourceUrl !== adData.narrationAudioUrl) {
+                if (!currentClip || currentClip.sourceUrl !== effectiveNarrationUrl) {
                     narrTrack.clips = [
                         {
                             id: uuidv4(),
-                            sourceUrl: adData.narrationAudioUrl,
+                            sourceUrl: effectiveNarrationUrl,
                             name: 'Narração Gerada',
                             startSec: adData.audioConfig.narration.offsetSec,
                             inSec: adData.audioConfig.narration.trimStart,
@@ -208,7 +210,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
             : null;
         setSelectedClipId(initialTrack?.clips[0]?.id ?? null);
         setSelectedTrackId(initialTrack?.id ?? null);
-    }, [isOpen, adData.narrationAudioUrl, adData.musicAudioUrl, initialTrackId]); // Re-run if URLs change while open
+    }, [isOpen, effectiveNarrationUrl, adData.musicAudioUrl, initialTrackId]); // Re-run if URLs change while open
 
     const cloneTimeline = React.useCallback(
         (value: AudioTimeline): AudioTimeline => JSON.parse(JSON.stringify(value)) as AudioTimeline,

@@ -1421,14 +1421,18 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
     }, []);
 
     const addMediaTake = React.useCallback((take: MediaTake) => {
-        // Automatically mute all new takes per user request
-        const mutedTake = { ...take, muteOriginalAudio: true };
+        // Opt-in explícito: mídia nova e projetos antigos começam sem áudio de take.
+        const mutedTake = { ...take, muteOriginalAudio: true, audio: { mode: 'off' as const, volume: 1 } };
         setMediaTakes((prev) => [...prev, mutedTake]);
     }, []);
 
     const addMediaTakes = React.useCallback((takes: MediaTake[]) => {
         if (!takes.length) return;
-        const mutedTakes = takes.map((take) => ({ ...take, muteOriginalAudio: true }));
+        const mutedTakes = takes.map((take) => ({
+            ...take,
+            muteOriginalAudio: true,
+            audio: take.audio || { mode: 'off' as const, volume: 1 },
+        }));
         setMediaTakes((current) => {
             const ids = new Set(current.map((take) => take.id));
             return [...current, ...mutedTakes.filter((take) => !ids.has(take.id))];

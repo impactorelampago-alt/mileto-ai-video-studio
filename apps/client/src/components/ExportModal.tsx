@@ -22,6 +22,7 @@ import {
     findProjectOpsExportCompany,
     OPS_EXPORT_DEFAULT_FOLDER_NAME,
 } from '../lib/opsExportDestination';
+import { normalizeTakeAudio, resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
 
 type DestinationKind = 'local' | 'shared' | 'ops';
 type FolderOption = { label: string; value: string };
@@ -97,6 +98,11 @@ interface ExportModalProps {
 
 export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPath, transitionRotation = 0 }: ExportModalProps) => {
     const { adData, captionStyle, projectId, saveProject, updateAdData } = useWizard();
+    const exportMasterAudioUrl = masterAudioUrl
+        || adData.masterAudioUrl
+        || resolveEffectiveNarrationAudio(adData).url
+        || undefined;
+    const hasTakeAudioOptIn = mediaTakes.some((take) => normalizeTakeAudio(take.audio).mode !== 'off');
     const { isExporting, startExport } = useExportJobs();
     const navigate = useNavigate();
     // O título do projeto é a fonte única para o rascunho e para o MP4.
@@ -441,7 +447,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             totalDuration,
             targetDims,
             mediaTakes: [...mediaTakes],
-            masterAudioUrl,
+            masterAudioUrl: exportMasterAudioUrl,
             transitionPath,
             transitionRotation,
             adData: {
@@ -469,7 +475,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         exportFileName,
         fps,
         isExporting,
-        masterAudioUrl,
+        exportMasterAudioUrl,
         mediaTakes,
         navigate,
         onClose,
@@ -664,7 +670,11 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                     </div>
 
                     <div className="flex items-center justify-between rounded-xl border border-brand-accent/10 bg-brand-accent/5 px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-brand-muted">
-                        <span>{masterAudioUrl ? 'Áudio master incluído' : 'Exportação sem áudio'}</span>
+                        <span>
+                            {exportMasterAudioUrl
+                                ? hasTakeAudioOptIn ? 'Master + áudio de takes autorizados' : 'Áudio master incluído'
+                                : hasTakeAudioOptIn ? 'Áudio de takes autorizados' : 'Exportação sem áudio'}
+                        </span>
                         <span className="text-brand-lime">
                             {targetDims.w}×{targetDims.h}
                         </span>

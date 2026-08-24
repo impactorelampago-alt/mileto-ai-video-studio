@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 import FormData from 'form-data';
 import { Request } from 'express';
+import fs from 'fs';
 import type { NarratorVoiceContext } from './narratorVoiceContext';
 
 /**
@@ -354,4 +355,80 @@ export const gatewayStt = async (
     const data = await parseBody(res);
     if (!res.ok) throw new GatewayHttpError(res.status, data.message || `Gateway ${res.status}`);
     return data as GatewaySttResult;
+};
+
+export interface GatewayAudioIsolationResult {
+    audio: Buffer;
+    mimeType: string;
+    demo: boolean;
+    charged: number;
+    balance: number | null;
+}
+
+/**
+ * Envia PCM cru (signed 16-bit, mono, 16 kHz) ao gateway. O segredo do
+ * provedor e a cobrança permanecem no gateway; o servidor local recebe apenas
+ * o áudio processado e os metadados de consumo em headers.
+ */
+export const gatewayAudioIsolation = async (
+    token: string,
+    pcmPath: string,
+    durationSec: number,
+    sourceType: 'narration' | 'take' | 'audio',
+): Promise<GatewayAudioIsolationResult> => {
+    if (!token) throw new GatewayHttpError(401, 'Sessão Mileto ausente ou expirada.');
+    if (!Number.isFinite(durationSec) || durationSec <= 0 || durationSec > 10 * 60) {
+        throw new GatewayHttpError(400, 'A duração do áudio para isolamento é inválida.');
+    }
+    if (!['narration', 'take', 'audio'].includes(sourceType)) {
+        throw new GatewayHttpError(400, 'O tipo da fonte de áudio é inválido.');
+    }
+
+    const stat = await fs.promises.stat(pcmPath);
+    const form = new FormData();
+    form.append('audio', fs.createReadStream(pcmPath), {
+        filename: 'source.pcm',
+        contentType: 'application/octet-stream',
+        knownLength: stat.size,
+    });
+    form.append('file_format', 'pcm_s16le_16');
+
+    const res = await fetchWithTimeout(
+        `${GATEWAY_URL}/v1/audio-isolation`,
+        {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, ...form.getHeaders() },
+            body: form,
+        },
+        12 * 60 * 1000,
+    );
+    if (!res.ok) {
+        const data = await parseBody(res);
+        throw new GatewayHttpError(
+            res.status,
+            data.message || `Falha no isolamento de voz (${res.status}).`,
+            data.code || null,
+        );
+    }
+
+    const contentLength = Number(res.headers.get('content-length') || 0);
+    const maxResultBytes = 128 * 1024 * 1024;
+    if (Number.isFinite(contentLength) && contentLength > maxResultBytes) {
+        throw new GatewayHttpError(502, 'O áudio isolado excedeu o limite seguro de resposta.');
+    }
+    const audio = Buffer.from(await res.arrayBuffer());
+    if (!audio.length || audio.length > maxResultBytes) {
+        throw new GatewayHttpError(502, 'O gateway devolveu um áudio isolado vazio ou grande demais.');
+    }
+
+    const chargedHeader = Number(res.headers.get('x-mileto-charged') || 0);
+    const balanceHeader = res.headers.get('x-mileto-balance');
+    const parsedBalance = balanceHeader == null ? null : Number(balanceHeader);
+    return {
+        audio,
+        mimeType: String(res.headers.get('content-type') || 'application/octet-stream').split(';')[0],
+        demo: res.headers.get('x-mileto-demo') === 'true',
+        charged: Number.isFinite(chargedHeader) ? chargedHeader : 0,
+        balance: parsedBalance != null && Number.isFinite(parsedBalance) ? parsedBalance : null,
+    };
 };

@@ -152,8 +152,11 @@ router.get('/transitions/list', transitionController.listTransitions);
 router.delete('/transitions/:id', transitionController.deleteTransition);
 
 import * as audioController from '../controllers/audioController';
+import * as audioInfrastructureController from '../controllers/audioInfrastructureController';
 // Audio Mix Routes
 router.post('/audio/mix', audioController.mixAudio);
+router.post('/audio/isolate', audioInfrastructureController.isolateAudio);
+router.post('/audio/mix-takes', audioInfrastructureController.mixTakeAudio);
 
 // Mock verification for now, real implementation would actually call the APIs
 router.post('/test-gemini', async (req, res) => {
