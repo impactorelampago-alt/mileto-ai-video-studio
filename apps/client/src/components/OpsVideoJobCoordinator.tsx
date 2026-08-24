@@ -90,6 +90,7 @@ import {
     resolveOpsVideoJobCompany,
     type OpsVideoJobCompanyResolution,
 } from '../lib/opsVideoJobCompany';
+import { opsTakeSourceCompanyId } from '../lib/opsVideoJobAssetSource';
 
 const POLL_INTERVAL_MS = 12_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -549,13 +550,19 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
         : DEFAULT_SYSTEM_VOICE;
     if (!voice) throw new Error(`voice_preset_not_found: A voz solicitada (${job.voicePresetId}) nao existe neste Mileto AI Video.`);
     const music = systemMusicTrackFor(voice.preset.musicTrackId) || systemMusicTrackFor(DEFAULT_SYSTEM_VOICE.preset.musicTrackId);
-    const assets = (await gatewayApi.opsAssets(job.companyId, { viewContextId: context.contextId })).data;
-    const assetById = new Map(assets.map((asset) => [asset.id, asset]));
-    const missing = job.takeAssetIds.filter((id) => !assetById.has(id));
-    if (missing.length) throw new Error(`ops_take_missing: ${missing.length} take(s) selecionado(s) nao estao mais disponiveis na empresa.`);
-    const eligibleAssets = job.takeAssetIds.map((id) => assetById.get(id)!);
-    if (eligibleAssets.some((asset) => asset.companyId !== job.companyId)) {
-        throw new Error('ops_take_company_mismatch: O Ops devolveu um take que nao pertence a empresa do job.');
+    const takeSourceCompanyId = opsTakeSourceCompanyId(job);
+    const companyAssets = (await gatewayApi.opsAssets(job.companyId, { viewContextId: context.contextId })).data;
+    const takeSourceAssets = takeSourceCompanyId === job.companyId
+        ? companyAssets
+        : (await gatewayApi.opsAssets(takeSourceCompanyId, { viewContextId: context.contextId })).data;
+    const companyAssetById = new Map(companyAssets.map((asset) => [asset.id, asset]));
+    const takeAssetById = new Map(takeSourceAssets.map((asset) => [asset.id, asset]));
+    const assetById = new Map([...companyAssetById, ...takeAssetById]);
+    const missing = job.takeAssetIds.filter((id) => !takeAssetById.has(id));
+    if (missing.length) throw new Error(`ops_take_missing: ${missing.length} take(s) selecionado(s) nao estao mais disponiveis na fonte configurada.`);
+    const eligibleAssets = job.takeAssetIds.map((id) => takeAssetById.get(id)!);
+    if (eligibleAssets.some((asset) => asset.companyId !== takeSourceCompanyId)) {
+        throw new Error('ops_take_company_mismatch: O Ops devolveu um take que nao pertence a fonte configurada do job.');
     }
     // Vídeo Moldura: sinal explícito e retrocompatível dentro de settings (aberto).
     const isMoldura = job.settings?.videoModel === 'moldura';
@@ -565,7 +572,7 @@ const validateBeforeClaim = async (job: OpsVideoJob, context: OpsViewContext): P
         ? job.settings.frameOverlayAssetId
         : null;
     const frameAssetId = job.frameAssetId || settingsFrameId;
-    const frameAsset = frameAssetId ? assetById.get(frameAssetId) || null : null;
+    const frameAsset = frameAssetId ? companyAssetById.get(frameAssetId) || null : null;
     if (frameAssetId && !frameAsset) {
         throw new Error('ops_frame_missing: A moldura PNG solicitada nao esta mais disponivel na empresa.');
     }
