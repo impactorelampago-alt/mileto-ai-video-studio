@@ -18,7 +18,7 @@ const fakeStorage = () => {
     };
 };
 
-test('mapeia só vozes Fish custom: id -> voiceId, sem sistema, sem catalogKey', () => {
+test('mapeia vozes padrão e Fish custom: id -> voiceId, sem catalogKey', () => {
     const voices = buildVoiceCatalogVoices([
         { id: 'fish-abc', name: 'Voz da Victoria', provider: 'fishAudio', description: 'grave', catalogKey: 'mv-x' },
         { id: 'legacy-1', name: 'Legada sem provider' }, // provider ausente = Fish
@@ -26,9 +26,21 @@ test('mapeia só vozes Fish custom: id -> voiceId, sem sistema, sem catalogKey',
         { id: '', name: 'sem id' },
         { id: 'fish-abc', name: 'duplicada' },
     ]);
-    assert.deepEqual(voices, [
-        { voiceId: 'fish-abc', name: 'Voz da Victoria', isCustom: true, description: 'grave' },
-        { voiceId: 'legacy-1', name: 'Legada sem provider', isCustom: true },
+    assert.equal(voices.length, 6);
+    assert.deepEqual(voices.slice(0, 4).map((voice) => ({
+        voiceId: voice.voiceId,
+        isCustom: voice.isCustom,
+        isDefault: voice.isDefault,
+        provider: voice.provider,
+    })), [
+        { voiceId: 'd7cdad0d54464bcfade4be58791c6f3d', isCustom: false, isDefault: true, provider: 'fish_audio' },
+        { voiceId: '64ea557cd80c4fb99a96b209763f4ec9', isCustom: false, isDefault: true, provider: 'fish_audio' },
+        { voiceId: 'fffaeef680cf41cdaff2c65d8cdd8650', isCustom: false, isDefault: true, provider: 'fish_audio' },
+        { voiceId: '5c7c62ef7fc545908c8de8feab76a272', isCustom: false, isDefault: true, provider: 'fish_audio' },
+    ]);
+    assert.deepEqual(voices.slice(4), [
+        { voiceId: 'fish-abc', name: 'Voz da Victoria', isCustom: true, provider: 'fish_audio', description: 'grave' },
+        { voiceId: 'legacy-1', name: 'Legada sem provider', isCustom: true, provider: 'fish_audio' },
     ]);
     // catalogKey (mv-*) nunca vaza; enviamos o id de síntese.
     assert.ok(!JSON.stringify(voices).includes('mv-x'));
@@ -58,7 +70,8 @@ test('primeira sincronização empurra catalogVersion 1 e persiste o estado', as
     assert.equal(outcome, 'pushed');
     assert.equal(puts.length, 1);
     assert.equal(puts[0].catalogVersion, 1);
-    assert.deepEqual(puts[0].voices.map((v) => v.voiceId), ['fish-1']);
+    assert.deepEqual(puts[0].voices.slice(-1).map((v) => v.voiceId), ['fish-1']);
+    assert.equal(puts[0].voices.length, 5);
     // estado persistido
     assert.match(d.storage.getItem('mileto_voice_catalog_sync_v1'), /"version":1/);
 });

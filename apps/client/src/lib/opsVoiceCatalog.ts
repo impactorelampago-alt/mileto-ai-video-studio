@@ -1,15 +1,28 @@
-// Sincronização do catálogo de vozes CUSTOM do usuário com o Mileto Ops.
+// Sincronização do catálogo de vozes do usuário com o Mileto Ops.
 // O Ops é um espelho: nós somos a fonte da verdade e empurramos (PUT) o snapshot.
-// As 4 vozes de sistema NÃO entram (o Ops injeta as padrão sozinho); só vozes
-// custom do Fish Audio, pois o Ops sintetiza pelo voiceId real do Fish.
+// As 4 vozes de sistema entram para o gateway anexar a amostra oficial do Fish;
+// o Ops continua usando seus próprios nomes e descrições canônicos para elas.
 
 import type { StorageLike } from './opsLibraryCache';
+
+// Contrato público das quatro vozes que acompanham o produto. Os IDs também
+// são validados no executor e no Ops; ficam aqui sem importar módulos de UI para
+// que a sincronização continue testável no Node puro do cliente.
+const OPS_SYSTEM_VOICES = [
+    { id: 'd7cdad0d54464bcfade4be58791c6f3d', name: 'Padrão Masculina', desc: 'Voz marcante, vendas' },
+    { id: '64ea557cd80c4fb99a96b209763f4ec9', name: 'Padrão Feminina', desc: 'Voz clara, explicativa' },
+    { id: 'fffaeef680cf41cdaff2c65d8cdd8650', name: 'Rodeio', desc: 'Locução animada, eventos' },
+    { id: '5c7c62ef7fc545908c8de8feab76a272', name: 'Locutor Rádio', desc: 'Locução de rádio, impacto' },
+] as const;
 
 export interface OpsVoiceCatalogVoice {
     voiceId: string;
     name: string;
     isCustom: boolean;
     description?: string;
+    provider?: 'fish_audio';
+    isDefault?: boolean;
+    previewUrl?: string;
 }
 
 export interface VoiceCatalogHeartbeatResponse {
@@ -44,8 +57,15 @@ const isFishCustomVoice = (voice: { provider?: unknown }) =>
 
 export const buildVoiceCatalogVoices = (customVoices: unknown): OpsVoiceCatalogVoice[] => {
     const source = Array.isArray(customVoices) ? customVoices : [];
-    const seen = new Set<string>();
-    const voices: OpsVoiceCatalogVoice[] = [];
+    const voices: OpsVoiceCatalogVoice[] = OPS_SYSTEM_VOICES.map((voice) => ({
+        voiceId: voice.id,
+        name: voice.name,
+        isCustom: false,
+        isDefault: true,
+        provider: 'fish_audio',
+        description: voice.desc,
+    }));
+    const seen = new Set(voices.map((voice) => voice.voiceId));
     for (const raw of source) {
         const voice = raw as { id?: unknown; name?: unknown; description?: unknown; provider?: unknown };
         if (!isFishCustomVoice(voice)) continue;
@@ -53,7 +73,7 @@ export const buildVoiceCatalogVoices = (customVoices: unknown): OpsVoiceCatalogV
         const name = String(voice?.name ?? '').trim();
         if (!voiceId || !name || seen.has(voiceId)) continue;
         seen.add(voiceId);
-        const entry: OpsVoiceCatalogVoice = { voiceId, name, isCustom: true };
+        const entry: OpsVoiceCatalogVoice = { voiceId, name, isCustom: true, provider: 'fish_audio' };
         const description = String(voice?.description ?? '').trim();
         if (description) entry.description = description;
         voices.push(entry);

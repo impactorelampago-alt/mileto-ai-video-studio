@@ -1,6 +1,7 @@
 // Validação/normalização do snapshot de catálogo de vozes que o Mileto AI Video
 // empurra para o Mileto Ops (PUT /v1/voice-catalogs/{aiVideoUserId}).
-// O contrato aceita só vozes CUSTOM (as 4 de sistema o Ops injeta sozinho).
+// As vozes de sistema também chegam para receber a amostra oficial do Fish. O
+// Ops injeta os nomes canônicos, mas depende deste snapshot para obter previewUrl.
 
 const LIMITS = Object.freeze({
     voiceId: 200,
@@ -90,4 +91,76 @@ export const normalizeVoiceCatalogVersion = (value) => {
         throw contractError('catalogVersion deve ser um inteiro maior ou igual a 1.');
     }
     return catalogVersion;
+};
+
+const FISH_MODEL_BASE_URL = 'https://api.fish.audio';
+const PREVIEW_LOOKUP_CONCURRENCY = 4;
+const MAX_PREVIEW_LOOKUPS_PER_SYNC = 40;
+const PREVIEW_LOOKUP_TIMEOUT_MS = 5_000;
+
+const normalizedHttpUrl = (value) => {
+    const raw = compact(value);
+    if (!raw) return null;
+    try {
+        const url = new URL(raw, FISH_MODEL_BASE_URL);
+        return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : null;
+    } catch {
+        return null;
+    }
+};
+
+export const fishModelPreviewUrl = (model) => {
+    const samples = Array.isArray(model?.samples) ? model.samples : [];
+    for (const sample of samples) {
+        const url = normalizedHttpUrl(sample?.audio);
+        if (url) return url;
+    }
+    return null;
+};
+
+const isFishVoice = (voice) => !voice?.provider || ['fish_audio', 'fishAudio'].includes(voice.provider);
+
+/**
+ * Anexa a primeira amostra já existente no modelo Fish. É best-effort e não
+ * sintetiza áudio: sem chave, amostra ou resposta válida, o catálogo segue sem
+ * previewUrl e o botão não é exibido no Ops.
+ */
+export const enrichVoiceCatalogPreviews = async (
+    payload,
+    { fetchImpl = fetch, fishApiKey } = {},
+) => {
+    // Import tardio evita carregar banco/configuração em consumidores que usam
+    // apenas os normalizadores puros (testes e ferramentas de contrato).
+    const key = fishApiKey === undefined
+        ? await import('./settings.js').then(({ getKey }) => getKey('fishAudio'))
+        : fishApiKey;
+    if (!key) return payload;
+
+    const voices = payload.voices.map((voice) => ({ ...voice }));
+    const indexes = voices
+        .map((voice, index) => ({ voice, index }))
+        .filter(({ voice }) => !voice.previewUrl && isFishVoice(voice))
+        .slice(0, MAX_PREVIEW_LOOKUPS_PER_SYNC);
+
+    for (let offset = 0; offset < indexes.length; offset += PREVIEW_LOOKUP_CONCURRENCY) {
+        const batch = indexes.slice(offset, offset + PREVIEW_LOOKUP_CONCURRENCY);
+        await Promise.all(batch.map(async ({ voice, index }) => {
+            try {
+                const response = await fetchImpl(
+                    `${FISH_MODEL_BASE_URL}/model/${encodeURIComponent(voice.voiceId)}`,
+                    {
+                        headers: { Authorization: `Bearer ${key}` },
+                        signal: AbortSignal.timeout(PREVIEW_LOOKUP_TIMEOUT_MS),
+                    },
+                );
+                if (!response.ok) return;
+                const previewUrl = fishModelPreviewUrl(await response.json());
+                if (previewUrl) voices[index].previewUrl = previewUrl;
+            } catch {
+                // Catálogo e produção nunca são bloqueados por uma prévia ausente.
+            }
+        }));
+    }
+
+    return { ...payload, voices };
 };

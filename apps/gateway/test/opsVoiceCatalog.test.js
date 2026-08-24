@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    enrichVoiceCatalogPreviews,
+    fishModelPreviewUrl,
     normalizeVoiceCatalogPayload,
     normalizeVoiceCatalogVersion,
 } from '../src/opsVoiceCatalog.js';
@@ -79,4 +81,40 @@ test('respeita o limite de 1000 vozes', () => {
         () => normalizeVoiceCatalogPayload({ catalogVersion: 1, voices }),
         /1000/,
     );
+});
+
+test('extrai a primeira amostra de áudio HTTP do modelo Fish', () => {
+    assert.equal(fishModelPreviewUrl({ samples: [
+        { audio: 'javascript:alert(1)' },
+        { audio: '/model-samples/voice.mp3' },
+    ] }), 'https://api.fish.audio/model-samples/voice.mp3');
+    assert.equal(fishModelPreviewUrl({ samples: [] }), null);
+});
+
+test('enriquece previews sem sintetizar e preserva falhas individualmente', async () => {
+    const calls = [];
+    const payload = {
+        catalogVersion: 4,
+        voices: [
+            { voiceId: 'system-1', name: 'Sistema', provider: 'fish_audio', isCustom: false },
+            { voiceId: 'custom-1', name: 'Custom', provider: 'fish_audio', isCustom: true },
+            { voiceId: 'existing', name: 'Pronta', provider: 'fish_audio', isCustom: true, previewUrl: 'https://cdn.example/existing.mp3' },
+        ],
+    };
+    const out = await enrichVoiceCatalogPreviews(payload, {
+        fishApiKey: 'test-key',
+        fetchImpl: async (url) => {
+            calls.push(url);
+            if (url.endsWith('/system-1')) {
+                return { ok: true, json: async () => ({ samples: [{ audio: 'https://cdn.fish.audio/system.mp3' }] }) };
+            }
+            return { ok: false, json: async () => ({}) };
+        },
+    });
+
+    assert.equal(out.voices[0].previewUrl, 'https://cdn.fish.audio/system.mp3');
+    assert.equal(out.voices[1].previewUrl, undefined);
+    assert.equal(out.voices[2].previewUrl, 'https://cdn.example/existing.mp3');
+    assert.equal(calls.length, 2);
+    assert.equal(payload.voices[0].previewUrl, undefined);
 });

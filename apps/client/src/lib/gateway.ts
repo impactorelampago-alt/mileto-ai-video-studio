@@ -682,7 +682,15 @@ export const gatewayApi = {
 
     async putOpsVoiceCatalog(payload: {
         catalogVersion: number;
-        voices: Array<{ voiceId: string; name: string; isCustom: boolean; description?: string }>;
+        voices: Array<{
+            voiceId: string;
+            name: string;
+            isCustom: boolean;
+            description?: string;
+            provider?: 'fish_audio';
+            isDefault?: boolean;
+            previewUrl?: string;
+        }>;
     }): Promise<{ ok?: boolean; applied?: boolean; catalogVersion?: number; voiceCount?: number }> {
         return gatewayFetch('/v1/integrations/mileto-ops/voice-catalog', {
             method: 'PUT',

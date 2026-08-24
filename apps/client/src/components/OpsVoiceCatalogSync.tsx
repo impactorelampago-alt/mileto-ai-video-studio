@@ -13,8 +13,8 @@ const isSkippable = (error: unknown): boolean =>
         ['ops_not_connected', 'ops_user_link_missing', 'ops_reconnect_required'].includes(error.code || ''));
 
 /**
- * Empurra o catálogo de vozes custom do usuário para o Mileto Ops ao abrir o app
- * e sempre que as vozes mudam. É best-effort e nunca bloqueia nada: usuários sem
+ * Empurra o catálogo de vozes do usuário para o Mileto Ops ao abrir o app e
+ * sempre que as vozes custom mudam. É best-effort e nunca bloqueia nada: usuários sem
  * conexão/vínculo simplesmente não sincronizam. Renderiza nada.
  */
 export const OpsVoiceCatalogSync = () => {
@@ -48,7 +48,7 @@ export const OpsVoiceCatalogSync = () => {
             debounce = setTimeout(() => void run(), 400);
         };
 
-        // Ao abrir o app (backfill natural) e a cada mudança de vozes custom.
+        // Ao abrir o app (backfill natural das vozes padrão) e a cada mudança custom.
         schedule();
         window.addEventListener('mileto:custom-voices-changed', schedule);
         return () => {

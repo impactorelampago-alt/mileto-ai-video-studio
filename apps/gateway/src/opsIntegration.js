@@ -27,6 +27,7 @@ import {
     createOpsExportIdempotencyKey,
 } from './opsExportContract.js';
 import {
+    enrichVoiceCatalogPreviews,
     normalizeVoiceCatalogPayload,
     normalizeVoiceCatalogVersion,
 } from './opsVoiceCatalog.js';
@@ -1052,14 +1053,14 @@ const confirmedUserLinkId = async (orgId, connectionId, aiUserId) => (
 ).rows[0]?.id || null;
 
 // PUT /v1/integrations/mileto-ops/voice-catalog — empurra o snapshot de vozes
-// custom do usuário autenticado para o Ops (substituição total, idempotente por
+// do usuário autenticado para o Ops (substituição total, idempotente por
 // catalogVersion). aiVideoUserId = o próprio usuário autenticado.
 export const putVoiceCatalog = async (req, res) => {
     const aiUserId = Number(req.user.id);
     if (!Number.isSafeInteger(aiUserId) || aiUserId <= 0) {
         return res.status(400).json({ ok: false, message: 'Usuário AI inválido.' });
     }
-    const payload = normalizeVoiceCatalogPayload(req.body);
+    const payload = await enrichVoiceCatalogPreviews(normalizeVoiceCatalogPayload(req.body));
     const { connection, accessToken } = await activeConnectionWithToken(req.user.orgId);
     if (!(await confirmedUserLinkId(req.user.orgId, connection.id, aiUserId))) {
         return res.status(409).json({
