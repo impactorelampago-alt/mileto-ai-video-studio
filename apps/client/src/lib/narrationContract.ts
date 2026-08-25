@@ -48,6 +48,42 @@ export const hasNarrationDirections = (value: string): boolean => {
     return DIRECTION_PATTERN.test(value);
 };
 
+const directionHasImmediateTarget = (value: string, end: number): boolean => {
+    let following = value.slice(end);
+    const nextDirection = new RegExp(String.raw`^\s*${DIRECTION_TOKEN_SOURCE}`);
+    while (nextDirection.test(following)) following = following.replace(nextDirection, '');
+    return /^[\s"'“”‘’(\-—]*[\p{L}\p{N}]/u.test(following);
+};
+
+/**
+ * Respostas automáticas do Narrador podem ocasionalmente colocar uma tag antes
+ * da pontuação (`cento e quarenta e nove reais [emphasis].`). A tag não possui
+ * alvo falável e o contrato corretamente a rejeitaria. Como o usuário não
+ * escreveu essa direção, removemos somente as tags órfãs; tags válidas e todo o
+ * conteúdo falado permanecem intactos. O modo manual continua estrito.
+ */
+const repairAutomaticDirectionsWithoutTarget = (value: string): string => {
+    const source = String(value || '');
+    // Conteúdo só com tags continua inválido e deve conservar o diagnóstico
+    // específico, em vez de virar uma síntese vazia durante a recuperação.
+    if (!/[\p{L}\p{N}]/u.test(source.replace(new RegExp(DIRECTION_TOKEN_SOURCE, 'g'), ''))) {
+        return source;
+    }
+    const directions = [...source.matchAll(new RegExp(DIRECTION_TOKEN_SOURCE, 'g'))];
+    const invalid = directions.filter((match) => !directionHasImmediateTarget(
+        source,
+        (match.index || 0) + match[0].length,
+    ));
+    if (!invalid.length) return source;
+
+    return invalid
+        .sort((left, right) => (right.index || 0) - (left.index || 0))
+        .reduce((result, match) => {
+            const start = match.index || 0;
+            return result.slice(0, start) + result.slice(start + match[0].length);
+        }, source);
+};
+
 /**
  * Recupera rascunhos produzidos por versões anteriores do Chat que podiam
  * terminar com uma direção sem texto (ex.: `Frase final. [soft]`). A direção
@@ -158,7 +194,12 @@ export const normalizeNarrationContract = (
     const preparedSynthesis = mode === 'clean'
         ? plain
         : mode === 'automatic'
-          ? prepareAutomaticNarrationDirections(synthesis || plain, data?.narrationDialect)
+          ? prepareAutomaticNarrationDirections(
+              opsDialect
+                  ? (synthesis || plain)
+                  : repairAutomaticDirectionsWithoutTarget(synthesis || plain),
+              data?.narrationDialect,
+          )
           : (synthesis || plain);
 
     return {

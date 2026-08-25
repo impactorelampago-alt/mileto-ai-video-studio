@@ -183,6 +183,34 @@ test('preserva pontuação ao remover direção órfã colocada antes dela', () 
     assert.equal(result.narrationSynthesisText, '[excited] Conheca nossa oferta hoje.');
 });
 
+test('automatic recupera tag órfã no meio do roteiro real e preserva as válidas', () => {
+    const synthesis = '[curious] Na Ótica Luz, em Rio das Ostras, você encontra óculos completo, armação mais lente, a partir de 149 reais [emphasis]. [confident] E tem mais: o exame é por nossa conta.';
+    const plain = synthesis.replace(/\[[a-z][a-z '\-]{0,63}\]/g, ' ').replace(/[ \t]+/g, ' ').trim();
+    const result = prepare({
+        narrationPlainText: plain,
+        narrationSynthesisText: synthesis,
+        directionMode: 'automatic',
+        protectedTerms: ['Ótica Luz'],
+    });
+
+    assert.equal(plain.includes('149 reais .'), true, 'reproduz a marca visível no print');
+    assert.doesNotMatch(result.narrationSynthesisText, /\[emphasis\]\s*\./);
+    assert.match(result.narrationSynthesisText, /^\[curious\]/);
+    assert.match(result.narrationSynthesisText, /\[confident\] E tem mais/);
+});
+
+test('manual continua rejeitando tag órfã no meio do roteiro', () => {
+    assert.throws(
+        () => prepare({
+            narrationPlainText: 'Oferta por 149 reais . Depois aproveite.',
+            narrationSynthesisText: '[curious] Oferta por 149 reais [emphasis]. Depois aproveite.',
+            directionMode: 'manual',
+        }),
+        (error: unknown) => error instanceof NarrationContractError
+            && error.code === 'TTS_DIRECTION_WITHOUT_TARGET',
+    );
+});
+
 test('mantem paragrafos no texto limpo e normaliza fala somente no texto de sintese', () => {
     const result = prepare({
         narrationPlainText: 'Oferta de R$ 199,00.\n\nLigue agora.',

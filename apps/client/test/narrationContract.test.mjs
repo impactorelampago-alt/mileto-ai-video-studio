@@ -206,3 +206,33 @@ test('remove sequência órfã e preserva colchetes editoriais finais', () => {
     );
     assert.equal(removeOrphanNarrationDirections('[warm] Oferta [soft].'), '[warm] Oferta.');
 });
+
+test('roteiro automático recupera tag órfã antes do ponto sem culpar o usuário', () => {
+    const synthesis = '[curious] Na Ótica Luz, em Rio das Ostras, você encontra óculos completo, armação mais lente, a partir de 149 reais [emphasis]. [confident] E tem mais: o exame é por nossa conta.';
+    const plain = stripNarrationDirections(synthesis);
+    const payload = buildNarrationTtsRequest(project({
+        narrationPlainText: plain,
+        narrationSynthesisText: synthesis,
+        narrationText: plain,
+        directionMode: 'automatic',
+    }), ['Ótica Luz']);
+
+    assert.equal(plain.includes('149 reais .'), true, 'reproduz a marca visível no print');
+    assert.doesNotMatch(payload.narrationSynthesisText, /\[emphasis\]\s*\./);
+    assert.match(payload.narrationSynthesisText, /^\[curious\]/);
+    assert.match(payload.narrationSynthesisText, /\[confident\] E tem mais/);
+    assert.equal(stripNarrationDirections(payload.narrationSynthesisText), plain);
+});
+
+test('modo manual não corrige silenciosamente uma tag sem alvo', () => {
+    const synthesis = '[curious] Oferta por 149 reais [emphasis]. Depois aproveite.';
+    const plain = stripNarrationDirections(synthesis);
+    const payload = buildNarrationTtsRequest(project({
+        narrationPlainText: plain,
+        narrationSynthesisText: synthesis,
+        narrationText: plain,
+        directionMode: 'manual',
+    }));
+
+    assert.match(payload.narrationSynthesisText, /\[emphasis\]\s*\./);
+});

@@ -91,7 +91,11 @@ const addAutomaticDirections = (value) => {
     return sentences.join('');
 };
 
-const extractDirections = (text, narrationDialect = LOCAL_NARRATION_DIALECT) => {
+const extractDirections = (
+    text,
+    narrationDialect = LOCAL_NARRATION_DIALECT,
+    validateTargets = true
+) => {
     const opsDialect = narrationDialect === OPS_NARRATION_DIALECT;
     const directions = [];
     let openAt = -1;
@@ -136,7 +140,7 @@ const extractDirections = (text, narrationDialect = LOCAL_NARRATION_DIALECT) => 
             'A narração possui colchetes de direção desbalanceados.'
         );
     }
-    for (const direction of directions) {
+    for (const direction of validateTargets ? directions : []) {
         let following = text.slice(direction.end);
         const nextDirection = opsDialect
             ? /^\s*\[[^\[\]\r\n]{1,240}\]/u
@@ -152,6 +156,30 @@ const extractDirections = (text, narrationDialect = LOCAL_NARRATION_DIALECT) => 
         }
     }
     return directions;
+};
+
+const directionHasImmediateTarget = (text, end, narrationDialect) => {
+    let following = text.slice(end);
+    const nextDirection = narrationDialect === OPS_NARRATION_DIALECT
+        ? /^\s*\[[^\[\]\r\n]{1,240}\]/u
+        : /^\s*\[[a-z][a-z '-]{0,63}\]/;
+    while (nextDirection.test(following)) following = following.replace(nextDirection, '');
+    return /^[\s"'“”‘’(\-—]*[\p{L}\p{N}]/u.test(following);
+};
+
+/** Recover only automatic directions without spoken targets; manual remains strict. */
+const repairAutomaticDirectionsWithoutTarget = (text, narrationDialect) => {
+    if (!/[\p{L}\p{N}]/u.test(stripDirections(text, narrationDialect))) return text;
+    const invalid = extractDirections(text, narrationDialect, false)
+        .filter((direction) => !directionHasImmediateTarget(text, direction.end, narrationDialect));
+    if (!invalid.length) return text;
+
+    return invalid
+        .sort((left, right) => right.start - left.start)
+        .reduce(
+            (result, direction) => result.slice(0, direction.start) + result.slice(direction.end),
+            text
+        );
 };
 
 const assertDirectionsOutsideProtectedValues = (
@@ -413,6 +441,13 @@ export const prepareTtsRequest = (payload = {}) => {
                 narrationDialect
             )
             : payload.narrationSynthesisText;
+        if (
+            directionMode === 'automatic'
+            && narrationDialect === LOCAL_NARRATION_DIALECT
+            && typeof synthesisText === 'string'
+        ) {
+            synthesisText = repairAutomaticDirectionsWithoutTarget(synthesisText, narrationDialect);
+        }
         if (
             provider === 'fishAudio'
             && model === 's2.1-pro'

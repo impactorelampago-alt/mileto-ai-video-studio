@@ -179,6 +179,33 @@ test('preserva pontuação ao remover direção órfã e recupera payload legado
     );
 });
 
+test('automatic recupera tag órfã antes do ponto sem perder direções válidas', () => {
+    const synthesis = '[curious] Na Ótica Luz, em Rio das Ostras, você encontra óculos completo, armação mais lente, a partir de 149 reais [emphasis]. [confident] E tem mais: o exame é por nossa conta.';
+    const plain = synthesis.replace(/\[[a-z][a-z '\-]{0,63}\]/g, ' ').replace(/[ \t]+/g, ' ').trim();
+    const result = prepareTtsRequest(structuredPayload({
+        narrationPlainText: plain,
+        narrationSynthesisText: synthesis,
+        directionMode: 'automatic',
+        protectedTerms: ['Ótica Luz'],
+    }));
+
+    assert.equal(plain.includes('149 reais .'), true, 'reproduz a marca visível no print');
+    assert.doesNotMatch(result.spokenText, /\[emphasis\]\s*\./);
+    assert.match(result.spokenText, /^\[curious\]/);
+    assert.match(result.spokenText, /\[confident\] E tem mais/);
+});
+
+test('manual continua rejeitando tag órfã no meio do roteiro', () => {
+    assert.throws(
+        () => prepareTtsRequest(structuredPayload({
+            narrationPlainText: 'Oferta por 149 reais . Depois aproveite.',
+            narrationSynthesisText: '[curious] Oferta por 149 reais [emphasis]. Depois aproveite.',
+            directionMode: 'manual',
+        })),
+        (error) => error.code === 'narration_direction_without_target'
+    );
+});
+
 test('borda migra manual ou automatic sem tags no S2.1 Pro e injeta direcoes avancadas', () => {
     const plain = 'Se você mora em Piracicaba e está precisando de óculos multifocais, preste atenção nesta oferta que só a Ótica Reis tem para você!\n\nA partir de cento e noventa e nove reais, você leva seu óculos completo, com armação e lente, e ainda ganha o exame totalmente por nossa conta.\n\nE o melhor: temos mais de seiscentas armações para você escolher do jeitinho que gosta.\n\nMas corra, porque essa promoção vai só até sábado! Não deixe para depois e garanta já seu óculos novo com qualidade e preço que cabe no seu bolso.\n\nChama no WhatsApp da Ótica Reis agora mesmo e agende seu exame sem custo! Seu olhar merece o melhor.';
     for (const directionMode of ['manual', 'automatic']) {

@@ -24,8 +24,8 @@ export const DOCUMENTED_FISH_DIRECTIONS = Object.freeze({
 const NATURAL_DIRECTION = /^[a-z][a-z' -]{0,63}$/;
 const DIRECTION_PATTERN = /\[([a-z][a-z' -]{0,63})\]/g;
 const ORPHAN_DIRECTION_TAIL = /(?:\s*\[[a-z][a-z' -]{0,63}\])+\s*([.!?,;:]*)\s*$/;
-const OPS_DIRECTION_PATTERN = /\[[^\[\]\r\n]{1,240}\]/g;
-const OPS_ORPHAN_DIRECTION_TAIL = /(?:\s*\[[^\[\]\r\n]{1,240}\])+\s*([.!?,;:]*)\s*$/;
+const OPS_DIRECTION_PATTERN = /\[[^[\]\r\n]{1,240}\]/g;
+const OPS_ORPHAN_DIRECTION_TAIL = /(?:\s*\[[^[\]\r\n]{1,240}\])+\s*([.!?,;:]*)\s*$/;
 const SPACE = /\s+/g;
 
 export class NarrationContractError extends Error {
@@ -102,6 +102,7 @@ const prepareSpokenTextPreservingEditorialBrackets = (value: string): string => 
 const parseDirections = (
     value: string,
     dialect: NarrationDialect = LOCAL_NARRATION_DIALECT,
+    validateTargets = true,
 ): Array<{ value: string; index: number; end: number; plainIndex: number }> => {
     const opsDialect = dialect === OPS_NARRATION_DIALECT;
     const result: Array<{ value: string; index: number; end: number; plainIndex: number }> = [];
@@ -128,7 +129,7 @@ const parseDirections = (
             if (depth !== 1 || opening < 0) throw new NarrationContractError('TTS_DIRECTIONS_UNBALANCED', 'As direções de voz possuem colchetes não balanceados.');
             const direction = value.slice(opening + 1, index).trim();
             const validDirection = opsDialect
-                ? direction.length >= 1 && direction.length <= 240 && !/[\[\]\r\n]/u.test(direction)
+                ? direction.length >= 1 && direction.length <= 240 && !/[[\]\r\n]/u.test(direction)
                 : NATURAL_DIRECTION.test(direction);
             if (!validDirection) {
                 throw new NarrationContractError('TTS_DIRECTION_INVALID', 'Use direções curtas em inglês, com letras, espaços e hífen, sempre entre colchetes.');
@@ -141,12 +142,12 @@ const parseDirections = (
         if (depth === 0) plainIndex += 1;
     }
     if (depth !== 0) throw new NarrationContractError('TTS_DIRECTIONS_UNBALANCED', 'As direções de voz possuem colchetes não balanceados.');
-    for (const direction of result) {
+    for (const direction of validateTargets ? result : []) {
         let following = value.slice(direction.end);
         // Permite uma pequena sequencia de instrucoes (ex.: pausa + emocao),
         // mas toda sequencia precisa controlar texto falavel imediatamente.
         const nextDirection = opsDialect
-            ? /^\s*\[[^\[\]\r\n]{1,240}\]/u
+            ? /^\s*\[[^[\]\r\n]{1,240}\]/u
             : /^\s*\[[a-z][a-z' -]{0,63}\]/;
         while (nextDirection.test(following)) {
             following = following.replace(nextDirection, '');
@@ -159,6 +160,37 @@ const parseDirections = (
         }
     }
     return result;
+};
+
+const directionHasImmediateTarget = (
+    value: string,
+    end: number,
+    dialect: NarrationDialect,
+): boolean => {
+    let following = value.slice(end);
+    const nextDirection = dialect === OPS_NARRATION_DIALECT
+        ? /^\s*\[[^[\]\r\n]{1,240}\]/u
+        : /^\s*\[[a-z][a-z' -]{0,63}\]/;
+    while (nextDirection.test(following)) following = following.replace(nextDirection, '');
+    return /^[\s"'“”‘’(\-—]*[\p{L}\p{N}]/u.test(following);
+};
+
+/** Recupera apenas tags automáticas sem alvo; direções manuais continuam estritas. */
+const repairAutomaticDirectionsWithoutTarget = (
+    value: string,
+    dialect: NarrationDialect,
+): string => {
+    if (!/[\p{L}\p{N}]/u.test(stripFishDirections(value, dialect))) return value;
+    const directions = parseDirections(value, dialect, false)
+        .filter((direction) => !directionHasImmediateTarget(value, direction.end, dialect));
+    if (!directions.length) return value;
+
+    return directions
+        .sort((left, right) => right.index - left.index)
+        .reduce(
+            (result, direction) => result.slice(0, direction.index) + result.slice(direction.end),
+            value,
+        );
 };
 
 export const stripFishDirections = (
@@ -339,6 +371,9 @@ export const prepareNarrationContract = (input: NarrationContractInput): Prepare
         synthesisText = stripFishDirections(synthesisText || plainText, narrationDialect);
     }
 
+    if (mode === 'automatic' && narrationDialect === LOCAL_NARRATION_DIALECT) {
+        synthesisText = repairAutomaticDirectionsWithoutTarget(synthesisText, narrationDialect);
+    }
     const beforeDirections = parseDirections(synthesisText, narrationDialect);
     if (comparable(stripFishDirections(synthesisText, narrationDialect)) !== comparable(plainText)) {
         throw new NarrationContractError('TTS_TEXT_MISMATCH', 'O texto limpo e o texto de síntese não representam a mesma narração.');
