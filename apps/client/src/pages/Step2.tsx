@@ -64,6 +64,7 @@ import { recoverOpsTakeSource } from '../lib/opsMediaRecovery';
 import { prepareOpsTakeForExport } from '../lib/opsMediaRecovery';
 import { refreshSharedTakeForExport } from '../lib/sharedMediaRecovery';
 import { applyQuickEdit } from '../lib/quickEdit';
+import { automaticCutTakes } from '../lib/automaticCuts';
 import {
     hasCurrentTakeIsolation,
     normalizeTakeAudio,
@@ -724,72 +725,21 @@ export const Step2 = () => {
             return;
         }
 
-        let remainingAudioTime = effectiveAudioDuration;
-        const finalDurations = new Map<string, number>();
-        let activeTakes = [...mediaTakes];
-        let attempts = 0;
-
-        while (activeTakes.length > 0 && remainingAudioTime > 0.001 && attempts < 100) {
-            attempts += 1;
-            const slice = remainingAudioTime / activeTakes.length;
-            const shortTakes = activeTakes.filter((take) => {
-                const maximum = take.type === 'video' && take.originalDurationSeconds > 0
-                    ? take.originalDurationSeconds
-                    : Number.MAX_VALUE;
-                return maximum < slice + 0.05;
-            });
-
-            if (shortTakes.length === 0) {
-                activeTakes.forEach((take) => finalDurations.set(take.id, slice));
-                remainingAudioTime = 0;
-                break;
-            }
-
-            shortTakes.forEach((take) => {
-                const maximum = take.type === 'video' && take.originalDurationSeconds > 0
-                    ? take.originalDurationSeconds
-                    : 0;
-                finalDurations.set(take.id, maximum);
-                remainingAudioTime -= maximum;
-            });
-            const lockedIds = new Set(shortTakes.map((take) => take.id));
-            activeTakes = activeTakes.filter((take) => !lockedIds.has(take.id));
+        try {
+            const result = automaticCutTakes(
+                mediaTakes,
+                effectiveAudioDuration,
+                (source, index) => `${source.id}-loop-${Date.now()}-${index}`,
+            );
+            setMediaTakes(result.takes);
+            toast.success(
+                result.looped
+                    ? `Cortes em loop ajustados para ${effectiveAudioDuration.toFixed(1)}s.`
+                    : `Cortes automáticos ajustados para ${effectiveAudioDuration.toFixed(1)}s.`,
+            );
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Não foi possível ajustar os cortes.');
         }
-
-        const adjustedTakes = mediaTakes.map((take) => ({
-            ...take,
-            trim: { start: 0, end: Math.max(0, finalDurations.get(take.id) || 0) },
-            speedPresetId: 'normal' as const,
-        }));
-
-        if (remainingAudioTime > 0.5) {
-            const loopedTakes = [...adjustedTakes];
-            let loopIndex = 0;
-            let timeToFill = remainingAudioTime;
-
-            while (timeToFill > 0.5 && loopedTakes.length < 800) {
-                const source = mediaTakes[loopIndex % mediaTakes.length];
-                const sourceDuration = source.type === 'video' && source.originalDurationSeconds > 0
-                    ? source.originalDurationSeconds
-                    : timeToFill;
-                const duration = Math.min(sourceDuration, timeToFill);
-                loopedTakes.push({
-                    ...source,
-                    id: `${source.id}-loop-${Date.now()}-${loopIndex}`,
-                    trim: { start: 0, end: Math.max(0, duration) },
-                    speedPresetId: 'normal' as const,
-                });
-                timeToFill -= duration;
-                loopIndex += 1;
-            }
-
-            setMediaTakes(loopedTakes);
-            toast.success(`Cortes em loop ajustados para ${effectiveAudioDuration.toFixed(1)}s.`);
-            return;
-        }
-
-        setMediaTakes(adjustedTakes);
-        toast.success(`Cortes automáticos ajustados para ${effectiveAudioDuration.toFixed(1)}s.`);
     };
 
     const handleQuickEdit = async () => {
