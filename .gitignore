@@ -23,7 +23,12 @@ apps/server/data/
 apps/server/public/mixes/
 apps/server/public/frames/
 apps/server/public/narrations/
-apps/server/public/transitions/
+# Transições enviadas por usuários continuam locais, mas o efeito incluído no
+# produto precisa ser versionado para existir em clones, worktrees e releases.
+apps/server/public/transitions/*
+!apps/server/public/transitions/builtins/
+apps/server/public/transitions/builtins/*
+!apps/server/public/transitions/builtins/film-burn-08.mp4
 apps/server/preview-cache/
 apps/server/ops-cache/
 apps/server/temp/

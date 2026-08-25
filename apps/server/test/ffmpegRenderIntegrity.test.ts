@@ -12,6 +12,7 @@ import {
 
 const ffmpegPath = path.resolve(__dirname, '../../client/resources/bin/ffmpeg.exe');
 const ffprobePath = path.resolve(__dirname, '../../client/resources/bin/ffprobe.exe');
+const builtInFilmBurnPath = path.resolve(__dirname, '../public/transitions/builtins/film-burn-08.mp4');
 const hasBundledBinaries = fs.existsSync(ffmpegPath) && fs.existsSync(ffprobePath);
 const serviceDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-render-service-data-'));
 process.env.USER_DATA_PATH = serviceDataDirectory;
@@ -153,6 +154,15 @@ const pixelAtFrame = (filePath: string, frameIndex: number, x: number, y: number
     'pipe:1',
 ]));
 
+const frameAt = (filePath: string, at: number): Buffer => runFfmpeg([
+    '-ss', at.toFixed(3),
+    '-i', filePath,
+    '-vf', 'format=rgb24',
+    '-frames:v', '1',
+    '-f', 'rawvideo',
+    'pipe:1',
+]);
+
 test('zoom-in-out preserva duração com fontes 24, 25, 30 e 60 fps', {
     skip: !hasBundledBinaries,
     timeout: 120_000,
@@ -279,6 +289,70 @@ test('zoom-in-out com takes mistos, transição e CTA mantém o quadro final', {
             `CTA final deveria ser verde, RGB=${[...duringCta].join(',')}`);
         assert.ok(duringCaption[1] > 80 && duringCaption[2] > 80,
             `Legenda final deveria permanecer visível em ciano, RGB=${[...duringCaption].join(',')}`);
+    } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('Film Burn oficial produz alteração visual real ao redor do corte', {
+    skip: !hasBundledBinaries,
+    timeout: 120_000,
+}, async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-render-builtin-transition-'));
+
+    try {
+        const { buildHybridVideo } = require('../src/services/ffmpeg');
+        const takeDuration = 0.75;
+        const duration = takeDuration * 2;
+        const sourcePath = makeVideo(directory, 'same-source.mp4', 30, takeDuration, '0x2864dc');
+        const audioPath = makeAudio(directory, duration);
+        const overlayPath = makeOverlay(directory, 'transparent-overlay.mov', duration);
+        const outputPath = path.join(directory, 'render-builtin-film-burn.mp4');
+        const controlPath = path.join(directory, 'render-without-transition.mp4');
+
+        const renderOptions = {
+            takes: [0, 1].map((index) => ({
+                id: `same-take-${index}`,
+                type: 'video' as const,
+                file_path: sourcePath,
+                start: 0,
+                end: takeDuration,
+                speed: 1,
+            })),
+            audioPath,
+            overlayPath,
+            duration,
+            targetW: 160,
+            targetH: 90,
+            outputFps: 30,
+        };
+
+        await buildHybridVideo({ ...renderOptions, transitionPath: builtInFilmBurnPath, outputPath });
+        await buildHybridVideo({ ...renderOptions, outputPath: controlPath });
+
+        let largestDifference = 0;
+        let visiblyChangedChannels = 0;
+        let comparedChannels = 0;
+        for (const at of [0.4, 0.6, 0.75, 0.9, 1.1]) {
+            const rendered = frameAt(outputPath, at);
+            const control = frameAt(controlPath, at);
+            assert.equal(rendered.length, control.length);
+
+            for (let index = 0; index < rendered.length; index += 1) {
+                const difference = Math.abs(rendered[index] - control[index]);
+                largestDifference = Math.max(largestDifference, difference);
+                if (difference >= 4) visiblyChangedChannels += 1;
+                comparedChannels += 1;
+            }
+        }
+
+        const changedRatio = visiblyChangedChannels / comparedChannels;
+
+        assert.ok(
+            largestDifference >= 10 && changedRatio >= 0.01,
+            'O Film Burn foi processado, mas não alterou os quadros em relação ao controle '
+                + `(diferença máxima=${largestDifference}; proporção=${changedRatio.toFixed(4)}).`,
+        );
     } finally {
         fs.rmSync(directory, { recursive: true, force: true });
     }

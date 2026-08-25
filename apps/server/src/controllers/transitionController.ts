@@ -4,6 +4,19 @@ import fs from 'fs';
 import { randomUUID as uuidv4 } from 'crypto';
 import ffmpeg from 'fluent-ffmpeg';
 
+interface TransitionCatalogEntry {
+    id?: string;
+    originalName?: string;
+    publicUrl?: string;
+    filePath?: string;
+    durationSec?: number;
+    category?: string;
+    isBuiltIn?: boolean;
+    identityCode?: string;
+    createdAt?: string;
+    [key: string]: unknown;
+}
+
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const transitionsDir = path.join(BASE_DATA_PATH, 'public/transitions');
 const builtInTransitionsDir = process.env.BUILTIN_TRANSITIONS_PATH
@@ -34,10 +47,40 @@ if (!fs.existsSync(transitionsDir)) {
     fs.mkdirSync(transitionsDir, { recursive: true });
 }
 
-const readUserTransitions = (): any[] => {
+const readUserTransitions = (): TransitionCatalogEntry[] => {
     const libraryPath = path.join(BASE_DATA_PATH, 'data/transition_library.json');
     if (!fs.existsSync(libraryPath)) return [];
-    return JSON.parse(fs.readFileSync(libraryPath, 'utf8'));
+    return JSON.parse(fs.readFileSync(libraryPath, 'utf8')) as TransitionCatalogEntry[];
+};
+
+const isUsableTransitionFile = (filePath: string): boolean => {
+    try {
+        const stats = fs.statSync(filePath);
+        return stats.isFile() && stats.size > 0;
+    } catch {
+        return false;
+    }
+};
+
+/**
+ * Não anuncia um efeito incluído que não possa ser lido nesta instalação.
+ * Além de evitar uma seleção visual falsa, preserva um upload do usuário com o
+ * mesmo nome quando o asset oficial estiver ausente.
+ */
+export const buildTransitionCatalog = (
+    userTransitions: TransitionCatalogEntry[],
+    builtInAvailable = isUsableTransitionFile(FILM_BURN_TRANSITION.filePath),
+): TransitionCatalogEntry[] => {
+    const normalizedUsers = userTransitions.map((transition) => ({ ...transition, isBuiltIn: false }));
+    if (!builtInAvailable) return normalizedUsers;
+
+    const reservedName = normalizedTransitionName(FILM_BURN_TRANSITION.originalName);
+    return [
+        FILM_BURN_TRANSITION,
+        ...normalizedUsers.filter(
+            (transition) => normalizedTransitionName(String(transition.originalName || '')) !== reservedName,
+        ),
+    ];
 };
 
 export const uploadTransition = async (req: Request, res: Response) => {
@@ -77,9 +120,9 @@ export const uploadTransition = async (req: Request, res: Response) => {
 
         // Save to transition_library.json
         const libraryPath = path.join(BASE_DATA_PATH, 'data/transition_library.json');
-        let library: any[] = [];
+        let library: TransitionCatalogEntry[] = [];
         if (fs.existsSync(libraryPath)) {
-            library = JSON.parse(fs.readFileSync(libraryPath, 'utf8'));
+            library = JSON.parse(fs.readFileSync(libraryPath, 'utf8')) as TransitionCatalogEntry[];
         }
         library.push(newTransition);
         fs.writeFileSync(libraryPath, JSON.stringify(library, null, 2));
@@ -93,11 +136,14 @@ export const uploadTransition = async (req: Request, res: Response) => {
 
 export const listTransitions = async (_req: Request, res: Response) => {
     try {
-        const reservedName = normalizedTransitionName(FILM_BURN_TRANSITION.originalName);
-        const userTransitions = readUserTransitions()
-            .filter((transition) => normalizedTransitionName(String(transition.originalName || '')) !== reservedName)
-            .map((transition) => ({ ...transition, isBuiltIn: false }));
-        res.json({ ok: true, transitions: [FILM_BURN_TRANSITION, ...userTransitions] });
+        const builtInAvailable = isUsableTransitionFile(FILM_BURN_TRANSITION.filePath);
+        if (!builtInAvailable) {
+            console.error('[Transitions] O efeito incluído Film Burn 08 não está disponível nesta instalação.');
+        }
+        res.json({
+            ok: true,
+            transitions: buildTransitionCatalog(readUserTransitions(), builtInAvailable),
+        });
     } catch (e: unknown) {
         console.error('[Transitions] Error listing transitions:', e);
         res.status(500).json({ ok: false, message: (e as Error).message });
@@ -117,8 +163,8 @@ export const deleteTransition = async (req: Request, res: Response) => {
             return res.status(404).json({ ok: false, message: 'Library not found' });
         }
 
-        const library = JSON.parse(fs.readFileSync(libraryPath, 'utf8'));
-        const transitionIndex = library.findIndex((t: { id: string }) => t.id === id);
+        const library = JSON.parse(fs.readFileSync(libraryPath, 'utf8')) as TransitionCatalogEntry[];
+        const transitionIndex = library.findIndex((transition) => transition.id === id);
 
         if (transitionIndex === -1) {
             return res.status(404).json({ ok: false, message: 'Transition not found' });
