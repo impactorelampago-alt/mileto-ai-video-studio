@@ -208,10 +208,20 @@ export const MainLayout = () => {
                 return;
             }
 
-            if (!res.isUpdateAvailable || !res.updateInfo) {
+            if (!res.isUpdateAvailable) {
                 if (manual) {
-                    toast.success(`Você já está na versão mais recente (${res.currentVersion}).`);
+                    const installedVersion = res.currentVersion || 'desconhecida';
+                    const publishedVersion = res.latestVersion || res.updateInfo?.version || installedVersion;
+                    toast.success(
+                        `Sistema atualizado. Instalada: ${installedVersion}; última publicada: ${publishedVersion}.`
+                    );
                 }
+                finishWithoutRestart();
+                return;
+            }
+
+            if (!res.updateInfo) {
+                if (manual) toast.error('Uma atualização foi encontrada, mas seus dados não puderam ser carregados.');
                 finishWithoutRestart();
                 return;
             }

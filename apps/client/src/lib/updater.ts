@@ -31,8 +31,9 @@ export const updater = {
             ok: boolean;
             message?: string;
             currentVersion?: string;
+            latestVersion?: string | null;
             isUpdateAvailable?: boolean;
-            updateInfo?: { version: string; releaseDate: string } | null;
+            updateInfo?: { version: string; releaseDate?: string } | null;
         }>;
     },
     async download() {

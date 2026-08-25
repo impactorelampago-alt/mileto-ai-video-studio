@@ -6,6 +6,7 @@ const https = require('https');
 const { randomBytes } = require('crypto');
 const { spawn } = require('child_process');
 const os = require('os');
+const { checkForUpdatesResilient } = require('./update-check.cjs');
 
 let serverProcess = null;
 let mainWindowRef = null;
@@ -13,6 +14,7 @@ let trayRef = null;
 let isQuitting = false;
 let shutdownResolve = null;
 let autoUpdater = null;
+let updateCheckInProgress = false;
 const localFileImportToken = randomBytes(32).toString('hex');
 const authorizedExportDirs = new Set();
 
@@ -59,7 +61,12 @@ function initAutoUpdater() {
         })
     );
     autoUpdater.on('update-downloaded', (info) => sendUpdateStatus({ type: 'downloaded', version: info.version }));
-    autoUpdater.on('error', (err) => sendUpdateStatus({ type: 'error', message: (err && err.message) || String(err) }));
+    autoUpdater.on('error', (err) => {
+        // A checagem resiliente pode se recuperar por um feed direto. Nesse
+        // intervalo, o resultado final do IPC é a fonte única da mensagem na UI.
+        if (updateCheckInProgress) return;
+        sendUpdateStatus({ type: 'error', message: (err && err.message) || String(err) });
+    });
     return autoUpdater;
 }
 
@@ -439,6 +446,7 @@ app.whenReady().then(() => {
 
     // ─── Auto-updater IPC ────────────────────────────────────────────────
     ipcMain.handle('update:check', async () => {
+        updateCheckInProgress = true;
         try {
             const updater = initAutoUpdater();
             if (isDev) {
@@ -448,10 +456,13 @@ app.whenReady().then(() => {
                     updater.forceDevUpdateConfig = true;
                 }
             }
-            const result = await updater.checkForUpdates();
+            const currentVersion = app.getVersion();
+            const checked = await checkForUpdatesResilient({ updater, currentVersion, logger: console });
+            const result = checked.result;
             return {
                 ok: true,
-                currentVersion: app.getVersion(),
+                currentVersion,
+                latestVersion: checked.publishedVersion || result?.updateInfo?.version || null,
                 isUpdateAvailable: Boolean(result && result.isUpdateAvailable),
                 updateInfo:
                     result && result.updateInfo
@@ -460,6 +471,8 @@ app.whenReady().then(() => {
             };
         } catch (err) {
             return { ok: false, message: err.message || String(err) };
+        } finally {
+            updateCheckInProgress = false;
         }
     });
 
