@@ -1,6 +1,110 @@
 import type { MediaTake } from '../types';
 
 const TIMELINE_FILL_EPSILON_SECONDS = 0.001;
+const LEGACY_TIMELINE_MAX_TAIL_GAP_SECONDS = 0.5;
+
+const takeTrimDuration = (take: MediaTake) => {
+    const start = Number(take.trim?.start);
+    const end = Number(take.trim?.end);
+    return Number.isFinite(start) && Number.isFinite(end)
+        ? Math.max(0, end - start)
+        : 0;
+};
+
+const timelineDuration = (takes: MediaTake[]) =>
+    takes.reduce((total, take) => total + takeTrimDuration(take), 0);
+
+export interface TimelineTailFillResult {
+    takes: MediaTake[];
+    filled: boolean;
+    addedTakeCount: number;
+    previousDurationSeconds: number;
+    finalDurationSeconds: number;
+}
+
+/**
+ * Completa somente a cauda ausente de uma timeline já editada.
+ *
+ * Diferente de `automaticCutTakes`, este reparo não redistribui os cortes nem
+ * remove efeitos: ele acrescenta cópias curtas dos takes existentes até cobrir
+ * o áudio. Isso permite retomar com segurança snapshots criados por versões
+ * antigas que aceitavam uma lacuna de até meio segundo.
+ */
+export const fillTimelineTailPreservingCuts = (
+    sourceTakes: MediaTake[],
+    effectiveAudioDuration: number,
+    idFactory: (_source: MediaTake, _index: number) => string = (source, index) =>
+        `${source.id}-tail-${crypto.randomUUID()}-${index}`,
+): TimelineTailFillResult => {
+    if (!Number.isFinite(effectiveAudioDuration) || effectiveAudioDuration <= 0) {
+        throw new Error('render_expected_duration_invalid: A narração precisa ter duração válida antes da exportação.');
+    }
+
+    const previousDurationSeconds = timelineDuration(sourceTakes);
+    if (previousDurationSeconds + TIMELINE_FILL_EPSILON_SECONDS >= effectiveAudioDuration) {
+        return {
+            takes: sourceTakes,
+            filled: false,
+            addedTakeCount: 0,
+            previousDurationSeconds,
+            finalDurationSeconds: previousDurationSeconds,
+        };
+    }
+
+    const missingDuration = effectiveAudioDuration - previousDurationSeconds;
+    if (missingDuration > LEGACY_TIMELINE_MAX_TAIL_GAP_SECONDS + TIMELINE_FILL_EPSILON_SECONDS) {
+        throw new Error(
+            'render_visual_timeline_short: A sequência visual termina muito antes do áudio e exige revisão dos cortes.',
+        );
+    }
+
+    const reusableTakes = sourceTakes.filter(
+        (take) => takeTrimDuration(take) > TIMELINE_FILL_EPSILON_SECONDS,
+    );
+    if (!reusableTakes.length) {
+        throw new Error(
+            'render_visual_timeline_unfillable: A sequência visual termina antes do áudio e não possui um corte reutilizável.',
+        );
+    }
+
+    const filledTakes = [...sourceTakes];
+    let remainingDuration = missingDuration;
+    let loopIndex = 0;
+
+    while (
+        remainingDuration > TIMELINE_FILL_EPSILON_SECONDS
+        && filledTakes.length < 800
+    ) {
+        const source = reusableTakes[loopIndex % reusableTakes.length];
+        const sourceStart = Number(source.trim.start);
+        const availableDuration = takeTrimDuration(source);
+        const duration = Math.min(availableDuration, remainingDuration);
+        filledTakes.push({
+            ...source,
+            id: idFactory(source, loopIndex),
+            trim: {
+                start: sourceStart,
+                end: sourceStart + duration,
+            },
+        });
+        remainingDuration -= duration;
+        loopIndex += 1;
+    }
+
+    if (remainingDuration > TIMELINE_FILL_EPSILON_SECONDS) {
+        throw new Error(
+            'render_visual_timeline_unfillable: Não foi possível completar a sequência visual dentro do limite seguro de cortes.',
+        );
+    }
+
+    return {
+        takes: filledTakes,
+        filled: true,
+        addedTakeCount: filledTakes.length - sourceTakes.length,
+        previousDurationSeconds,
+        finalDurationSeconds: timelineDuration(filledTakes),
+    };
+};
 
 /**
  * Distribui a duração contratada entre os takes e reutiliza fontes quando o

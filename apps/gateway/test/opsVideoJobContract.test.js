@@ -330,6 +330,20 @@ test('quantidade de takes vem da narracao real, usa TAKES recentes e varia por l
     assert.match(takeSelection, /deterministicShuffle/);
 });
 
+test('retomada repara a cauda visual legada antes de persistir e exportar', () => {
+    const resumeAt = coordinator.indexOf('if (canResumeProject && savedProject)');
+    const repairAt = coordinator.indexOf('fillTimelineTailPreservingCuts(', resumeAt);
+    const persistAt = coordinator.indexOf('await persistAutomatedProject(', repairAt);
+    const exportAt = coordinator.indexOf('const exportJobId = startExport(', repairAt);
+
+    assert.ok(resumeAt >= 0);
+    assert.ok(repairAt > resumeAt);
+    assert.ok(persistAt > repairAt);
+    assert.ok(exportAt > persistAt);
+    assert.match(coordinator.slice(resumeAt, repairAt), /if \(canResumeProject && job\.quickEdit\)/);
+    assert.match(coordinator.slice(repairAt, persistAt), /legacy_visual_timeline_tail_repaired/);
+});
+
 test('projeto do agente continua listado e editavel depois da exportacao', () => {
     const saves = coordinator.match(/await persistAutomatedProject\(/g) || [];
     assert.equal(saves.length, 2);

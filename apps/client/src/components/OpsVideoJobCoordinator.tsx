@@ -38,6 +38,7 @@ import {
     type PersistedOpsVideoWorkerJob,
 } from '../lib/opsVideoWorkerState';
 import { applyQuickEdit } from '../lib/quickEdit';
+import { fillTimelineTailPreservingCuts } from '../lib/automaticCuts';
 import { canonicalSystemVoiceId, DEFAULT_SYSTEM_VOICE, SYSTEM_VOICES } from '../lib/systemVoices';
 import { systemMusicTrackFor } from '../lib/systemMusic';
 import {
@@ -1649,16 +1650,6 @@ export const OpsVideoJobCoordinator = () => {
                     ? titleWarning || 'Titulos automaticos prontos.'
                     : 'Etapa de titulos ignorada.');
 
-                await persistAutomatedProject({
-                    projectId: job.projectId,
-                    title: job.projectTitle,
-                    adData,
-                    mediaTakes: finalTakes,
-                    captionStyle,
-                    selectedMusicId,
-                    exported: false,
-                });
-                persisted = updatePersistedOpsVideoJob({ resume: { projectPrepared: true } }) || persisted;
             }
 
             // Projetos retomados podem guardar a identidade de um contexto já expirado
@@ -1668,6 +1659,40 @@ export const OpsVideoJobCoordinator = () => {
                 ...adData,
                 opsCompany: readiness.initialAdData.opsCompany,
             };
+
+            // Snapshots produzidos até a v1.4.50 podiam preservar uma cauda
+            // visual até 0,5 s menor que a narração. A edição rápida atual já
+            // evita isso em projetos novos, porém uma retomada pula essa etapa.
+            // Repare apenas a cauda, sem redistribuir ou substituir os cortes
+            // que o projeto já confirmou.
+            if (canResumeProject && job.quickEdit) {
+                const timelineTail = fillTimelineTailPreservingCuts(
+                    finalTakes,
+                    Number(adData.narrationDuration || 0),
+                    (_source, index) => `${job.projectId}-tail-${index + 1}-${crypto.randomUUID()}`,
+                );
+                if (timelineTail.filled) {
+                    finalTakes = timelineTail.takes;
+                    console.warn('[ops-video-worker]', {
+                        event: 'legacy_visual_timeline_tail_repaired',
+                        projectId: job.projectId,
+                        previousDurationSeconds: timelineTail.previousDurationSeconds,
+                        finalDurationSeconds: timelineTail.finalDurationSeconds,
+                        addedTakeCount: timelineTail.addedTakeCount,
+                    });
+                }
+            }
+
+            await persistAutomatedProject({
+                projectId: job.projectId,
+                title: job.projectTitle,
+                adData,
+                mediaTakes: finalTakes,
+                captionStyle,
+                selectedMusicId,
+                exported: false,
+            });
+            persisted = updatePersistedOpsVideoJob({ resume: { projectPrepared: true } }) || persisted;
 
             await patch('export', OPS_VIDEO_PROGRESS.export.start, 'Renderizando a versao final e preparando o envio ao Ops.');
             const metadata = await prepareOpsExportMetadata(job.projectId, adData, finalTakes.length);
