@@ -1,7 +1,12 @@
 import type { OpsVideoJob, OpsVideoJobStage } from './gateway';
 import type { ExportResultDiagnostics } from './exportIntegrity';
 
-export const OPS_VIDEO_WORKER_APP_VERSION = '1.4.40';
+// Injetada pelo Vite a partir do package.json. O heartbeat precisa anunciar a
+// versao real do executavel; um literal manual fica obsoleto a cada release e
+// faz o Ops preservar jobs compatíveis na fila como se o app fosse antigo.
+export const OPS_VIDEO_WORKER_APP_VERSION = typeof __MILETO_APP_VERSION__ === 'string'
+    ? __MILETO_APP_VERSION__
+    : '0.0.0';
 export const OPS_VIDEO_WORKER_STATE_KEY = 'mileto:ops-video-worker:active:v1';
 
 export type OpsVideoWorkerLocalStatus =

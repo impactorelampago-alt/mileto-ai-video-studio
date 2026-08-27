@@ -17,6 +17,8 @@ const opsController = read('../../server/src/controllers/opsController.ts');
 const takeSelection = read('../../client/src/lib/opsTakeSelection.ts');
 const projectController = read('../../server/src/controllers/projectController.ts');
 const electron = read('../../client/electron-main/main.cjs');
+const viteConfig = read('../../client/vite.config.ts');
+const clientPackage = JSON.parse(read('../../client/package.json'));
 
 test('CORS permite o token efemero usado nas atualizacoes de progresso do job', () => {
     assert.match(server, /Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Ops-View-Context, X-Mileto-Job-Token, Idempotency-Key'/);
@@ -54,9 +56,12 @@ test('fila, leitura, presença, claim, revisão e PATCH preservam delegação, a
     }
 });
 
-test('heartbeat usa versão 1.4.39, campo oficial mode e job atual', () => {
+test('heartbeat usa a versão do package.json, campo oficial mode e job atual', () => {
     const heartbeat = handler('export const heartbeatVideoWorker', 'export const claimVideoJob');
-    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = '1\.4\.40'/);
+    assert.match(viteConfig, /readFileSync\(new URL\('\.\/package\.json', import\.meta\.url\)/);
+    assert.match(viteConfig, /__MILETO_APP_VERSION__:\s*JSON\.stringify\(appVersion\)/);
+    assert.match(workerState, /OPS_VIDEO_WORKER_APP_VERSION = typeof __MILETO_APP_VERSION__/);
+    assert.match(String(clientPackage.version), /^\d+\.\d+\.\d+/);
     assert.match(coordinator, /mode: modeRef\.current/);
     assert.match(coordinator, /activeJobId && persisted\?\.jobId === activeJobId/);
     assert.match(coordinator, /resolvePersistedJob\(persisted\)/);
