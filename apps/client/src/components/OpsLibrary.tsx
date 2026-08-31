@@ -959,7 +959,12 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         framing?: TakeFramingRecord;
     }
 
-    const [trimTarget, setTrimTarget] = useState<{ asset: OpsAsset; take: MediaTake } | null>(null);
+    const [trimTarget, setTrimTarget] = useState<{
+        asset: OpsAsset;
+        take: MediaTake;
+        previewUrl?: string;
+        materializing?: boolean;
+    } | null>(null);
     const [trimBusyAssetId, setTrimBusyAssetId] = useState<string | null>(null);
     // Enquadramento 1:1 + "ignorar" por asset (persistido por dispositivo).
     const [takeFramingMap, setTakeFramingMap] = useState<Record<string, TakeFramingRecord>>(() => readTakeFramingMap());
@@ -1029,8 +1034,8 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         if (cached) return Promise.resolve(cached);
         const pending = materializePromiseRef.current.get(asset.id);
         if (pending) return pending;
-        // skipProxy: o Editor de Cortes toca o arquivo original — o proxy
-        // re-encodado (o passo mais caro do materialize) fica para o editor.
+        // skipProxy mantém MP4/H.264 no caminho rápido. O servidor ainda gera
+        // um proxy leve quando o original é MOV/HEVC e não toca no Chromium.
         const promise = materializeAsset(asset, null, crypto.randomUUID(), { skipProxy: true })
             .then((take) => {
                 materializedTakeCacheRef.current.set(asset.id, take);
@@ -1048,16 +1053,69 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         const staged = stagedTrims.get(asset.id);
         if (staged) {
             // Reabre com os cortes salvos carregados, sem rematerializar nada.
-            setTrimTarget({ asset, take: staged.take });
+            setTrimTarget({ asset, take: staged.take, materializing: false });
             return;
         }
         setTrimBusyAssetId(asset.id);
         const alreadyReady = materializedTakeCacheRef.current.has(asset.id);
-        const toastId = alreadyReady ? null : toast.loading(`Preparando "${asset.name}" para recorte...`);
+        const toastId = alreadyReady ? null : toast.loading(`Abrindo "${asset.name}" para recorte...`);
+        const materializing = materializeForTrim(asset);
         try {
-            const take = await materializeForTrim(asset);
+            if (alreadyReady) {
+                const take = await materializing;
+                setTrimTarget({ asset, take, materializing: false });
+            } else {
+                try {
+                    // O stream já começa a ser resolvido no hover/foco do card.
+                    // A primeira fonte pronta vence: cache local nunca espera um
+                    // stream lento, e o stream rápido esconde download + proxy.
+                    const firstReady = await Promise.race([
+                        materializing.then((take) => ({ kind: 'local' as const, take })),
+                        resolvePreviewSource(asset).then((source) => ({ kind: 'remote' as const, source })),
+                    ]);
+                    if (firstReady.kind === 'local') {
+                        setTrimTarget({ asset, take: firstReady.take, materializing: false });
+                        if (toastId) toast.dismiss(toastId);
+                        return;
+                    }
+                    const remotePreview = firstReady.source;
+                    const duration = Math.max(0, Number(asset.durationMs || 0) / 1000);
+                    const previewTake: MediaTake = {
+                        id: crypto.randomUUID(),
+                        fileName: asset.name,
+                        originalDurationSeconds: duration,
+                        url: remotePreview.url,
+                        fileUrl: remotePreview.url,
+                        proxyUrl: remotePreview.url,
+                        type: 'video',
+                        trim: { start: 0, end: duration },
+                    };
+                    setTrimTarget({
+                        asset,
+                        take: previewTake,
+                        previewUrl: remotePreview.url,
+                        materializing: true,
+                    });
+                    void materializing
+                        .then((localTake) => {
+                            setTrimTarget((current) => current?.asset.id === asset.id
+                                ? { ...current, take: localTake, materializing: false }
+                                : current);
+                        })
+                        .catch((error) => {
+                            setTrimTarget((current) => current?.asset.id === asset.id
+                                ? { ...current, materializing: false }
+                                : current);
+                            toast.error(error instanceof Error ? error.message : 'Não foi possível preparar o arquivo local.');
+                        });
+                } catch {
+                    // Sem stream disponível, conserva o comportamento seguro:
+                    // espera a cópia local/proxy antes de abrir.
+                    const take = await materializing;
+                    setTrimTarget({ asset, take, materializing: false });
+                }
+            }
             if (toastId) toast.dismiss(toastId);
-            setTrimTarget({ asset, take });
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Não foi possível preparar o vídeo.';
             if (toastId) toast.error(message, { id: toastId });
@@ -1098,7 +1156,8 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     // usuário edita o atual: o próximo lápis abre na hora.
     const TRIM_PREFETCH_AHEAD = 2;
     useEffect(() => {
-        if (!trimTarget || pickerKind) return;
+        if (!trimTarget || trimTarget.materializing || pickerKind) return;
+        if (!materializedTakeCacheRef.current.has(trimTarget.asset.id)) return;
         const currentId = trimTarget.asset.id;
         const index = curationQueue.findIndex((asset) => asset.id === currentId);
         if (index === -1) return;
@@ -1126,7 +1185,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
             cancelled = true;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [trimTarget?.asset.id]);
+    }, [trimTarget?.asset.id, trimTarget?.materializing]);
 
     // O destino é congelado no momento do salvamento: mesmo que o usuário
     // navegue ou o contexto recarregue, o lote sabe para onde cada take vai.
@@ -1277,15 +1336,26 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         (_takeId: string, newTrims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>, framing?: TakeFramingRecord) => {
             setTrimTarget(null);
             if (!newTrims.length) return;
-            const entry = buildTrimEntry(target, newTrims, framing);
-            // Confirmado direto: sai do carrinho para não cortar em dobro no lote.
-            setStagedTrims((previous) => {
-                if (!previous.has(target.asset.id)) return previous;
-                const next = new Map(previous);
-                next.delete(target.asset.id);
-                return next;
-            });
-            void runCutJob([entry]);
+            const ready = materializedTakeCacheRef.current.has(target.asset.id);
+            const toastId = ready ? null : toast.loading(`Finalizando o preparo de "${target.asset.name}"...`);
+            void materializeForTrim(target.asset)
+                .then((localTake) => {
+                    if (toastId) toast.dismiss(toastId);
+                    const entry = buildTrimEntry({ asset: target.asset, take: localTake }, newTrims, framing);
+                    // Confirmado direto: sai do carrinho para não cortar em dobro no lote.
+                    setStagedTrims((previous) => {
+                        if (!previous.has(target.asset.id)) return previous;
+                        const next = new Map(previous);
+                        next.delete(target.asset.id);
+                        return next;
+                    });
+                    void runCutJob([entry]);
+                })
+                .catch((error) => {
+                    const message = error instanceof Error ? error.message : 'Não foi possível preparar o vídeo para o corte.';
+                    if (toastId) toast.error(message, { id: toastId });
+                    else toast.error(message);
+                });
         };
 
     // "Salvar e escolher o próximo": guarda os ajustes no carrinho e volta à
@@ -1294,11 +1364,22 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         (_takeId: string, newTrims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>, framing?: TakeFramingRecord) => {
             setTrimTarget(null);
             if (!newTrims.length) return;
-            const entry = buildTrimEntry(target, newTrims, framing);
-            setStagedTrims((previous) => new Map(previous).set(target.asset.id, entry));
-            toast.success(`Cortes de "${target.asset.name}" salvos.`, {
-                description: 'Escolha o próximo take ou clique em "Cortar todos os selecionados".',
-            });
+            const ready = materializedTakeCacheRef.current.has(target.asset.id);
+            const toastId = ready ? null : toast.loading(`Salvando os cortes de "${target.asset.name}"...`);
+            void materializeForTrim(target.asset)
+                .then((localTake) => {
+                    const entry = buildTrimEntry({ asset: target.asset, take: localTake }, newTrims, framing);
+                    setStagedTrims((previous) => new Map(previous).set(target.asset.id, entry));
+                    toast.success(`Cortes de "${target.asset.name}" salvos.`, {
+                        ...(toastId ? { id: toastId } : {}),
+                        description: 'Escolha o próximo take ou clique em "Cortar todos os selecionados".',
+                    });
+                })
+                .catch((error) => {
+                    const message = error instanceof Error ? error.message : 'Não foi possível preparar o vídeo para salvar os cortes.';
+                    if (toastId) toast.error(message, { id: toastId });
+                    else toast.error(message);
+                });
         };
 
     const processStagedBatch = () => {
@@ -1774,6 +1855,8 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                 <div className="flex flex-wrap items-center gap-1.5">
                                                     {asset.kind === 'video' && (
                                                         <button
+                                                            onPointerEnter={() => warmPreviewSource(asset)}
+                                                            onFocus={() => warmPreviewSource(asset)}
                                                             onClick={() => void beginAssetTrim(asset)}
                                                             disabled={trimBusyAssetId !== null}
                                                             className={`inline-flex items-center justify-center rounded-lg border p-1.5 transition disabled:opacity-40 ${stagedTrims.has(asset.id)
@@ -1860,6 +1943,8 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                             <span className="flex justify-end gap-1.5">
                                                 {asset.kind === 'video' && (
                                                     <button
+                                                        onPointerEnter={() => warmPreviewSource(asset)}
+                                                        onFocus={() => warmPreviewSource(asset)}
                                                         onClick={() => void beginAssetTrim(asset)}
                                                         disabled={trimBusyAssetId !== null}
                                                         className={`rounded-lg border p-1.5 transition disabled:opacity-40 ${stagedTrims.has(asset.id)
@@ -1971,6 +2056,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                 <TrimModal
                     key={trimTarget.asset.id}
                     take={trimTarget.take}
+                    previewSrc={trimTarget.previewUrl}
                     initialTrims={stagedTrims.get(trimTarget.asset.id)?.trims}
                     onSave={handleTrimSave(trimTarget)}
                     onStage={pickerKind ? undefined : handleTrimStage(trimTarget)}

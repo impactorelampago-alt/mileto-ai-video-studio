@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Play, Check, RotateCcw, Trash2, Scissors, Split, Undo2, GripVertical, CopyPlus, ArrowRight, Sparkles, Crop, Ban } from 'lucide-react';
 import { toast } from 'sonner';
@@ -16,6 +16,8 @@ export interface TrimFramingPayload {
 
 interface TrimModalProps {
     take: MediaTake;
+    /** Prévia remota já aquecida; o arquivo local continua sendo a fonte do corte. */
+    previewSrc?: string;
     onSave: (
         takeId: string,
         newTrims: Array<{ start: number; end: number; speedPresetId?: SpeedPresetType; kind: 'primary' | 'created' }>,
@@ -48,7 +50,7 @@ interface LocalSegment {
     kind: 'primary' | 'created';
 }
 
-export const TrimModal = ({ take, onSave, onClose, onStage, initialTrims, queue, framingEnabled = false, initialFraming, initialIgnoreSquare = false }: TrimModalProps) => {
+export const TrimModal = ({ take, previewSrc, onSave, onClose, onStage, initialTrims, queue, framingEnabled = false, initialFraming, initialIgnoreSquare = false }: TrimModalProps) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const timelineRef = useRef<HTMLDivElement>(null);
 
@@ -459,6 +461,23 @@ export const TrimModal = ({ take, onSave, onClose, onStage, initialTrims, queue,
     };
 
     const activeSegment = segments.find((s) => s.id === activeSegmentId);
+    // A prévia remota abre o modal sem esperar o download do original. Se ela
+    // não tocar (por exemplo, MOV/HEVC sem stream convertido), o componente
+    // troca automaticamente para o proxy H.264 local assim que ele ficar pronto.
+    const localPreviewSource = take.proxyUrl || take.url;
+    const previewCandidates = useMemo(
+        () => [previewSrc, localPreviewSource]
+            .filter((source): source is string => Boolean(source))
+            .filter((source, index, values) => values.indexOf(source) === index),
+        [localPreviewSource, previewSrc],
+    );
+    const [failedPreviewSources, setFailedPreviewSources] = useState<ReadonlySet<string>>(() => new Set());
+    const [previewSource, setPreviewSource] = useState(() => previewCandidates[0] || '');
+
+    useEffect(() => {
+        const nextSource = previewCandidates.find((source) => !failedPreviewSources.has(source));
+        if (nextSource && nextSource !== previewSource) setPreviewSource(nextSource);
+    }, [failedPreviewSources, previewCandidates, previewSource]);
 
     return createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4">
@@ -555,17 +574,25 @@ export const TrimModal = ({ take, onSave, onClose, onStage, initialTrims, queue,
                         {take.type === 'video' ? (
                             <video
                                 ref={videoRef}
-                                src={take.url}
+                                src={previewSource}
                                 className="h-full w-auto max-w-full object-contain rounded-lg shadow-2xl bg-black"
                                 onTimeUpdate={handleTimeUpdate}
                                 onLoadedMetadata={handleLoadedMetadata}
                                 onSeeked={handleSeeked}
                                 onClick={togglePlay}
                                 onEnded={handleEnded}
+                                onError={() => {
+                                    setIsPlaying(false);
+                                    setFailedPreviewSources((previous) => {
+                                        const next = new Set(previous);
+                                        next.add(previewSource);
+                                        return next;
+                                    });
+                                }}
                             />
                         ) : (
                             <img
-                                src={take.url}
+                                src={previewSource}
                                 className="h-full w-auto max-w-full object-contain rounded-lg shadow-2xl bg-black"
                                 alt="Preview"
                             />
@@ -586,7 +613,7 @@ export const TrimModal = ({ take, onSave, onClose, onStage, initialTrims, queue,
                             <div className="absolute inset-0 z-30 flex flex-col gap-2 bg-black p-4">
                                 <div className="relative min-h-0 flex-1">
                                     <FramingEditor
-                                        src={take.url}
+                                        src={previewSource}
                                         type={take.type}
                                         value={framing}
                                         onChange={setFraming}

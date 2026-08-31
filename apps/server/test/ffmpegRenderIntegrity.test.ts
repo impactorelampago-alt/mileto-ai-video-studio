@@ -222,6 +222,48 @@ test('zoom-in-out preserva duração com fontes 24, 25, 30 e 60 fps', {
     }
 });
 
+test('exporta corte cujo início quase zero veio de cálculo da timeline', {
+    skip: !hasBundledBinaries,
+    timeout: 120_000,
+}, async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-render-near-zero-trim-'));
+    try {
+        const { buildHybridVideo, probeMediaDurations } = require('../src/services/ffmpeg');
+        const start = 5.810291446861626e-7;
+        const duration = 1.6927249999999963;
+        const outputFps = 30;
+        const sourcePath = makeVideo(directory, 'near-zero-source.mp4', outputFps, 2);
+        const audioPath = makeAudio(directory, duration);
+        const overlayPath = makeOverlay(directory, 'near-zero-overlay.mov', duration);
+        const outputPath = path.join(directory, 'near-zero-render.mp4');
+
+        await buildHybridVideo({
+            takes: [{
+                id: 'near-zero-trim',
+                type: 'video',
+                file_path: sourcePath,
+                start,
+                end: start + duration,
+                speed: 1,
+            }],
+            audioPath,
+            overlayPath,
+            outputPath,
+            duration,
+            targetW: 160,
+            targetH: 90,
+            outputFps,
+        });
+
+        const probe = await probeMediaDurations(outputPath);
+        const diagnostics = validateRenderedOutput({ expectedDurationSec: duration, media: probe, outputFps });
+        assert.equal(diagnostics.status, 'passed', JSON.stringify(diagnostics));
+        assert.equal(probe.videoFrameCount, expectedTimelineFrameCount(duration, outputFps), JSON.stringify(probe));
+    } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+    }
+});
+
 test('zoom-in-out com takes mistos, transição e CTA mantém o quadro final', {
     skip: !hasBundledBinaries,
     timeout: 120_000,

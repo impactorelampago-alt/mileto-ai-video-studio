@@ -10,6 +10,7 @@ process.env.DISABLE_GPU_ENCODE = '1';
 
 const {
     FfmpegExecutionError,
+    formatFfmpegFilterSeconds,
     getVideoEncoderArgsFor,
     runWithSoftwareEncoderFallback,
     summarizeFfmpegStderr,
@@ -81,4 +82,14 @@ test('reduz stderr do FFmpeg e remove comando e caminhos locais', () => {
     assert.ok(diagnostic.length <= 640);
     assert.ok(error.message.length < 800);
     assert.equal(error.code, 'ffmpeg_execution_failed');
+});
+
+test('serializa tempos de filtro sem notação científica', () => {
+    const startFromTimelineMath = 5.810291446861626e-7;
+    const durationFromTimelineMath = 1.6927249999999963;
+
+    assert.equal(formatFfmpegFilterSeconds(startFromTimelineMath), '0');
+    assert.equal(formatFfmpegFilterSeconds(durationFromTimelineMath), '1.692725');
+    assert.doesNotMatch(formatFfmpegFilterSeconds(startFromTimelineMath), /e[+-]?\d+/i);
+    assert.throws(() => formatFfmpegFilterSeconds(Number.NaN), /número finito/);
 });

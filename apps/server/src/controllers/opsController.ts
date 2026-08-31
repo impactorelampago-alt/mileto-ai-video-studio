@@ -9,6 +9,7 @@ import { bearerFrom, GatewayHttpError, gatewayJson, gatewayUploadFile } from '..
 import { BASE_DATA_PATH } from './fileExplorerController';
 import { resolveLocalSource } from './sharedController';
 import { getVideoEncoderArgs, getVideoMetadata } from '../services/ffmpeg';
+import { selectOpsPreviewProxyProfile, type OpsPreviewProxyProfile } from '../services/opsPreviewProxy';
 import { isSafeRemoteUrl, safeResolve } from '../utils/safePath';
 import {
     compactOpsText,
@@ -89,6 +90,7 @@ interface CacheEntry {
     accessCapability: string;
     filePath: string;
     proxyPath?: string | null;
+    proxyProfile?: OpsPreviewProxyProfile | null;
     delivery?: string | null;
     duration: number;
     frames: string[];
@@ -539,22 +541,32 @@ const downloadWithRenewal = async (
     throw new GatewayHttpError(410, 'A autorização de download expirou repetidamente. Tente novamente.');
 };
 
-const generateProxy = async (inputPath: string, outputPath: string) =>
+const generateProxy = async (
+    inputPath: string,
+    outputPath: string,
+    profile: OpsPreviewProxyProfile = 'standard',
+) =>
     new Promise<boolean>((resolve) => {
+        const trimPreview = profile === 'trim';
         const child = spawn(FFMPEG_BIN, [
             '-y',
             '-i',
             inputPath,
             '-vf',
-            // Proxy leve para a timeline. O original permanece intacto e é usado na exportação.
-            'scale=540:-2',
-            ...getVideoEncoderArgs({ quality: 28, speed: 'veryfast' }),
+            // O proxy de recorte só existe para compatibilidade de codec: 360p
+            // e ultrafast reduzem bastante a espera dos MOV/HEVC de celular.
+            // O proxy padrão do editor mantém os 540p anteriores.
+            trimPreview ? 'scale=360:-2' : 'scale=540:-2',
+            ...getVideoEncoderArgs({
+                quality: trimPreview ? 31 : 28,
+                speed: trimPreview ? 'ultrafast' : 'veryfast',
+            }),
             '-movflags',
             '+faststart',
             '-c:a',
             'aac',
             '-b:a',
-            '128k',
+            trimPreview ? '96k' : '128k',
             outputPath,
         ]);
         child.on('error', () => resolve(false));
@@ -569,24 +581,41 @@ const prepareEntry = async (
     localSha256: string,
     effectiveMimeType: string,
     delivery: string | null,
-    // O Editor de Cortes não usa o proxy re-encodado; pular a geração corta o
-    // passo mais caro do materialize. O caminho do editor gera depois (upgrade
-    // preguiçoso no cache-hit) sem degradar nada.
+    // O Editor de Cortes pula a recodificação apenas quando o codec original é
+    // compatível. MOV/HEVC recebe o perfil leve para não abrir com tela preta.
     skipProxy = false
 ): Promise<CacheEntry> => {
     const kind = reference.kind === 'image' ? 'image' : reference.kind === 'audio' ? 'audio' : 'video';
     let duration = kind === 'image' ? 3.5 : 0;
     let proxyPath: string | null = null;
+    let proxyProfile: OpsPreviewProxyProfile | null = null;
     if (kind === 'video') {
         const metadata = await getVideoMetadata(filePath);
         duration = Number(metadata.duration || 0);
-        if (!skipProxy) {
-            proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview.mp4');
+        proxyProfile = selectOpsPreviewProxyProfile({
+            filePath,
+            mimeType: effectiveMimeType,
+            codecName: metadata.codecName,
+            pixelFormat: metadata.pixelFormat,
+            skipProxy,
+        });
+        if (proxyProfile) {
+            proxyPath = safeResolve(CACHE_ROOT, cacheId, proxyProfile === 'trim' ? 'preview-trim.mp4' : 'preview.mp4');
             if (path.resolve(proxyPath) === path.resolve(filePath)) {
                 proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview-2.mp4');
             }
-            if (!(await generateProxy(filePath, proxyPath))) {
+            const failedProfile = proxyProfile;
+            if (!(await generateProxy(filePath, proxyPath, proxyProfile))) {
+                fs.rmSync(proxyPath, { force: true });
                 proxyPath = null;
+                proxyProfile = null;
+                if (failedProfile === 'trim') {
+                    throw new GatewayHttpError(
+                        500,
+                        'Não foi possível converter este MOV para uma prévia compatível. Tente novamente.',
+                        'ops_preview_proxy_failed',
+                    );
+                }
             }
         }
     }
@@ -608,6 +637,7 @@ const prepareEntry = async (
         accessCapability,
         filePath,
         proxyPath,
+        proxyProfile,
         delivery,
         duration,
         frames: [],
@@ -663,16 +693,49 @@ export const materialize = async (req: Request, res: Response) => {
             if (existing) {
                 existing.lastAccessedAt = new Date().toISOString();
                 ensureAccessCapability(existing);
-                // Upgrade preguiçoso: se o arquivo foi materializado sem proxy
-                // (fluxo de recorte) e agora o editor precisa dele, gera aqui.
-                if (!skipProxy && existing.kind === 'video' && !existing.proxyPath) {
-                    let proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview.mp4');
-                    if (path.resolve(proxyPath) === path.resolve(existing.filePath)) {
-                        proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview-2.mp4');
-                    }
-                    if (await generateProxy(existing.filePath, proxyPath)) {
-                        existing.proxyPath = proxyPath;
-                        existing.sizeBytes = fs.statSync(existing.filePath).size + fs.statSync(proxyPath).size;
+                if (existing.kind === 'video') {
+                    const metadata = await getVideoMetadata(existing.filePath);
+                    const desiredProfile = selectOpsPreviewProxyProfile({
+                        filePath: existing.filePath,
+                        mimeType: existing.mimeType,
+                        codecName: metadata.codecName,
+                        pixelFormat: metadata.pixelFormat,
+                        skipProxy,
+                    });
+                    // Entradas antigas com preview.mp4 são equivalentes ao perfil padrão.
+                    const currentProfile = existing.proxyPath
+                        ? existing.proxyProfile || 'standard'
+                        : null;
+                    const needsProxy = Boolean(desiredProfile && !existing.proxyPath);
+                    const needsStandardUpgrade = desiredProfile === 'standard' && currentProfile === 'trim';
+                    if (needsProxy || needsStandardUpgrade) {
+                        const nextProfile = desiredProfile as OpsPreviewProxyProfile;
+                        let proxyPath = safeResolve(
+                            CACHE_ROOT,
+                            cacheId,
+                            nextProfile === 'trim' ? 'preview-trim.mp4' : 'preview.mp4',
+                        );
+                        if (path.resolve(proxyPath) === path.resolve(existing.filePath)) {
+                            proxyPath = safeResolve(CACHE_ROOT, cacheId, 'preview-2.mp4');
+                        }
+                        if (await generateProxy(existing.filePath, proxyPath, nextProfile)) {
+                            const previousProxyPath = existing.proxyPath;
+                            existing.proxyPath = proxyPath;
+                            existing.proxyProfile = nextProfile;
+                            if (previousProxyPath && path.resolve(previousProxyPath) !== path.resolve(proxyPath)) {
+                                fs.rmSync(previousProxyPath, { force: true });
+                            }
+                            existing.sizeBytes = fs.statSync(existing.filePath).size + fs.statSync(proxyPath).size;
+                        } else {
+                            fs.rmSync(proxyPath, { force: true });
+                            if (nextProfile === 'trim') {
+                                throw new GatewayHttpError(
+                                    500,
+                                    'Não foi possível converter este MOV para uma prévia compatível. Tente novamente.',
+                                    'ops_preview_proxy_failed',
+                                );
+                            }
+                        }
                     }
                 }
                 writeIndex(existingIndex);
@@ -737,16 +800,24 @@ export const materialize = async (req: Request, res: Response) => {
             const finalPath = safeResolve(directory, `${cacheId}${extension}`);
             fs.renameSync(partialPath, finalPath);
 
-            const entry = await prepareEntry(
-                cacheId,
-                cacheKey,
-                latest.reference,
-                finalPath,
-                localSha256,
-                downloaded.effectiveMimeType,
-                latest.download.delivery || null,
-                skipProxy
-            );
+            let entry: CacheEntry;
+            try {
+                entry = await prepareEntry(
+                    cacheId,
+                    cacheKey,
+                    latest.reference,
+                    finalPath,
+                    localSha256,
+                    downloaded.effectiveMimeType,
+                    latest.download.delivery || null,
+                    skipProxy
+                );
+            } catch (error) {
+                // O diretório acabou de ser criado para esta materialização e
+                // ainda não entrou no índice; não conserve arquivo órfão.
+                fs.rmSync(directory, { recursive: true, force: true });
+                throw error;
+            }
             const next = readIndex().filter((item) => item.cacheId !== cacheId);
             next.push(entry);
             writeIndex(next);

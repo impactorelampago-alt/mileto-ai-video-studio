@@ -1,7 +1,7 @@
 {
     "name": "client",
     "private": true,
-    "version": "1.4.54",
+    "version": "1.4.55",
     "description": "Mileto App Desktop",
     "author": "User",
     "type": "module",

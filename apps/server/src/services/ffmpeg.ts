@@ -167,6 +167,23 @@ export const getVideoEncoderArgs = (opts: EncoderArgsOpts = {}): string[] => {
 };
 
 const FFMPEG_DIAGNOSTIC_MAX_LENGTH = 640;
+const FFMPEG_FILTER_TIME_PRECISION = 9;
+const FFMPEG_FILTER_ZERO_EPSILON_SECONDS = 1e-6;
+
+/**
+ * Serializa tempos usados dentro do filtergraph sem notação científica.
+ * O parser de duração do FFmpeg rejeita valores como `5.8e-7`, que podem
+ * surgir de operações de ponto flutuante mesmo quando o corte começa em zero.
+ */
+export const formatFfmpegFilterSeconds = (value: number): string => {
+    if (!Number.isFinite(value)) {
+        throw new Error('ffmpeg_filter_time_invalid: O tempo do filtro precisa ser um número finito.');
+    }
+    const normalized = Math.abs(value) <= FFMPEG_FILTER_ZERO_EPSILON_SECONDS ? 0 : value;
+    return normalized
+        .toFixed(FFMPEG_FILTER_TIME_PRECISION)
+        .replace(/\.?0+$/, '');
+};
 
 export const summarizeFfmpegStderr = (stderr: string): string => {
     const lines = String(stderr || '')
@@ -290,6 +307,8 @@ export interface VideoMetadata {
     duration: number;
     width?: number;
     height?: number;
+    codecName?: string;
+    pixelFormat?: string;
 }
 
 export const getVideoMetadata = (filePath: string): Promise<VideoMetadata> => {
@@ -304,6 +323,8 @@ export const getVideoMetadata = (filePath: string): Promise<VideoMetadata> => {
                     : (data.format.duration || 0),
                 width: stream?.width,
                 height: stream?.height,
+                codecName: stream?.codec_name,
+                pixelFormat: stream?.pix_fmt,
             });
         });
     });
@@ -887,7 +908,7 @@ export const buildHybridVideo = async (params: HybridParams): Promise<string> =>
             // já representa exatamente um frame da cadência final, seja a câmera
             // 24, 25, 30 ou 60 fps. Imagens são sustentadas pelo contrato de frames.
             const sourceTimelineStr = take.type === 'video'
-                ? `trim=start=${take.start}:duration=${rawDuration},setpts=${setptsExpr},fps=${outputFps}:start_time=0,`
+                ? `trim=start=${formatFfmpegFilterSeconds(take.start)}:duration=${formatFfmpegFilterSeconds(rawDuration)},setpts=${setptsExpr},fps=${outputFps}:start_time=0,`
                 : `loop=loop=-1:size=1:start=0,trim=duration=${frameLockedDuration.toFixed(9)},setpts=PTS-STARTPTS,fps=${outputFps}:start_time=0,`;
             const isContain = take.objectFit === 'contain';
             // O movimento usa uma tela intermediária em 2x. O zoompan mantém a saída

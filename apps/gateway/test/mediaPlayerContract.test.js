@@ -59,6 +59,32 @@ test('player preserva teclado, volume, loading, erro e fullscreen', () => {
     }
 });
 
+test('Editor de Cortes prefere proxy compatível sem trocar o original de exportação', () => {
+    const trimModal = read('../../client/src/components/TrimModal.tsx');
+    assert.match(trimModal, /const localPreviewSource = take\.proxyUrl \|\| take\.url/);
+    assert.match(trimModal, /previewCandidates\.find\(\(source\) => !failedPreviewSources\.has\(source\)\)/);
+    assert.match(trimModal, /<video[\s\S]*?src=\{previewSource\}/);
+    assert.doesNotMatch(trimModal, /<video[\s\S]{0,160}?src=\{take\.url\}/);
+});
+
+test('recorte abre pelo stream aquecido e materializa o original em segundo plano', () => {
+    const openTrim = opsLibrary.slice(
+        opsLibrary.indexOf('const beginAssetTrim'),
+        opsLibrary.indexOf('const beginAssetFraming'),
+    );
+    assert.match(openTrim, /const materializing = materializeForTrim\(asset\)/);
+    assert.match(openTrim, /await Promise\.race\(\[/);
+    assert.match(openTrim, /resolvePreviewSource\(asset\)\.then/);
+    assert.match(openTrim, /materializing\.then\(\(take\) => \(\{ kind: 'local'/);
+    assert.match(openTrim, /setTrimTarget\(\{[\s\S]*previewUrl: remotePreview\.url,[\s\S]*materializing: true/);
+    assert.match(openTrim, /void materializing[\s\S]*\.then\(\(localTake\)/);
+    assert.equal(
+        (opsLibrary.match(/onPointerEnter=\{\(\) => warmPreviewSource\(asset\)\}/g) || []).length,
+        4,
+        'card e botão de recorte devem aquecer o stream nos modos grade e lista',
+    );
+});
+
 test('download local usa endpoint attachment em vez da URL publica cross-origin', () => {
     assert.match(fileExplorer, /\/api\/files\/download\?/);
     assert.match(fileExplorerController, /export const downloadItem/);
