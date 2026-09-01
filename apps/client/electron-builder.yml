@@ -15,8 +15,9 @@ publish:
       repo: mileto-ai-video-studio
       releaseType: release
 
-# Maximum Compression (ASAR is required for performance and security)
-compression: maximum
+# O nível maximum aumenta bastante o tempo de empacotamento sem redução
+# perceptível do instalador. Normal mantém ASAR e atualizações diferenciais.
+compression: normal
 asar: true
 
 # EXCLUSIONS - The heart of size optimization!
