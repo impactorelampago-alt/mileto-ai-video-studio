@@ -62,7 +62,7 @@ import { VideoEnhancementModal } from '../components/VideoEnhancementModal';
 import { normalizeVideoEnhancement, sharpnessLabel } from '../lib/videoEnhancement';
 import { recoverOpsTakeSource } from '../lib/opsMediaRecovery';
 import { prepareOpsTakeForExport } from '../lib/opsMediaRecovery';
-import { refreshSharedTakeForExport } from '../lib/sharedMediaRecovery';
+import { refreshSharedAudioSourceUrl, refreshSharedTakeForExport } from '../lib/sharedMediaRecovery';
 import { applyQuickEdit } from '../lib/quickEdit';
 import { automaticCutTakes } from '../lib/automaticCuts';
 import {
@@ -72,6 +72,13 @@ import {
     takeOriginalSourceKey,
 } from '../lib/audioIsolation';
 import { isolateAudioSource } from '../lib/audioIsolationApi';
+import { API_BASE_URL } from '../lib/apiBase';
+import {
+    fullMolduraAudioConfig,
+    isShortMolduraMaster,
+    molduraNarrationUsesFullSource,
+    projectAudioTimelineDuration,
+} from '../lib/molduraAudio';
 
 const copyTakeFileName = (fileName: string, label: string) => {
     const extensionIndex = fileName.lastIndexOf('.');
@@ -368,7 +375,10 @@ export const Step2 = () => {
     const isMoldura = adData.videoModel === 'moldura';
     const [isFramePickerOpen, setIsFramePickerOpen] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
+    const [isPreparingMolduraAudio, setIsPreparingMolduraAudio] = useState(false);
+    const [invalidMolduraMasterUrl, setInvalidMolduraMasterUrl] = useState<string | null>(null);
     const previewRef = useRef<VideoSequencePreviewRef>(null);
+    const molduraAudioMixRequestRef = useRef(0);
     const opsSourceRepairsRef = useRef(new Set<string>());
     const latestMediaTakesRef = useRef(mediaTakes);
     latestMediaTakesRef.current = mediaTakes;
@@ -445,7 +455,12 @@ export const Step2 = () => {
         return end > start ? (background?.offsetSec ?? 0) + (end - start) : 0;
     })();
     const narrationFallbackDuration = adData.audioConfig?.narration?.enabled === false ? 0 : narrationDuration;
-    const automaticCutDuration = narrationTrackDuration || narrationFallbackDuration || backgroundTrackDuration;
+    const automaticCutDuration = projectAudioTimelineDuration({
+        videoModel: adData.videoModel,
+        narrationDuration: narrationFallbackDuration,
+        narrationTrackDuration,
+        backgroundTrackDuration,
+    });
     // A mixagem é o relógio final. Takes excedentes continuam editáveis, porém
     // nada depois do fim efetivo do áudio entra no preview ou na exportação.
     const totalDuration = automaticCutDuration > 0
@@ -461,6 +476,171 @@ export const Step2 = () => {
     const canQuickEdit = mediaTakes.length > 0
         && quickEditTargetDuration > 0
         && quickEditRemaining <= 0.05;
+
+    const molduraNarrationIsActive = isMoldura
+        && narrationDuration > 0
+        && adData.audioConfig.narration.enabled !== false
+        && Number(adData.audioConfig.narration.volume || 0) > 0
+        && Boolean(effectiveNarration.url || effectiveNarration.sharedAssetId);
+    const molduraNarrationIsFull = molduraNarrationUsesFullSource(adData);
+    const molduraAudioConfigFingerprint = JSON.stringify(adData.audioConfig);
+    const molduraPreviewAudioUrl = isMoldura
+        ? (
+            adData.masterAudioUrl && adData.masterAudioUrl !== invalidMolduraMasterUrl
+                ? adData.masterAudioUrl
+                : effectiveNarration.url || undefined
+        )
+        : adData.masterAudioUrl;
+
+    // Projetos Moldura antigos podiam conservar o trimEnd de uma narração
+    // anterior. Isso fazia o cartão mostrar 16,1 s de voz, mas o master e o
+    // monitor pararem em 11,6 s. Primeiro restauramos o recorte integral; depois
+    // descartamos qualquer master já materializado que ainda seja fisicamente
+    // menor que a narração atual.
+    useEffect(() => {
+        if (!molduraNarrationIsActive) {
+            setIsPreparingMolduraAudio(false);
+            return;
+        }
+        if (!molduraNarrationIsFull) {
+            setIsPreparingMolduraAudio(true);
+            updateAdData({
+                audioConfig: fullMolduraAudioConfig(adData),
+                masterAudioUrl: undefined,
+                sharedMasterAssetId: undefined,
+            });
+            return;
+        }
+
+        const masterUrl = adData.masterAudioUrl;
+        if (!masterUrl || masterUrl === invalidMolduraMasterUrl) return;
+
+        let disposed = false;
+        const audio = document.createElement('audio');
+        audio.preload = 'metadata';
+        setIsPreparingMolduraAudio(true);
+        audio.onloadedmetadata = () => {
+            if (disposed) return;
+            if (isShortMolduraMaster(adData, audio.duration)) {
+                setInvalidMolduraMasterUrl(masterUrl);
+                updateAdData({ masterAudioUrl: undefined, sharedMasterAssetId: undefined });
+                return;
+            }
+            setInvalidMolduraMasterUrl(null);
+            setIsPreparingMolduraAudio(false);
+        };
+        audio.onerror = () => {
+            if (!disposed) setIsPreparingMolduraAudio(false);
+        };
+        audio.src = masterUrl;
+
+        return () => {
+            disposed = true;
+            audio.removeAttribute('src');
+            audio.load();
+        };
+    }, [
+        adData.masterAudioUrl,
+        adData.narrationDuration,
+        adData.videoModel,
+        invalidMolduraMasterUrl,
+        molduraNarrationIsActive,
+        molduraNarrationIsFull,
+        updateAdData,
+    ]);
+
+    // Ao invalidar um master curto, prepara novamente a mesma combinação de
+    // voz + música. Se a música estiver indisponível, a URL seca da narração
+    // continua sendo usada pela prévia/exportação em vez de perder o CTA.
+    useEffect(() => {
+        if (
+            !molduraNarrationIsActive
+            || !molduraNarrationIsFull
+            || adData.masterAudioUrl
+        ) return;
+
+        const requestId = ++molduraAudioMixRequestRef.current;
+        const controller = new AbortController();
+        setIsPreparingMolduraAudio(true);
+
+        void (async () => {
+            try {
+                const [narrationUrl, musicUrl] = await Promise.all([
+                    effectiveNarration.variant === 'isolated'
+                        ? Promise.resolve(effectiveNarration.url)
+                        : refreshSharedAudioSourceUrl(
+                            effectiveNarration.sharedAssetId,
+                            effectiveNarration.url,
+                            'shared_narration_source_unavailable',
+                        ),
+                    refreshSharedAudioSourceUrl(
+                        adData.sharedMusicAssetId,
+                        adData.musicAudioUrl,
+                        'shared_music_source_unavailable',
+                    ),
+                ]);
+                if (controller.signal.aborted || requestId !== molduraAudioMixRequestRef.current) return;
+                if (!narrationUrl) throw new Error('A fonte da narração não está disponível.');
+
+                const response = await fetch(`${API_BASE_URL}/api/audio/mix`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        narrationUrl,
+                        musicUrl,
+                        audioConfig: fullMolduraAudioConfig(adData),
+                    }),
+                });
+                const data = await response.json();
+                if (!response.ok || !data.ok || !data.masterAudioUrl) {
+                    throw new Error(data.message || 'A mixagem completa não pôde ser preparada.');
+                }
+                if (controller.signal.aborted || requestId !== molduraAudioMixRequestRef.current) return;
+
+                const masterAudioUrl = /^https?:\/\//i.test(data.masterAudioUrl)
+                    ? data.masterAudioUrl
+                    : `${API_BASE_URL}${data.masterAudioUrl}`;
+                updateAdData({
+                    masterAudioUrl,
+                    sharedMasterAssetId: undefined,
+                    ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
+                        ? { narrationAudioUrl: narrationUrl }
+                        : {}),
+                    ...(adData.sharedMusicAssetId ? { musicAudioUrl: musicUrl } : {}),
+                });
+            } catch (error) {
+                if (controller.signal.aborted || requestId !== molduraAudioMixRequestRef.current) return;
+                console.error('Moldura audio repair error:', error);
+                toast.warning('A música não pôde ser remontada agora. A narração completa será preservada.', {
+                    description: error instanceof Error ? error.message : undefined,
+                    duration: 7000,
+                });
+            } finally {
+                if (requestId === molduraAudioMixRequestRef.current) setIsPreparingMolduraAudio(false);
+            }
+        })();
+
+        return () => {
+            controller.abort();
+            if (requestId === molduraAudioMixRequestRef.current) {
+                molduraAudioMixRequestRef.current += 1;
+            }
+        };
+    }, [
+        adData.masterAudioUrl,
+        adData.musicAudioUrl,
+        adData.sharedMusicAssetId,
+        adData.sharedNarrationAssetId,
+        adData.videoModel,
+        effectiveNarration.sharedAssetId,
+        effectiveNarration.url,
+        effectiveNarration.variant,
+        molduraAudioConfigFingerprint,
+        molduraNarrationIsActive,
+        molduraNarrationIsFull,
+        updateAdData,
+    ]);
 
     const handleNext = () => {
         const missing = missingBeforeStep(3, adData, mediaTakes);
@@ -487,6 +667,10 @@ export const Step2 = () => {
         }
         if (!adData.frameOverlay) {
             toast.warning('Escolha uma moldura PNG antes de exportar.');
+            return;
+        }
+        if (isPreparingMolduraAudio) {
+            toast.info('Aguarde um instante: estamos garantindo a narração completa.');
             return;
         }
         setShowExportModal(true);
@@ -1083,7 +1267,7 @@ export const Step2 = () => {
                         <VideoSequencePreview
                             ref={previewRef}
                             takes={mediaTakes}
-                            masterAudioUrl={adData.masterAudioUrl}
+                            masterAudioUrl={molduraPreviewAudioUrl}
                             onMuteToggle={handleMuteToggle}
                             onMuteAll={handleMuteAll}
                             showTakeList={false}
@@ -1185,10 +1369,13 @@ export const Step2 = () => {
                         {/* Export (direita) */}
                         <button
                             onClick={handleOpenExportMoldura}
-                            className="flex items-center gap-2.5 rounded-xl bg-linear-to-r from-brand-lime to-brand-accent px-8 py-2.5 text-xs font-extrabold uppercase tracking-widest text-[#0a0f12] transition-transform hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(0,230,118,0.4)] active:scale-[0.98]"
+                            disabled={isPreparingMolduraAudio}
+                            className="flex items-center gap-2.5 rounded-xl bg-linear-to-r from-brand-lime to-brand-accent px-8 py-2.5 text-xs font-extrabold uppercase tracking-widest text-[#0a0f12] transition-transform hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(0,230,118,0.4)] active:scale-[0.98] disabled:cursor-wait disabled:opacity-60"
                         >
-                            <Download className="h-5 w-5 shrink-0" />
-                            <span>Exportar e Concluir</span>
+                            {isPreparingMolduraAudio
+                                ? <Loader2 className="h-5 w-5 shrink-0 animate-spin" />
+                                : <Download className="h-5 w-5 shrink-0" />}
+                            <span>{isPreparingMolduraAudio ? 'Preparando áudio' : 'Exportar e Concluir'}</span>
                         </button>
                     </div>
                 ) : (
@@ -1216,7 +1403,7 @@ export const Step2 = () => {
                     <ExportModal
                         onClose={() => setShowExportModal(false)}
                         mediaTakes={mediaTakes}
-                        masterAudioUrl={adData.masterAudioUrl || effectiveNarration.url || undefined}
+                        masterAudioUrl={molduraPreviewAudioUrl}
                         transitionPath={adData.globalTransition?.filePath || undefined}
                         transitionRotation={adData.transitionRotation ?? 0}
                     />

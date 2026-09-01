@@ -36,6 +36,7 @@ import {
     sharpnessKernel,
 } from '../lib/videoEnhancement';
 import { hasCurrentTakeIsolation, normalizeTakeAudio } from '../lib/audioIsolation';
+import { previewTimelineDuration } from '../lib/molduraAudio';
 
 const OVERLAY_DESIGN_WIDTH = 360;
 const OVERLAY_DESIGN_HEIGHT_PORTRAIT = 640;
@@ -627,12 +628,14 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         const totalDuration = useMemo(() => {
             const takesDur = takes.reduce((acc, t) => acc + (t.trim.end - t.trim.start), 0);
-            const authoritativeAudioDuration =
-                audioDuration > 0 ? audioDuration : Number(adData.narrationDuration || 0);
-            if (authoritativeAudioDuration > 0) return authoritativeAudioDuration;
-            if (takes.length === 0) return 30;
-            return takesDur;
-        }, [takes, audioDuration, adData.narrationDuration]);
+            return previewTimelineDuration({
+                videoModel: adData.videoModel,
+                narrationDuration: adData.narrationDuration,
+                measuredMasterDuration: audioDuration,
+                takesDuration: takesDur,
+                emptyFallbackDuration: 30,
+            });
+        }, [takes, audioDuration, adData.narrationDuration, adData.videoModel]);
 
         // Calculate global time for progress bar
         const globalTime = useMemo(() => {
