@@ -14,7 +14,7 @@ import { gatewayApi } from '../lib/gateway';
 import {
     invalidateOpsBrandDirectoryCache,
     opsViewContextIdentity,
-    resolveOpsProjectBrand,
+    resolveOpsProjectBrandWithRetry,
 } from '../lib/opsProjectBrand';
 import {
     refreshSharedMasterAudioForExport,
@@ -536,7 +536,10 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                     // O contextId expira em poucos minutos. O render pode durar mais do
                     // que isso, portanto a resolução do modal nunca pode ser reutilizada.
                     invalidateOpsBrandDirectoryCache();
-                    const resolvedDestination = await resolveOpsProjectBrand(activeExport.adData.opsCompany);
+                    const resolvedDestination = await resolveOpsProjectBrandWithRetry(
+                        activeExport.adData.opsCompany,
+                        { maxAttempts: 2 },
+                    );
                     if (!resolvedDestination.required || !resolvedDestination.company || !resolvedDestination.context) {
                         throw new Error('ops_export_destination_unavailable: A empresa da etapa 1 não está disponível no Mileto Ops.');
                     }

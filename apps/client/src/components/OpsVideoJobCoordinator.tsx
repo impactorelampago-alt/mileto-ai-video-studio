@@ -100,9 +100,13 @@ const EXPORT_TIMEOUT_MS = 60 * 60 * 1_000;
 // é preferível a exibir títulos automáticos diferentes dos aprovados no chat.
 const PLANNED_TITLES_UNAVAILABLE_WARNING =
     'Os títulos confirmados no chat não puderam ser aplicados; o vídeo foi finalizado sem títulos para não exibir textos diferentes dos aprovados.';
-// Falhas do executor que um novo render limpo (com chave nova) resolve. São
-// reportadas como retryable para o Ops exibir "Tentar novamente" sozinho.
-const RETRYABLE_EXECUTOR_ERROR_CODES = new Set(['idempotency_key_conflict']);
+// Falhas transitórias ou que uma nova execução limpa resolve. São reportadas
+// como retryable para o Ops permitir uma nova tentativa segura.
+const RETRYABLE_EXECUTOR_ERROR_CODES = new Set([
+    'idempotency_key_conflict',
+    'ops_brand_resolution_timeout',
+    'ops_brand_resolution_unavailable',
+]);
 
 type QueuedJob = { job: OpsVideoJob; context: OpsViewContext; resume?: PersistedOpsVideoWorkerJob | null };
 type OpsExportEvent = {
@@ -329,6 +333,8 @@ const isRecoverableInterruption = (error: unknown, code: string) => {
     return [
         'export_busy',
         'ops_export_timeout',
+        'ops_brand_resolution_timeout',
+        'ops_brand_resolution_unavailable',
         'worker_interrupted',
         'claim_unavailable',
         'gateway_unavailable',

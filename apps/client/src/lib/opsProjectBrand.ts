@@ -1,5 +1,6 @@
 import { normalizeBrandPalette } from './brandPalette';
 import {
+    GatewayError,
     gatewayApi,
     type OpsCompany,
     type OpsIntegrationStatus,
@@ -8,7 +9,23 @@ import {
 import type { AdData, BrandPalette, OpsProjectCompany } from '../types';
 
 export const OPS_BRAND_DIRECTORY_CACHE_TTL_MS = 30_000;
-export const OPS_BRAND_RESOLUTION_DEADLINE_MS = 10_000;
+// A resolução pode fazer três consultas sequenciais (conexão, contextos e
+// empresa). Cada request do gateway aceita até 30 s, portanto o limite antigo
+// de 10 s interrompia respostas ainda válidas no fim de renders longos.
+export const OPS_BRAND_RESOLUTION_DEADLINE_MS = 45_000;
+export const OPS_BRAND_RESOLUTION_TIMEOUT_CODE = 'ops_brand_resolution_timeout';
+export const OPS_BRAND_RESOLUTION_UNAVAILABLE_CODE = 'ops_brand_resolution_unavailable';
+
+export class OpsBrandResolutionError extends Error {
+    readonly code: string;
+    readonly retryable = true;
+
+    constructor(code: string, message: string) {
+        super(`${code}: ${message}`);
+        this.name = 'OpsBrandResolutionError';
+        this.code = code;
+    }
+}
 
 export interface ResolveOpsProjectBrandOptions {
     signal?: AbortSignal;
@@ -86,12 +103,58 @@ const runWithBrandDeadline = <T,>(
         };
         const timeout = globalThis.setTimeout(() => {
             controller.abort();
-            finish(() => reject(new Error('O Mileto Ops excedeu o prazo seguro ao confirmar a marca.')));
+            finish(() => reject(new OpsBrandResolutionError(
+                OPS_BRAND_RESOLUTION_TIMEOUT_CODE,
+                'O Mileto Ops excedeu o prazo seguro ao confirmar a marca.',
+            )));
         }, safeDeadline);
         operation(controller.signal).then(
             (value) => finish(() => resolve(value)),
             (error) => finish(() => reject(error)),
         );
+    });
+};
+
+const retryableGatewayFailure = (error: GatewayError) => (
+    error.retryable === true
+    || error.status === 0
+    || error.status === 408
+    || error.status === 429
+    || error.status >= 500
+);
+
+const normalizeBrandResolutionError = (error: unknown): unknown => {
+    if (error instanceof OpsBrandResolutionError) return error;
+    if (error instanceof GatewayError && retryableGatewayFailure(error)) {
+        return new OpsBrandResolutionError(
+            OPS_BRAND_RESOLUTION_UNAVAILABLE_CODE,
+            error.message || 'O Mileto Ops ficou temporariamente indisponível ao confirmar a marca.',
+        );
+    }
+    return error;
+};
+
+export const isRetryableOpsBrandResolutionError = (error: unknown): boolean => {
+    if (error instanceof OpsBrandResolutionError) return true;
+    const message = error instanceof Error ? error.message : String(error || '');
+    return message.startsWith(`${OPS_BRAND_RESOLUTION_TIMEOUT_CODE}:`)
+        || message.startsWith(`${OPS_BRAND_RESOLUTION_UNAVAILABLE_CODE}:`);
+};
+
+const waitBeforeBrandRetry = (delayMs: number, signal?: AbortSignal) => {
+    if (!(delayMs > 0)) return Promise.resolve();
+    if (signal?.aborted) return Promise.reject(brandAbortError());
+    return new Promise<void>((resolve, reject) => {
+        const timeout = globalThis.setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+        }, delayMs);
+        const onAbort = () => {
+            globalThis.clearTimeout(timeout);
+            signal?.removeEventListener('abort', onAbort);
+            reject(brandAbortError());
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
     });
 };
 
@@ -255,7 +318,9 @@ export const resolveOpsProjectBrand = async (
             palette,
             paletteUpdatedAt: palette ? company.paletteUpdatedAt ?? null : null,
         };
-    }, options.deadlineMs ?? OPS_BRAND_RESOLUTION_DEADLINE_MS).then((resolved) => {
+    }, options.deadlineMs ?? OPS_BRAND_RESOLUTION_DEADLINE_MS).catch((error) => {
+        throw normalizeBrandResolutionError(error);
+    }).then((resolved) => {
         if (requestEpoch === cacheEpoch) {
             resolvedBrandCache.set(key, {
                 value: resolved,
@@ -268,6 +333,37 @@ export const resolveOpsProjectBrand = async (
     });
     resolvedBrandRequests.set(key, request);
     return waitForSharedRequest(request, options.signal);
+};
+
+export interface ResolveOpsProjectBrandRetryOptions extends ResolveOpsProjectBrandOptions {
+    maxAttempts?: number;
+    retryDelayMs?: number;
+}
+
+/**
+ * No fim da exportação, tenta renovar o contexto sem descartar o MP4 já
+ * renderizado na primeira oscilação transitória do Ops.
+ */
+export const resolveOpsProjectBrandWithRetry = async (
+    selection?: OpsProjectCompany | null,
+    options: ResolveOpsProjectBrandRetryOptions = {},
+): Promise<ResolvedOpsProjectBrand> => {
+    const requestedAttempts = Number(options.maxAttempts ?? 2);
+    const maxAttempts = Number.isFinite(requestedAttempts)
+        ? Math.max(1, Math.min(3, Math.round(requestedAttempts)))
+        : 2;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+            return await resolveOpsProjectBrand(selection, options);
+        } catch (error) {
+            lastError = error;
+            if (!isRetryableOpsBrandResolutionError(error) || attempt >= maxAttempts) throw error;
+            invalidateOpsBrandDirectoryCache();
+            await waitBeforeBrandRetry(options.retryDelayMs ?? 750, options.signal);
+        }
+    }
+    throw lastError;
 };
 
 const normalizeHex = (value: unknown) => /^#[0-9a-f]{6}$/i.test(String(value || '').trim())

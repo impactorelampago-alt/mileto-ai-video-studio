@@ -9,11 +9,30 @@ const coordinator = readFileSync(
 
 test('idempotency_key_conflict é classificado como retryable (fix #2 — botão do Ops)', () => {
     // O conjunto de códigos retryable existe e inclui o conflito de chave.
-    assert.match(coordinator, /const RETRYABLE_EXECUTOR_ERROR_CODES = new Set\(\['idempotency_key_conflict'\]\)/);
+    const retryableCodes = coordinator.slice(
+        coordinator.indexOf('const RETRYABLE_EXECUTOR_ERROR_CODES'),
+        coordinator.indexOf('type QueuedJob'),
+    );
+    assert.match(retryableCodes, /'idempotency_key_conflict'/);
     // errorParts usa o conjunto no ramo de erro prefixado (Error puro do upload).
     assert.match(coordinator, /const code = safeErrorIdentifier\(match\[1\], 'ai_video_failed'\);[\s\S]*?retryable: RETRYABLE_EXECUTOR_ERROR_CODES\.has\(code\)/);
     // ...e também no ramo de GatewayError, caso o conflito chegue tipado.
     assert.match(coordinator, /retryable: RETRYABLE_EXECUTOR_ERROR_CODES\.has\(code\) \|\|/);
+});
+
+test('timeout ao renovar a marca é retomável e não vira falha definitiva após o render', () => {
+    const retryableCodes = coordinator.slice(
+        coordinator.indexOf('const RETRYABLE_EXECUTOR_ERROR_CODES'),
+        coordinator.indexOf('type QueuedJob'),
+    );
+    const recoverable = coordinator.slice(
+        coordinator.indexOf('const isRecoverableInterruption'),
+        coordinator.indexOf('const isPersistedResolutionFailure'),
+    );
+    for (const code of ['ops_brand_resolution_timeout', 'ops_brand_resolution_unavailable']) {
+        assert.match(retryableCodes, new RegExp(`'${code}'`));
+        assert.match(recoverable, new RegExp(`'${code}'`));
+    }
 });
 
 test('idempotency_key_conflict nunca entra na lista de interrupção recuperável (vai para falha + retry do Ops)', () => {
