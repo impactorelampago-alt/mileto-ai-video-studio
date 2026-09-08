@@ -10,6 +10,7 @@ import { BASE_DATA_PATH } from './fileExplorerController';
 import { resolveLocalSource } from './sharedController';
 import { getVideoEncoderArgs, getVideoMetadata } from '../services/ffmpeg';
 import { selectOpsPreviewProxyProfile, type OpsPreviewProxyProfile } from '../services/opsPreviewProxy';
+import { opsMediaOriginsFor } from '../services/opsMediaOrigin';
 import { isSafeRemoteUrl, safeResolve } from '../utils/safePath';
 import {
     compactOpsText,
@@ -24,8 +25,8 @@ const MAX_BYTES = Math.max(1024 * 1024 * 1024, Number(process.env.OPS_CACHE_MAX_
 const TTL_MS = Math.max(24 * 60 * 60 * 1000, Number(process.env.OPS_CACHE_TTL_DAYS || 7) * 24 * 60 * 60 * 1000);
 const FFMPEG_BIN = process.env.FFMPEG_PATH || 'ffmpeg';
 const activeMaterializations = new Set<string>();
-const OPS_BASE_URL = process.env.OPS_BASE_URL || 'https://miletoops.com';
-const OPS_MEDIA_ORIGIN = new URL(OPS_BASE_URL).origin;
+const OPS_BASE_URL = process.env.OPS_BASE_URL || 'https://apoloops.com';
+const OPS_MEDIA_ORIGINS = opsMediaOriginsFor(OPS_BASE_URL);
 const OPS_MEDIA_PATH = /^\/api\/integrations\/mileto-ai-video\/delivery\/[^/]+$/;
 const OPS_VIEW_CONTEXT_HEADER = 'x-ops-view-context';
 const OPS_EXPORT_MAX_BYTES = Math.max(25 * 1024 * 1024, Number(process.env.OPS_EXPORT_MAX_BYTES || 512 * 1024 * 1024));
@@ -360,7 +361,7 @@ const assertAllowedOpsMediaUrl = (rawUrl: string) => {
     if (mediaUrl.username || mediaUrl.password) {
         throw new GatewayHttpError(502, 'A URL de mídia do Mileto Ops contém credenciais.');
     }
-    if (mediaUrl.origin !== OPS_MEDIA_ORIGIN) {
+    if (!OPS_MEDIA_ORIGINS.has(mediaUrl.origin)) {
         throw new GatewayHttpError(502, 'A URL de mídia não pertence à origem configurada do Mileto Ops.');
     }
     if (process.env.NODE_ENV === 'production' && mediaUrl.protocol !== 'https:') {

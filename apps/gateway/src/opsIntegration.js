@@ -44,6 +44,7 @@ import {
     storedOpsRefreshIssue,
     storedOpsRefreshError,
 } from './opsConnectionRecovery.js';
+import { opsMediaOriginsFor } from './opsMediaOrigin.js';
 
 const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
 const b64u = (buffer) => Buffer.from(buffer).toString('base64url');
@@ -105,17 +106,17 @@ const httpError = (status, code, message) => Object.assign(new Error(message), {
 
 const validateOpsMediaUrl = (rawUrl) => {
     let mediaUrl;
-    let configuredUrl;
+    let allowedOrigins;
     try {
         mediaUrl = new URL(String(rawUrl));
-        configuredUrl = new URL(config.ops.baseUrl);
+        allowedOrigins = opsMediaOriginsFor(config.ops.baseUrl);
     } catch {
         throw httpError(502, 'ops_media_url_invalid', 'O Mileto Ops devolveu uma URL de mídia inválida.');
     }
     if (mediaUrl.username || mediaUrl.password) {
         throw httpError(502, 'ops_media_url_invalid', 'A URL de mídia do Mileto Ops contém credenciais.');
     }
-    if (mediaUrl.origin !== configuredUrl.origin) {
+    if (!allowedOrigins.has(mediaUrl.origin)) {
         throw httpError(502, 'ops_media_origin_invalid', 'A URL de mídia não pertence à origem configurada do Mileto Ops.');
     }
     if (process.env.NODE_ENV === 'production' && mediaUrl.protocol !== 'https:') {
