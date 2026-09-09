@@ -19,6 +19,7 @@ interface MiletoMediaPlayerProps {
     autoPlay?: boolean;
     downloadName?: string;
     onDownload?: () => void | Promise<void>;
+    resolvePlaybackSource?: () => Promise<string>;
     resolveDownloadSource?: () => Promise<{ src: string; fileName?: string }>;
     showDownload?: boolean;
 }
@@ -73,11 +74,14 @@ export const MiletoMediaPlayer = ({
     autoPlay = true,
     downloadName,
     onDownload,
+    resolvePlaybackSource,
     resolveDownloadSource,
     showDownload = true,
 }: MiletoMediaPlayerProps) => {
     const shellRef = useRef<HTMLDivElement | null>(null);
     const videoRef = useRef<HTMLVideoElement | null>(null);
+    const playbackRecoveryAttemptedRef = useRef(false);
+    const [activeSrc, setActiveSrc] = useState(src);
     const [playing, setPlaying] = useState(false);
     const [waiting, setWaiting] = useState(true);
     const [currentTime, setCurrentTime] = useState(0);
@@ -89,12 +93,36 @@ export const MiletoMediaPlayer = ({
     const [fullscreen, setFullscreen] = useState(false);
 
     useEffect(() => {
+        setActiveSrc(src);
+        playbackRecoveryAttemptedRef.current = false;
         setPlaying(false);
         setWaiting(true);
         setCurrentTime(0);
         setDuration(0);
         setFailed(false);
     }, [src]);
+
+    const handlePlaybackError = async () => {
+        if (!resolvePlaybackSource || playbackRecoveryAttemptedRef.current) {
+            setWaiting(false);
+            setFailed(true);
+            return;
+        }
+
+        playbackRecoveryAttemptedRef.current = true;
+        setPlaying(false);
+        setWaiting(true);
+        setFailed(false);
+        try {
+            const refreshedSrc = await resolvePlaybackSource();
+            if (!refreshedSrc) throw new Error('O Mileto Ops não devolveu um novo acesso ao vídeo.');
+            setActiveSrc(refreshedSrc);
+        } catch (error) {
+            console.error('Media playback recovery failed:', error);
+            setWaiting(false);
+            setFailed(true);
+        }
+    };
 
     useEffect(() => {
         const handleFullscreen = () => setFullscreen(document.fullscreenElement === shellRef.current);
@@ -151,7 +179,7 @@ export const MiletoMediaPlayer = ({
             else {
                 const resolved = resolveDownloadSource
                     ? await resolveDownloadSource()
-                    : { src, fileName: downloadName };
+                    : { src: activeSrc, fileName: downloadName };
                 downloadSource(resolved.src, resolved.fileName || downloadName || title);
             }
             if (!onDownload) toast.success('Download iniciado.');
@@ -192,7 +220,7 @@ export const MiletoMediaPlayer = ({
         >
             <video
                 ref={videoRef}
-                src={src}
+                src={activeSrc}
                 autoPlay={autoPlay}
                 playsInline
                 preload="auto"
@@ -208,10 +236,7 @@ export const MiletoMediaPlayer = ({
                 onWaiting={() => setWaiting(true)}
                 onCanPlay={() => setWaiting(false)}
                 onEnded={() => setPlaying(false)}
-                onError={() => {
-                    setWaiting(false);
-                    setFailed(true);
-                }}
+                onError={() => void handlePlaybackError()}
                 className="max-h-[72vh] min-h-[300px] w-full bg-black object-contain"
             />
 
@@ -229,7 +254,7 @@ export const MiletoMediaPlayer = ({
                 <div className="absolute inset-0 grid place-items-center bg-black/75 p-8 text-center">
                     <div>
                         <p className="text-sm font-black text-white">Não foi possível reproduzir este vídeo.</p>
-                        <p className="mt-2 text-xs text-white/45">Tente abrir novamente ou use o botão de download.</p>
+                        <p className="mt-2 text-xs text-white/45">O acesso foi renovado automaticamente. Tente abrir novamente ou use o botão de download.</p>
                     </div>
                 </div>
             )}

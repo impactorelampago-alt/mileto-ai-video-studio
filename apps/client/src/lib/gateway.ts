@@ -268,6 +268,8 @@ export interface OpsMediaUrl {
     expiresAt?: string | null;
     delivery?: string;
     supportsRange?: boolean | null;
+    sizeBytes?: number | null;
+    checksum?: string | null;
     requestId?: string;
 }
 

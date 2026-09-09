@@ -59,6 +59,26 @@ test('player preserva teclado, volume, loading, erro e fullscreen', () => {
     }
 });
 
+test('player renova uma URL temporária uma única vez quando a reprodução falha', () => {
+    assert.match(player, /resolvePlaybackSource\?: \(\) => Promise<string>/);
+    assert.match(player, /playbackRecoveryAttemptedRef\.current/);
+    assert.match(player, /const refreshedSrc = await resolvePlaybackSource\(\)/);
+    assert.match(player, /src=\{activeSrc\}/);
+    assert.match(player, /onError=\{\(\) => void handlePlaybackError\(\)\}/);
+    assert.match(opsLibrary, /previewUrlCacheRef\.current\.delete\(cacheKey\)/);
+    assert.match(opsLibrary, /resolvePlaybackSource=\{\(\) => refreshPreviewSource\(preview\.asset\)\}/);
+});
+
+test('download valida a entrega recebida sem comparar transcode com upload original', () => {
+    const downloadController = read('../../server/src/controllers/downloadController.ts');
+    assert.match(opsLibrary, /sizeBytes: result\.sizeBytes \?\? null/);
+    assert.match(opsLibrary, /checksum: result\.checksum \?\? null/);
+    assert.doesNotMatch(opsLibrary, /sizeBytes: asset\.sizeBytes/);
+    assert.doesNotMatch(downloadController, /if \(expectedBytes && receivedBytes !== expectedBytes\)/);
+    assert.match(downloadController, /const contentLength = Math\.max\(0, Number\(response\.headers\.get\('content-length'\) \|\| 0\)\)/);
+    assert.match(downloadController, /if \(contentLength && receivedBytes !== contentLength\)/);
+});
+
 test('Editor de Cortes prefere proxy compatível sem trocar o original de exportação', () => {
     const trimModal = read('../../client/src/components/TrimModal.tsx');
     assert.match(trimModal, /const localPreviewSource = take\.proxyUrl \|\| take\.url/);

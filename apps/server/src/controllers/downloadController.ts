@@ -752,7 +752,8 @@ export const startOpsDownload = (req: Request, res: Response) => {
                     throw new Error(`A entrega do Mileto Ops falhou (${response.status}).`);
                 }
 
-                const contentLength = Math.max(0, Number(response.headers.get('content-length') || expectedBytes || 0));
+                const contentLength = Math.max(0, Number(response.headers.get('content-length') || 0));
+                const progressTotal = contentLength || expectedBytes;
                 if (contentLength > MAX_REMOTE_DOWNLOAD_BYTES) {
                     throw new Error('O arquivo ultrapassa o limite local de download.');
                 }
@@ -778,8 +779,8 @@ export const startOpsDownload = (req: Request, res: Response) => {
                             return;
                         }
                         hash.update(chunk);
-                        job.stepPercent = contentLength > 0
-                            ? Math.min(99, (receivedBytes / contentLength) * 100)
+                        job.stepPercent = progressTotal > 0
+                            ? Math.min(99, (receivedBytes / progressTotal) * 100)
                             : Math.min(95, job.stepPercent + 0.25);
                         job.percent = Math.round(job.stepPercent);
                         callback(null, chunk);
@@ -793,9 +794,10 @@ export const startOpsDownload = (req: Request, res: Response) => {
                     throw aborted;
                 }
 
-                if (expectedBytes && receivedBytes !== expectedBytes) {
-                    throw new Error('O tamanho baixado não confere com o arquivo do Mileto Ops.');
-                }
+                // O catálogo descreve o upload original. Entregas de vídeo podem ser
+                // transcodificadas pelo provedor e, legitimamente, ter outro tamanho.
+                // A integridade da entrega é validada pelo Content-Length e checksum
+                // efetivamente informados pela URL temporária.
                 if (contentLength && receivedBytes !== contentLength) {
                     throw new Error('O download terminou incompleto.');
                 }

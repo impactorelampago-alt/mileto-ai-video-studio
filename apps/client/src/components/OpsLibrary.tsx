@@ -776,14 +776,15 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
 
     const resolvePreviewSource = async (asset: OpsAsset) => {
         const kind = asset.kind === 'image' ? 'download' : 'stream';
-        const cacheKey = `${selectedContext?.contextId || 'default'}:${asset.id}:${kind}`;
+        const contextId = selectedContextRef.current?.contextId;
+        const cacheKey = `${contextId || 'default'}:${asset.id}:${kind}`;
         const cached = previewUrlCacheRef.current.get(cacheKey);
         if (cached && cached.expiresAt > Date.now() + 15_000) return cached.source;
 
         const pending = previewRequestRef.current.get(cacheKey);
         if (pending) return pending;
 
-        const request = gatewayApi.opsAssetUrl(asset.id, kind, selectedContext?.contextId)
+        const request = gatewayApi.opsAssetUrl(asset.id, kind, contextId)
             .then((source) => {
                 const declaredExpiry = source.expiresAt ? Date.parse(source.expiresAt) : Number.NaN;
                 previewUrlCacheRef.current.set(cacheKey, {
@@ -795,6 +796,16 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
             .finally(() => previewRequestRef.current.delete(cacheKey));
         previewRequestRef.current.set(cacheKey, request);
         return request;
+    };
+
+    const refreshPreviewSource = async (asset: OpsAsset) => {
+        const kind = asset.kind === 'image' ? 'download' : 'stream';
+        const contextId = selectedContextRef.current?.contextId;
+        const cacheKey = `${contextId || 'default'}:${asset.id}:${kind}`;
+        previewUrlCacheRef.current.delete(cacheKey);
+        previewRequestRef.current.delete(cacheKey);
+        const refreshed = await resolvePreviewSource(asset);
+        return refreshed.url;
     };
 
     const warmPreviewSource = (asset: OpsAsset) => {
@@ -826,8 +837,9 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                     name: asset.name,
                     mode,
                     destination,
-                    sizeBytes: asset.sizeBytes || null,
-                    checksum: asset.checksum || null,
+                    delivery: result.delivery || null,
+                    sizeBytes: result.sizeBytes ?? null,
+                    checksum: result.checksum ?? null,
                 }),
             });
             const data = await response.json();
@@ -2045,6 +2057,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                 src={preview.url}
                                 title={preview.asset.name}
                                 downloadName={preview.asset.name}
+                                resolvePlaybackSource={() => refreshPreviewSource(preview.asset)}
                                 onDownload={() => downloadAsset(preview.asset)}
                             />
                         )}
