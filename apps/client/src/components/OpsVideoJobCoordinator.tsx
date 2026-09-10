@@ -92,6 +92,7 @@ import {
     type OpsVideoJobCompanyResolution,
 } from '../lib/opsVideoJobCompany';
 import { opsTakeSourceCompanyId } from '../lib/opsVideoJobAssetSource';
+import { createOpsViewContextCache } from '../lib/opsViewContextCache';
 
 const POLL_INTERVAL_MS = 12_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -123,6 +124,8 @@ type CompletedOpsExport = {
     executionRevision?: number;
 };
 type JobDisplayState = OpsExecutorActivity;
+
+const opsViewContextCache = createOpsViewContextCache(() => gatewayApi.opsViewContexts());
 
 type ElectronIpc = {
     invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -440,15 +443,10 @@ const waitForOpsExport = (projectId: string, exportJobId: string): Promise<Compl
 });
 
 const orderedContexts = async (): Promise<OpsViewContext[]> => {
-    const response = await gatewayApi.opsViewContexts();
-    const contexts = response.data?.contexts || [];
-    return [
-        ...contexts.filter((context) => context.contextId === response.data.defaultContextId),
-        ...contexts.filter((context) => context.contextId !== response.data.defaultContextId),
-    ];
+    return opsViewContextCache.get();
 };
 
-const findQueuedJob = async (): Promise<QueuedJob | null> => {
+const findQueuedJob = async (allowContextRefresh = true): Promise<QueuedJob | null> => {
     let successfulLookups = 0;
     let lastAccessError: unknown = null;
     let transientLookupError: unknown = null;
@@ -470,7 +468,13 @@ const findQueuedJob = async (): Promise<QueuedJob | null> => {
     // timeout/5xx. Erros de acesso isolados podem ser ignorados quando outro
     // contexto respondeu normalmente.
     if (transientLookupError) throw transientLookupError;
-    if (successfulLookups === 0 && lastAccessError) throw lastAccessError;
+    if (successfulLookups === 0 && lastAccessError) {
+        if (allowContextRefresh) {
+            opsViewContextCache.invalidate();
+            return findQueuedJob(false);
+        }
+        throw lastAccessError;
+    }
     return null;
 };
 
@@ -751,6 +755,11 @@ export const OpsVideoJobCoordinator = () => {
     });
 
     useEffect(() => { exportingRef.current = isExporting; }, [isExporting]);
+    useEffect(() => {
+        // O cache nunca atravessa uma troca de sessao/usuario.
+        opsViewContextCache.invalidate();
+        heartbeatContextRef.current = initialPersistedJob?.viewContextId || null;
+    }, [initialPersistedJob?.viewContextId, user?.id]);
     useEffect(() => () => {
         titleGenerationAbortRef.current?.abort();
         heartbeatGenerationRef.current += 1;
@@ -845,6 +854,7 @@ export const OpsVideoJobCoordinator = () => {
         } catch (error) {
             if (!isLatest()) return;
             if (error instanceof GatewayError && [401, 403, 404].includes(error.status)) {
+                opsViewContextCache.invalidate();
                 heartbeatContextRef.current = null;
             }
             const parsed = errorParts(error);
