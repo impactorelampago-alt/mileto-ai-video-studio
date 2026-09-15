@@ -35,8 +35,12 @@ import {
     resolveTakeSharpness,
     sharpnessKernel,
 } from '../lib/videoEnhancement';
-import { hasCurrentTakeIsolation, normalizeTakeAudio } from '../lib/audioIsolation';
-import { previewTimelineDuration } from '../lib/molduraAudio';
+import { hasCurrentTakeIsolation, normalizeTakeAudio, resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
+import {
+    configuredNarrationTimelineDuration,
+    isAudioSourceShortForTimeline,
+    previewTimelineDuration,
+} from '../lib/molduraAudio';
 
 const OVERLAY_DESIGN_WIDTH = 360;
 const OVERLAY_DESIGN_HEIGHT_PORTRAIT = 640;
@@ -606,15 +610,44 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     : 9 / 16;
         const transitionRotateScale = transitionQuarterTurn ? Math.max(stageRatio, 1 / stageRatio) : 1;
 
-        // Calculate total duration (approximated for progress bar)
+        // Duração contratada pelo editor e usada pelo monitor inteiro.
         const [audioDuration, setAudioDuration] = useState<number>(0);
+        const expectedNarrationDuration = configuredNarrationTimelineDuration(adData);
+        const effectiveNarrationUrl = resolveEffectiveNarrationAudio(adData).url || undefined;
+        const masterRejectionKey = masterAudioUrl
+            ? `${masterAudioUrl}\u0000${expectedNarrationDuration.toFixed(3)}`
+            : '';
+        const [rejectedMasterKey, setRejectedMasterKey] = useState('');
+        const playbackAudioUrl = masterAudioUrl && rejectedMasterKey !== masterRejectionKey
+            ? masterAudioUrl
+            : effectiveNarrationUrl || masterAudioUrl;
 
         // Update audio duration when metadata loads
         useEffect(() => {
             if (audioMasterRef.current) {
                 const updateDuration = () => {
                     if (audioMasterRef.current?.duration && Number.isFinite(audioMasterRef.current.duration)) {
-                        setAudioDuration(audioMasterRef.current.duration);
+                        const measuredDuration = audioMasterRef.current.duration;
+                        const loadedSource = audioMasterRef.current.getAttribute('src') || '';
+                        const loadedMaster = Boolean(
+                            masterAudioUrl
+                            && loadedSource === masterAudioUrl
+                            && playbackAudioUrl === masterAudioUrl
+                        );
+                        if (
+                            loadedMaster
+                            && effectiveNarrationUrl
+                            && effectiveNarrationUrl !== masterAudioUrl
+                            && isAudioSourceShortForTimeline(expectedNarrationDuration, measuredDuration)
+                        ) {
+                            // O master pertence a uma configuração anterior. Troca
+                            // imediatamente para a narração original completa; assim
+                            // preview, legendas e títulos continuam no mesmo relógio.
+                            setAudioDuration(0);
+                            setRejectedMasterKey(masterRejectionKey);
+                            return;
+                        }
+                        setAudioDuration(measuredDuration);
                     }
                 };
                 audioMasterRef.current.addEventListener('loadedmetadata', updateDuration);
@@ -624,18 +657,25 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     audioMasterRef.current?.removeEventListener('loadedmetadata', updateDuration);
                 };
             }
-        }, [masterAudioUrl]);
+        }, [
+            effectiveNarrationUrl,
+            expectedNarrationDuration,
+            masterAudioUrl,
+            masterRejectionKey,
+            playbackAudioUrl,
+        ]);
 
         const totalDuration = useMemo(() => {
             const takesDur = takes.reduce((acc, t) => acc + (t.trim.end - t.trim.start), 0);
             return previewTimelineDuration({
                 videoModel: adData.videoModel,
                 narrationDuration: adData.narrationDuration,
+                configuredAudioDuration: expectedNarrationDuration,
                 measuredMasterDuration: audioDuration,
                 takesDuration: takesDur,
                 emptyFallbackDuration: 30,
             });
-        }, [takes, audioDuration, adData.narrationDuration, adData.videoModel]);
+        }, [takes, audioDuration, adData.narrationDuration, adData.videoModel, expectedNarrationDuration]);
 
         // Calculate global time for progress bar
         const globalTime = useMemo(() => {
@@ -690,7 +730,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
         const playAudio = useCallback(() => {
             if (
                 audioMasterRef.current &&
-                masterAudioUrl &&
+                playbackAudioUrl &&
                 audioMasterRef.current.paused &&
                 !audioMasterRef.current.ended // CRITICAL: Do not restart if it finished naturally
             ) {
@@ -707,7 +747,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 }
             }
             playIsolatedTakeAudio();
-        }, [masterAudioUrl, playIsolatedTakeAudio]);
+        }, [playbackAudioUrl, playIsolatedTakeAudio]);
 
         // Eventos `waiting` de poucos frames são normais ao trocar o decoder
         // pré-carregado. Só interrompemos a faixa mestre se a espera for real.
@@ -992,7 +1032,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             ? Math.max(0, video.currentTime - currentTake.trim.start)
                             : currentTimeInTake;
                     const sequenceTime =
-                        masterAudioUrl && audioMasterRef.current
+                        playbackAudioUrl && audioMasterRef.current
                             ? audioMasterRef.current.currentTime
                             : takeStartTime + localTime;
 
@@ -1024,9 +1064,11 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 if (audioMasterRef.current && !isStandaloneTakePreview) {
                     const currentAudioTime = audioMasterRef.current.currentTime;
                     setAudioTime(currentAudioTime);
-                    // A mixagem mestre determina o fim do anúncio. Não continue
-                    // tocando takes depois que o áudio final acabar.
-                    if (audioMasterRef.current.ended || currentAudioTime >= totalDuration - 0.02) {
+                    // A configuração atual determina o fim do anúncio. Um master
+                    // fisicamente curto não pode encerrar a sequência antes dela.
+                    const endedAtExpectedTime = audioMasterRef.current.ended
+                        && audioDuration >= totalDuration - 0.12;
+                    if (endedAtExpectedTime || currentAudioTime >= totalDuration - 0.02) {
                         stopAll();
                         setCurrentTakeIndex(0);
                         setCurrentTimeInTake(0);
@@ -1048,7 +1090,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                             const isLastTake = currentTakeIndex >= takes.length - 1;
                             const hasAudibleTail = Boolean(
                                 isLastTake &&
-                                masterAudioUrl &&
+                                playbackAudioUrl &&
                                 master &&
                                 !master.ended &&
                                 Number.isFinite(master.currentTime) &&
@@ -1273,7 +1315,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                     // último quadro até a fala terminar, sem voltar ao primeiro take.
                     const master = audioMasterRef.current;
                     const hasAudibleTail = Boolean(
-                        masterAudioUrl &&
+                        playbackAudioUrl &&
                         master &&
                         !master.ended &&
                         Number.isFinite(master.currentTime) &&
@@ -1323,7 +1365,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             finishBuffering,
             isStandaloneTakePreview,
             currentTimeInTake,
-            masterAudioUrl,
+            playbackAudioUrl,
+            audioDuration,
             currentIsolatedTakeAudioUrl,
             currentTakeAudio.mode,
             currentTakeAudio.volume,
@@ -1343,7 +1386,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
                 // CRITICAL FIX: To prevent the "Zombie Audio" bug where the audio finishes 2 seconds before the video
                 // and the watchdog says "Hey, video is playing but audio is paused, let's force play!".
                 // We check if it is explicitly `ended`. Also, we only sync if the audio still has time left.
-                if (mas && masterAudioUrl && mas.paused && !mas.ended) {
+                if (mas && playbackAudioUrl && mas.paused && !mas.ended) {
                     // Check if there is still audio left to play, considering float precision
                     if (mas.currentTime < (mas.duration || 0) - 0.5) {
                         console.warn('[audio-watchdog] Vídeo tocando mas áudio mestre pausado! Forçando sync.');
@@ -1353,7 +1396,7 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             }, 500);
 
             return () => clearInterval(interval);
-        }, [isPlaying, isBuffering, isStandaloneTakePreview, masterAudioUrl, activeVideo]);
+        }, [isPlaying, isBuffering, isStandaloneTakePreview, playbackAudioUrl, activeVideo]);
 
         // Atualiza imediatamente a variante/volume do take sem inferir opt-in legado.
         useEffect(() => {
@@ -1365,13 +1408,22 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
 
         // ─── Audio Elements Setup ───────────────────────────────────────────
         useEffect(() => {
-            if (audioMasterRef.current && masterAudioUrl) {
-                if (audioMasterRef.current.src !== masterAudioUrl) {
-                    audioMasterRef.current.src = masterAudioUrl;
-                }
-                audioMasterRef.current.volume = 1; // Mixed volumes are baked in
+            const audio = audioMasterRef.current;
+            if (!audio) return;
+            if (!playbackAudioUrl) {
+                audio.pause();
+                audio.removeAttribute('src');
+                audio.load();
+                setAudioDuration(0);
+                return;
             }
-        }, [masterAudioUrl]);
+            if (audio.getAttribute('src') !== playbackAudioUrl) {
+                audio.pause();
+                audio.setAttribute('src', playbackAudioUrl);
+                audio.load();
+            }
+            audio.volume = 1; // Mixed volumes are baked in
+        }, [playbackAudioUrl]);
 
         useEffect(() => {
             const audio = isolatedTakeAudioRef.current;

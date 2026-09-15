@@ -68,18 +68,58 @@ export const projectAudioTimelineDuration = (input: {
         || positiveDuration(input.backgroundTrackDuration);
 };
 
+/**
+ * Duração que a faixa de narração deve ocupar na timeline. Diferente da duração
+ * física do MP3 master, este valor preserva um corte intencional feito no editor
+ * de áudio e também denuncia masters antigos que terminam antes do corte atual.
+ */
+export const configuredNarrationTimelineDuration = (
+    adData: Pick<AdData, 'videoModel' | 'narrationDuration' | 'audioConfig'>,
+): number => {
+    const narrationDuration = positiveDuration(adData.narrationDuration);
+    if (adData.videoModel === 'moldura' && narrationDuration > 0) return narrationDuration;
+
+    const narration = adData.audioConfig?.narration;
+    if (!narration || narration.enabled === false) return 0;
+    const volume = Number(narration.volume);
+    if (Number.isFinite(volume) && volume <= 0) return 0;
+
+    const trimStart = Math.max(0, Number(narration.trimStart) || 0);
+    const trimEnd = positiveDuration(narration.trimEnd) || narrationDuration;
+    if (!(trimEnd > trimStart)) return 0;
+    return Math.max(0, Number(narration.offsetSec) || 0) + (trimEnd - trimStart);
+};
+
+export const isAudioSourceShortForTimeline = (
+    expectedDuration: unknown,
+    measuredDuration: unknown,
+): boolean => {
+    const expected = positiveDuration(expectedDuration);
+    const measured = positiveDuration(measuredDuration);
+    return expected > 0
+        && measured > 0
+        && measured < expected - MOLDURA_AUDIO_DURATION_TOLERANCE_SEC;
+};
+
 export const previewTimelineDuration = (input: {
     videoModel?: AdData['videoModel'];
     narrationDuration: unknown;
+    configuredAudioDuration?: unknown;
     measuredMasterDuration: unknown;
     takesDuration: unknown;
     emptyFallbackDuration?: number;
 }): number => {
     const narrationDuration = positiveDuration(input.narrationDuration);
+    const configuredAudioDuration = positiveDuration(input.configuredAudioDuration);
     const masterDuration = positiveDuration(input.measuredMasterDuration);
     if (input.videoModel === 'moldura' && narrationDuration > 0) {
-        return Math.max(narrationDuration, masterDuration);
+        return Math.max(narrationDuration, configuredAudioDuration, masterDuration);
     }
+    // A configuração atual é o contrato do editor. Um MP3 master medido com
+    // duração menor pode pertencer a uma mixagem anterior e não deve encurtar o
+    // monitor; um corte intencional continua preservado porque já está refletido
+    // em configuredAudioDuration.
+    if (configuredAudioDuration > 0) return configuredAudioDuration;
     if (masterDuration > 0) return masterDuration;
     if (narrationDuration > 0) return narrationDuration;
     return positiveDuration(input.takesDuration) || input.emptyFallbackDuration || 30;

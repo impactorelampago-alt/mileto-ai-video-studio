@@ -23,10 +23,33 @@ import {
     OPS_EXPORT_DEFAULT_FOLDER_NAME,
 } from '../lib/opsExportDestination';
 import { normalizeTakeAudio, resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
+import {
+    configuredNarrationTimelineDuration,
+    isAudioSourceShortForTimeline,
+} from '../lib/molduraAudio';
 
 type DestinationKind = 'local' | 'shared' | 'ops';
 type FolderOption = { label: string; value: string };
 type SelectOption = { label: string; value: string };
+const probeAudioDuration = (url: string): Promise<number> => new Promise((resolve) => {
+    const audio = document.createElement('audio');
+    let settled = false;
+    const finish = (duration: number) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        audio.removeAttribute('src');
+        audio.load();
+        resolve(Number.isFinite(duration) && duration > 0 ? duration : 0);
+    };
+    const timeout = window.setTimeout(() => finish(0), 10_000);
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => finish(Number(audio.duration));
+    audio.onerror = () => finish(0);
+    audio.src = url;
+    audio.load();
+});
+
 const flattenFolders = (node: { name: string; relPath: string; children?: unknown[] }, prefix = ''): FolderOption[] => {
     const path = node.relPath === '/' ? '' : node.relPath;
     const children = Array.isArray(node.children) ? node.children as Array<{ name: string; relPath: string; children?: unknown[] }> : [];
@@ -98,9 +121,10 @@ interface ExportModalProps {
 
 export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPath, transitionRotation = 0 }: ExportModalProps) => {
     const { adData, captionStyle, projectId, saveProject, updateAdData } = useWizard();
+    const effectiveNarration = resolveEffectiveNarrationAudio(adData);
     const exportMasterAudioUrl = masterAudioUrl
         || adData.masterAudioUrl
-        || resolveEffectiveNarrationAudio(adData).url
+        || effectiveNarration.url
         || undefined;
     const hasTakeAudioOptIn = mediaTakes.some((take) => normalizeTakeAudio(take.audio).mode !== 'off');
     const { isExporting, startExport } = useExportJobs();
@@ -173,7 +197,8 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
     }, [mediaTakes, adData.format]);
 
     const takesDuration = mediaTakes.reduce((total, take) => total + (take.trim.end - take.trim.start), 0);
-    const totalDuration = Number(adData.narrationDuration || 0) > 0 ? Number(adData.narrationDuration) : takesDuration;
+    const configuredAudioDuration = configuredNarrationTimelineDuration(adData);
+    const totalDuration = configuredAudioDuration > 0 ? configuredAudioDuration : takesDuration;
     const finalNarrationText = useMemo(() => {
         const captions = adData.captions;
         if (captions?.sourceKey === narrationSourceKey(adData) && captions.segments.length) {
@@ -408,6 +433,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             }
         }
         let exportAdData = adData;
+        let resolvedExportMasterAudioUrl = exportMasterAudioUrl;
         if (adData.opsCompany?.id) {
             try {
                 const resolvedBrand = await resolveOpsProjectBrand(adData.opsCompany);
@@ -433,6 +459,40 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
                 return;
             }
         }
+
+        // Um projeto retomado pode carregar a URL de uma mixagem feita antes da
+        // última narração. Se ela acabar cedo, use a fonte original completa em
+        // vez de exportar silêncio (ou bloquear o render) depois do décimo segundo.
+        let resolvedExportAudioDuration = 0;
+        if (resolvedExportMasterAudioUrl && totalDuration > 0) {
+            resolvedExportAudioDuration = await probeAudioDuration(resolvedExportMasterAudioUrl);
+            if (isAudioSourceShortForTimeline(totalDuration, resolvedExportAudioDuration)) {
+                const narrationFallback = effectiveNarration.url || undefined;
+                if (narrationFallback && narrationFallback !== resolvedExportMasterAudioUrl) {
+                    const narrationDuration = await probeAudioDuration(narrationFallback);
+                    if (!isAudioSourceShortForTimeline(totalDuration, narrationDuration) && narrationDuration > 0) {
+                        resolvedExportMasterAudioUrl = narrationFallback;
+                        resolvedExportAudioDuration = narrationDuration;
+                        exportAdData = {
+                            ...exportAdData,
+                            masterAudioUrl: narrationFallback,
+                            sharedMasterAssetId: undefined,
+                        };
+                    }
+                }
+            }
+        }
+
+        if (resolvedExportMasterAudioUrl && totalDuration > 0) {
+            if (isAudioSourceShortForTimeline(totalDuration, resolvedExportAudioDuration)) {
+                setStarting(false);
+                setErrorMsg(
+                    `A trilha preparada termina em ${resolvedExportAudioDuration.toFixed(1)}s, mas o projeto vai até ${totalDuration.toFixed(1)}s. Volte à etapa de áudio e prepare a narração novamente.`,
+                );
+                return;
+            }
+        }
+
         const saved = await saveProject({ lastStep: 4 });
         if (!saved) {
             setStarting(false);
@@ -447,7 +507,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             totalDuration,
             targetDims,
             mediaTakes: [...mediaTakes],
-            masterAudioUrl: exportMasterAudioUrl,
+            masterAudioUrl: resolvedExportMasterAudioUrl,
             transitionPath,
             transitionRotation,
             adData: {
@@ -476,6 +536,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         fps,
         isExporting,
         exportMasterAudioUrl,
+        effectiveNarration.url,
         mediaTakes,
         navigate,
         onClose,

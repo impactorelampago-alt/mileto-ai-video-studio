@@ -1848,7 +1848,7 @@ export const Step4 = () => {
                         <VideoSequencePreview
                             ref={previewRef}
                             takes={mediaTakes}
-                            masterAudioUrl={adData.masterAudioUrl}
+                            masterAudioUrl={adData.masterAudioUrl || effectiveNarration.url || undefined}
                             captions={currentCaptions}
                             onMuteToggle={() => {}}
                             onMuteAll={() => {}}

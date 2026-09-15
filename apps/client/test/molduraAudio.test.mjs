@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    configuredNarrationTimelineDuration,
     fullMolduraAudioConfig,
+    isAudioSourceShortForTimeline,
     isShortMolduraMaster,
     molduraNarrationUsesFullSource,
     previewTimelineDuration,
@@ -63,6 +65,13 @@ test('relógio da Moldura ignora fim curto da configuração e preserva o CTA', 
 });
 
 test('modelo Takes continua respeitando o recorte intencional do áudio', () => {
+    const adData = {
+        videoModel: 'takes',
+        narrationDuration: 16.1,
+        audioConfig: audioConfig(),
+    };
+    const configuredDuration = configuredNarrationTimelineDuration(adData);
+    assert.equal(configuredDuration, 11.6);
     assert.equal(projectAudioTimelineDuration({
         videoModel: 'takes',
         narrationDuration: 16.1,
@@ -72,7 +81,30 @@ test('modelo Takes continua respeitando o recorte intencional do áudio', () => 
     assert.equal(previewTimelineDuration({
         videoModel: 'takes',
         narrationDuration: 16.1,
+        configuredAudioDuration: configuredDuration,
         measuredMasterDuration: 11.6,
         takesDuration: 16.1,
     }), 11.6);
+});
+
+test('modelo Takes não deixa um master antigo de 10s encurtar uma narração atual de 15,83s', () => {
+    const adData = {
+        videoModel: 'takes',
+        narrationDuration: 15.83,
+        audioConfig: audioConfig({
+            narration: { trimEnd: 15.83 },
+            background: { trimEnd: 15.83 },
+        }),
+    };
+    const configuredDuration = configuredNarrationTimelineDuration(adData);
+
+    assert.equal(configuredDuration, 15.83);
+    assert.equal(isAudioSourceShortForTimeline(configuredDuration, 10), true);
+    assert.equal(previewTimelineDuration({
+        videoModel: 'takes',
+        narrationDuration: 15.83,
+        configuredAudioDuration: configuredDuration,
+        measuredMasterDuration: 10,
+        takesDuration: 15.83,
+    }), 15.83);
 });
