@@ -2,10 +2,13 @@ import type {
     AdData,
     AudioConfig,
     MasterAudioContract,
+    NarrationTimingContract,
     TimelineDurationContract,
 } from '../types';
+import { narrationSourceKey } from './narrationState.ts';
 
 export const MOLDURA_AUDIO_DURATION_TOLERANCE_SEC = 0.12;
+const NARRATION_TIMING_NORMALIZATION_EPSILON_SEC = 0.001;
 
 const positiveDuration = (value: unknown): number => {
     const duration = Number(value);
@@ -34,6 +37,71 @@ const fingerprint = (value: unknown): string => {
         hash = Math.imul(hash, 16777619);
     }
     return `timeline-v1-${(hash >>> 0).toString(16)}`;
+};
+
+type NarrationTimingData = Pick<AdData, 'videoModel' | 'narrationDuration' | 'audioConfig'> & Partial<Pick<
+    AdData,
+    | 'narrationText'
+    | 'narrationAudioUrl'
+    | 'narrationAudioPath'
+    | 'sharedNarrationAssetId'
+    | 'narrationIsolation'
+    | 'narrationTimingContract'
+>>;
+
+const currentNarrationTimingSourceKey = (adData: NarrationTimingData): string => narrationSourceKey({
+    narrationText: adData.narrationText || '',
+    narrationAudioUrl: adData.narrationAudioUrl ?? null,
+    narrationAudioPath: adData.narrationAudioPath ?? null,
+    sharedNarrationAssetId: adData.sharedNarrationAssetId,
+    narrationIsolation: adData.narrationIsolation,
+});
+
+export const createNarrationTimingContract = (
+    adData: NarrationTimingData,
+): NarrationTimingContract => ({
+    version: 1,
+    mode: 'custom',
+    sourceKey: currentNarrationTimingSourceKey(adData),
+});
+
+/**
+ * Um trim só é autoral quando foi salvo pelo editor para esta fonte exata.
+ * Drafts anteriores ao contrato não têm como provar essa intenção e voltam à
+ * locução integral, impedindo que metadados herdados cortem o CTA.
+ */
+export const hasCurrentCustomNarrationTiming = (
+    adData: NarrationTimingData,
+): boolean => Boolean(
+    adData.videoModel !== 'moldura'
+    && positiveDuration(adData.narrationDuration) > 0
+    && adData.narrationTimingContract?.version === 1
+    && adData.narrationTimingContract.mode === 'custom'
+    && adData.narrationTimingContract.sourceKey === currentNarrationTimingSourceKey(adData),
+);
+
+/** Normaliza o estado legado; não altera um corte autoral ligado à fonte atual. */
+export const narrationAudioConfigForProject = (
+    adData: NarrationTimingData,
+): AudioConfig => {
+    const duration = positiveDuration(adData.narrationDuration);
+    if (!(duration > 0) || hasCurrentCustomNarrationTiming(adData)) return adData.audioConfig;
+
+    const narration = adData.audioConfig.narration;
+    const alreadyFull = Math.abs(Number(narration.offsetSec) || 0) <= NARRATION_TIMING_NORMALIZATION_EPSILON_SEC
+        && Math.abs(Number(narration.trimStart) || 0) <= NARRATION_TIMING_NORMALIZATION_EPSILON_SEC
+        && Math.abs(positiveDuration(narration.trimEnd) - duration) <= NARRATION_TIMING_NORMALIZATION_EPSILON_SEC;
+    if (alreadyFull) return adData.audioConfig;
+
+    return {
+        ...adData.audioConfig,
+        narration: {
+            ...narration,
+            offsetSec: 0,
+            trimStart: 0,
+            trimEnd: duration,
+        },
+    };
 };
 
 export const molduraNarrationDuration = (
@@ -103,18 +171,24 @@ export const projectAudioTimelineDuration = (input: {
  * de áudio e também denuncia masters antigos que terminam antes do corte atual.
  */
 export const configuredNarrationTimelineDuration = (
-    adData: Pick<AdData, 'videoModel' | 'narrationDuration' | 'audioConfig'>,
+    adData: NarrationTimingData,
 ): number => {
     const narrationDuration = positiveDuration(adData.narrationDuration);
-    if (adData.videoModel === 'moldura' && narrationDuration > 0) return narrationDuration;
 
     const narration = adData.audioConfig?.narration;
     if (!narration || narration.enabled === false) return 0;
     const volume = Number(narration.volume);
     if (Number.isFinite(volume) && volume <= 0) return 0;
 
+    if (narrationDuration > 0 && !hasCurrentCustomNarrationTiming(adData)) {
+        return narrationDuration;
+    }
+
     const trimStart = Math.max(0, Number(narration.trimStart) || 0);
-    const trimEnd = positiveDuration(narration.trimEnd) || narrationDuration;
+    const configuredTrimEnd = positiveDuration(narration.trimEnd) || narrationDuration;
+    const trimEnd = narrationDuration > 0
+        ? Math.min(configuredTrimEnd, narrationDuration)
+        : configuredTrimEnd;
     if (!(trimEnd > trimStart)) return 0;
     return Math.max(0, Number(narration.offsetSec) || 0) + (trimEnd - trimStart);
 };
@@ -140,14 +214,13 @@ export const configuredBackgroundTimelineDuration = (
  * do projeto.
  */
 export const audioConfigForProjectTimeline = (
-    adData: Pick<
-        AdData,
-        'videoModel' | 'narrationDuration' | 'musicAudioUrl' | 'sharedMusicAssetId' | 'audioConfig'
-    >,
+    adData: NarrationTimingData & Pick<AdData, 'musicAudioUrl' | 'sharedMusicAssetId'>,
     takesDuration: unknown = 0,
 ): AudioConfig => {
-    if (configuredNarrationTimelineDuration(adData) > 0) return adData.audioConfig;
-    if (configuredBackgroundTimelineDuration(adData) > 0) return adData.audioConfig;
+    const normalizedAudioConfig = narrationAudioConfigForProject(adData);
+    const normalizedAdData = { ...adData, audioConfig: normalizedAudioConfig };
+    if (configuredNarrationTimelineDuration(normalizedAdData) > 0) return normalizedAudioConfig;
+    if (configuredBackgroundTimelineDuration(normalizedAdData) > 0) return normalizedAudioConfig;
 
     const visualDuration = positiveDuration(takesDuration);
     const background = adData.audioConfig?.background;
@@ -159,15 +232,15 @@ export const audioConfigForProjectTimeline = (
         || (Number.isFinite(volume) && volume <= 0)
         || (!adData.musicAudioUrl && !adData.sharedMusicAssetId)
     ) {
-        return adData.audioConfig;
+        return normalizedAudioConfig;
     }
 
     const offsetSec = Math.max(0, Number(background.offsetSec) || 0);
     const trimStart = Math.max(0, Number(background.trimStart) || 0);
     const playableDuration = visualDuration - offsetSec;
-    if (!(playableDuration > 0)) return adData.audioConfig;
+    if (!(playableDuration > 0)) return normalizedAudioConfig;
     return {
-        ...adData.audioConfig,
+        ...normalizedAudioConfig,
         background: {
             ...background,
             trimEnd: roundDuration(trimStart + playableDuration),
@@ -201,14 +274,18 @@ export const deriveTimelineContract = (
         | 'narrationAudioPath'
         | 'sharedNarrationAssetId'
         | 'narrationIsolation'
+        | 'narrationText'
+        | 'narrationTimingContract'
         | 'musicAudioUrl'
         | 'sharedMusicAssetId'
         | 'audioConfig'
     >,
     takesDuration: unknown = 0,
 ): TimelineDurationContract | undefined => {
-    const narrationDuration = configuredNarrationTimelineDuration(adData);
-    const backgroundDuration = configuredBackgroundTimelineDuration(adData);
+    const normalizedAudioConfig = narrationAudioConfigForProject(adData);
+    const normalizedAdData = { ...adData, audioConfig: normalizedAudioConfig };
+    const narrationDuration = configuredNarrationTimelineDuration(normalizedAdData);
+    const backgroundDuration = configuredBackgroundTimelineDuration(normalizedAdData);
     const visualDuration = positiveDuration(takesDuration);
     const source: TimelineDurationContract['source'] = narrationDuration > 0
         ? 'narration'
@@ -227,8 +304,11 @@ export const deriveTimelineContract = (
         videoModel: adData.videoModel || 'takes',
         audio: stableAudioIdentity(adData),
         narrationDuration: positiveDuration(adData.narrationDuration),
-        narration: adData.audioConfig?.narration || null,
-        background: adData.audioConfig?.background || null,
+        narration: normalizedAudioConfig.narration,
+        background: normalizedAudioConfig.background,
+        narrationTiming: hasCurrentCustomNarrationTiming(adData)
+            ? adData.narrationTimingContract
+            : null,
         ...(source === 'takes' ? { takesDuration: visualDuration } : {}),
     };
     return { version: 1, durationSec, source, fingerprint: fingerprint(input) };
@@ -243,6 +323,8 @@ export const projectTimelineContract = (
         | 'narrationAudioPath'
         | 'sharedNarrationAssetId'
         | 'narrationIsolation'
+        | 'narrationText'
+        | 'narrationTimingContract'
         | 'musicAudioUrl'
         | 'sharedMusicAssetId'
         | 'audioConfig'
@@ -288,16 +370,26 @@ export const withCanonicalTimelineContract = <T extends AdData>(
     adData: T,
     takesDuration: unknown = 0,
 ): T => {
-    const nextContract = deriveTimelineContract(adData, takesDuration);
+    const customTimingIsCurrent = hasCurrentCustomNarrationTiming(adData);
+    const normalizedAudioConfig = narrationAudioConfigForProject(adData);
+    const timingStateWasReset = normalizedAudioConfig !== adData.audioConfig
+        || Boolean(adData.narrationTimingContract && !customTimingIsCurrent);
+    const normalizedAdData = {
+        ...adData,
+        audioConfig: normalizedAudioConfig,
+        ...(!customTimingIsCurrent ? { narrationTimingContract: undefined } : {}),
+        ...(timingStateWasReset ? { audioTimeline: undefined } : {}),
+    } as T;
+    const nextContract = deriveTimelineContract(normalizedAdData, takesDuration);
     if (!nextContract) {
-        const { timelineContract: _timeline, masterAudioContract: _master, ...rest } = adData;
+        const { timelineContract: _timeline, masterAudioContract: _master, ...rest } = normalizedAdData;
         void _timeline;
         void _master;
         return rest as T;
     }
     const masterIsCurrent = masterContractMatchesTimeline(nextContract, adData.masterAudioContract);
     return {
-        ...adData,
+        ...normalizedAdData,
         timelineContract: nextContract,
         ...(masterIsCurrent ? {} : { masterAudioContract: undefined }),
     };

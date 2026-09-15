@@ -88,6 +88,7 @@ export const invalidatedNarrationDerivatives = (): Partial<AdData> => ({
     sharedNarrationAssetId: undefined,
     narrationDuration: 0,
     audioTimeline: undefined,
+    narrationTimingContract: undefined,
     captions: undefined,
     dynamicTitles: [],
     dynamicTitlesSourceKey: undefined,
@@ -101,6 +102,7 @@ export const invalidatedNarrationDerivatives = (): Partial<AdData> => ({
 /** Derivados temporizados/mixados ao trocar Original ↔ Isolada, sem apagar o original. */
 export const invalidatedNarrationVariantDerivatives = (): Partial<AdData> => ({
     audioTimeline: undefined,
+    narrationTimingContract: undefined,
     captions: undefined,
     dynamicTitles: [],
     dynamicTitlesSourceKey: undefined,

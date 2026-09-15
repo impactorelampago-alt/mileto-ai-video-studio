@@ -276,6 +276,17 @@ export interface AudioConfig {
 }
 
 /**
+ * Prova de que o recorte/posicionamento da narração foi alterado de propósito
+ * no editor. Sem essa prova, campos legados de trim nunca podem encurtar uma
+ * nova locução silenciosamente.
+ */
+export interface NarrationTimingContract {
+    version: 1;
+    mode: 'custom';
+    sourceKey: string;
+}
+
+/**
  * Contrato persistido do relogio do projeto. A assinatura impede que uma
  * duracao calculada para audio/takes antigos seja reutilizada depois de uma
  * edicao.
@@ -554,6 +565,7 @@ export interface AdData {
     sharedMusicAssetId?: string;
     audioConfig: AudioConfig; // Kept for backward compatibility
     audioTimeline?: AudioTimeline; // New Data Model
+    narrationTimingContract?: NarrationTimingContract;
     masterAudioUrl?: string; // Mix of Narration + Background music generated on backend
     sharedMasterAssetId?: string;
     timelineContract?: TimelineDurationContract;

@@ -1,6 +1,6 @@
-import { API_BASE_URL } from './apiBase';
+import { API_BASE_URL } from './apiBase.ts';
 import type { MediaTake, TransitionAsset } from '../types';
-import { automaticCutTakes } from './automaticCuts';
+import { automaticCutTakes } from './automaticCuts.ts';
 
 export const QUICK_EDIT_SHARPNESS = 25;
 

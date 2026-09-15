@@ -64,7 +64,7 @@ import { recoverOpsTakeSource } from '../lib/opsMediaRecovery';
 import { prepareOpsTakeForExport } from '../lib/opsMediaRecovery';
 import { refreshSharedAudioSourceUrl, refreshSharedTakeForExport } from '../lib/sharedMediaRecovery';
 import { applyQuickEdit } from '../lib/quickEdit';
-import { automaticCutTakes } from '../lib/automaticCuts';
+import { automaticCutTakes, canApplyQuickEdit } from '../lib/automaticCuts';
 import {
     hasCurrentTakeIsolation,
     normalizeTakeAudio,
@@ -74,10 +74,12 @@ import {
 import { isolateAudioSource } from '../lib/audioIsolationApi';
 import { API_BASE_URL } from '../lib/apiBase';
 import {
+    audioConfigForProjectTimeline,
     canonicalProjectTimelineDuration,
     fullMolduraAudioConfig,
     isAudioSourceInvalidForTimeline,
     masterAudioContractFromMix,
+    masterAudioContractIsCurrent,
     molduraNarrationUsesFullSource,
 } from '../lib/molduraAudio';
 
@@ -376,10 +378,10 @@ export const Step2 = () => {
     const isMoldura = adData.videoModel === 'moldura';
     const [isFramePickerOpen, setIsFramePickerOpen] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
-    const [isPreparingMolduraAudio, setIsPreparingMolduraAudio] = useState(false);
-    const [invalidMolduraMasterUrl, setInvalidMolduraMasterUrl] = useState<string | null>(null);
+    const [isPreparingTimelineAudio, setIsPreparingTimelineAudio] = useState(false);
+    const [invalidTimelineMasterUrl, setInvalidTimelineMasterUrl] = useState<string | null>(null);
     const previewRef = useRef<VideoSequencePreviewRef>(null);
-    const molduraAudioMixRequestRef = useRef(0);
+    const timelineAudioMixRequestRef = useRef(0);
     const opsSourceRepairsRef = useRef(new Set<string>());
     const latestMediaTakesRef = useRef(mediaTakes);
     latestMediaTakesRef.current = mediaTakes;
@@ -449,38 +451,37 @@ export const Step2 = () => {
     // O master termina com a narração quando ela existe (`amix duration=first`).
     // A música só define o relógio do projeto quando não há faixa narrada.
     const quickEditTargetDuration = automaticCutDuration;
-    const quickEditRemaining = Math.max(0, quickEditTargetDuration - rawTakesDuration);
-    const canQuickEdit = mediaTakes.length > 0
-        && quickEditTargetDuration > 0
-        && quickEditRemaining <= 0.05;
+    const canQuickEdit = canApplyQuickEdit(mediaTakes, quickEditTargetDuration);
 
-    const molduraNarrationIsActive = isMoldura
-        && narrationDuration > 0
+    const narrationIsActive = narrationDuration > 0
         && adData.audioConfig.narration.enabled !== false
         && Number(adData.audioConfig.narration.volume || 0) > 0
         && Boolean(effectiveNarration.url || effectiveNarration.sharedAssetId);
     const molduraNarrationIsFull = molduraNarrationUsesFullSource(adData);
-    const molduraAudioConfigFingerprint = JSON.stringify(adData.audioConfig);
+    const narrationTimingIsReady = !isMoldura || molduraNarrationIsFull;
+    const timelineAudioConfigFingerprint = JSON.stringify(adData.audioConfig);
+    const currentMasterIsVerified = Boolean(
+        adData.masterAudioUrl
+        && masterAudioContractIsCurrent(adData, rawTakesDuration),
+    );
     const molduraPreviewAudioUrl = isMoldura
         ? (
-            adData.masterAudioUrl && adData.masterAudioUrl !== invalidMolduraMasterUrl
+            adData.masterAudioUrl && adData.masterAudioUrl !== invalidTimelineMasterUrl
                 ? adData.masterAudioUrl
                 : effectiveNarration.url || undefined
         )
         : adData.masterAudioUrl;
 
-    // Projetos Moldura antigos podiam conservar o trimEnd de uma narração
-    // anterior. Isso fazia o cartão mostrar 16,1 s de voz, mas o master e o
-    // monitor pararem em 11,6 s. Primeiro restauramos o recorte integral; depois
-    // descartamos qualquer master cuja duração física não corresponda à
-    // narração atual.
+    // Rascunhos antigos podiam conservar trim/timeline/master de outra duração.
+    // Primeiro restauramos a locução integral quando necessário. Depois exigimos
+    // tanto o contrato atual quanto a duração física antes de reutilizar o master.
     useEffect(() => {
-        if (!molduraNarrationIsActive) {
-            setIsPreparingMolduraAudio(false);
+        if (!narrationIsActive) {
+            setIsPreparingTimelineAudio(false);
             return;
         }
-        if (!molduraNarrationIsFull) {
-            setIsPreparingMolduraAudio(true);
+        if (!narrationTimingIsReady) {
+            setIsPreparingTimelineAudio(true);
             updateAdData({
                 audioConfig: fullMolduraAudioConfig(adData),
                 masterAudioUrl: undefined,
@@ -490,25 +491,30 @@ export const Step2 = () => {
         }
 
         const masterUrl = adData.masterAudioUrl;
-        if (!masterUrl || masterUrl === invalidMolduraMasterUrl) return;
+        if (!masterUrl || masterUrl === invalidTimelineMasterUrl) return;
+        if (!currentMasterIsVerified) {
+            setInvalidTimelineMasterUrl(masterUrl);
+            updateAdData({ masterAudioUrl: undefined, sharedMasterAssetId: undefined });
+            return;
+        }
 
         let disposed = false;
         const audio = document.createElement('audio');
         audio.preload = 'metadata';
-        setIsPreparingMolduraAudio(true);
+        setIsPreparingTimelineAudio(true);
         audio.onloadedmetadata = () => {
             if (disposed) return;
             if (isAudioSourceInvalidForTimeline(automaticCutDuration, audio.duration)) {
-                setInvalidMolduraMasterUrl(masterUrl);
+                setInvalidTimelineMasterUrl(masterUrl);
                 updateAdData({ masterAudioUrl: undefined, sharedMasterAssetId: undefined });
                 return;
             }
-            setInvalidMolduraMasterUrl(null);
-            setIsPreparingMolduraAudio(false);
+            setInvalidTimelineMasterUrl(null);
+            setIsPreparingTimelineAudio(false);
         };
         audio.onerror = () => {
             if (disposed) return;
-            setInvalidMolduraMasterUrl(masterUrl);
+            setInvalidTimelineMasterUrl(masterUrl);
             updateAdData({ masterAudioUrl: undefined, sharedMasterAssetId: undefined });
         };
         audio.src = masterUrl;
@@ -523,25 +529,26 @@ export const Step2 = () => {
         adData.narrationDuration,
         adData.videoModel,
         automaticCutDuration,
-        invalidMolduraMasterUrl,
-        molduraNarrationIsActive,
-        molduraNarrationIsFull,
+        currentMasterIsVerified,
+        invalidTimelineMasterUrl,
+        narrationIsActive,
+        narrationTimingIsReady,
         updateAdData,
     ]);
 
-    // Ao invalidar um master curto, prepara novamente a mesma combinação de
-    // voz + música. Se a música estiver indisponível, a URL seca da narração
-    // continua sendo usada pela prévia/exportação em vez de perder o CTA.
+    // Ao invalidar um master, prepara novamente voz + música inclusive quando o
+    // rascunho foi reaberto direto nesta etapa. A voz seca continua sendo o
+    // fallback seguro caso a música esteja temporariamente indisponível.
     useEffect(() => {
         if (
-            !molduraNarrationIsActive
-            || !molduraNarrationIsFull
+            !narrationIsActive
+            || !narrationTimingIsReady
             || adData.masterAudioUrl
         ) return;
 
-        const requestId = ++molduraAudioMixRequestRef.current;
+        const requestId = ++timelineAudioMixRequestRef.current;
         const controller = new AbortController();
-        setIsPreparingMolduraAudio(true);
+        setIsPreparingTimelineAudio(true);
 
         void (async () => {
             try {
@@ -559,8 +566,12 @@ export const Step2 = () => {
                         'shared_music_source_unavailable',
                     ),
                 ]);
-                if (controller.signal.aborted || requestId !== molduraAudioMixRequestRef.current) return;
+                if (controller.signal.aborted || requestId !== timelineAudioMixRequestRef.current) return;
                 if (!narrationUrl) throw new Error('A fonte da narração não está disponível.');
+
+                const mixAudioConfig = isMoldura
+                    ? fullMolduraAudioConfig(adData)
+                    : audioConfigForProjectTimeline(adData, rawTakesDuration);
 
                 const response = await fetch(`${API_BASE_URL}/api/audio/mix`, {
                     method: 'POST',
@@ -569,51 +580,53 @@ export const Step2 = () => {
                     body: JSON.stringify({
                         narrationUrl,
                         musicUrl,
-                        audioConfig: fullMolduraAudioConfig(adData),
+                        audioConfig: mixAudioConfig,
                     }),
                 });
                 const data = await response.json();
                 if (!response.ok || !data.ok || !data.masterAudioUrl) {
                     throw new Error(data.message || 'A mixagem completa não pôde ser preparada.');
                 }
-                if (controller.signal.aborted || requestId !== molduraAudioMixRequestRef.current) return;
+                if (controller.signal.aborted || requestId !== timelineAudioMixRequestRef.current) return;
 
                 const masterAudioUrl = /^https?:\/\//i.test(data.masterAudioUrl)
                     ? data.masterAudioUrl
                     : `${API_BASE_URL}${data.masterAudioUrl}`;
                 const mixAdData = {
                     ...adData,
-                    audioConfig: fullMolduraAudioConfig(adData),
+                    audioConfig: mixAudioConfig,
                     ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
                         ? { narrationAudioUrl: narrationUrl }
                         : {}),
                     ...(adData.sharedMusicAssetId ? { musicAudioUrl: musicUrl } : {}),
                 };
+                setInvalidTimelineMasterUrl(null);
                 updateAdData({
                     masterAudioUrl,
                     sharedMasterAssetId: undefined,
-                    masterAudioContract: masterAudioContractFromMix(mixAdData, data),
+                    audioConfig: mixAudioConfig,
+                    masterAudioContract: masterAudioContractFromMix(mixAdData, data, rawTakesDuration),
                     ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
                         ? { narrationAudioUrl: narrationUrl }
                         : {}),
                     ...(adData.sharedMusicAssetId ? { musicAudioUrl: musicUrl } : {}),
                 });
             } catch (error) {
-                if (controller.signal.aborted || requestId !== molduraAudioMixRequestRef.current) return;
-                console.error('Moldura audio repair error:', error);
+                if (controller.signal.aborted || requestId !== timelineAudioMixRequestRef.current) return;
+                console.error('Timeline audio repair error:', error);
                 toast.warning('A música não pôde ser remontada agora. A narração completa será preservada.', {
                     description: error instanceof Error ? error.message : undefined,
                     duration: 7000,
                 });
             } finally {
-                if (requestId === molduraAudioMixRequestRef.current) setIsPreparingMolduraAudio(false);
+                if (requestId === timelineAudioMixRequestRef.current) setIsPreparingTimelineAudio(false);
             }
         })();
 
         return () => {
             controller.abort();
-            if (requestId === molduraAudioMixRequestRef.current) {
-                molduraAudioMixRequestRef.current += 1;
+            if (requestId === timelineAudioMixRequestRef.current) {
+                timelineAudioMixRequestRef.current += 1;
             }
         };
     }, [
@@ -625,9 +638,11 @@ export const Step2 = () => {
         effectiveNarration.sharedAssetId,
         effectiveNarration.url,
         effectiveNarration.variant,
-        molduraAudioConfigFingerprint,
-        molduraNarrationIsActive,
-        molduraNarrationIsFull,
+        isMoldura,
+        narrationIsActive,
+        narrationTimingIsReady,
+        rawTakesDuration,
+        timelineAudioConfigFingerprint,
         updateAdData,
     ]);
 
@@ -658,7 +673,7 @@ export const Step2 = () => {
             toast.warning('Escolha uma moldura PNG antes de exportar.');
             return;
         }
-        if (isPreparingMolduraAudio) {
+        if (isPreparingTimelineAudio) {
             toast.info('Aguarde um instante: estamos garantindo a narração completa.');
             return;
         }
@@ -1041,10 +1056,12 @@ export const Step2 = () => {
                                         )}
                                         title={
                                             canQuickEdit
-                                                ? 'Aplicar cortes e acabamento rápido em todos os takes'
+                                                ? isDurationShort
+                                                    ? 'Aplicar cortes, repetir as fontes disponíveis e completar toda a narração'
+                                                    : 'Aplicar cortes e acabamento rápido em todos os takes'
                                                 : quickEditTargetDuration <= 0
                                                   ? 'Gere ou selecione a trilha do projeto primeiro'
-                                                  : `Adicione mais ${quickEditRemaining.toFixed(1)}s de takes para liberar`
+                                                  : 'Adicione pelo menos um take para liberar'
                                         }
                                         aria-label="Edição rápida"
                                     >
@@ -1358,13 +1375,13 @@ export const Step2 = () => {
                         {/* Export (direita) */}
                         <button
                             onClick={handleOpenExportMoldura}
-                            disabled={isPreparingMolduraAudio}
+                            disabled={isPreparingTimelineAudio}
                             className="flex items-center gap-2.5 rounded-xl bg-linear-to-r from-brand-lime to-brand-accent px-8 py-2.5 text-xs font-extrabold uppercase tracking-widest text-[#0a0f12] transition-transform hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(0,230,118,0.4)] active:scale-[0.98] disabled:cursor-wait disabled:opacity-60"
                         >
-                            {isPreparingMolduraAudio
+                            {isPreparingTimelineAudio
                                 ? <Loader2 className="h-5 w-5 shrink-0 animate-spin" />
                                 : <Download className="h-5 w-5 shrink-0" />}
-                            <span>{isPreparingMolduraAudio ? 'Preparando áudio' : 'Exportar e Concluir'}</span>
+                            <span>{isPreparingTimelineAudio ? 'Preparando áudio' : 'Exportar e Concluir'}</span>
                         </button>
                     </div>
                 ) : (

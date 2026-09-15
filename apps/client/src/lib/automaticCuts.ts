@@ -14,6 +14,16 @@ const takeTrimDuration = (take: MediaTake) => {
 const timelineDuration = (takes: MediaTake[]) =>
     takes.reduce((total, take) => total + takeTrimDuration(take), 0);
 
+/**
+ * A falta de duração bruta não bloqueia a edição rápida: automaticCutTakes
+ * reutiliza as fontes com novos IDs até preencher o relógio da narração.
+ */
+export const canApplyQuickEdit = (sourceTakes: MediaTake[], targetDuration: number) => (
+    sourceTakes.length > 0
+    && Number.isFinite(targetDuration)
+    && targetDuration > 0
+);
+
 export interface TimelineTailFillResult {
     takes: MediaTake[];
     filled: boolean;

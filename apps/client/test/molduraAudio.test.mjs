@@ -5,11 +5,13 @@ import {
     canonicalProjectTimelineDuration,
     configuredBackgroundTimelineDuration,
     configuredNarrationTimelineDuration,
+    createNarrationTimingContract,
     deriveTimelineContract,
     fullMolduraAudioConfig,
     isAudioSourceShortForTimeline,
     isAudioSourceInvalidForTimeline,
     isShortMolduraMaster,
+    narrationAudioConfigForProject,
     masterAudioContractFromMix,
     masterAudioContractIsCurrent,
     molduraNarrationUsesFullSource,
@@ -73,27 +75,59 @@ test('relógio da Moldura ignora fim curto da configuração e preserva o CTA', 
     assert.equal(isShortMolduraMaster({ videoModel: 'moldura', narrationDuration: 16.1 }, 0), true);
 });
 
-test('modelo Takes continua respeitando o recorte intencional do áudio', () => {
+test('modelo Takes migra trim legado curto para a narração integral', () => {
     const adData = {
         videoModel: 'takes',
         narrationDuration: 16.1,
+        narrationText: 'Locução atual completa',
+        narrationAudioUrl: 'http://localhost:3301/narrations/current.mp3',
+        narrationAudioPath: null,
         audioConfig: audioConfig(),
     };
     const configuredDuration = configuredNarrationTimelineDuration(adData);
-    assert.equal(configuredDuration, 11.6);
+    assert.equal(configuredDuration, 16.1);
+    const repaired = narrationAudioConfigForProject(adData);
+    assert.equal(repaired.narration.offsetSec, 0);
+    assert.equal(repaired.narration.trimStart, 0);
+    assert.equal(repaired.narration.trimEnd, 16.1);
     assert.equal(projectAudioTimelineDuration({
         videoModel: 'takes',
         narrationDuration: 16.1,
-        narrationTrackDuration: 11.6,
+        narrationTrackDuration: configuredDuration,
         backgroundTrackDuration: 20,
-    }), 11.6);
+    }), 16.1);
     assert.equal(previewTimelineDuration({
         videoModel: 'takes',
         narrationDuration: 16.1,
         configuredAudioDuration: configuredDuration,
         measuredMasterDuration: 11.6,
         takesDuration: 16.1,
-    }), 11.6);
+    }), 16.1);
+});
+
+test('modelo Takes só preserva corte autoral ligado à fonte atual', () => {
+    const base = {
+        videoModel: 'takes',
+        narrationDuration: 16.1,
+        narrationText: 'Locução atual completa',
+        narrationAudioUrl: 'http://localhost:3301/narrations/current.mp3',
+        narrationAudioPath: null,
+        sharedNarrationAssetId: undefined,
+        narrationIsolation: undefined,
+        audioConfig: audioConfig(),
+    };
+    const edited = {
+        ...base,
+        narrationTimingContract: createNarrationTimingContract(base),
+    };
+    assert.equal(configuredNarrationTimelineDuration(edited), 11.6);
+
+    const changedSource = {
+        ...edited,
+        narrationAudioUrl: 'http://localhost:3301/narrations/replaced.mp3',
+    };
+    assert.equal(configuredNarrationTimelineDuration(changedSource), 16.1);
+    assert.equal(narrationAudioConfigForProject(changedSource).narration.trimEnd, 16.1);
 });
 
 test('modelo Takes não deixa um master antigo de 10s encurtar uma narração atual de 15,83s', () => {
@@ -179,8 +213,44 @@ test('contrato canônico é estável e invalida master quando a configuração m
         timelineContract: timeline,
         masterAudioContract,
     };
-    assert.equal(canonicalProjectTimelineDuration(edited, 10), 14.2);
-    assert.equal(masterAudioContractIsCurrent(edited, 10), false);
+    const explicitlyEdited = {
+        ...edited,
+        narrationTimingContract: createNarrationTimingContract(edited),
+    };
+    assert.equal(canonicalProjectTimelineDuration(explicitlyEdited, 10), 14.2);
+    assert.equal(masterAudioContractIsCurrent(explicitlyEdited, 10), false);
+});
+
+test('hidratação limpa timeline e master herdados quando o trim não tem autoria', () => {
+    const legacy = {
+        videoModel: 'takes',
+        narrationDuration: 15.83,
+        narrationText: 'Narração que chega ao CTA',
+        narrationAudioUrl: 'http://localhost:3301/narrations/current.mp3',
+        narrationAudioPath: null,
+        sharedNarrationAssetId: undefined,
+        narrationIsolation: undefined,
+        musicAudioUrl: null,
+        sharedMusicAssetId: undefined,
+        audioConfig: audioConfig({ narration: { trimEnd: 10.4 } }),
+        audioTimeline: {
+            durationSec: 10.4,
+            tracks: [{ id: 'narration', clips: [{ outSec: 10.4 }] }],
+        },
+        masterAudioUrl: 'http://localhost:3301/mixes/old.mp3',
+        masterAudioContract: {
+            version: 1,
+            durationSec: 10.4,
+            expectedDurationSec: 10.4,
+            mixIdentity: 'old',
+            timelineFingerprint: 'old',
+        },
+    };
+    const repaired = withCanonicalTimelineContract(legacy, 10.4);
+    assert.equal(repaired.audioConfig.narration.trimEnd, 15.83);
+    assert.equal(repaired.audioTimeline, undefined);
+    assert.equal(repaired.timelineContract.durationSec, 15.83);
+    assert.equal(repaired.masterAudioContract, undefined);
 });
 
 test('timeline sem áudio usa a soma visual sem permitir contrato antigo', () => {

@@ -9,6 +9,11 @@ import { useAudioEngine } from '../../hooks/useAudioEngine';
 import { timeToX } from './timelineUtils';
 import { toast } from 'sonner';
 import { resolveEffectiveNarrationAudio } from '../../lib/audioIsolation';
+import {
+    createNarrationTimingContract,
+    hasCurrentCustomNarrationTiming,
+    narrationAudioConfigForProject,
+} from '../../lib/molduraAudio';
 
 interface TimelineEditorProps {
     isOpen: boolean;
@@ -43,6 +48,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
     const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
     const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
     const [dragTime, setDragTime] = useState<number | null>(null);
+    const narrationTimingEditedRef = React.useRef(false);
 
     // Audio Engine - Moved up to be available for Zoom logic
     const { isPlaying, currentTime, play, pause, seek, isReady, audioBuffers, buffersVersion, loadError } = useAudioEngine(
@@ -109,6 +115,9 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
     useEffect(() => {
         if (!isOpen) return;
 
+        const customNarrationTiming = hasCurrentCustomNarrationTiming(adData);
+        const normalizedAudioConfig = narrationAudioConfigForProject(adData);
+        narrationTimingEditedRef.current = customNarrationTiming;
         let initialTimeline: AudioTimeline;
 
         if (adData.audioTimeline) {
@@ -122,8 +131,8 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                         id: 'narration',
                         label: 'Narração',
                         type: 'audio',
-                        enabled: adData.audioConfig.narration.enabled,
-                        volume: adData.audioConfig.narration.volume,
+                        enabled: normalizedAudioConfig.narration.enabled,
+                        volume: normalizedAudioConfig.narration.volume,
                         muted: false,
                         solo: false,
                         clips: [],
@@ -151,17 +160,17 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
             if (effectiveNarrationUrl) {
                 const currentClip = narrTrack.clips[0];
                 // If no clip, or different URL, replace it
-                if (!currentClip || currentClip.sourceUrl !== effectiveNarrationUrl) {
+                if (!currentClip || currentClip.sourceUrl !== effectiveNarrationUrl || !customNarrationTiming) {
                     narrTrack.clips = [
                         {
-                            id: uuidv4(),
+                            id: currentClip?.id || uuidv4(),
                             sourceUrl: effectiveNarrationUrl,
                             name: 'Narração Gerada',
-                            startSec: adData.audioConfig.narration.offsetSec,
-                            inSec: adData.audioConfig.narration.trimStart,
-                            outSec: adData.audioConfig.narration.trimEnd || 0,
-                            fadeInSec: adData.audioConfig.narration.fadeInSec,
-                            fadeOutSec: adData.audioConfig.narration.fadeOutSec,
+                            startSec: normalizedAudioConfig.narration.offsetSec,
+                            inSec: normalizedAudioConfig.narration.trimStart,
+                            outSec: normalizedAudioConfig.narration.trimEnd || 0,
+                            fadeInSec: normalizedAudioConfig.narration.fadeInSec,
+                            fadeOutSec: normalizedAudioConfig.narration.fadeOutSec,
                             volume: 1,
                         },
                     ];
@@ -227,6 +236,50 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
         },
         [cloneTimeline]
     );
+
+    const timelinePersistencePatch = React.useCallback((value: AudioTimeline) => {
+        const narrTrack = value.tracks.find((track) => track.id === 'narration');
+        const bgmTrack = value.tracks.find((track) => track.id === 'bgm');
+        const narrClip = narrTrack?.clips[0];
+        const bgmClip = bgmTrack?.clips[0];
+
+        return {
+            audioTimeline: value,
+            narrationTimingContract: narrationTimingEditedRef.current && narrClip
+                ? createNarrationTimingContract(adData)
+                : undefined,
+            masterAudioUrl: undefined,
+            sharedMasterAssetId: undefined,
+            audioConfig: {
+                narration: {
+                    enabled: Boolean(narrClip) && (narrTrack?.enabled ?? true),
+                    volume: narrTrack?.volume ?? 1,
+                    offsetSec: narrClip?.startSec ?? 0,
+                    trimStart: narrClip?.inSec ?? 0,
+                    trimEnd: narrClip?.outSec || undefined,
+                    fadeInSec: narrClip?.fadeInSec ?? 0,
+                    fadeOutSec: narrClip?.fadeOutSec ?? 0,
+                },
+                background: {
+                    enabled: Boolean(bgmClip) && (bgmTrack?.enabled ?? true),
+                    volume: (bgmTrack?.volume ?? 1) * (bgmClip?.volume ?? 1),
+                    offsetSec: bgmClip?.startSec ?? 0,
+                    trimStart: bgmClip?.inSec ?? 0,
+                    trimEnd: bgmClip?.outSec || undefined,
+                    fadeInSec: bgmClip?.fadeInSec ?? 0,
+                    fadeOutSec: bgmClip?.fadeOutSec ?? 0,
+                },
+            },
+        };
+    }, [
+        adData.narrationAudioPath,
+        adData.narrationAudioUrl,
+        adData.narrationIsolation,
+        adData.narrationText,
+        adData.narrationDuration,
+        adData.sharedNarrationAssetId,
+        adData.videoModel,
+    ]);
 
     const undo = React.useCallback(() => {
         const previous = history[history.length - 1];
@@ -312,40 +365,9 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
     // Autosave & Sync to AudioConfig (Legacy Support)
     useEffect(() => {
         if (timeline) {
-            // Map timeline back to legacy audioConfig for ProjectPreviewPanel compatibility
-            const narrTrack = timeline.tracks.find((t) => t.id === 'narration');
-            const bgmTrack = timeline.tracks.find((t) => t.id === 'bgm');
-
-            const narrClip = narrTrack?.clips[0];
-            const bgmClip = bgmTrack?.clips[0];
-
-            updateAdData({
-                audioTimeline: timeline,
-                masterAudioUrl: undefined,
-                sharedMasterAssetId: undefined,
-                audioConfig: {
-                    narration: {
-                        enabled: narrTrack?.enabled ?? true,
-                        volume: narrTrack?.volume ?? 1,
-                        offsetSec: narrClip?.startSec ?? 0,
-                        trimStart: narrClip?.inSec ?? 0,
-                        trimEnd: narrClip?.outSec || undefined,
-                        fadeInSec: narrClip?.fadeInSec ?? 0,
-                        fadeOutSec: narrClip?.fadeOutSec ?? 0,
-                    },
-                    background: {
-                        enabled: bgmTrack?.enabled ?? true,
-                        volume: (bgmTrack?.volume ?? 1) * (bgmClip?.volume ?? 1),
-                        offsetSec: bgmClip?.startSec ?? 0,
-                        trimStart: bgmClip?.inSec ?? 0,
-                        trimEnd: bgmClip?.outSec || undefined,
-                        fadeInSec: bgmClip?.fadeInSec ?? 0,
-                        fadeOutSec: bgmClip?.fadeOutSec ?? 0,
-                    },
-                },
-            });
+            updateAdData(timelinePersistencePatch(timeline));
         }
-    }, [timeline, updateAdData]);
+    }, [timeline, timelinePersistencePatch, updateAdData]);
 
     // Lock Body Scroll
     useEffect(() => {
@@ -377,6 +399,9 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
 
             const deltaPixels = e.clientX - dragState.startX;
             const deltaSec = deltaPixels / zoom;
+            if (dragState.trackId === 'narration' && Math.abs(deltaSec) > 0.001) {
+                narrationTimingEditedRef.current = true;
+            }
 
             setTimeline((prev) => {
                 if (!prev) return null;
@@ -603,6 +628,10 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                         <button
                             onClick={() => {
                                 if (!selectedClipId || !timeline) return;
+                                const selectedNarrationClip = timeline.tracks.some((track) => (
+                                    track.id === 'narration'
+                                    && track.clips.some((clip) => clip.id === selectedClipId)
+                                ));
 
                                 rememberTimeline(timeline);
 
@@ -666,6 +695,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                                     }, 0);
 
                                     if (!hasChanges) return prev;
+                                    if (selectedNarrationClip) narrationTimingEditedRef.current = true;
                                     return { ...prev, tracks: newTracks, durationSec: maxEnd };
                                 });
                             }}
@@ -678,6 +708,12 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                             onClick={() => {
                                 if (!selectedClipId || !timeline) return;
                                 rememberTimeline(timeline);
+                                if (timeline.tracks.find((track) => (
+                                    track.id === 'narration'
+                                    && track.clips.some((clip) => clip.id === selectedClipId)
+                                ))) {
+                                    narrationTimingEditedRef.current = true;
+                                }
                                 setTimeline((prev) => {
                                     if (!prev) return null;
                                     const newTracks = prev.tracks.map((t) => ({
@@ -893,42 +929,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                                 pause();
                                 // Force save timeline state one last time before closing
                                 if (timeline) {
-                                    const narrTrack = timeline.tracks.find((t) => t.id === 'narration');
-                                    const bgmTrack = timeline.tracks.find((t) => t.id === 'bgm');
-                                    const narrClip = narrTrack?.clips[0];
-                                    const bgmClip = bgmTrack?.clips[0];
-
-                                    const narrationVolume = narrTrack?.volume ?? 1;
-                                    const backgroundVolume = (bgmTrack?.volume ?? 1) * (bgmClip?.volume ?? 1);
-
-                                    // DEBUG: Check coupling
-                                    console.log('Final Save:', { narrationVolume, backgroundVolume });
-
-                                    updateAdData({
-                                        audioTimeline: timeline,
-                                        masterAudioUrl: undefined,
-                                        sharedMasterAssetId: undefined,
-                                        audioConfig: {
-                                            narration: {
-                                                enabled: narrTrack?.enabled ?? true,
-                                                volume: narrationVolume,
-                                                offsetSec: narrClip?.startSec ?? 0,
-                                                trimStart: narrClip?.inSec ?? 0,
-                                                trimEnd: narrClip?.outSec || undefined,
-                                                fadeInSec: narrClip?.fadeInSec ?? 0,
-                                                fadeOutSec: narrClip?.fadeOutSec ?? 0,
-                                            },
-                                            background: {
-                                                enabled: bgmTrack?.enabled ?? true,
-                                                volume: backgroundVolume,
-                                                offsetSec: bgmClip?.startSec ?? 0,
-                                                trimStart: bgmClip?.inSec ?? 0,
-                                                trimEnd: bgmClip?.outSec || undefined,
-                                                fadeInSec: bgmClip?.fadeInSec ?? 0,
-                                                fadeOutSec: bgmClip?.fadeOutSec ?? 0,
-                                            },
-                                        },
-                                    });
+                                    updateAdData(timelinePersistencePatch(timeline));
                                 }
                                 onClose();
                             }}

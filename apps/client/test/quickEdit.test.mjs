@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
     automaticCutTakes,
+    canApplyQuickEdit,
     fillTimelineTailPreservingCuts,
 } from '../src/lib/automaticCuts.ts';
 
@@ -48,6 +49,22 @@ test('não cria loop quando os takes disponíveis já cobrem a narração', () =
     assert.equal(result.takes.length, 2);
     assert.ok(Math.abs(timelineDuration(result.takes) - narrationDuration) < 0.001);
     assert.ok(result.takes.every((take) => take.speedPresetId === 'normal'));
+});
+
+test('edição rápida permanece disponível e completa 15,83 s com apenas 10,4 s de fontes', () => {
+    const sourceTakes = Array.from({ length: 10 }, (_, index) => videoTake(`take-${index + 1}`, 1.04));
+    const narrationDuration = 15.83;
+
+    assert.equal(canApplyQuickEdit(sourceTakes, narrationDuration), true);
+    const result = automaticCutTakes(
+        sourceTakes,
+        narrationDuration,
+        (_source, index) => `loop-${index}`,
+    );
+
+    assert.equal(result.looped, true);
+    assert.ok(result.takes.length > sourceTakes.length);
+    assert.ok(Math.abs(timelineDuration(result.takes) - narrationDuration) < 0.001);
 });
 
 test('repara a cauda de snapshot legado sem redistribuir os cortes existentes', () => {
