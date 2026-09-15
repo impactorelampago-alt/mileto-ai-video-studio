@@ -8,12 +8,29 @@ import { AddressInfo } from 'node:net';
 import { execFileSync } from 'child_process';
 import ffmpeg from 'fluent-ffmpeg';
 import {
+    audioMixDurationMatches,
+    audioTrackTimelineDuration,
     buildAudioMixCacheHash,
     downloadRemoteAudioFile,
     ensureValidAudioCacheFile,
     isAllowedRemoteAudioUrl,
     isUsableAudioCacheFile,
 } from '../src/controllers/audioController';
+
+test('contrato da mixagem recusa duração ausente ou divergente', () => {
+    assert.equal(audioTrackTimelineDuration({
+        enabled: true,
+        volume: 1,
+        offsetSec: 0.4,
+        trimStart: 0.2,
+        trimEnd: 15.6,
+        fadeInSec: 0,
+        fadeOutSec: 0,
+    }), 15.8);
+    assert.equal(audioMixDurationMatches(15.8, 15.86), true);
+    assert.equal(audioMixDurationMatches(15.8, 10), false);
+    assert.equal(audioMixDurationMatches(15.8, 0), false);
+});
 
 const audioControllerSource = fs.readFileSync(
     path.resolve(__dirname, '../src/controllers/audioController.ts'),

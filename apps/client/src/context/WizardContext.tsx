@@ -36,6 +36,7 @@ import {
     narrationContractFromLegacyText,
     normalizeNarrationContract,
 } from '../lib/narrationContract';
+import { withCanonicalTimelineContract } from '../lib/molduraAudio';
 
 export const SHOW_DEBUG_FEATURES = false;
 
@@ -173,12 +174,18 @@ const serializeTakeForDraft = (take: MediaTake): MediaTake => {
     };
 };
 
-const serializeAdDataForDraft = (adData: AdData): AdData => ({
-    ...adData,
-    ...(adData.frameOverlay
-        ? { frameOverlay: serializeTakeForDraft(adData.frameOverlay) }
-        : { frameOverlay: undefined }),
-});
+const takesTimelineDuration = (takes: MediaTake[]): number => takes.reduce(
+    (total, take) => total + Math.max(0, Number(take.trim?.end || 0) - Number(take.trim?.start || 0)),
+    0,
+);
+
+const serializeAdDataForDraft = (adData: AdData, takes: MediaTake[] = []): AdData =>
+    withCanonicalTimelineContract({
+        ...adData,
+        ...(adData.frameOverlay
+            ? { frameOverlay: serializeTakeForDraft(adData.frameOverlay) }
+            : { frameOverlay: undefined }),
+    }, takesTimelineDuration(takes));
 
 const DEFAULT_NARRATION_TEXT = '';
 
@@ -226,7 +233,7 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
     textCase: 'uppercase',
 };
 
-const mergeAdData = (data?: Partial<AdData>): AdData => {
+const mergeAdData = (data?: Partial<AdData>, takes: MediaTake[] = []): AdData => {
     const selectedVoiceId = canonicalSystemVoiceId(
         data?.selectedVoiceId ?? data?.voiceId ?? defaultAdData.selectedVoiceId,
     ) ?? null;
@@ -245,7 +252,7 @@ const mergeAdData = (data?: Partial<AdData>): AdData => {
             ? data.ttsModel
             : 'eleven_multilingual_v2')
         : contract.ttsModel;
-    return {
+    return withCanonicalTimelineContract({
         ...defaultAdData,
         ...(data || {}),
         ...contract,
@@ -272,7 +279,7 @@ const mergeAdData = (data?: Partial<AdData>): AdData => {
             },
         },
         videoEnhancement: normalizeVideoEnhancement(data?.videoEnhancement),
-    };
+    }, takesTimelineDuration(takes));
 };
 
 export const createDefaultAdData = (input: Partial<AdData> = {}): AdData => mergeAdData(input);
@@ -501,7 +508,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         const envelope: DraftRecoveryEnvelope = {
             capturedAt,
             data: {
-                adData: { ...serializeAdDataForDraft(s.adData), title },
+                adData: { ...serializeAdDataForDraft(s.adData, s.mediaTakes), title },
                 mediaTakes: s.mediaTakes.map(serializeTakeForDraft),
                 captionStyle: s.captionStyle,
                 selectedMusicId: s.selectedMusicId,
@@ -579,7 +586,8 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         exported: boolean;
         title: string;
     }) => {
-        const nextAd = serializeAdDataForDraft(payload.adData);
+        let nextAd = serializeAdDataForDraft(payload.adData, payload.mediaTakes);
+        const portableMasterContract = nextAd.masterAudioContract;
         const previousNarrationSourceKey = narrationSourceKey(nextAd);
 
         const syncTransition = async (
@@ -742,6 +750,16 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 backendPath: undefined,
             };
         }));
+
+        nextAd = withCanonicalTimelineContract(nextAd, takesTimelineDuration(nextTakes));
+        if (portableMasterContract && nextAd.timelineContract) {
+            // Compartilhar troca apenas a identidade de transporte das mesmas
+            // fontes. Reata o master validado à assinatura portátil resultante.
+            nextAd.masterAudioContract = {
+                ...portableMasterContract,
+                timelineFingerprint: nextAd.timelineContract.fingerprint,
+            };
+        }
 
         return {
             ...payload,
@@ -1011,7 +1029,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         const current = stateRef.current;
         const s = {
             ...current,
-            adData: serializeAdDataForDraft(current.adData),
+            adData: serializeAdDataForDraft(current.adData, current.mediaTakes),
             mediaTakes: current.mediaTakes.map(serializeTakeForDraft),
         };
         const exported = !!opts?.exported;
@@ -1107,7 +1125,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 'Rascunho sem título';
             const localPayload = {
                 ...data,
-                adData: { ...mergeAdData(data.adData), title },
+                adData: { ...mergeAdData(data.adData, data.mediaTakes), title },
                 mediaTakes: Array.isArray(data.mediaTakes) ? data.mediaTakes : [],
                 captionStyle: Object.prototype.hasOwnProperty.call(data, 'captionStyle')
                     ? normalizeHydratedCaptionStyle(data.captionStyle ?? null)
@@ -1130,7 +1148,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         invalidatePendingMusicSelection();
         const title = data.adData?.title?.trim() || data.title?.trim() || '';
         setDraftTitle(title);
-        if (data.adData) setAdData(mergeAdData({ ...data.adData, title }));
+        if (data.adData) setAdData(mergeAdData({ ...data.adData, title }, data.mediaTakes));
         setMediaTakes(Array.isArray(data.mediaTakes) ? data.mediaTakes : []);
         const nextCaptionStyle = Object.prototype.hasOwnProperty.call(data, 'captionStyle')
             ? normalizeHydratedCaptionStyle(data.captionStyle ?? null)
@@ -1255,7 +1273,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         const nextMusicId = snapshot.selectedMusicId === undefined
             ? SYSTEM_MUSIC_IDS.batida
             : snapshot.selectedMusicId;
-        const nextAdData = mergeAdData({ ...snapshot.adData, title });
+        const nextAdData = mergeAdData({ ...snapshot.adData, title }, snapshot.mediaTakes);
         setProjectId(snapshot.projectId);
         setDraftScope('local');
         setDraftTitle(title);
@@ -1398,7 +1416,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             const selectedVoiceId = Object.prototype.hasOwnProperty.call(data, 'selectedVoiceId')
                 ? canonicalSystemVoiceId(data.selectedVoiceId) ?? null
                 : prev.selectedVoiceId;
-            return {
+            const merged: AdData = {
                 ...prev,
                 ...data,
                 ...legacyNarrationPatch,
@@ -1417,6 +1435,20 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                     },
                 } : {}),
             };
+            const masterReferenceChanged = (
+                Object.prototype.hasOwnProperty.call(data, 'masterAudioUrl')
+                && data.masterAudioUrl !== prev.masterAudioUrl
+            ) || (
+                Object.prototype.hasOwnProperty.call(data, 'sharedMasterAssetId')
+                && data.sharedMasterAssetId !== prev.sharedMasterAssetId
+            );
+            if (masterReferenceChanged && !Object.prototype.hasOwnProperty.call(data, 'masterAudioContract')) {
+                merged.masterAudioContract = undefined;
+            }
+            return withCanonicalTimelineContract(
+                merged,
+                takesTimelineDuration(stateRef.current.mediaTakes),
+            );
         });
     }, []);
 
@@ -1531,6 +1563,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                     : undefined,
                 masterAudioUrl: undefined,
                 sharedMasterAssetId: undefined,
+                masterAudioContract: undefined,
                 audioConfig: {
                     ...ad.audioConfig,
                     background: {

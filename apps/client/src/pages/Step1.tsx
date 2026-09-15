@@ -31,6 +31,12 @@ import {
     resolveEffectiveNarrationAudio,
 } from '../lib/audioIsolation';
 import { isolateAudioSource } from '../lib/audioIsolationApi';
+import {
+    audioConfigForProjectTimeline,
+    canonicalProjectTimelineDuration,
+    masterAudioContractFromMix,
+    masterAudioContractIsCurrent,
+} from '../lib/molduraAudio';
 
 const audioMixRequestIdentity = (data: AdData, musicId: string | null): string => JSON.stringify({
     musicId,
@@ -53,7 +59,7 @@ const narrationUrlForMix = async (data: AdData): Promise<string | null> => {
 };
 
 export const Step1 = () => {
-    const { adData, updateAdData, selectedMusicId, setSelectedMusicId, musicLibrary } = useWizard();
+    const { adData, updateAdData, mediaTakes, selectedMusicId, setSelectedMusicId, musicLibrary } = useWizard();
     const navigate = useNavigate();
     const [isGenerating, setIsGenerating] = useState(false);
     const [isMixing, setIsMixing] = useState(false);
@@ -114,6 +120,15 @@ export const Step1 = () => {
     );
     const isAudioOperationBusy = isMixing || isGenerating || isRecording || isUploadingRec || isIsolatingNarration;
     const automaticMixConfigFingerprint = JSON.stringify(adData.audioConfig);
+    const takesDuration = mediaTakes.reduce(
+        (total, take) => total + Math.max(0, take.trim.end - take.trim.start),
+        0,
+    );
+    const currentMasterIsVerified = Boolean(
+        adData.masterAudioUrl
+        && masterAudioContractIsCurrent(adData, takesDuration),
+    );
+    const currentTimelineDuration = canonicalProjectTimelineDuration(adData, takesDuration);
 
     useLayoutEffect(() => {
         currentAudioConfigRef.current = adData.audioConfig;
@@ -122,16 +137,16 @@ export const Step1 = () => {
         latestMusicLibraryRef.current = musicLibrary;
     }, [adData, musicLibrary, selectedMusicId]);
 
-    // A troca de música invalida o master anterior no WizardContext. Quando já
-    // existe narração, refazemos a mixagem imediatamente para o player da etapa 1
-    // não cair para "somente narração". O contador + AbortController impedem que
-    // uma resposta lenta da faixa anterior sobrescreva a seleção mais recente.
+    // Toda mixagem sem prova do contrato atual (inclusive rascunhos legados) é
+    // refeita. O contador + AbortController impedem que uma resposta lenta de
+    // uma configuração anterior sobrescreva a seleção mais recente.
     useEffect(() => {
         if (
             isAudioEditorOpen
+            || !(currentTimelineDuration > 0)
             || (!effectiveNarration.url && !effectiveNarration.sharedAssetId
                 && !adData.musicAudioUrl && !adData.sharedMusicAssetId)
-            || adData.masterAudioUrl
+            || currentMasterIsVerified
         ) return;
 
         const controller = new AbortController();
@@ -153,6 +168,10 @@ export const Step1 = () => {
                 if (!narrationUrl && !musicUrl) {
                     throw new Error('Nenhuma fonte de áudio está disponível para a mixagem.');
                 }
+                const mixAudioConfig = audioConfigForProjectTimeline({
+                    ...adData,
+                    audioConfig: currentAudioConfigRef.current,
+                }, takesDuration);
                 const response = await fetch(`${apiBase}/api/audio/mix`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -160,7 +179,7 @@ export const Step1 = () => {
                     body: JSON.stringify({
                         narrationUrl,
                         musicUrl,
-                        audioConfig: currentAudioConfigRef.current,
+                        audioConfig: mixAudioConfig,
                     }),
                 });
                 const data = await response.json();
@@ -171,9 +190,19 @@ export const Step1 = () => {
                 const masterAudioUrl = /^https?:\/\//i.test(data.masterAudioUrl)
                     ? data.masterAudioUrl
                     : `${apiBase}${data.masterAudioUrl}`;
+                const mixAdData: AdData = {
+                    ...adData,
+                    audioConfig: mixAudioConfig,
+                    ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
+                        ? { narrationAudioUrl: narrationUrl }
+                        : {}),
+                    ...(adData.sharedMusicAssetId ? { musicAudioUrl: musicUrl } : {}),
+                };
                 updateAdData({
                     masterAudioUrl,
                     sharedMasterAssetId: undefined,
+                    audioConfig: mixAudioConfig,
+                    masterAudioContract: masterAudioContractFromMix(mixAdData, data, takesDuration),
                     ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
                         ? { narrationAudioUrl: narrationUrl }
                         : {}),
@@ -206,11 +235,14 @@ export const Step1 = () => {
         adData.sharedMusicAssetId,
         adData.sharedNarrationAssetId,
         automaticMixConfigFingerprint,
+        currentMasterIsVerified,
+        currentTimelineDuration,
         effectiveNarration.sharedAssetId,
         effectiveNarration.url,
         effectiveNarration.variant,
         isAudioEditorOpen,
         selectedMusicId,
+        takesDuration,
         updateAdData,
     ]);
 
@@ -259,6 +291,11 @@ export const Step1 = () => {
             navigate('/wizard/step/2');
             return;
         }
+        if (!(currentTimelineDuration > 0)) {
+            updateAdData({ masterAudioUrl: undefined, sharedMasterAssetId: undefined });
+            navigate('/wizard/step/2');
+            return;
+        }
 
         const requestId = ++nextMixRequestRef.current;
         const requestIdentity = audioMixRequestIdentity(adData, selectedMusicId);
@@ -282,6 +319,7 @@ export const Step1 = () => {
                     'shared_music_source_unavailable',
                 ),
             ]);
+            const mixAudioConfig = audioConfigForProjectTimeline(adData, takesDuration);
             if (!requestIsCurrent()) {
                 toast.info('A música ou a narração mudou. Prepare a trilha atual antes de avançar.', {
                     id: toastId,
@@ -295,7 +333,7 @@ export const Step1 = () => {
                 body: JSON.stringify({
                     narrationUrl,
                     musicUrl,
-                    audioConfig: adData.audioConfig,
+                    audioConfig: mixAudioConfig,
                 }),
             });
 
@@ -314,9 +352,19 @@ export const Step1 = () => {
                 const masterAudioUrl = /^https?:\/\//i.test(data.masterAudioUrl)
                     ? data.masterAudioUrl
                     : `${apiBase}${data.masterAudioUrl}`;
+                const mixAdData: AdData = {
+                    ...adData,
+                    audioConfig: mixAudioConfig,
+                    ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
+                        ? { narrationAudioUrl: narrationUrl }
+                        : {}),
+                    ...(adData.sharedMusicAssetId ? { musicAudioUrl: musicUrl } : {}),
+                };
                 updateAdData({
                     masterAudioUrl,
                     sharedMasterAssetId: undefined,
+                    audioConfig: mixAudioConfig,
+                    masterAudioContract: masterAudioContractFromMix(mixAdData, data, takesDuration),
                     ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
                         ? { narrationAudioUrl: narrationUrl }
                         : {}),

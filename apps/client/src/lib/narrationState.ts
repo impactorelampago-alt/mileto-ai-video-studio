@@ -94,6 +94,8 @@ export const invalidatedNarrationDerivatives = (): Partial<AdData> => ({
     titleGenerationSummary: undefined,
     masterAudioUrl: undefined,
     sharedMasterAssetId: undefined,
+    timelineContract: undefined,
+    masterAudioContract: undefined,
 });
 
 /** Derivados temporizados/mixados ao trocar Original ↔ Isolada, sem apagar o original. */
@@ -105,4 +107,6 @@ export const invalidatedNarrationVariantDerivatives = (): Partial<AdData> => ({
     titleGenerationSummary: undefined,
     masterAudioUrl: undefined,
     sharedMasterAssetId: undefined,
+    timelineContract: undefined,
+    masterAudioContract: undefined,
 });

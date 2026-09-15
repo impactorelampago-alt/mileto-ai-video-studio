@@ -60,11 +60,6 @@ const PLAN_LABEL: Record<string, string> = {
     enterprise: 'Plano Enterprise',
 };
 
-// O layout pode montar novamente em desenvolvimento (React StrictMode) ou após
-// um novo login. A checagem automática deve acontecer somente uma vez por sessão
-// do renderer; o botão manual continua disponível a qualquer momento.
-let automaticUpdateCheckStarted = false;
-
 export const MainLayout = () => {
     const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
     const [isDownloadPanelOpen, setIsDownloadPanelOpen] = useState(false);
@@ -162,7 +157,6 @@ export const MainLayout = () => {
                     progressToastId.current = null;
                 }
                 toast.success(`Versão ${s.version} baixada. Reiniciando para instalar...`, { duration: 2500 });
-                setTimeout(() => void updater.install(), 2000);
             } else if (s.type === 'error') {
                 const shouldNotify = manualUpdateFlowRef.current;
                 if (progressToastId.current != null) {
@@ -238,12 +232,6 @@ export const MainLayout = () => {
             finishWithoutRestart();
         }
     }, []);
-
-    useEffect(() => {
-        if (automaticUpdateCheckStarted || !updater.isAvailable()) return;
-        automaticUpdateCheckStarted = true;
-        void runUpdateCheck(false);
-    }, [runUpdateCheck]);
 
     const handleCheckUpdates = () => {
         void runUpdateCheck(true);

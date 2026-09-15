@@ -275,6 +275,27 @@ export interface AudioConfig {
     background: AudioTrackConfig;
 }
 
+/**
+ * Contrato persistido do relogio do projeto. A assinatura impede que uma
+ * duracao calculada para audio/takes antigos seja reutilizada depois de uma
+ * edicao.
+ */
+export interface TimelineDurationContract {
+    version: 1;
+    durationSec: number;
+    source: 'narration' | 'background' | 'takes';
+    fingerprint: string;
+}
+
+/** Prova de que o master foi medido e pertence ao contrato atual da timeline. */
+export interface MasterAudioContract {
+    version: 1;
+    durationSec: number;
+    expectedDurationSec: number;
+    mixIdentity: string;
+    timelineFingerprint: string;
+}
+
 export interface AudioClip {
     id: string;
     sourceUrl: string;
@@ -535,6 +556,8 @@ export interface AdData {
     audioTimeline?: AudioTimeline; // New Data Model
     masterAudioUrl?: string; // Mix of Narration + Background music generated on backend
     sharedMasterAssetId?: string;
+    timelineContract?: TimelineDurationContract;
+    masterAudioContract?: MasterAudioContract;
     narrationDuration?: number;
     captions?: CaptionTrack;
     globalTransition?: TransitionAsset | null;

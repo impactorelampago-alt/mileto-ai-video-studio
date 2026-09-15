@@ -24,8 +24,10 @@ import {
 } from '../lib/opsExportDestination';
 import { normalizeTakeAudio, resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
 import {
-    configuredNarrationTimelineDuration,
-    isAudioSourceShortForTimeline,
+    canonicalProjectTimelineDuration,
+    isAudioSourceInvalidForTimeline,
+    masterAudioContractIsCurrent,
+    projectTimelineContract,
 } from '../lib/molduraAudio';
 
 type DestinationKind = 'local' | 'shared' | 'ops';
@@ -197,8 +199,9 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
     }, [mediaTakes, adData.format]);
 
     const takesDuration = mediaTakes.reduce((total, take) => total + (take.trim.end - take.trim.start), 0);
-    const configuredAudioDuration = configuredNarrationTimelineDuration(adData);
-    const totalDuration = configuredAudioDuration > 0 ? configuredAudioDuration : takesDuration;
+    const timelineContract = projectTimelineContract(adData, takesDuration);
+    const totalDuration = canonicalProjectTimelineDuration(adData, takesDuration);
+    const projectRequiresAudio = Boolean(timelineContract && timelineContract.source !== 'takes');
     const finalNarrationText = useMemo(() => {
         const captions = adData.captions;
         if (captions?.sourceKey === narrationSourceKey(adData) && captions.segments.length) {
@@ -434,6 +437,14 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         }
         let exportAdData = adData;
         let resolvedExportMasterAudioUrl = exportMasterAudioUrl;
+        if (
+            adData.masterAudioUrl
+            && adData.masterAudioContract
+            && !masterAudioContractIsCurrent(adData, takesDuration)
+            && resolvedExportMasterAudioUrl === adData.masterAudioUrl
+        ) {
+            resolvedExportMasterAudioUrl = effectiveNarration.url || undefined;
+        }
         if (adData.opsCompany?.id) {
             try {
                 const resolvedBrand = await resolveOpsProjectBrand(adData.opsCompany);
@@ -466,28 +477,37 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         let resolvedExportAudioDuration = 0;
         if (resolvedExportMasterAudioUrl && totalDuration > 0) {
             resolvedExportAudioDuration = await probeAudioDuration(resolvedExportMasterAudioUrl);
-            if (isAudioSourceShortForTimeline(totalDuration, resolvedExportAudioDuration)) {
+            if (isAudioSourceInvalidForTimeline(totalDuration, resolvedExportAudioDuration)) {
                 const narrationFallback = effectiveNarration.url || undefined;
                 if (narrationFallback && narrationFallback !== resolvedExportMasterAudioUrl) {
                     const narrationDuration = await probeAudioDuration(narrationFallback);
-                    if (!isAudioSourceShortForTimeline(totalDuration, narrationDuration) && narrationDuration > 0) {
+                    if (!isAudioSourceInvalidForTimeline(totalDuration, narrationDuration) && narrationDuration > 0) {
                         resolvedExportMasterAudioUrl = narrationFallback;
                         resolvedExportAudioDuration = narrationDuration;
                         exportAdData = {
                             ...exportAdData,
                             masterAudioUrl: narrationFallback,
                             sharedMasterAssetId: undefined,
+                            masterAudioContract: undefined,
                         };
                     }
                 }
             }
         }
 
+        if (projectRequiresAudio && !resolvedExportMasterAudioUrl) {
+            setStarting(false);
+            setErrorMsg('A timeline exige áudio, mas nenhuma fonte verificável está disponível. Prepare novamente a trilha na etapa de áudio.');
+            return;
+        }
+
         if (resolvedExportMasterAudioUrl && totalDuration > 0) {
-            if (isAudioSourceShortForTimeline(totalDuration, resolvedExportAudioDuration)) {
+            if (isAudioSourceInvalidForTimeline(totalDuration, resolvedExportAudioDuration)) {
                 setStarting(false);
                 setErrorMsg(
-                    `A trilha preparada termina em ${resolvedExportAudioDuration.toFixed(1)}s, mas o projeto vai até ${totalDuration.toFixed(1)}s. Volte à etapa de áudio e prepare a narração novamente.`,
+                    resolvedExportAudioDuration > 0
+                        ? `A trilha preparada termina em ${resolvedExportAudioDuration.toFixed(1)}s, mas o projeto vai até ${totalDuration.toFixed(1)}s. Volte à etapa de áudio e prepare a narração novamente.`
+                        : 'Não foi possível medir a duração física da trilha. Prepare novamente o áudio antes de exportar.',
                 );
                 return;
             }
@@ -557,7 +577,9 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         startExport,
         starting,
         targetDims,
+        takesDuration,
         totalDuration,
+        projectRequiresAudio,
         transitionPath,
         transitionRotation,
         updateAdData,

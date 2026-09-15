@@ -15,6 +15,10 @@ let isQuitting = false;
 let shutdownResolve = null;
 let autoUpdater = null;
 let updateCheckInProgress = false;
+let automaticUpdateTimer = null;
+let automaticInstallTimer = null;
+const AUTOMATIC_UPDATE_INTERVAL_MS = 15 * 60 * 1000;
+const AUTOMATIC_UPDATE_RETRY_MS = 2 * 60 * 1000;
 const localFileImportToken = randomBytes(32).toString('hex');
 const authorizedExportDirs = new Set();
 
@@ -60,7 +64,15 @@ function initAutoUpdater() {
             bytesPerSecond: p.bytesPerSecond,
         })
     );
-    autoUpdater.on('update-downloaded', (info) => sendUpdateStatus({ type: 'downloaded', version: info.version }));
+    autoUpdater.on('update-downloaded', (info) => {
+        sendUpdateStatus({ type: 'downloaded', version: info.version });
+        if (!isDev && !automaticInstallTimer) {
+            automaticInstallTimer = setTimeout(() => {
+                automaticInstallTimer = null;
+                installDownloadedUpdate();
+            }, 2000);
+        }
+    });
     autoUpdater.on('error', (err) => {
         // A checagem resiliente pode se recuperar por um feed direto. Nesse
         // intervalo, o resultado final do IPC é a fonte única da mensagem na UI.
@@ -68,6 +80,52 @@ function initAutoUpdater() {
         sendUpdateStatus({ type: 'error', message: (err && err.message) || String(err) });
     });
     return autoUpdater;
+}
+
+function installDownloadedUpdate() {
+    if (isQuitting) return;
+    isQuitting = true;
+    if (automaticUpdateTimer) {
+        clearTimeout(automaticUpdateTimer);
+        automaticUpdateTimer = null;
+    }
+    setImmediate(() => initAutoUpdater().quitAndInstall(false, true));
+}
+
+function scheduleAutomaticUpdateCheck(delayMs = AUTOMATIC_UPDATE_INTERVAL_MS) {
+    if (isDev || isQuitting) return;
+    if (automaticUpdateTimer) clearTimeout(automaticUpdateTimer);
+    automaticUpdateTimer = setTimeout(() => {
+        automaticUpdateTimer = null;
+        void runAutomaticUpdateCheck();
+    }, Math.max(0, delayMs));
+}
+
+async function runAutomaticUpdateCheck() {
+    if (isDev || isQuitting) return;
+    if (updateCheckInProgress) {
+        scheduleAutomaticUpdateCheck(AUTOMATIC_UPDATE_RETRY_MS);
+        return;
+    }
+    updateCheckInProgress = true;
+    try {
+        const updater = initAutoUpdater();
+        const checked = await checkForUpdatesResilient({
+            updater,
+            currentVersion: app.getVersion(),
+            logger: console,
+        });
+        if (checked.result?.isUpdateAvailable) {
+            await updater.downloadUpdate();
+            return;
+        }
+        scheduleAutomaticUpdateCheck();
+    } catch (error) {
+        console.warn('[updater] Verificação automática falhou:', error?.message || error);
+        scheduleAutomaticUpdateCheck(AUTOMATIC_UPDATE_RETRY_MS);
+    } finally {
+        updateCheckInProgress = false;
+    }
 }
 
 function startServer() {
@@ -283,8 +341,14 @@ function createWindow() {
     mainWindowRef = mainWindow;
 
     mainWindow.on('show', publishExecutorMode);
-    mainWindow.on('focus', publishExecutorMode);
-    mainWindow.on('restore', publishExecutorMode);
+    mainWindow.on('focus', () => {
+        publishExecutorMode();
+        scheduleAutomaticUpdateCheck(1000);
+    });
+    mainWindow.on('restore', () => {
+        publishExecutorMode();
+        scheduleAutomaticUpdateCheck(1000);
+    });
     mainWindow.on('minimize', publishExecutorMode);
     mainWindow.on('hide', publishExecutorMode);
     mainWindow.on('close', (event) => {
@@ -446,6 +510,9 @@ app.whenReady().then(() => {
 
     // ─── Auto-updater IPC ────────────────────────────────────────────────
     ipcMain.handle('update:check', async () => {
+        if (updateCheckInProgress) {
+            return { ok: false, message: 'Uma verificação de atualização já está em andamento.' };
+        }
         updateCheckInProgress = true;
         try {
             const updater = initAutoUpdater();
@@ -486,7 +553,7 @@ app.whenReady().then(() => {
     });
 
     ipcMain.handle('update:install', () => {
-        setImmediate(() => initAutoUpdater().quitAndInstall(false, true));
+        installDownloadedUpdate();
         return { ok: true };
     });
 
@@ -685,6 +752,7 @@ app.whenReady().then(() => {
     createTray(fs.existsSync(trayIconPath) ? trayIconPath : path.join(__dirname, '../build/icon.ico'));
     startServer();
     ensureDesktopShortcut();
+    scheduleAutomaticUpdateCheck(5000);
 
     app.on('activate', function () {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -702,5 +770,7 @@ app.on('before-quit', (event) => {
 });
 
 app.on('quit', () => {
+    if (automaticUpdateTimer) clearTimeout(automaticUpdateTimer);
+    if (automaticInstallTimer) clearTimeout(automaticInstallTimer);
     if (serverProcess) serverProcess.kill();
 });

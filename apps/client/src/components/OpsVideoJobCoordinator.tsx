@@ -93,6 +93,7 @@ import {
 } from '../lib/opsVideoJobCompany';
 import { opsTakeSourceCompanyId } from '../lib/opsVideoJobAssetSource';
 import { createOpsViewContextCache } from '../lib/opsViewContextCache';
+import { canonicalProjectTimelineDuration } from '../lib/molduraAudio';
 
 const POLL_INTERVAL_MS = 12_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -1460,7 +1461,7 @@ export const OpsVideoJobCoordinator = () => {
                 const poolForSelection = eligibleForSquare.length ? eligibleForSquare : readiness.eligibleAssets;
                 const selection = selectOpsTakesForNarration(
                     poolForSelection,
-                    Number(adData.narrationDuration || 0),
+                    canonicalProjectTimelineDuration(adData),
                     job,
                 );
                 const orderedAssets = selection.takes;
@@ -1508,7 +1509,7 @@ export const OpsVideoJobCoordinator = () => {
                 if (job.quickEdit) {
                     const quickEdit = await applyQuickEdit(
                         finalTakes,
-                        Number(adData.narrationDuration || 0),
+                        canonicalProjectTimelineDuration(adData),
                         adData.globalTransition,
                         (source, index) => `${job.projectId}-loop-${index + 1}-${source.id}`,
                     );
@@ -1684,7 +1685,7 @@ export const OpsVideoJobCoordinator = () => {
             if (canResumeProject && job.quickEdit) {
                 const timelineTail = fillTimelineTailPreservingCuts(
                     finalTakes,
-                    Number(adData.narrationDuration || 0),
+                    canonicalProjectTimelineDuration(adData),
                     (_source, index) => `${job.projectId}-tail-${index + 1}-${crypto.randomUUID()}`,
                 );
                 if (timelineTail.filled) {
@@ -1732,7 +1733,10 @@ export const OpsVideoJobCoordinator = () => {
                 fileName: technicalFileName(job.projectTitle),
                 outputFolder: `Mileto Ops > ${companyName}`,
                 fps: 30,
-                totalDuration: Number(adData.narrationDuration || 0),
+                totalDuration: canonicalProjectTimelineDuration(
+                    adData,
+                    finalTakes.reduce((total, take) => total + Math.max(0, take.trim.end - take.trim.start), 0),
+                ),
                 targetDims: adData.format === '1:1' ? { w: 1080, h: 1080 } : { w: 1080, h: 1920 },
                 mediaTakes: finalTakes,
                 masterAudioUrl: adData.masterAudioUrl,

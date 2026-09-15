@@ -20,6 +20,10 @@ import type {
 import { normalizeHydratedCaptionStyle } from './captionStyleMigration';
 import type { OpsExportMetadata } from '../context/ExportJobsContext';
 import { buildNarrationTtsRequest, contractFromTtsResponse } from './narrationContract';
+import {
+    masterAudioContractFromMix,
+    withCanonicalTimelineContract,
+} from './molduraAudio';
 
 type ApiEnvelope<T> = {
     ok?: boolean;
@@ -113,7 +117,7 @@ export const generateNarrationAndMix = async (input: AdData): Promise<AdData> =>
         },
     };
     const responseContract = contractFromTtsResponse(input, narration);
-    let next: AdData = {
+    let next: AdData = withCanonicalTimelineContract({
         ...input,
         ...invalidatedNarrationDerivatives(),
         ...responseContract,
@@ -123,7 +127,7 @@ export const generateNarrationAndMix = async (input: AdData): Promise<AdData> =>
         narrationDuration,
         audioConfig,
         audioTimeline: undefined,
-    };
+    });
 
     const mix = await fetch(`${API_BASE_URL}/api/audio/mix`, {
         method: 'POST',
@@ -134,15 +138,21 @@ export const generateNarrationAndMix = async (input: AdData): Promise<AdData> =>
             audioConfig,
         }),
     });
-    const mixed = await readApi<{ masterAudioUrl?: string }>(mix);
+    const mixed = await readApi<{
+        masterAudioUrl?: string;
+        durationSec?: number;
+        expectedDurationSec?: number;
+        mixIdentity?: string;
+    }>(mix);
     if (!mixed.masterAudioUrl) throw new Error('audio_mix_missing: A mixagem não devolveu o áudio final.');
     next = {
         ...next,
         masterAudioUrl: /^https?:\/\//i.test(mixed.masterAudioUrl)
             ? mixed.masterAudioUrl
             : `${API_BASE_URL}${mixed.masterAudioUrl}`,
+        masterAudioContract: masterAudioContractFromMix(next, mixed),
     };
-    return next;
+    return withCanonicalTimelineContract(next);
 };
 
 interface MaterializedOpsSource {

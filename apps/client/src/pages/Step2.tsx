@@ -74,10 +74,11 @@ import {
 import { isolateAudioSource } from '../lib/audioIsolationApi';
 import { API_BASE_URL } from '../lib/apiBase';
 import {
+    canonicalProjectTimelineDuration,
     fullMolduraAudioConfig,
-    isShortMolduraMaster,
+    isAudioSourceInvalidForTimeline,
+    masterAudioContractFromMix,
     molduraNarrationUsesFullSource,
-    projectAudioTimelineDuration,
 } from '../lib/molduraAudio';
 
 const copyTakeFileName = (fileName: string, label: string) => {
@@ -438,34 +439,10 @@ export const Step2 = () => {
         (take) => normalizeTakeAudio(take.audio).mode === 'off',
     );
     const effectiveNarration = resolveEffectiveNarrationAudio(adData);
-    const selectedMusic = musicLibrary.find((music) => music.id === selectedMusicId);
-    const narrationTrackDuration = (() => {
-        if (adData.audioConfig?.narration?.enabled === false) return 0;
-        const narration = adData.audioConfig?.narration;
-        const start = narration?.trimStart ?? 0;
-        const end = narration?.trimEnd ?? narrationDuration;
-        return end > start ? (narration?.offsetSec ?? 0) + (end - start) : 0;
-    })();
-    const backgroundTrackDuration = (() => {
-        if (adData.audioConfig?.background?.enabled === false) return 0;
-        if (!adData.musicAudioUrl && !selectedMusic) return 0;
-        const background = adData.audioConfig?.background;
-        const start = background?.trimStart ?? 0;
-        const end = background?.trimEnd ?? selectedMusic?.durationSec ?? 0;
-        return end > start ? (background?.offsetSec ?? 0) + (end - start) : 0;
-    })();
-    const narrationFallbackDuration = adData.audioConfig?.narration?.enabled === false ? 0 : narrationDuration;
-    const automaticCutDuration = projectAudioTimelineDuration({
-        videoModel: adData.videoModel,
-        narrationDuration: narrationFallbackDuration,
-        narrationTrackDuration,
-        backgroundTrackDuration,
-    });
-    // A mixagem é o relógio final. Takes excedentes continuam editáveis, porém
-    // nada depois do fim efetivo do áudio entra no preview ou na exportação.
-    const totalDuration = automaticCutDuration > 0
-        ? Math.min(rawTakesDuration, automaticCutDuration)
-        : rawTakesDuration;
+    const automaticCutDuration = canonicalProjectTimelineDuration(adData, rawTakesDuration);
+    // O contrato do projeto é o único relógio. Se os takes acabarem antes, o
+    // compositor mantém o último quadro; ele nunca encurta áudio, títulos ou CTA.
+    const totalDuration = automaticCutDuration;
     const durationDelta = rawTakesDuration - automaticCutDuration;
     const isDurationShort = automaticCutDuration > 0 && durationDelta < -0.05;
     const hasDurationReserve = automaticCutDuration > 0 && durationDelta > 0.05;
@@ -495,8 +472,8 @@ export const Step2 = () => {
     // Projetos Moldura antigos podiam conservar o trimEnd de uma narração
     // anterior. Isso fazia o cartão mostrar 16,1 s de voz, mas o master e o
     // monitor pararem em 11,6 s. Primeiro restauramos o recorte integral; depois
-    // descartamos qualquer master já materializado que ainda seja fisicamente
-    // menor que a narração atual.
+    // descartamos qualquer master cuja duração física não corresponda à
+    // narração atual.
     useEffect(() => {
         if (!molduraNarrationIsActive) {
             setIsPreparingMolduraAudio(false);
@@ -521,7 +498,7 @@ export const Step2 = () => {
         setIsPreparingMolduraAudio(true);
         audio.onloadedmetadata = () => {
             if (disposed) return;
-            if (isShortMolduraMaster(adData, audio.duration)) {
+            if (isAudioSourceInvalidForTimeline(automaticCutDuration, audio.duration)) {
                 setInvalidMolduraMasterUrl(masterUrl);
                 updateAdData({ masterAudioUrl: undefined, sharedMasterAssetId: undefined });
                 return;
@@ -530,7 +507,9 @@ export const Step2 = () => {
             setIsPreparingMolduraAudio(false);
         };
         audio.onerror = () => {
-            if (!disposed) setIsPreparingMolduraAudio(false);
+            if (disposed) return;
+            setInvalidMolduraMasterUrl(masterUrl);
+            updateAdData({ masterAudioUrl: undefined, sharedMasterAssetId: undefined });
         };
         audio.src = masterUrl;
 
@@ -543,6 +522,7 @@ export const Step2 = () => {
         adData.masterAudioUrl,
         adData.narrationDuration,
         adData.videoModel,
+        automaticCutDuration,
         invalidMolduraMasterUrl,
         molduraNarrationIsActive,
         molduraNarrationIsFull,
@@ -601,9 +581,18 @@ export const Step2 = () => {
                 const masterAudioUrl = /^https?:\/\//i.test(data.masterAudioUrl)
                     ? data.masterAudioUrl
                     : `${API_BASE_URL}${data.masterAudioUrl}`;
+                const mixAdData = {
+                    ...adData,
+                    audioConfig: fullMolduraAudioConfig(adData),
+                    ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
+                        ? { narrationAudioUrl: narrationUrl }
+                        : {}),
+                    ...(adData.sharedMusicAssetId ? { musicAudioUrl: musicUrl } : {}),
+                };
                 updateAdData({
                     masterAudioUrl,
                     sharedMasterAssetId: undefined,
+                    masterAudioContract: masterAudioContractFromMix(mixAdData, data),
                     ...(effectiveNarration.variant === 'original' && adData.sharedNarrationAssetId
                         ? { narrationAudioUrl: narrationUrl }
                         : {}),

@@ -341,6 +341,23 @@ const fitConfigToSource = (
 
 const filterNumber = (value: number): string => Number(value.toFixed(3)).toString();
 
+export const AUDIO_MIX_DURATION_TOLERANCE_SEC = 0.12;
+
+export const audioTrackTimelineDuration = (config: NormalizedAudioTrackConfig): number => {
+    if (config.trimEnd === undefined) return 0;
+    return Math.max(0, config.offsetSec + (config.trimEnd - config.trimStart));
+};
+
+export const audioMixDurationMatches = (expected: unknown, measured: unknown): boolean => {
+    const expectedDuration = Number(expected);
+    const measuredDuration = Number(measured);
+    return Number.isFinite(expectedDuration)
+        && expectedDuration > 0
+        && Number.isFinite(measuredDuration)
+        && measuredDuration > 0
+        && Math.abs(measuredDuration - expectedDuration) <= AUDIO_MIX_DURATION_TOLERANCE_SEC;
+};
+
 export const buildAudioFilterChain = (config: NormalizedAudioTrackConfig): string => {
     const trimEnd = config.trimEnd;
     if (trimEnd === undefined) throw new Error('Não foi possível determinar o fim da faixa.');
@@ -473,7 +490,20 @@ export const mixAudio = async (req: Request, res: Response) => {
         }
 
         if (readyInputs.length === 0) {
-            return res.json({ ok: true, masterAudioUrl: null });
+            return res.json({
+                ok: true,
+                masterAudioUrl: null,
+                durationSec: 0,
+                expectedDurationSec: 0,
+                mixIdentity: null,
+            });
+        }
+
+        // `amix=duration=first` torna a primeira entrada o relógio físico do
+        // master. A narração é sempre inserida antes da música quando existe.
+        const expectedDurationSec = audioTrackTimelineDuration(readyInputs[0].config);
+        if (!(expectedDurationSec > 0)) {
+            throw new Error('Não foi possível determinar a duração esperada da mixagem.');
         }
 
         const hash = await buildAudioMixCacheHash({
@@ -496,7 +526,7 @@ export const mixAudio = async (req: Request, res: Response) => {
             volume: input.config.volume,
         })));
 
-        await ensureValidAudioCacheFile(outputPath, async (temporaryPath) => {
+        const produceMix = async (temporaryPath: string) => {
             const command = ffmpeg();
             readyInputs.forEach((input) => command.input(input.inputPath));
 
@@ -527,9 +557,39 @@ export const mixAudio = async (req: Request, res: Response) => {
                     .on('end', () => resolve())
                     .on('error', (err) => reject(err));
             });
-        });
+        };
 
-        res.json({ ok: true, masterAudioUrl: publicUrl });
+        // Um MP3 decodificável, porém curto, não é cache válido para esta
+        // identidade. A validação por duração força sua reconstrução atômica.
+        await ensureValidAudioCacheFile(
+            outputPath,
+            produceMix,
+            async (candidatePath) => {
+                try {
+                    return audioMixDurationMatches(
+                        expectedDurationSec,
+                        await probeAudioDuration(candidatePath),
+                    );
+                } catch {
+                    return false;
+                }
+            },
+        );
+
+        const durationSec = await probeAudioDuration(outputPath);
+        if (!audioMixDurationMatches(expectedDurationSec, durationSec)) {
+            throw new Error(
+                `A mixagem terminou em ${durationSec.toFixed(2)}s, mas deveria terminar em ${expectedDurationSec.toFixed(2)}s.`,
+            );
+        }
+
+        res.json({
+            ok: true,
+            masterAudioUrl: publicUrl,
+            durationSec,
+            expectedDurationSec,
+            mixIdentity: hash,
+        });
     } catch (error: any) {
         console.error('[Audio Mix Error]', error);
         res.status(500).json({ ok: false, message: error.message || 'Erro ao mixar áudios' });
