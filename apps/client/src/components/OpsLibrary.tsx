@@ -67,7 +67,16 @@ const OPS_EDITOR_IMPORT_CONCURRENCY = 4;
 const OPS_EDITOR_PREVIEW_CONCURRENCY = 6;
 const OPS_EDITOR_IMPORT_ATTEMPTS = 5;
 const RETRYABLE_MATERIALIZE_STATUS = new Set([401, 403, 408, 409, 425, 429, 500, 502, 503, 504]);
+const OPS_CUT_UPLOAD_ATTEMPTS = 3;
+const RETRYABLE_CUT_UPLOAD_STATUS = new Set([401, 403, 408, 409, 425, 429, 500, 502, 503, 504]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const wait = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+
+const apiFailureMessage = (data: Record<string, unknown>, fallback: string) => {
+    const message = typeof data.message === 'string' && data.message.trim() ? data.message.trim() : fallback;
+    const code = typeof data.code === 'string' ? data.code.trim() : '';
+    return code && !message.startsWith(`${code}:`) ? `${code}: ${message}` : message;
+};
 
 const remoteVideoDuration = (url: string, fallback: number) => new Promise<number>((resolve) => {
     const video = document.createElement('video');
@@ -355,6 +364,10 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     const uploadToOps = async (file: File) => {
         if (!selectedCompany) {
             toast.error('Abra uma empresa antes de enviar.');
+            return;
+        }
+        if (selectedCompany.kind === 'archive') {
+            toast.error('O Acervo da Agência é somente leitura na integração. Envie o vídeo para uma empresa permitida.');
             return;
         }
         if (!file.name.toLowerCase().endsWith('.mp4')) {
@@ -963,10 +976,16 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     // ao fechamento do app).
     interface StagedTrimEntry {
         asset: OpsAsset;
-        take: MediaTake;
+        // Legado: builds anteriores persistiam a materialização local inteira.
+        // Ela nunca é confiada; cada abertura/processamento reidrata o asset.
+        take?: MediaTake;
         trims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>;
         destinationFolderId: string;
         destinationLabel: string;
+        destinationScope?: 'ops' | 'local';
+        // Uma chave por trecho evita duplicação se o upload concluir no Ops e a
+        // resposta se perder antes de o cliente registrar o sucesso.
+        uploadIdempotencyKeys?: string[];
         // Enquadramento 1:1 definido no editor; propagado para cada clipe aprovado.
         framing?: TakeFramingRecord;
     }
@@ -989,6 +1008,8 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     useEffect(() => {
         writeStagedTrims(stagedTrims);
     }, [stagedTrims]);
+    const [cuttingStaged, setCuttingStaged] = useState(false);
+    const cutJobRunningRef = useRef(false);
     const [confirmDiscardStaged, setConfirmDiscardStaged] = useState(false);
     const [stagedExitGuard, setStagedExitGuard] = useState<{ action: () => void } | null>(null);
 
@@ -1013,6 +1034,9 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         () => [...stagedTrims.values()].reduce((sum, entry) => sum + entry.trims.length, 0),
         [stagedTrims]
     );
+    const stagedDestinationLabel = selectedCompany?.kind === 'archive'
+        ? 'Meu computador › Vídeos › Cortes'
+        : [...stagedTrims.values()][0]?.destinationLabel ?? 'a pasta do take';
 
     // O aviso de saída só vale quando o usuário está DENTRO da pasta onde os
     // cortes foram salvos e navega para fora dela. Entrar/voltar nunca avisa —
@@ -1062,12 +1086,6 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
 
     const beginAssetTrim = async (asset: OpsAsset) => {
         if (asset.kind !== 'video' || trimBusyAssetId) return;
-        const staged = stagedTrims.get(asset.id);
-        if (staged) {
-            // Reabre com os cortes salvos carregados, sem rematerializar nada.
-            setTrimTarget({ asset, take: staged.take, materializing: false });
-            return;
-        }
         setTrimBusyAssetId(asset.id);
         const alreadyReady = materializedTakeCacheRef.current.has(asset.id);
         const toastId = alreadyReady ? null : toast.loading(`Abrindo "${asset.name}" para recorte...`);
@@ -1196,70 +1214,138 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         return () => {
             cancelled = true;
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [trimTarget?.asset.id, trimTarget?.materializing]);
 
     // O destino é congelado no momento do salvamento: mesmo que o usuário
     // navegue ou o contexto recarregue, o lote sabe para onde cada take vai.
     const buildTrimEntry = (
-        target: { asset: OpsAsset; take: MediaTake },
+        target: { asset: OpsAsset },
         trims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>,
         framing?: TakeFramingRecord,
     ): StagedTrimEntry => {
-        if (!approvedTakesFolder) {
+        const archiveSource = selectedCompany?.kind === 'archive';
+        if (archiveSource) {
+            toast.info('O Acervo da Agência é somente leitura. Os cortes serão salvos em Meu computador › Vídeos › Cortes.');
+        } else if (!approvedTakesFolder) {
             toast.warning(`Esta empresa ainda não tem a pasta ${APPROVED_TAKES_FOLDER_LABEL} — os cortes irão para a pasta original.`);
         }
         const hasFraming = Boolean(framing && (framing.framing || framing.ignoreSquare));
         return {
             asset: target.asset,
-            take: target.take,
             trims: trims.map(({ start, end, kind }) => ({ start, end, kind })),
             destinationFolderId: approvedTakesFolder?.id || target.asset.folderId || selectedFolder?.id || '',
-            destinationLabel: approvedTakesFolder ? APPROVED_TAKES_FOLDER_LABEL : 'a pasta do take',
+            destinationLabel: archiveSource
+                ? 'Meu computador › Vídeos › Cortes'
+                : approvedTakesFolder ? APPROVED_TAKES_FOLDER_LABEL : 'a pasta do take',
+            destinationScope: archiveSource ? 'local' : 'ops',
+            uploadIdempotencyKeys: trims.map(() => crypto.randomUUID()),
             ...(hasFraming ? { framing } : {}),
         };
     };
 
-    const sliceAndImportEntry = async (entry: StagedTrimEntry) => {
+    const normalizeStagedTrimEntry = (entry: StagedTrimEntry): StagedTrimEntry => {
+        const company = companies.find((candidate) => candidate.id === entry.asset.companyId)
+            || (selectedCompanyRef.current?.id === entry.asset.companyId ? selectedCompanyRef.current : null);
+        const destinationScope = entry.destinationScope || (company?.kind === 'archive' ? 'local' : 'ops');
+        return {
+            ...entry,
+            destinationScope,
+            destinationLabel: destinationScope === 'local'
+                ? 'Meu computador › Vídeos › Cortes'
+                : entry.destinationLabel,
+            uploadIdempotencyKeys: entry.trims.map((_, index) => {
+                const existing = entry.uploadIdempotencyKeys?.[index];
+                return existing && UUID_PATTERN.test(existing) ? existing : crypto.randomUUID();
+            }),
+        };
+    };
+
+    const sliceAndImportEntry = async (
+        entry: StagedTrimEntry,
+        onPhase?: (phase: 'preparing' | 'slicing' | 'uploading') => void,
+    ) => {
+        // O carrinho sobrevive a reinícios, mas o cache local não é parte do
+        // contrato durável. Revalida o asset no Ops antes de cada corte; se a
+        // cópia ainda existir, o servidor responde do cache sem baixá-la outra vez.
+        onPhase?.('preparing');
+        let currentTake: MediaTake;
+        try {
+            currentTake = await materializeAsset(entry.asset, null, crypto.randomUUID(), { skipProxy: true });
+            materializedTakeCacheRef.current.set(entry.asset.id, currentTake);
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : 'não foi possível preparar a mídia';
+            throw new Error(`Preparação da origem: ${detail}`);
+        }
+
+        onPhase?.('slicing');
         const sliceRes = await fetch(`${API_BASE_URL}/api/video/slice`, {
             method: 'POST',
             headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                backendPath: entry.take.backendPath,
-                sourceUrl: entry.take.url,
+                backendPath: currentTake.backendPath,
+                sourceUrl: currentTake.url,
                 baseName: entry.asset.name,
                 segments: entry.trims.map(({ start, end }) => ({ start, end })),
             }),
         });
-        const sliceData = await sliceRes.json().catch(() => ({}));
+        const sliceData = await sliceRes.json().catch(() => ({})) as Record<string, unknown> & { slices?: Array<Record<string, unknown>> };
         if (!sliceRes.ok || !sliceData.ok || !Array.isArray(sliceData.slices)) {
-            throw new Error(sliceData.message || `Falha ao recortar "${entry.asset.name}".`);
+            throw new Error(`Recorte local: ${apiFailureMessage(sliceData, `falha ao recortar "${entry.asset.name}".`)}`);
         }
+        if (entry.destinationScope === 'local') return sliceData.slices.length;
 
-        const contextId = await ensureFreshOpsContext();
-        for (const slice of sliceData.slices) {
-            const opsRes = await fetch(`${API_BASE_URL}/api/ops/files/import-local`, {
-                method: 'POST',
-                headers: {
-                    ...(await localAuthHeaders()),
-                    'Content-Type': 'application/json',
-                    ...(contextId ? { 'X-Ops-View-Context': contextId } : {}),
-                },
-                body: JSON.stringify({
-                    sourceUrl: absoluteLocalUrl(slice.publicUrl),
-                    backendPath: slice.filePath,
-                    fileName: slice.name,
-                    companyId: entry.asset.companyId,
-                    folderId: entry.destinationFolderId,
-                }),
-            });
-            const opsData = await opsRes.json().catch(() => ({}));
-            if (!opsRes.ok || !opsData.ok) {
-                throw new Error(opsData.message || `Falha ao enviar um corte de "${entry.asset.name}".`);
+        onPhase?.('uploading');
+        for (let sliceIndex = 0; sliceIndex < sliceData.slices.length; sliceIndex += 1) {
+            const slice = sliceData.slices[sliceIndex];
+            let uploaded: Record<string, unknown> | null = null;
+            let uploadError = `falha ao enviar um corte de "${entry.asset.name}".`;
+            for (let attempt = 0; attempt < OPS_CUT_UPLOAD_ATTEMPTS; attempt += 1) {
+                try {
+                    const contextId = await ensureFreshOpsContext();
+                    const opsRes = await fetch(`${API_BASE_URL}/api/ops/files/import-local`, {
+                        method: 'POST',
+                        headers: {
+                            ...(await localAuthHeaders()),
+                            'Content-Type': 'application/json',
+                            ...(contextId ? { 'X-Ops-View-Context': contextId } : {}),
+                        },
+                        body: JSON.stringify({
+                            sourceUrl: absoluteLocalUrl(String(slice.publicUrl || '')),
+                            backendPath: slice.filePath,
+                            fileName: slice.name,
+                            companyId: entry.asset.companyId,
+                            folderId: entry.destinationFolderId,
+                            idempotencyKey: entry.uploadIdempotencyKeys?.[sliceIndex],
+                            sourceProjectId: `ops-cut:${entry.asset.id}:${entry.uploadIdempotencyKeys?.[sliceIndex]}`,
+                            sourceProjectTitle: entry.asset.name,
+                        }),
+                    });
+                    const opsData = await opsRes.json().catch(() => ({})) as Record<string, unknown>;
+                    if (opsRes.ok && opsData.ok !== false) {
+                        uploaded = opsData;
+                        break;
+                    }
+
+                    uploadError = apiFailureMessage(opsData, `falha ao enviar um corte de "${entry.asset.name}".`);
+                    const retryable = RETRYABLE_CUT_UPLOAD_STATUS.has(opsRes.status);
+                    if ([401, 403].includes(opsRes.status)) contextExpiresAtRef.current = 0;
+                    if (!retryable || attempt >= OPS_CUT_UPLOAD_ATTEMPTS - 1) break;
+                } catch (error) {
+                    uploadError = error instanceof Error ? error.message : 'a conexão com o Mileto Ops foi interrompida';
+                    contextExpiresAtRef.current = 0;
+                    if (attempt >= OPS_CUT_UPLOAD_ATTEMPTS - 1) break;
+                }
+                await wait(Math.min(4_000, 700 * 2 ** attempt));
+            }
+            if (!uploaded) {
+                throw new Error(`Envio ao Mileto Ops: ${uploadError}`);
             }
             // Enquadramento do editor viaja para o clipe aprovado recém-criado:
             // o Ops devolve o assetId do novo asset em data.assetId.
-            const newAssetId = String(opsData?.data?.assetId || '').trim();
+            const uploadedData = uploaded.data && typeof uploaded.data === 'object'
+                ? uploaded.data as Record<string, unknown>
+                : null;
+            const newAssetId = String(uploadedData?.assetId || '').trim();
             if (newAssetId && entry.framing && (entry.framing.framing || entry.framing.ignoreSquare)) {
                 writeTakeFraming(newAssetId, entry.framing);
             }
@@ -1271,38 +1357,67 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
     // progresso ("Cortando take 2 de 5...") mora na central de notificações.
     const runCutJob = async (entries: StagedTrimEntry[]) => {
         if (!entries.length) return;
-        const destinationLabel = entries[0].destinationLabel;
+        // Migra em memória carrinhos criados por versões antigas e conserva as
+        // mesmas chaves nas novas tentativas.
+        const queuedEntries = entries.map(normalizeStagedTrimEntry);
+        // O carrinho permanece persistido até cada item terminar. Assim uma
+        // queda/fechamento no meio do lote nunca apaga os cortes ainda pendentes.
+        setStagedTrims((previous) => {
+            const next = new Map(previous);
+            for (const entry of queuedEntries) next.set(entry.asset.id, entry);
+            return next;
+        });
+        if (cutJobRunningRef.current) {
+            toast.info('Os cortes foram salvos e entrarão na próxima tentativa após o lote atual.');
+            return;
+        }
+        cutJobRunningRef.current = true;
+        setCuttingStaged(true);
+        try {
+        const destinationLabel = queuedEntries[0].destinationLabel;
         const jobId = registerClientJob({
             mode: 'video',
             source: 'editor-import',
-            title: entries.length === 1
-                ? `Cortes de "${entries[0].asset.name}"`
-                : `Cortes de ${entries.length} takes`,
-            destination: destinationLabel === APPROVED_TAKES_FOLDER_LABEL
-                ? `Mileto Ops · ${APPROVED_TAKES_FOLDER_LABEL}`
-                : 'Mileto Ops',
+            title: queuedEntries.length === 1
+                ? `Cortes de "${queuedEntries[0].asset.name}"`
+                : `Cortes de ${queuedEntries.length} takes`,
+            destination: queuedEntries[0].destinationScope === 'local'
+                ? destinationLabel
+                : destinationLabel === APPROVED_TAKES_FOLDER_LABEL
+                    ? `Mileto Ops · ${APPROVED_TAKES_FOLDER_LABEL}`
+                    : 'Mileto Ops',
             statusText: 'Preparando os cortes...',
         });
         toast.success(
-            entries.length === 1 ? 'Corte em processamento.' : `${entries.length} takes em processamento.`,
+            queuedEntries.length === 1 ? 'Corte em processamento.' : `${queuedEntries.length} takes em processamento.`,
             { description: 'Acompanhe no sino de notificações — pode continuar usando o app.' },
         );
 
-        const failures: StagedTrimEntry[] = [];
+        const failures: Array<{ entry: StagedTrimEntry; message: string }> = [];
         let sentCuts = 0;
-        for (let index = 0; index < entries.length; index += 1) {
-            const entry = entries[index];
+        for (let index = 0; index < queuedEntries.length; index += 1) {
+            const entry = queuedEntries[index];
+            const updatePhase = (phase: 'preparing' | 'slicing' | 'uploading') => {
+                const labels = {
+                    preparing: 'Preparando origem',
+                    slicing: 'Recortando',
+                    uploading: 'Enviando ao Mileto Ops',
+                } as const;
+                updateClientJob(jobId, {
+                    statusText: `${labels[phase]} · take ${index + 1} de ${queuedEntries.length} — ${entry.asset.name}`,
+                });
+            };
             updateClientJob(jobId, {
-                percent: Math.round((index / entries.length) * 100),
-                stepPercent: Math.round((index / entries.length) * 100),
-                statusText: `Cortando take ${index + 1} de ${entries.length} — ${entry.asset.name}`,
+                percent: Math.round((index / queuedEntries.length) * 100),
+                stepPercent: Math.round((index / queuedEntries.length) * 100),
+                statusText: `Preparando take ${index + 1} de ${queuedEntries.length} — ${entry.asset.name}`,
             });
             try {
-                sentCuts += await sliceAndImportEntry(entry);
+                sentCuts += await sliceAndImportEntry(entry, updatePhase);
                 setTrimmedTakeIds(markTakeTrimmed(entry.asset.id));
                 // A pasta de destino ganhou arquivos: derruba o cache dela para
                 // a próxima abertura já buscar a listagem fresca.
-                if (selectedContext) {
+                if (entry.destinationScope !== 'local' && selectedContext) {
                     removeOpsListingCache(opsListingCacheKey(
                         'assets',
                         contextIdentity(selectedContext),
@@ -1310,8 +1425,16 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                         entry.destinationFolderId || 'root',
                     ));
                 }
-            } catch {
-                failures.push(entry);
+                setStagedTrims((previous) => {
+                    if (!previous.has(entry.asset.id)) return previous;
+                    const next = new Map(previous);
+                    next.delete(entry.asset.id);
+                    return next;
+                });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'Falha desconhecida no processamento.';
+                console.error(`[ops-cut] ${entry.asset.name}: ${message}`, error);
+                failures.push({ entry, message });
             }
         }
 
@@ -1320,14 +1443,21 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
             setStagedTrims((previous) => {
                 const next = new Map(previous);
                 for (const failure of failures) {
-                    if (!next.has(failure.asset.id)) next.set(failure.asset.id, failure);
+                    if (!next.has(failure.entry.asset.id)) next.set(failure.entry.asset.id, failure.entry);
                 }
                 return next;
             });
+            const first = failures[0];
+            const distinctReasons = new Set(failures.map((failure) => failure.message));
+            const reason = distinctReasons.size === 1
+                ? first.message
+                : `${first.entry.asset.name}: ${first.message}`;
             updateClientJob(jobId, {
                 phase: 'error',
+                percent: 100,
+                stepPercent: 100,
                 completedAt: Date.now(),
-                error: `${failures.length} de ${entries.length} take${entries.length === 1 ? '' : 's'} falhou — os cortes continuam salvos para tentar de novo.`,
+                error: `${failures.length} de ${queuedEntries.length} take${queuedEntries.length === 1 ? '' : 's'} falhou. ${reason} Os cortes continuam salvos para tentar de novo.`,
             });
         } else {
             updateClientJob(jobId, {
@@ -1341,6 +1471,10 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         // Clipes aprovados podem ter recebido enquadramento — reflete os selos.
         setTakeFramingMap(readTakeFramingMap());
         void loadAssets();
+        } finally {
+            cutJobRunningRef.current = false;
+            setCuttingStaged(false);
+        }
     };
 
     // "Confirmar (N takes)": corte avulso — processa este take na hora, via sino.
@@ -1348,26 +1482,8 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         (_takeId: string, newTrims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>, framing?: TakeFramingRecord) => {
             setTrimTarget(null);
             if (!newTrims.length) return;
-            const ready = materializedTakeCacheRef.current.has(target.asset.id);
-            const toastId = ready ? null : toast.loading(`Finalizando o preparo de "${target.asset.name}"...`);
-            void materializeForTrim(target.asset)
-                .then((localTake) => {
-                    if (toastId) toast.dismiss(toastId);
-                    const entry = buildTrimEntry({ asset: target.asset, take: localTake }, newTrims, framing);
-                    // Confirmado direto: sai do carrinho para não cortar em dobro no lote.
-                    setStagedTrims((previous) => {
-                        if (!previous.has(target.asset.id)) return previous;
-                        const next = new Map(previous);
-                        next.delete(target.asset.id);
-                        return next;
-                    });
-                    void runCutJob([entry]);
-                })
-                .catch((error) => {
-                    const message = error instanceof Error ? error.message : 'Não foi possível preparar o vídeo para o corte.';
-                    if (toastId) toast.error(message, { id: toastId });
-                    else toast.error(message);
-                });
+            const entry = buildTrimEntry(target, newTrims, framing);
+            void runCutJob([entry]);
         };
 
     // "Salvar e escolher o próximo": guarda os ajustes no carrinho e volta à
@@ -1376,28 +1492,17 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
         (_takeId: string, newTrims: Array<{ start: number; end: number; kind: 'primary' | 'created' }>, framing?: TakeFramingRecord) => {
             setTrimTarget(null);
             if (!newTrims.length) return;
-            const ready = materializedTakeCacheRef.current.has(target.asset.id);
-            const toastId = ready ? null : toast.loading(`Salvando os cortes de "${target.asset.name}"...`);
-            void materializeForTrim(target.asset)
-                .then((localTake) => {
-                    const entry = buildTrimEntry({ asset: target.asset, take: localTake }, newTrims, framing);
-                    setStagedTrims((previous) => new Map(previous).set(target.asset.id, entry));
-                    toast.success(`Cortes de "${target.asset.name}" salvos.`, {
-                        ...(toastId ? { id: toastId } : {}),
-                        description: 'Escolha o próximo take ou clique em "Cortar todos os selecionados".',
-                    });
-                })
-                .catch((error) => {
-                    const message = error instanceof Error ? error.message : 'Não foi possível preparar o vídeo para salvar os cortes.';
-                    if (toastId) toast.error(message, { id: toastId });
-                    else toast.error(message);
-                });
+            const entry = buildTrimEntry(target, newTrims, framing);
+            setStagedTrims((previous) => new Map(previous).set(target.asset.id, entry));
+            toast.success(`Cortes de "${target.asset.name}" salvos.`, {
+                description: 'Escolha o próximo take ou clique em "Cortar todos os selecionados".',
+            });
         };
 
     const processStagedBatch = () => {
+        if (cutJobRunningRef.current) return;
         const entries = [...stagedTrims.values()];
         if (!entries.length) return;
-        setStagedTrims(new Map());
         void runCutJob(entries);
     };
 
@@ -1408,6 +1513,10 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
 
     const performDeleteAssets = async (targets: OpsAsset[]) => {
         if (!targets.length) return;
+        if (selectedCompany?.kind === 'archive') {
+            toast.error('O Acervo da Agência é somente leitura na integração.');
+            return;
+        }
         setDeletingAssets(true);
         const toastId = toast.loading(`Apagando ${targets.length} arquivo${targets.length === 1 ? '' : 's'} do Mileto Ops...`);
         let removed = 0;
@@ -1647,6 +1756,11 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                     <button onClick={() => navigateToFolder(null)} className="truncate font-bold hover:text-brand-accent">
                                         {companyName(selectedCompany)}
                                     </button>
+                                    {selectedCompany.kind === 'archive' && (
+                                        <span className="shrink-0 rounded-full border border-amber-400/25 bg-amber-500/10 px-2 py-1 text-[8px] font-black uppercase tracking-wider text-amber-200" title="O contrato do Mileto Ops não permite gravar no Acervo da Agência. Cortes são salvos localmente.">
+                                            Somente leitura · cortes locais
+                                        </span>
+                                    )}
                                     {folderPath.map((folder, index) => {
                                         const last = index === folderPath.length - 1;
                                         return (
@@ -1667,7 +1781,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                     })}
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    {!pickerKind && selectedCompany && (
+                                    {!pickerKind && selectedCompany && selectedCompany.kind !== 'archive' && (
                                         <>
                                             <input
                                                 ref={uploadInputRef}
@@ -1755,7 +1869,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                     )}
                                     <div className="flex items-center gap-3">
                                         <span className="text-[10px] font-bold text-brand-muted">{selectedAssets.length} selecionado(s)</span>
-                                        {!pickerKind && !onTakePicked && (
+                                        {!pickerKind && !onTakePicked && selectedCompany.kind !== 'archive' && (
                                             <button
                                                 type="button"
                                                 onClick={() => setConfirmDeleteAssets(selectedAssets)}
@@ -1898,7 +2012,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                     <button onClick={() => void downloadAsset(asset)} className={`${pickerKind || onTakePicked ? 'flex-1 justify-center' : ''} inline-flex items-center justify-center rounded-lg border border-white/10 p-1.5 text-brand-muted transition hover:text-foreground`} title="Baixar para Arquivos">
                                                         <ArrowDownToLine className="h-3.5 w-3.5" />
                                                     </button>
-                                                    {!pickerKind && !onTakePicked && (
+                                                    {!pickerKind && !onTakePicked && selectedCompany.kind !== 'archive' && (
                                                         <button
                                                             onClick={() => setConfirmDeleteAssets([asset])}
                                                             disabled={deletingAssets}
@@ -1984,7 +2098,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                     </button>
                                                 )}
                                                 <button onClick={() => void downloadAsset(asset)} className="rounded-lg border border-white/10 p-1.5 text-brand-muted hover:text-foreground" title="Baixar para Arquivos"><ArrowDownToLine className="h-3.5 w-3.5" /></button>
-                                                {!pickerKind && !onTakePicked && (
+                                                {!pickerKind && !onTakePicked && selectedCompany.kind !== 'archive' && (
                                                     <button
                                                         onClick={() => setConfirmDeleteAssets([asset])}
                                                         disabled={deletingAssets}
@@ -2013,7 +2127,7 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                                 {stagedTrims.size} take{stagedTrims.size === 1 ? '' : 's'} com cortes salvos
                                             </div>
                                             <div className="truncate text-[10px] text-brand-muted">
-                                                {stagedCutsTotal} corte{stagedCutsTotal === 1 ? '' : 's'} irão para {[...stagedTrims.values()][0]?.destinationLabel ?? 'a pasta do take'}
+                                                {stagedCutsTotal} corte{stagedCutsTotal === 1 ? '' : 's'} irão para {stagedDestinationLabel}
                                             </div>
                                         </div>
                                     </div>
@@ -2021,17 +2135,19 @@ export const OpsLibrary = ({ pickerKind, onPicked, onTakePicked }: OpsLibraryPro
                                         <button
                                             type="button"
                                             onClick={() => setConfirmDiscardStaged(true)}
-                                            className="rounded-lg border border-white/10 px-3 py-2 text-[11px] font-bold text-brand-muted transition hover:border-red-400/40 hover:text-red-300"
+                                            disabled={cuttingStaged}
+                                            className="rounded-lg border border-white/10 px-3 py-2 text-[11px] font-bold text-brand-muted transition hover:border-red-400/40 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
                                         >
                                             Descartar
                                         </button>
                                         <button
                                             type="button"
                                             onClick={processStagedBatch}
-                                            className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-2 text-[11px] font-black uppercase tracking-wide text-white shadow-lg shadow-emerald-900/30 transition hover:scale-[1.03] hover:from-emerald-500 hover:to-emerald-400 active:scale-95"
+                                            disabled={cuttingStaged}
+                                            className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-emerald-600 to-emerald-500 px-4 py-2 text-[11px] font-black uppercase tracking-wide text-white shadow-lg shadow-emerald-900/30 transition hover:scale-[1.03] hover:from-emerald-500 hover:to-emerald-400 active:scale-95 disabled:cursor-wait disabled:opacity-60 disabled:hover:scale-100"
                                         >
-                                            <Scissors className="h-3.5 w-3.5" />
-                                            Cortar todos os selecionados
+                                            {cuttingStaged ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
+                                            {cuttingStaged ? 'Processando cortes' : 'Cortar todos os selecionados'}
                                         </button>
                                     </div>
                                 </div>

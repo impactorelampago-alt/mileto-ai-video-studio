@@ -1041,15 +1041,33 @@ export const importLocalFile = async (req: Request, res: Response) => {
             sourceProjectId: req.body?.sourceProjectId || `local-file:${crypto.createHash('sha256').update(sourcePath).digest('hex')}`,
             sourceProjectTitle: req.body?.sourceProjectTitle || localTitle,
         });
+        // O upload de um corte pode terminar no gateway e a resposta se perder
+        // (queda de rede, renovação de contexto, fechamento da tela). A chave
+        // estável permite repetir a tentativa sem criar outro asset no Ops.
+        const idempotencyKey = String(req.body?.idempotencyKey || '').trim();
+        if (idempotencyKey && !UUID_PATTERN.test(idempotencyKey)) {
+            throw new GatewayHttpError(422, 'A chave idempotente do arquivo é inválida.', 'invalid_idempotency_key');
+        }
         const viewContext = viewContextFrom(req);
         const result = await gatewayUploadFile(
             token || '',
             `/v1/integrations/mileto-ops/companies/${encodeURIComponent(companyId)}/assets/export`,
             sourcePath,
-            { folderId: String(req.body?.folderId || ''), fileName, ...metadata },
+            {
+                folderId: String(req.body?.folderId || ''),
+                fileName,
+                ...metadata,
+                ...(idempotencyKey ? { idempotencyKey } : {}),
+            },
             viewContext ? { 'X-Ops-View-Context': viewContext } : {},
         );
-        res.json(result);
+        // Normaliza o contrato local. O gateway historicamente já devolve
+        // `ok`, mas o renderer não deve transformar um HTTP 2xx válido em
+        // falha caso uma versão do gateway omita esse campo envelope.
+        const payload = result && typeof result === 'object'
+            ? result as Record<string, unknown>
+            : { data: result };
+        res.json({ ...payload, ok: true });
     } catch (error) {
         const status = error instanceof GatewayHttpError && error.status > 0 ? error.status : 400;
         res.status(status).json({

@@ -139,7 +139,17 @@ export const writeStagedTrims = <T>(
         const payload: Record<string, unknown> = {};
         for (const [assetId, entry] of entries) {
             const savedAt = Number((entry as StagedTrimLike).savedAt);
-            payload[assetId] = { ...(entry as object), savedAt: Number.isFinite(savedAt) ? savedAt : now };
+            // `take` contém somente materialização efêmera: caminho absoluto do
+            // cache local e URL com capability. Guardá-lo por sete dias fazia o
+            // carrinho tentar recortar um arquivo que podia já ter sido limpo e
+            // também persistia uma credencial local sem necessidade. O asset e
+            // os trims são a fonte estável; a mídia é reidratada ao abrir/cortar.
+            const durableEntry = { ...(entry as object) } as Record<string, unknown>;
+            delete durableEntry.take;
+            payload[assetId] = {
+                ...durableEntry,
+                savedAt: Number.isFinite(savedAt) ? savedAt : now,
+            };
         }
         storage.setItem(STAGED_KEY, JSON.stringify(payload));
     } catch {

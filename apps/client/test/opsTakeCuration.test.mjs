@@ -92,7 +92,7 @@ test('take atual fora da fila comeca a busca do inicio', () => {
     assert.equal(nextTakeToTrim(queue, 'desconhecido', new Set(['a']))?.id, 'b');
 });
 
-test('carrinho de cortes sobrevive ao ciclo gravar/reler (recarregamento do app)', () => {
+test('carrinho de cortes sobrevive ao ciclo gravar/reler sem persistir materializacao efemera', () => {
     const storage = fakeStorage();
     const entry = {
         asset: { id: 'asset-1', name: 'IMG_1.MOV', companyId: 'empresa-1', folderId: 'pasta-takes' },
@@ -109,7 +109,22 @@ test('carrinho de cortes sobrevive ao ciclo gravar/reler (recarregamento do app)
     assert.deepEqual(back.trims, entry.trims);
     assert.equal(back.destinationFolderId, 'pasta-aprovados');
     assert.equal(back.asset.companyId, 'empresa-1');
-    assert.equal(back.take.backendPath, 'C:/cache/x.mp4');
+    assert.equal(back.take, undefined, 'caminho de cache e capability local não podem sobreviver no carrinho');
+});
+
+test('carrinho conserva chaves idempotentes dos cortes entre tentativas', () => {
+    const storage = fakeStorage();
+    const uploadIdempotencyKeys = [
+        '11111111-1111-4111-8111-111111111111',
+        '22222222-2222-4222-8222-222222222222',
+    ];
+    writeStagedTrims(new Map([['asset-1', {
+        asset: { id: 'asset-1' },
+        trims: [{ start: 0, end: 1, kind: 'primary' }, { start: 2, end: 3, kind: 'created' }],
+        uploadIdempotencyKeys,
+    }]]), storage);
+
+    assert.deepEqual(readStagedTrims(storage).get('asset-1').uploadIdempotencyKeys, uploadIdempotencyKeys);
 });
 
 test('carrinho vazio limpa o registro e dados corrompidos viram carrinho vazio', () => {
