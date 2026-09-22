@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
-import { Play, Sparkles, AlertCircle, CheckCircle2, Type } from 'lucide-react';
+import { Play, Sparkles, AlertCircle, CheckCircle2, Eye, EyeOff, Type } from 'lucide-react';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import { VideoSequencePreview } from '../components/VideoSequencePreview';
@@ -22,6 +22,7 @@ import {
     type TitleWorkflowAsyncFingerprint,
 } from '../lib/titleWorkflowAsyncGuard';
 import { normalizeTakeAudio, resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
+import { captionTrackIsEnabled, withCaptionTrackEnabled } from '../lib/captionVisibility';
 
 export const Step3 = () => {
     const { adData, updateAdData, mediaTakes, setMediaTakes, captionStyle, setCaptionStyle } = useWizard();
@@ -37,6 +38,7 @@ export const Step3 = () => {
     const currentSourceKey = narrationSourceKey(adData);
     const effectiveNarration = resolveEffectiveNarrationAudio(adData);
     const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
+    const captionsEnabled = captionTrackIsEnabled(currentCaptions);
     const currentWorkflowFingerprintKey = titleWorkflowAsyncFingerprintKey(
         captureTitleWorkflowAsyncFingerprint(adData),
     );
@@ -319,6 +321,27 @@ export const Step3 = () => {
         }
     };
 
+    const handleToggleCaptions = () => {
+        const latestAdData = latestAdDataRef.current;
+        const latestSourceKey = narrationSourceKey(latestAdData);
+        const latestCaptions = latestAdData.captions?.sourceKey === latestSourceKey
+            ? latestAdData.captions
+            : undefined;
+
+        if (!latestCaptions?.segments?.length) {
+            toast.error('Gere as legendas antes de alterar a exibição.');
+            return;
+        }
+
+        const nextEnabled = !captionTrackIsEnabled(latestCaptions);
+        updateAdData({ captions: withCaptionTrackEnabled(latestCaptions, nextEnabled) });
+        toast.success(
+            nextEnabled
+                ? 'Legendas ativadas na prévia e na exportação.'
+                : 'Legendas desativadas. Os blocos foram preservados para você reativar quando quiser.',
+        );
+    };
+
     const handleNext = () => {
         const missing = missingBeforeStep(4, adData, mediaTakes);
         if (missing.length) toast.warning(pendingWarningText(missing), { duration: 7000 });
@@ -355,7 +378,7 @@ export const Step3 = () => {
                                 takes={mediaTakes}
                                 masterAudioUrl={adData.masterAudioUrl || effectiveNarration.url || undefined}
                                 captions={currentCaptions}
-                                captionEditingEnabled={Boolean(currentCaptions?.segments?.length)}
+                                captionEditingEnabled={captionsEnabled && Boolean(currentCaptions?.segments?.length)}
                                 onCaptionStyleChange={(updates) => {
                                     if (captionStyle) setCaptionStyle({ ...captionStyle, ...updates });
                                 }}
@@ -412,6 +435,7 @@ export const Step3 = () => {
                         </div>
 
                         <button
+                            type="button"
                             onClick={handleGenerateCaptions}
                             disabled={isGenerating}
                             className={cn(
@@ -421,8 +445,37 @@ export const Step3 = () => {
                                     : 'bg-linear-to-r from-brand-lime to-brand-accent text-[#0a0f12] hover:shadow-[0_0_20px_rgba(0,230,118,0.4)] hover:scale-[1.02] active:scale-[0.98]'
                             )}
                         >
-                            {isGenerating ? (generationStatus || 'Processando Áudio...') : 'Gerar Legendas Automáticas'}
+                            {isGenerating
+                                ? (generationStatus || 'Processando Áudio...')
+                                : currentCaptions?.segments?.length
+                                    ? 'Gerar legendas novamente'
+                                    : 'Gerar Legendas Automáticas'}
                         </button>
+
+                        {currentCaptions?.segments?.length ? (
+                            <>
+                                <button
+                                    type="button"
+                                    onClick={handleToggleCaptions}
+                                    disabled={isGenerating}
+                                    aria-pressed={captionsEnabled}
+                                    className={cn(
+                                        'mt-3 flex w-full items-center justify-center gap-2 rounded-xl border py-3 text-[11px] font-bold uppercase tracking-wider transition-all disabled:cursor-wait disabled:opacity-50',
+                                        captionsEnabled
+                                            ? 'border-red-400/30 bg-red-500/10 text-red-300 hover:border-red-400/50 hover:bg-red-500/15'
+                                            : 'border-brand-accent/35 bg-brand-accent/10 text-brand-accent hover:border-brand-accent/60 hover:bg-brand-accent/15',
+                                    )}
+                                >
+                                    {captionsEnabled ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                    {captionsEnabled ? 'Desativar legendas' : 'Ativar legendas'}
+                                </button>
+                                <p className="mt-2 text-center text-[10px] leading-relaxed text-brand-muted">
+                                    {captionsEnabled
+                                        ? 'Ao desativar, elas deixam de aparecer na prévia e no vídeo exportado.'
+                                        : 'Os blocos continuam salvos e podem ser reativados sem gerar novamente.'}
+                                </p>
+                            </>
+                        ) : null}
 
                         <div className="mt-5 space-y-3 border-t border-black/5 pt-5 dark:border-white/5">
                             <h4 className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-brand-muted">
@@ -465,31 +518,47 @@ export const Step3 = () => {
                         <div className="mt-5 space-y-3 border-t border-black/5 pt-5 dark:border-white/5">
                             <div className="flex items-start gap-4">
                                 {currentCaptions?.segments && currentCaptions.segments.length > 0 ? (
-                                    <>
-                                        <div className="p-2 bg-brand-lime/10 rounded-xl shadow-inner mt-0.5 shrink-0">
-                                            <CheckCircle2 className="w-5 h-5 text-brand-lime drop-shadow-[0_0_5px_rgba(163,230,53,0.5)]" />
-                                        </div>
-                                        <div>
-                                            <p className="text-sm font-bold uppercase tracking-wider text-brand-lime">
-                                                Pronto para renderizar
-                                            </p>
-                                            <p className="text-xs text-brand-muted mt-1 font-medium">
-                                                Foram gerados {currentCaptions.segments.length} blocos de legenda.
-                                            </p>
-                                            {currentCaptions.review?.sourceApplied && (
-                                                <p className="text-xs text-brand-lime mt-2 font-semibold">
-                                                    Roteiro da etapa 1 revisado antes de exibir as legendas
-                                                    {currentCaptions.review.correctedWords > 0
-                                                        ? ` · ${currentCaptions.review.correctedWords} correção(ões) de grafia`
-                                                        : ''}
-                                                    {currentCaptions.review.formattedValues > 0
-                                                        ? ` · ${currentCaptions.review.formattedValues} valor(es) formatado(s)`
-                                                        : ''}
-                                                    .
+                                    captionsEnabled ? (
+                                        <>
+                                            <div className="p-2 bg-brand-lime/10 rounded-xl shadow-inner mt-0.5 shrink-0">
+                                                <CheckCircle2 className="w-5 h-5 text-brand-lime drop-shadow-[0_0_5px_rgba(163,230,53,0.5)]" />
+                                            </div>
+                                            <div>
+                                                <p className="text-sm font-bold uppercase tracking-wider text-brand-lime">
+                                                    Pronto para renderizar
                                                 </p>
-                                            )}
-                                        </div>
-                                    </>
+                                                <p className="text-xs text-brand-muted mt-1 font-medium">
+                                                    Foram gerados {currentCaptions.segments.length} blocos de legenda.
+                                                </p>
+                                                {currentCaptions.review?.sourceApplied && (
+                                                    <p className="text-xs text-brand-lime mt-2 font-semibold">
+                                                        Roteiro da etapa 1 revisado antes de exibir as legendas
+                                                        {currentCaptions.review.correctedWords > 0
+                                                            ? ` · ${currentCaptions.review.correctedWords} correção(ões) de grafia`
+                                                            : ''}
+                                                        {currentCaptions.review.formattedValues > 0
+                                                            ? ` · ${currentCaptions.review.formattedValues} valor(es) formatado(s)`
+                                                            : ''}
+                                                        .
+                                                    </p>
+                                                )}
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div className="mt-0.5 shrink-0 rounded-xl bg-white/5 p-2 shadow-inner">
+                                                <EyeOff className="h-5 w-5 text-brand-muted" />
+                                            </div>
+                                            <div>
+                                                <p className="text-sm font-bold uppercase tracking-wider text-brand-muted">
+                                                    Legendas desativadas
+                                                </p>
+                                                <p className="mt-1 text-xs font-medium text-brand-muted">
+                                                    Os {currentCaptions.segments.length} blocos estão salvos, mas não serão exibidos nem exportados.
+                                                </p>
+                                            </div>
+                                        </>
+                                    )
                                 ) : (
                                     <>
                                         <div className="p-2 bg-brand-accent/10 rounded-xl shadow-inner mt-0.5 shrink-0">
