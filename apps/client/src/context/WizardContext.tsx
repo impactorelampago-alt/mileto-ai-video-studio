@@ -9,6 +9,8 @@ import {
 } from '../lib/narratorVoiceContext';
 import { DEFAULT_VIDEO_ENHANCEMENT, normalizeVideoEnhancement } from '../lib/videoEnhancement';
 import { gatewayApi, type SharedAsset } from '../lib/gateway';
+import { useAuth } from './AuthContext';
+import { readProjectBackupVersion, syncPersonalFiles, writeProjectBackupVersion } from '../lib/privateBackup';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { API_BASE_URL } from '../lib/apiBase';
 import { HACKER_MATRIX_PRESET_REVISION, normalizeHydratedCaptionStyle } from '../lib/captionStyleMigration';
@@ -103,6 +105,8 @@ interface WizardContextType {
     loadDraft: (_id: string, _scope?: 'local' | 'shared') => Promise<number | null>;
     publishDraftToShared: (_id: string) => Promise<boolean>;
     hasDraftContent: () => boolean;
+    syncPersonalBackup: () => Promise<void>;
+    backupState: { running: boolean; detail: string; lastSuccess: string | null; error: string | null };
 
     customVoices: CustomVoice[];
     addCustomVoice: (voice: CustomVoice) => void;
@@ -287,6 +291,14 @@ export const createDefaultAdData = (input: Partial<AdData> = {}): AdData => merg
 const WizardContext = createContext<WizardContextType | undefined>(undefined);
 
 export const WizardProvider = ({ children }: { children: ReactNode }) => {
+    const { status: authStatus, user } = useAuth();
+    const [backupState, setBackupState] = useState({
+        running: false, detail: '', lastSuccess: null as string | null, error: null as string | null,
+    });
+    const backupRunningRef = useRef(false);
+    const backupPendingRef = useRef(false);
+    const backupWarningRef = useRef('');
+    const backupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [apiKeys, setApiKeys] = useState<ApiKeys>(() => {
         // NENHUMA chave chumbada aqui. Este arquivo vai para o Git e é empacotado
         // no instalador — um app Electron não guarda segredo, qualquer pessoa abre
@@ -389,6 +401,151 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             // ignore
         }
     }, []);
+
+    const syncPersonalBackup = React.useCallback(async (activate = false): Promise<void> => {
+        if (backupRunningRef.current) { backupPendingRef.current = true; return; }
+        if (authStatus !== 'authed' || !user?.id || !user.orgId) return;
+        backupRunningRef.current = true;
+        setBackupState((current) => ({ ...current, running: true, detail: 'Verificando backup pessoal…', error: null }));
+        try {
+            const ownerResponse = await fetch(`${API_BASE_URL}/api/private-backup/owner`);
+            const ownerResult = await ownerResponse.json() as {
+                ok?: boolean; owner?: { orgId: number; userId: number } | null; message?: string;
+            };
+            if (!ownerResponse.ok || !ownerResult.ok) throw new Error(ownerResult.message || 'Servidor local indisponível.');
+            const localProjectsResponse = await fetch(`${API_BASE_URL}/api/projects`);
+            const localProjectsResult = await localProjectsResponse.json() as {
+                ok?: boolean; drafts?: Array<{ projectId: string; updatedAt: string | null }>;
+            };
+            if (!localProjectsResult.ok || !Array.isArray(localProjectsResult.drafts)) {
+                throw new Error('Não foi possível listar os projetos locais.');
+            }
+            let owner = ownerResult.owner;
+            if (!owner) {
+                if (!activate) {
+                    // Em instalação vazia não há dados de outra pessoa para vincular.
+                    const inventoryResponse = await fetch(`${API_BASE_URL}/api/private-backup/files`);
+                    const inventory = await inventoryResponse.json() as { files?: unknown[] };
+                    if (localProjectsResult.drafts.length || inventory.files?.length) {
+                        const warning = 'Ative o backup para vincular os dados deste PC à sua conta.';
+                        setBackupState((current) => ({ ...current, running: false,
+                            detail: 'Backup desativado para dados antigos.',
+                            error: warning }));
+                        if (backupWarningRef.current !== warning) {
+                            backupWarningRef.current = warning;
+                            toast.warning('Backup pessoal ainda não ativado', { description: warning });
+                        }
+                        return;
+                    }
+                }
+                const response = await fetch(`${API_BASE_URL}/api/private-backup/owner`, {
+                    method: 'POST', headers: { ...(await localAuthHeaders()), 'Content-Type': 'application/json' },
+                });
+                const result = await response.json() as {
+                    ok?: boolean; owner?: { orgId: number; userId: number }; message?: string;
+                };
+                if (!response.ok || !result.ok) throw new Error(result.message || 'Não foi possível ativar o backup.');
+                owner = result.owner;
+            }
+            if (Number(owner?.userId) !== user.id || Number(owner?.orgId) !== user.orgId) {
+                throw new Error('Este computador tem dados locais vinculados a outra conta. O backup foi bloqueado.');
+            }
+            const cloudProjects = await gatewayApi.privateBackupProjects();
+            const cloudById = new Map(cloudProjects.map((item) => [item.projectId, item]));
+            const failures: string[] = [];
+            for (const [index, project] of localProjectsResult.drafts.entries()) {
+                const localTime = new Date(project.updatedAt || 0).getTime();
+                if (!Number.isFinite(localTime) || localTime <= 0) continue;
+                const cloud = cloudById.get(project.projectId);
+                const remoteVersion = cloud ? Number(cloud.version) : null;
+                let marker = readProjectBackupVersion(user.orgId, user.id, project.projectId);
+                const unchanged = cloud
+                    && new Date(cloud.sourceUpdatedAt).getTime() === localTime;
+                if (unchanged && !marker && remoteVersion) {
+                    writeProjectBackupVersion(user.orgId, user.id, project.projectId,
+                        remoteVersion, cloud.sourceUpdatedAt);
+                    marker = readProjectBackupVersion(user.orgId, user.id, project.projectId);
+                }
+                if (unchanged && marker?.version === remoteVersion) continue;
+                if ((cloud && marker?.version !== remoteVersion) || (!cloud && marker)) {
+                    failures.push(`${project.projectId}: versão diferente na nuvem; o projeto local foi preservado`);
+                    continue;
+                }
+                setBackupState((current) => ({ ...current,
+                    detail: `Protegendo projetos ${index + 1}/${localProjectsResult.drafts!.length}…`,
+                }));
+                try {
+                    const response = await fetch(`${API_BASE_URL}/api/projects/${encodeURIComponent(project.projectId)}`);
+                    const result = await response.json() as { ok?: boolean; data?: LoadedDraftData; message?: string };
+                    if (!response.ok || !result.ok || !result.data) throw new Error(result.message || 'Projeto indisponível.');
+                    const data = result.data;
+                    const title = data.adData?.title?.trim() || data.title?.trim() || 'Rascunho sem título';
+                    const portable = await prepareSharedPayload({
+                        ...data,
+                        adData: mergeAdData(data.adData, data.mediaTakes),
+                        mediaTakes: Array.isArray(data.mediaTakes) ? data.mediaTakes : [],
+                        captionStyle: data.captionStyle ?? null,
+                        selectedMusicId: data.selectedMusicId ?? null,
+                        updatedAt: data.updatedAt || project.updatedAt || new Date().toISOString(),
+                        exported: !!data.exported,
+                        title,
+                    }, 'backup');
+                    const version = await gatewayApi.savePrivateBackupProject(project.projectId,
+                        portable as unknown as Record<string, unknown>, marker?.version ?? null,
+                        user.orgId, user.id);
+                    writeProjectBackupVersion(user.orgId, user.id, project.projectId,
+                        version, data.updatedAt || project.updatedAt || portable.updatedAt);
+                    const latestResponse = await fetch(`${API_BASE_URL}/api/projects/${encodeURIComponent(project.projectId)}`);
+                    if (latestResponse.ok) {
+                        const latest = await latestResponse.json() as { data?: LoadedDraftData };
+                        if (new Date(latest.data?.updatedAt || 0).getTime() > new Date(data.updatedAt || 0).getTime()) {
+                            backupPendingRef.current = true;
+                            failures.push(`${project.projectId}: alterado durante a sincronização`);
+                        }
+                    }
+                } catch (error) {
+                    failures.push(`${project.projectId}: ${error instanceof Error ? error.message : 'falha'}`);
+                }
+            }
+            setBackupState((current) => ({ ...current, detail: 'Protegendo arquivos do acervo…' }));
+            try {
+                await syncPersonalFiles(user.orgId, user.id, (done, total) => {
+                    setBackupState((current) => ({ ...current, detail: `Protegendo arquivos ${done}/${total}…` }));
+                });
+            } catch (error) {
+                failures.push(error instanceof Error ? error.message : 'Falha nos arquivos.');
+            }
+            if (failures.length) throw new Error(failures.slice(0, 3).join('; '));
+            setBackupState({ running: false, detail: 'Projetos e arquivos protegidos na nuvem.',
+                lastSuccess: new Date().toISOString(), error: null });
+            backupWarningRef.current = '';
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Falha no backup.';
+            setBackupState((current) => ({ ...current, running: false, detail: 'Backup incompleto.',
+                error: message }));
+            if (backupWarningRef.current !== message) {
+                backupWarningRef.current = message;
+                toast.warning('Backup pessoal incompleto', { description: message });
+            }
+        } finally {
+            backupRunningRef.current = false;
+            if (backupPendingRef.current) {
+                backupPendingRef.current = false;
+                window.setTimeout(() => void syncPersonalBackup(false), 1000);
+            }
+        }
+    // prepareSharedPayload é estável (depende apenas do importLocalAsset estável)
+    // e é declarado adiante neste provider; a callback roda só após o render.
+    }, [authStatus, user?.id, user?.orgId]);
+
+    useEffect(() => {
+        if (authStatus !== 'authed' || !user?.id) return;
+        const start = window.setTimeout(() => void syncPersonalBackup(false), 3000);
+        const repeat = window.setInterval(() => void syncPersonalBackup(false), 5 * 60 * 1000);
+        return () => { window.clearTimeout(start); window.clearInterval(repeat); };
+    }, [authStatus, user?.id, syncPersonalBackup]);
+
+    const activatePersonalBackup = React.useCallback(() => syncPersonalBackup(true), [syncPersonalBackup]);
 
     // Custom Voices (Persisted in LocalStorage)
     const [customVoices, setCustomVoices] = useState<CustomVoice[]>(() => {
@@ -535,9 +692,11 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         parent: 'Músicas' | 'Imagens' | 'Vídeos' | 'Vídeos/Transições';
         mimeType?: string;
         preventDuplicate?: boolean;
-        visibility?: 'library' | 'project';
+        visibility?: 'library' | 'project' | 'backup';
     }): Promise<SharedAsset> => {
-        const cacheKey = `${input.visibility || 'library'}:${input.parent}:${input.backendPath || input.sourceUrl || ''}`;
+        // Backup precisa re-hashear arquivos alterados no mesmo caminho.
+        const cacheKey = input.visibility === 'backup' ? ''
+            : `${input.visibility || 'library'}:${input.parent}:${input.backendPath || input.sourceUrl || ''}`;
         const cached = sharedAssetCacheRef.current.get(cacheKey);
         if (cached) return cached;
 
@@ -585,7 +744,17 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         updatedAt: string;
         exported: boolean;
         title: string;
-    }) => {
+    }, mode: 'shared' | 'backup' = 'shared') => {
+        const mediaVisibility = mode === 'backup' ? 'backup' : 'library';
+        const promotionCache = new Map<string, Promise<SharedAsset>>();
+        const shareIfPrivate = (id: string): Promise<SharedAsset> => {
+            const prior = promotionCache.get(id);
+            if (prior) return prior;
+            const pending = gatewayApi.sharedAsset(id).then((asset) => asset.visibility === 'backup'
+                ? gatewayApi.publishBackupAsset(id) : asset);
+            promotionCache.set(id, pending);
+            return pending;
+        };
         let nextAd = serializeAdDataForDraft(payload.adData, payload.mediaTakes);
         const portableMasterContract = nextAd.masterAudioContract;
         const previousNarrationSourceKey = narrationSourceKey(nextAd);
@@ -605,10 +774,13 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
 
             const sharedAssetId = String(transition.sharedAssetId || '').trim();
             if (sharedAssetId) {
+                const asset = mode === 'shared' ? await shareIfPrivate(sharedAssetId) : null;
                 return {
                     ...portableTransition,
+                    id: asset && asset.id !== sharedAssetId ? `shared:${asset.id}` : portableTransition.id,
                     scope: 'shared',
-                    sharedAssetId,
+                    sharedAssetId: asset?.id || sharedAssetId,
+                    publicUrl: asset?.publicUrl || portableTransition.publicUrl,
                 };
             }
 
@@ -623,6 +795,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 parent: 'Vídeos/Transições',
                 mimeType: /\.mov$/i.test(transition.originalName || '') ? 'video/quicktime' : 'video/mp4',
                 preventDuplicate: true,
+                visibility: mediaVisibility,
             });
             return {
                 ...portableTransition,
@@ -647,11 +820,18 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                     backendPath,
                     name: fileNameFrom(sourceUrl, fallbackName),
                     parent: 'Músicas',
-                    visibility,
+                    visibility: mode === 'backup' ? 'backup' : visibility,
                 });
                 nextAd[urlKey] = entry.publicUrl;
                 nextAd[idKey] = entry.id;
                 return entry;
+            }
+            const existingId = nextAd[idKey];
+            if (mode === 'shared' && existingId) {
+                const entry = await shareIfPrivate(existingId);
+                nextAd[urlKey] = entry.publicUrl;
+                nextAd[idKey] = entry.id;
+                return entry.id !== existingId ? entry : null;
             }
             return null;
         };
@@ -707,6 +887,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                     backendPath: frame.backendPath,
                     name: frame.fileName || fileNameFrom(sourceUrl, 'moldura.png'),
                     parent: 'Imagens',
+                    visibility: mediaVisibility,
                 });
                 nextAd.frameOverlay = {
                     ...frame,
@@ -716,6 +897,10 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                     proxyUrl: entry.publicUrl,
                     backendPath: undefined,
                 };
+            } else if (mode === 'shared' && frame.sharedAssetId) {
+                const entry = await shareIfPrivate(frame.sharedAssetId);
+                nextAd.frameOverlay = { ...frame, sharedAssetId: entry.id,
+                    url: entry.publicUrl, fileUrl: entry.publicUrl, proxyUrl: entry.publicUrl };
             }
         }
 
@@ -734,12 +919,20 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             // do AI Video exige uma ação futura, separada e explícita do usuário.
             if (take.externalMedia?.source === 'mileto_ops') return portableTake;
             const sourceUrl = take.fileUrl || take.url;
-            if (!isLocalMedia(sourceUrl, take.backendPath)) return portableTake;
+            if (!isLocalMedia(sourceUrl, take.backendPath)) {
+                if (mode === 'shared' && portableTake.sharedAssetId) {
+                    const entry = await shareIfPrivate(portableTake.sharedAssetId);
+                    return { ...portableTake, sharedAssetId: entry.id,
+                        url: entry.publicUrl, fileUrl: entry.publicUrl, proxyUrl: entry.publicUrl };
+                }
+                return portableTake;
+            }
             const entry = await importLocalAsset({
                 sourceUrl,
                 backendPath: take.backendPath,
                 name: take.fileName || fileNameFrom(sourceUrl, take.type === 'image' ? 'imagem.png' : 'video.mp4'),
                 parent: take.type === 'image' ? 'Imagens' : 'Vídeos',
+                visibility: mediaVisibility,
             });
             return {
                 ...portableTake,
@@ -1091,6 +1284,10 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                     );
                     const json = await res.json();
                     if (!res.ok || !json.ok) throw new Error(json.message || 'Falha ao salvar o projeto.');
+                    if (!opts?.keepalive && authStatus === 'authed' && user?.id) {
+                        if (backupTimerRef.current) clearTimeout(backupTimerRef.current);
+                        backupTimerRef.current = setTimeout(() => void syncPersonalBackup(false), 2_000);
+                    }
                 }
                 lastSavedFingerprintRef.current = fingerprint;
                 console.log(`[Draft] Salvo (${exported ? 'exportado' : 'rascunho'}):`, s.projectId);
@@ -1107,7 +1304,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         const queued = saveQueueRef.current.then(persist, persist);
         saveQueueRef.current = queued;
         return queued;
-    }, [hasDraftContent, prepareSharedPayload]);
+    }, [hasDraftContent, prepareSharedPayload, authStatus, user?.id, syncPersonalBackup]);
 
     const publishDraftToShared = React.useCallback(async (id: string): Promise<boolean> => {
         try {
@@ -1172,6 +1369,11 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 }
                 return;
             }
+            if (user?.id) {
+                const ownerResponse = await fetch(`${API_BASE_URL}/api/private-backup/owner`);
+                const owner = (await ownerResponse.json() as { owner?: { userId: number; orgId: number } | null }).owner;
+                if (owner && (owner.userId !== user.id || owner.orgId !== user.orgId)) return;
+            }
             const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/projects/${projectId}`);
             if (res.status === 404) {
                 if (recovery) applyLoadedDraft(await hydrateSharedPayload(recovery.data));
@@ -1197,7 +1399,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 }
             }
         }
-    }, [projectId, draftScopeState, applyLoadedDraft, hydrateSharedPayload, invalidatePendingMusicSelection]);
+    }, [projectId, draftScopeState, applyLoadedDraft, hydrateSharedPayload, invalidatePendingMusicSelection, user?.id, user?.orgId]);
 
     const loadDraft = React.useCallback(async (id: string, scope: 'local' | 'shared' = draftScopeState): Promise<number | null> => {
         invalidatePendingMusicSelection();
@@ -1205,7 +1407,16 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
         const recovery = readDraftRecovery(id, scope);
         try {
+            if (scope === 'local' && user?.id) {
+                const ownerResponse = await fetch(`${API_BASE_URL}/api/private-backup/owner`);
+                const owner = (await ownerResponse.json() as { owner?: { userId: number; orgId: number } | null }).owner;
+                if (owner && (owner.userId !== user.id || owner.orgId !== user.orgId)) {
+                    initialDraftLoadCompleteRef.current = true;
+                    return null;
+                }
+            }
             let persisted: LoadedDraftData | null = null;
+            let fromPrivateBackup = false;
             if (scope === 'shared') {
                 const json = await gatewayApi.sharedDraft(id);
                 if (json.ok && json.data) persisted = json.data as LoadedDraftData;
@@ -1215,6 +1426,29 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                     const json = await res.json();
                     if (json.ok && json.data) persisted = json.data as LoadedDraftData;
                 }
+                try {
+                    const backup = await gatewayApi.privateBackupProject(id);
+                    const marker = user?.id && user.orgId
+                        ? readProjectBackupVersion(user.orgId, user.id, id) : null;
+                    const localChanged = marker && persisted
+                        && new Date(persisted.updatedAt || 0).getTime()
+                            !== new Date(marker.sourceUpdatedAt).getTime();
+                    if (!persisted || (marker && backup.version > marker.version && !localChanged)) {
+                        persisted = backup.data as LoadedDraftData;
+                        fromPrivateBackup = true;
+                        if (user?.id && user.orgId) {
+                            writeProjectBackupVersion(user.orgId, user.id, id,
+                                backup.version, String(backup.data.updatedAt || ''));
+                        }
+                    } else if (!marker && user?.id && user.orgId
+                        && new Date(persisted.updatedAt || 0).getTime()
+                            === new Date(String(backup.data.updatedAt || 0)).getTime()) {
+                        writeProjectBackupVersion(user.orgId, user.id, id,
+                            backup.version, String(backup.data.updatedAt || ''));
+                    }
+                } catch {
+                    // Sem conexão, a cópia local continua acessível.
+                }
             }
             const selected = preferRecoverySnapshot(persisted, recovery);
             if (!selected) {
@@ -1222,6 +1456,13 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 return null;
             }
             const data = await hydrateSharedPayload(selected);
+            if (scope === 'local' && fromPrivateBackup && selected === persisted) {
+                const response = await fetch(`${API_BASE_URL}/api/projects/${encodeURIComponent(id)}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data }),
+                });
+                if (!response.ok) throw new Error('Não foi possível restaurar o projeto neste computador.');
+            }
 
             setProjectId(id);
             setDraftScope(scope);
@@ -1253,7 +1494,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             initialDraftLoadCompleteRef.current = true;
             return null;
         }
-    }, [applyLoadedDraft, draftScopeState, hydrateSharedPayload, invalidatePendingMusicSelection, setDraftScope]);
+    }, [applyLoadedDraft, draftScopeState, hydrateSharedPayload, invalidatePendingMusicSelection, setDraftScope, user?.id, user?.orgId]);
 
     const applyProjectSnapshot = React.useCallback((snapshot: {
         projectId: string;
@@ -1665,6 +1906,8 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             loadDraft,
             publishDraftToShared,
             hasDraftContent,
+            syncPersonalBackup: activatePersonalBackup,
+            backupState,
             customVoices,
             addCustomVoice,
             removeCustomVoice,
@@ -1698,6 +1941,8 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             loadDraft,
             publishDraftToShared,
             hasDraftContent,
+            activatePersonalBackup,
+            backupState,
             customVoices,
             addCustomVoice,
             removeCustomVoice,

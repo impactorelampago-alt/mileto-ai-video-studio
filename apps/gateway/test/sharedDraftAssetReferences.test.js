@@ -10,6 +10,7 @@ const MUSIC_ID = '44444444-4444-4444-8444-444444444444';
 const MASTER_ID = '55555555-5555-4555-8555-555555555555';
 const GLOBAL_TRANSITION_ID = '66666666-6666-4666-8666-666666666666';
 const FRAME_TRANSITION_ID = '77777777-7777-4777-8777-777777777777';
+const FRAME_ID = '88888888-8888-4888-8888-888888888888';
 
 test('rascunho compartilhado retém takes, áudios e transições compartilhadas', () => {
     const assetIds = collectSharedDraftAssetIds({
@@ -29,7 +30,7 @@ test('rascunho compartilhado retém takes, áudios e transições compartilhadas
             sharedMusicAssetId: MUSIC_ID,
             sharedMasterAssetId: MASTER_ID,
             globalTransition: { sharedAssetId: GLOBAL_TRANSITION_ID },
-            frameOverlay: { transition: { asset: { sharedAssetId: FRAME_TRANSITION_ID } } },
+            frameOverlay: { sharedAssetId: FRAME_ID, transition: { asset: { sharedAssetId: FRAME_TRANSITION_ID } } },
         },
     });
 
@@ -41,6 +42,7 @@ test('rascunho compartilhado retém takes, áudios e transições compartilhadas
         MASTER_ID,
         GLOBAL_TRANSITION_ID,
         FRAME_TRANSITION_ID,
+        FRAME_ID,
     ]);
 });
 

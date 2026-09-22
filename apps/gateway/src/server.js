@@ -16,6 +16,7 @@ import { composeNarratorVoiceContext } from './narratorVoiceContext.js';
 import * as admin from './admin.js';
 import * as account from './account.js';
 import * as shared from './shared.js';
+import * as privateBackups from './privateBackups.js';
 import * as opsIntegration from './opsIntegration.js';
 import * as generation from './generation.js';
 import {
@@ -591,6 +592,7 @@ app.post('/shared/files/move', authed, asyncHandler(shared.moveItem));
 app.post('/shared/files/copy', authed, asyncHandler(shared.copyItem));
 app.get('/shared/files/item/:assetId', authed, asyncHandler(shared.getItem));
 app.post('/shared/files/item/:assetId/download-url', authed, asyncHandler(shared.getItemDownload));
+app.post('/shared/files/item/:assetId/publish-backup', authed, asyncHandler(shared.publishBackupItem));
 app.delete('/shared/files/item/:assetId', authed, asyncHandler(shared.trashItem));
 app.post('/shared/files/item/:assetId/restore', authed, asyncHandler(shared.restoreItem));
 app.get('/shared/drafts', authed, asyncHandler(shared.listDrafts));
@@ -600,6 +602,12 @@ app.delete('/shared/drafts/:draftId', authed, asyncHandler(shared.trashDraft));
 // Ação explícita para clientes desktop e proxies que tratam DELETE de forma
 // diferente. Mantemos DELETE por compatibilidade com versões anteriores.
 app.post('/shared/drafts/:draftId/trash', authed, asyncHandler(shared.trashDraft));
+app.get('/private/backups/projects', authed, asyncHandler(privateBackups.listProjects));
+app.get('/private/backups/projects/:projectId', authed, asyncHandler(privateBackups.getProject));
+app.put('/private/backups/projects/:projectId', authed, asyncHandler(privateBackups.saveProject));
+app.delete('/private/backups/projects/:projectId', authed, asyncHandler(privateBackups.deleteProject));
+app.get('/private/backups/files', authed, asyncHandler(privateBackups.listFiles));
+app.put('/private/backups/files/:sourceId', authed, asyncHandler(privateBackups.saveFile));
 
 // ── Painel do super admin (HTML estático) ───────────────────────────────────
 app.use('/admin-ui', express.static(path.join(__dirname, '..', 'public')));

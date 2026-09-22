@@ -151,6 +151,30 @@ export interface SharedDraftSummary {
     authorEmail?: string | null;
 }
 
+export interface PrivateBackupProject {
+    projectId: string;
+    title: string;
+    sourceUpdatedAt: string;
+    backedUpAt: string;
+    version: string | number;
+    exported: boolean;
+    mediaCount: number;
+    videoModel?: 'takes' | 'moldura' | null;
+}
+
+export interface PrivateBackupFile {
+    sourceId: string;
+    assetId: string;
+    relPath: string;
+    name: string;
+    category: string;
+    size: number;
+    sourceMtime: string;
+    sha256: string;
+    backedUpAt: string;
+    version: string | number;
+}
+
 export interface SharedAsset {
     id: string;
     name: string;
@@ -158,6 +182,7 @@ export interface SharedAsset {
     assetCode?: string;
     type?: 'audio' | 'image' | 'video';
     durationSec?: number;
+    visibility?: 'library' | 'project' | 'backup';
 }
 
 export interface OpsIntegrationStatus {
@@ -860,9 +885,55 @@ export const gatewayApi = {
         return gatewayFetch('/shared/drafts');
     },
 
+    async privateBackupProjects(): Promise<PrivateBackupProject[]> {
+        const result = await gatewayFetch<{ projects: PrivateBackupProject[] }>('/private/backups/projects');
+        return result.projects;
+    },
+
+    async privateBackupProject(id: string): Promise<{ data: Record<string, unknown>; version: number }> {
+        const result = await gatewayFetch<{ project: { data: Record<string, unknown>; version: string | number } }>(
+            `/private/backups/projects/${encodeURIComponent(id)}`
+        );
+        return { data: result.project.data, version: Number(result.project.version) };
+    },
+
+    async savePrivateBackupProject(id: string, data: Record<string, unknown>, expectedVersion: number | null,
+        ownerOrgId: number, ownerUserId: number): Promise<number> {
+        const result = await gatewayFetch<{ version: number }>(`/private/backups/projects/${encodeURIComponent(id)}`, {
+            method: 'PUT', body: JSON.stringify({ data, expectedVersion, ownerOrgId, ownerUserId }),
+        });
+        return Number(result.version);
+    },
+
+    async deletePrivateBackupProject(id: string): Promise<void> {
+        await gatewayFetch(`/private/backups/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    },
+
+    async privateBackupFiles(): Promise<PrivateBackupFile[]> {
+        const result = await gatewayFetch<{ files: PrivateBackupFile[] }>('/private/backups/files');
+        return result.files;
+    },
+
+    async savePrivateBackupFile(sourceId: string, input: {
+        assetId: string; relPath: string; size: number; sourceMtime: string; expectedVersion: number | null;
+        ownerOrgId: number; ownerUserId: number;
+    }): Promise<number> {
+        const result = await gatewayFetch<{ version: number }>(`/private/backups/files/${encodeURIComponent(sourceId)}`, {
+            method: 'PUT', body: JSON.stringify(input),
+        });
+        return Number(result.version);
+    },
+
     async sharedAsset(id: string): Promise<SharedAsset> {
         const result = await gatewayFetch<{ ok: boolean; item: SharedAsset }>(
             `/shared/files/item/${encodeURIComponent(id)}`
+        );
+        return result.item;
+    },
+
+    async publishBackupAsset(id: string): Promise<SharedAsset> {
+        const result = await gatewayFetch<{ item: SharedAsset }>(
+            `/shared/files/item/${encodeURIComponent(id)}/publish-backup`, { method: 'POST' }
         );
         return result.item;
     },

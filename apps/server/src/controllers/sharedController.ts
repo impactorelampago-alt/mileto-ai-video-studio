@@ -25,7 +25,7 @@ const jsonFrom = async (response: { text: () => Promise<string> }) => {
     }
 };
 
-const gatewayRequest = async (req: Request, path: string, init: RequestInit = {}) => {
+export const gatewayRequest = async (req: Request, path: string, init: RequestInit = {}) => {
     const token = bearerFrom(req);
     if (!token) throw new GatewayHttpError(401, 'Sessão Mileto ausente ou expirada.');
     const headers = {
@@ -106,11 +106,19 @@ const uploadPath = async (
     originalName: string,
     mimeType: string,
     parentPath: string,
-    options: { preventDuplicate?: boolean; visibility?: 'library' | 'project' } = {},
+    options: { preventDuplicate?: boolean; visibility?: 'library' | 'project' | 'backup' } = {},
 ) => {
     const stat = await fs.promises.stat(filePath);
     if (!stat.isFile()) throw new Error('A origem local não é um arquivo.');
     const sha256 = await hashFile(filePath);
+    const assertStableBackupSource = async () => {
+        if (options.visibility !== 'backup') return;
+        const current = await fs.promises.stat(filePath);
+        if (!current.isFile() || current.size !== stat.size || current.mtimeMs !== stat.mtimeMs
+            || await hashFile(filePath) !== sha256) {
+            throw new GatewayHttpError(409, 'O arquivo mudou durante o backup. Ele será enviado novamente.');
+        }
+    };
     const category = parentPath.split(/[\\/]/).filter(Boolean)[0] || 'Vídeos';
     const uploadMeta = {
         sha256,
@@ -119,7 +127,7 @@ const uploadPath = async (
         name: originalName,
         parentPath,
         category,
-        visibility: options.visibility === 'project' ? 'project' : 'library',
+        visibility: options.visibility === 'project' || options.visibility === 'backup' ? options.visibility : 'library',
     };
 
     if (options.preventDuplicate) {
@@ -171,6 +179,7 @@ const uploadPath = async (
             item?: unknown;
         };
         if (prepared.deduplicated) {
+            await assertStableBackupSource();
             return { ok: true, deduplicated: true, identityCode: sha256, entry: prepared.item };
         }
         if (!prepared.uploadUrl) throw new Error('O gateway não preparou o upload.');
@@ -197,6 +206,7 @@ const uploadPath = async (
     }
 
     if (!uploaded) throw new Error('O upload para o R2 não foi concluído.');
+    await assertStableBackupSource();
 
     const completed = (await gatewayRequest(req, '/shared/files/upload/complete', {
         method: 'POST',
@@ -250,7 +260,7 @@ const probeDuration = (filePath: string) =>
 const MAX_CAPTION_AUDIO_BYTES = 25 * 1024 * 1024;
 const SHARED_AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.webm', '.mp4']);
 
-const isAllowedSharedAudioUrl = (rawUrl: string) => {
+export const isAllowedSharedAudioUrl = (rawUrl: string) => {
     try {
         const parsed = new URL(rawUrl);
         const hostname = parsed.hostname.toLowerCase().replace(/\.+$/, '');
@@ -457,6 +467,15 @@ export const uploadFile = async (req: Request, res: Response) => {
 
 export const importLocalFile = async (req: Request, res: Response) => {
     try {
+        if (req.body.visibility === 'backup') {
+            const ownerPath = path.join(BASE_DATA_PATH, 'data', 'private-backup-owner.json');
+            let owner: { orgId?: number; userId?: number } | null = null;
+            try { owner = JSON.parse(await fs.promises.readFile(ownerPath, 'utf8')); } catch { /* sem vínculo */ }
+            const me = await gatewayRequest(req, '/auth/me') as { user?: { id?: number; orgId?: number } };
+            if (!owner || owner.userId !== Number(me.user?.id) || owner.orgId !== Number(me.user?.orgId)) {
+                throw new GatewayHttpError(409, 'O acervo local não pertence à conta desta sessão. Backup bloqueado.');
+            }
+        }
         const filePath = resolveLocalSource(String(req.body.sourceUrl || ''), String(req.body.backendPath || ''));
         const name = String(req.body.name || path.basename(filePath));
         const parentPath = String(req.body.parent || 'Vídeos');
@@ -468,7 +487,8 @@ export const importLocalFile = async (req: Request, res: Response) => {
             parentPath,
             {
                 preventDuplicate: req.body.preventDuplicate === true,
-                visibility: req.body.visibility === 'project' ? 'project' : 'library',
+                visibility: req.body.visibility === 'project' || req.body.visibility === 'backup'
+                    ? req.body.visibility : 'library',
             }
         ));
     } catch (error) {

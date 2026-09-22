@@ -17,7 +17,8 @@ test('nome do anexo é seguro, legível e preserva UTF-8 no parâmetro padrão',
 
 test('capability de download compartilhado é autenticada, isolada por organização e força attachment', () => {
     assert.match(server, /app\.post\('\/shared\/files\/item\/:assetId\/download-url', authed, asyncHandler\(shared\.getItemDownload\)\)/);
-    assert.match(shared, /getAccessibleItem\(orgIdOf\(req\), req\.params\.assetId\)/);
+    assert.match(shared, /getAccessibleItem\(orgIdOf\(req\), req\.params\.assetId, req\.user\.id\)/);
+    assert.match(shared, /i\.visibility <> 'backup' OR i\.created_by = \$3/);
     assert.match(shared, /ResponseContentDisposition: sharedDownloadContentDisposition\(name\)/);
     assert.match(shared, /url: await signedAttachment\(row\.object_key, row\.name\)/);
     assert.doesNotMatch(shared.slice(shared.indexOf('export const getItemDownload'), shared.indexOf('export const renameItem')), /object_key:/);

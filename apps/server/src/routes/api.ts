@@ -15,6 +15,7 @@ import * as transitionController from '../controllers/transitionController';
 import * as downloadController from '../controllers/downloadController';
 import * as fileExplorerController from '../controllers/fileExplorerController';
 import * as sharedController from '../controllers/sharedController';
+import * as privateBackupController from '../controllers/privateBackupController';
 import * as opsController from '../controllers/opsController';
 import * as aiGenerationController from '../controllers/aiGenerationController';
 
@@ -128,6 +129,10 @@ router.get('/shared/files/trash', sharedController.trash);
 router.post('/shared/files/folder', sharedController.createFolder);
 router.post('/shared/files/upload', upload.single('file'), sharedController.uploadFile);
 router.post('/shared/files/import-local', sharedController.importLocalFile);
+router.get('/private-backup/files', privateBackupController.inventory);
+router.get('/private-backup/owner', privateBackupController.getOwner);
+router.post('/private-backup/owner', privateBackupController.claimOwner);
+router.post('/private-backup/files/:sourceId/restore', privateBackupController.restoreFile);
 router.patch('/shared/files/rename', sharedController.renameItem);
 router.post('/shared/files/move', sharedController.moveItem);
 router.post('/shared/files/copy', sharedController.copyItem);

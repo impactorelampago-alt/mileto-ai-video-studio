@@ -1,13 +1,15 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Wand2, Scissors, Clock, Trash2, CheckCircle2, Loader2, HardDrive, Users, Share2, Pencil, Film, Frame, Check, X, Copy, Play } from 'lucide-react';
+import { ArrowRight, Wand2, Scissors, Clock, Trash2, CheckCircle2, Loader2, HardDrive, Users, Share2, Pencil, Film, Frame, Check, X, Copy, Play, Cloud, CloudDownload, CloudUpload } from 'lucide-react';
 import { toast } from 'sonner';
 import { useWizard } from '../context/WizardContext';
 import { cn } from '../lib/utils';
-import { gatewayApi } from '../lib/gateway';
+import { gatewayApi, GatewayError } from '../lib/gateway';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { refreshOpsTakeUrl } from '../lib/opsMediaRecovery';
 import type { MediaTake } from '../types';
+import { restoreMissingPersonalFiles } from '../lib/privateBackup';
+import { useAuth } from '../context/AuthContext';
 
 interface DraftSummary {
     projectId: string;
@@ -19,6 +21,8 @@ interface DraftSummary {
     author?: string | null;
     cover?: { url: string; type: 'image' | 'video' } | null;
     videoModel?: 'takes' | 'moldura';
+    backupOnly?: boolean;
+    backedUpAt?: string;
 }
 
 const API_BASE = (window as unknown as { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
@@ -72,7 +76,11 @@ const formatDuration = (sec: number): string => {
 
 export const Home = () => {
     const navigate = useNavigate();
-    const { startNewDraft, loadDraft, publishDraftToShared, projectId, draftScope, updateAdData } = useWizard();
+    const { user } = useAuth();
+    const { startNewDraft, loadDraft, publishDraftToShared, projectId, draftScope, updateAdData,
+        syncPersonalBackup, backupState } = useWizard();
+    const [restoringFiles, setRestoringFiles] = useState(false);
+    const [backupFileCount, setBackupFileCount] = useState<number | null>(null);
     const [drafts, setDrafts] = useState<DraftSummary[]>([]);
     const [loadingDrafts, setLoadingDrafts] = useState(true);
     const [resumingId, setResumingId] = useState<string | null>(null);
@@ -183,8 +191,40 @@ export const Home = () => {
             const res = await fetch(`${API_BASE}/api/projects`);
             const json = await res.json();
             if (json.ok && Array.isArray(json.drafts)) {
-                setDrafts(json.drafts);
-                void resolveOpsCovers(json.drafts);
+                const ownerResponse = await fetch(`${API_BASE}/api/private-backup/owner`);
+                const ownerResult = await ownerResponse.json() as {
+                    owner?: { orgId: number; userId: number } | null;
+                };
+                const otherOwner = user && ownerResult.owner
+                    && (ownerResult.owner.userId !== user?.id || ownerResult.owner.orgId !== user?.orgId);
+                const localDrafts = otherOwner ? [] : json.drafts as DraftSummary[];
+                let remoteProjects: Awaited<ReturnType<typeof gatewayApi.privateBackupProjects>> = [];
+                try {
+                    remoteProjects = await gatewayApi.privateBackupProjects();
+                    const files = await gatewayApi.privateBackupFiles();
+                    setBackupFileCount(files.length);
+                } catch {
+                    // Offline: não esconda os projetos locais.
+                }
+                const localIds = new Set(localDrafts.map((draft) => draft.projectId));
+                const cloudById = new Map(remoteProjects.map((project) => [project.projectId, project]));
+                const combined = localDrafts.map((draft) => {
+                    const backup = cloudById.get(draft.projectId);
+                    return backup ? { ...draft, backedUpAt: backup.backedUpAt,
+                        updatedAt: new Date(backup.sourceUpdatedAt).getTime() > new Date(draft.updatedAt || 0).getTime()
+                            ? backup.sourceUpdatedAt : draft.updatedAt } : draft;
+                });
+                for (const backup of remoteProjects) {
+                    if (localIds.has(backup.projectId)) continue;
+                    combined.push({ projectId: backup.projectId, title: backup.title,
+                        updatedAt: backup.sourceUpdatedAt, exported: backup.exported,
+                        mediaCount: Number(backup.mediaCount) || 0, duration: 0,
+                        videoModel: backup.videoModel === 'moldura' ? 'moldura' : 'takes',
+                        backupOnly: true, backedUpAt: backup.backedUpAt });
+                }
+                combined.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+                setDrafts(combined);
+                if (!otherOwner) void resolveOpsCovers(json.drafts);
                 return true;
             }
             return false;
@@ -194,7 +234,7 @@ export const Home = () => {
         } finally {
             setLoadingDrafts(false);
         }
-    }, [scope, resolveOpsCovers]);
+    }, [scope, resolveOpsCovers, user?.id, user?.orgId]);
 
     useEffect(() => {
         let cancelled = false;
@@ -338,11 +378,20 @@ export const Home = () => {
                 if (draftScope === 'shared' && projectId === id) startNewDraft({ scope: 'local' });
                 toast.success('Rascunho movido para a lixeira por 30 dias.');
             } else {
-                const res = await fetch(`${API_BASE}/api/projects/${id}`, { method: 'DELETE' });
-                const json = await res.json();
-                if (!json.ok) throw new Error(json.message || 'Falha ao excluir');
+                const draft = drafts.find((item) => item.projectId === id);
+                try {
+                    await gatewayApi.deletePrivateBackupProject(id);
+                } catch (error) {
+                    if (!(error instanceof GatewayError) || error.status !== 404) throw error;
+                }
+                if (!draft?.backupOnly) {
+                    const res = await fetch(`${API_BASE}/api/projects/${id}`, { method: 'DELETE' });
+                    const json = await res.json();
+                    if (!res.ok || !json.ok) throw new Error(json.message || 'Falha ao excluir');
+                }
                 setDrafts((prev) => prev.filter((d) => d.projectId !== id));
-                toast.success('Rascunho excluído.');
+                if (draftScope === 'local' && projectId === id) startNewDraft({ scope: 'local' });
+                toast.success(draft?.backedUpAt ? 'Projeto excluído deste PC e do backup pessoal.' : 'Rascunho excluído.');
             }
         } catch (err) {
             toast.error(err instanceof Error ? err.message : 'Erro ao excluir');
@@ -385,6 +434,22 @@ export const Home = () => {
         }
     };
 
+    const handleRestoreFiles = async () => {
+        if (restoringFiles) return;
+        setRestoringFiles(true);
+        try {
+            if (!user?.id || !user.orgId) throw new Error('Entre na sua conta para restaurar o acervo.');
+            const result = await restoreMissingPersonalFiles(user.orgId, user.id);
+            toast.success(result.restored
+                ? `${result.restored} arquivo(s) do acervo restaurado(s) neste computador.`
+                : 'Todos os arquivos do backup já estão neste computador.');
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Não foi possível restaurar o acervo.');
+        } finally {
+            setRestoringFiles(false);
+        }
+    };
+
     return (
         <div className="flex flex-col gap-10 py-8">
             {/* Hero */}
@@ -419,6 +484,39 @@ export const Home = () => {
                     <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
                 </button>
             </div>
+
+            {scope === 'local' && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-brand-lime/20 bg-brand-lime/5 p-4">
+                    <div className="flex min-w-0 items-center gap-3">
+                        <Cloud className="h-5 w-5 shrink-0 text-brand-lime" />
+                        <div>
+                            <p className="text-sm font-bold text-foreground">Backup pessoal de projetos e acervo</p>
+                            <p className={cn('text-xs', backupState.error ? 'text-amber-300' : 'text-muted-foreground')}>
+                                {backupState.running ? backupState.detail
+                                    : backupState.error || (backupState.lastSuccess
+                                        ? `Protegido em ${new Date(backupState.lastSuccess).toLocaleString('pt-BR')}`
+                                        : 'Sincronização automática a cada 5 minutos após a ativação.')}
+                            </p>
+                            {backupFileCount !== null && (
+                                <p className="text-[11px] text-muted-foreground">{backupFileCount} arquivo(s) disponíveis na nuvem</p>
+                            )}
+                        </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <button type="button" disabled={backupState.running}
+                            onClick={() => void syncPersonalBackup().then(() => refreshDrafts())}
+                            className="inline-flex items-center gap-2 rounded-xl border border-brand-lime/30 px-3 py-2 text-xs font-bold text-brand-lime disabled:opacity-50">
+                            {backupState.running ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudUpload className="h-4 w-4" />}
+                            {backupState.error?.startsWith('Ative') ? 'Ativar backup' : 'Sincronizar agora'}
+                        </button>
+                        <button type="button" disabled={restoringFiles} onClick={() => void handleRestoreFiles()}
+                            className="inline-flex items-center gap-2 rounded-xl border border-border px-3 py-2 text-xs font-bold text-foreground disabled:opacity-50">
+                            {restoringFiles ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudDownload className="h-4 w-4" />}
+                            Restaurar arquivos
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {/* Rascunhos recentes */}
             <div className="flex flex-col gap-3">
@@ -589,7 +687,7 @@ export const Home = () => {
                                         )}
                                         {!isEditing && (
                                             <div className="flex shrink-0 items-center gap-0.5 opacity-70 transition-opacity hover:opacity-100 focus-within:opacity-100">
-                                                <button
+                                                {!d.backupOnly && <button
                                                     type="button"
                                                     onClick={(event) => beginRename(event, d)}
                                                     className="rounded-lg p-1.5 text-muted-foreground/60 transition-colors hover:bg-brand-lime/10 hover:text-brand-lime"
@@ -597,8 +695,8 @@ export const Home = () => {
                                                     aria-label="Editar título"
                                                 >
                                                     <Pencil className="h-3.5 w-3.5" />
-                                                </button>
-                                                {scope === 'local' && (
+                                                </button>}
+                                                {scope === 'local' && !d.backupOnly && (
                                                     <button
                                                         type="button"
                                                         onClick={(event) => void handleDuplicate(event, d.projectId)}
@@ -640,6 +738,13 @@ export const Home = () => {
                                         )}
                                     </div>
 
+                                    {scope === 'local' && d.backedUpAt && (
+                                        <div className="mt-2 flex items-center gap-1 text-[10px] text-brand-lime">
+                                            <Cloud className="h-3 w-3" />
+                                            {d.backupOnly ? 'Somente na nuvem — clique para restaurar' : 'Backup na nuvem'}
+                                        </div>
+                                    )}
+
                                     {scope === 'shared' && d.author && (
                                         <div className="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground">
                                             <Users className="h-3 w-3" />
@@ -661,7 +766,7 @@ export const Home = () => {
                                         )}
 
                                         <div className="ml-auto flex shrink-0 items-center gap-2">
-                                            {scope === 'local' && (
+                                            {scope === 'local' && !d.backupOnly && (
                                                 <button
                                                     type="button"
                                                     onClick={(event) => void handleShare(event, d.projectId)}

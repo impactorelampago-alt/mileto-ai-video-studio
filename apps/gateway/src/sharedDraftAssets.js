@@ -29,6 +29,7 @@ export const collectSharedDraftAssetIds = (data) => {
     }
     add(adData?.globalTransition?.sharedAssetId);
     add(adData?.frameOverlay?.transition?.asset?.sharedAssetId);
+    add(adData?.frameOverlay?.sharedAssetId);
 
     return [...referencedIds];
 };

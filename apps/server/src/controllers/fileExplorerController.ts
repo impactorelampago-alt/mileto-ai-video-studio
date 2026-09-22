@@ -97,7 +97,13 @@ export function readIndex(): FileEntry[] {
 export function writeIndex(entries: FileEntry[]): void {
     const dir = path.dirname(INDEX_JSON);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(INDEX_JSON, JSON.stringify(entries, null, 2), 'utf-8');
+    const temporary = `${INDEX_JSON}.${uuidv4()}.tmp`;
+    try {
+        fs.writeFileSync(temporary, JSON.stringify(entries, null, 2), 'utf-8');
+        fs.renameSync(temporary, INDEX_JSON);
+    } finally {
+        if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────

@@ -121,7 +121,7 @@ export const listProjects = async (_req: Request, res: Response) => {
                 drafts.push({
                     projectId: entry.name,
                     title,
-                    updatedAt: parsed.updatedAt || null,
+                    updatedAt: parsed.updatedAt || fs.statSync(dataPath).mtime.toISOString(),
                     exported: !!parsed.exported,
                     mediaCount,
                     duration,

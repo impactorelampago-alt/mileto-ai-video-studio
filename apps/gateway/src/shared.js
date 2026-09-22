@@ -139,7 +139,7 @@ const createItem = async (client, { orgId, userId, blobId, parentPath, category,
         `INSERT INTO media_items
              (id, org_id, blob_id, parent_path, category, name, media_type, duration_sec, created_by, visibility, purge_after)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                 CASE WHEN $10 = 'project' THEN now() + interval '1 day' ELSE NULL END)
+                 CASE WHEN $10 IN ('project', 'backup') THEN now() + interval '1 day' ELSE NULL END)
          RETURNING *`,
         [id, orgId, blobId, parentPath, category, name, itemMediaType || mediaType(category, '', name), durationSec ?? null, userId, visibility]
     );
@@ -234,7 +234,7 @@ export const prepareUpload = async (req, res) => {
     const category = categoryFromPath(parentPath, 'Vídeos');
     const name = cleanName(req.body.name);
     const durationSec = req.body.durationSec == null ? null : Number(req.body.durationSec);
-    const visibility = req.body.visibility === 'project' ? 'project' : 'library';
+    const visibility = ['project', 'backup'].includes(req.body.visibility) ? req.body.visibility : 'library';
     if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(size) || size <= 0) {
         return res.status(400).json({ ok: false, message: 'Hash ou tamanho do arquivo inválido.' });
     }
@@ -306,7 +306,7 @@ export const completeUpload = async (req, res) => {
     const category = categoryFromPath(parentPath, 'Vídeos');
     const name = cleanName(req.body.name);
     const durationSec = req.body.durationSec == null ? null : Number(req.body.durationSec);
-    const visibility = req.body.visibility === 'project' ? 'project' : 'library';
+    const visibility = ['project', 'backup'].includes(req.body.visibility) ? req.body.visibility : 'library';
     if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(size) || size <= 0) {
         return res.status(400).json({ ok: false, message: 'Upload inválido.' });
     }
@@ -375,28 +375,31 @@ export const completeUpload = async (req, res) => {
 };
 
 const getLiveItem = async (orgId, id) =>
-    (await query(`${itemSelect} WHERE i.org_id = $1 AND i.id = $2 AND i.trashed_at IS NULL`, [orgId, id])).rows[0];
+    (await query(`${itemSelect} WHERE i.org_id = $1 AND i.id = $2 AND i.trashed_at IS NULL AND i.visibility <> 'backup'`, [orgId, id])).rows[0];
 
-const getAccessibleItem = async (orgId, id) =>
+const getAccessibleItem = async (orgId, id, userId) =>
     (
         await query(
             `${itemSelect}
               WHERE i.org_id = $1 AND i.id = $2
+                AND (i.visibility <> 'backup' OR i.created_by = $3)
                 AND (i.trashed_at IS NULL OR EXISTS (
                     SELECT 1 FROM shared_draft_assets da WHERE da.asset_item_id = i.id
+                ) OR EXISTS (
+                    SELECT 1 FROM private_backup_project_assets pa WHERE pa.asset_item_id = i.id
                 ))`,
-            [orgId, id]
+            [orgId, id, userId]
         )
     ).rows[0];
 
 export const getItem = async (req, res) => {
-    const row = await getAccessibleItem(orgIdOf(req), req.params.assetId);
+    const row = await getAccessibleItem(orgIdOf(req), req.params.assetId, req.user.id);
     if (!row) return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
     res.json({ ok: true, item: await mapItem(row) });
 };
 
 export const getItemDownload = async (req, res) => {
-    const row = await getAccessibleItem(orgIdOf(req), req.params.assetId);
+    const row = await getAccessibleItem(orgIdOf(req), req.params.assetId, req.user.id);
     if (!row) return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
     res.json({
         ok: true,
@@ -407,10 +410,33 @@ export const getItemDownload = async (req, res) => {
     });
 };
 
+// Publicar um projeto restaurado converte explicitamente uma mídia do cofre
+// pessoal em item do acervo da equipe, sem reenviar os bytes já deduplicados.
+export const publishBackupItem = async (req, res) => {
+    const orgId = orgIdOf(req);
+    const source = (await query(
+        `${itemSelect} WHERE i.org_id = $1 AND i.id = $2 AND i.visibility = 'backup'
+             AND i.created_by = $3 AND i.trashed_at IS NULL`,
+        [orgId, req.params.assetId, req.user.id]
+    )).rows[0];
+    if (!source) return res.status(404).json({ ok: false, message: 'Mídia do backup não encontrada.' });
+    const client = await pool.connect();
+    try {
+        const item = await createItem(client, {
+            orgId, userId: req.user.id, blobId: source.blob_id,
+            parentPath: source.parent_path, category: source.category, name: source.name,
+            durationSec: source.duration_sec, mediaType: source.media_type, visibility: 'library',
+        });
+        res.json({ ok: true, item: await mapItem({ ...source, ...item }) });
+    } finally {
+        client.release();
+    }
+};
+
 export const renameItem = async (req, res) => {
     const orgId = orgIdOf(req);
     const result = await query(
-        `UPDATE media_items SET name = $3 WHERE org_id = $1 AND id = $2 AND trashed_at IS NULL RETURNING id`,
+        `UPDATE media_items SET name = $3 WHERE org_id = $1 AND id = $2 AND trashed_at IS NULL AND visibility <> 'backup' RETURNING id`,
         [orgId, req.body.id, cleanName(req.body.name)]
     );
     if (!result.rowCount) return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
@@ -423,7 +449,7 @@ export const moveItem = async (req, res) => {
     const category = categoryFromPath(parentPath, 'Imagens');
     const result = await query(
         `UPDATE media_items SET parent_path = $3, category = $4
-         WHERE org_id = $1 AND id = $2 AND trashed_at IS NULL RETURNING id`,
+         WHERE org_id = $1 AND id = $2 AND trashed_at IS NULL AND visibility <> 'backup' RETURNING id`,
         [orgId, req.body.id, parentPath, category]
     );
     if (!result.rowCount) return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
@@ -459,7 +485,7 @@ export const trashItem = async (req, res) => {
     const result = await query(
         `UPDATE media_items
             SET trashed_at = now(), purge_after = now() + interval '${TRASH_DAYS} days'
-          WHERE org_id = $1 AND id = $2 AND trashed_at IS NULL RETURNING id`,
+          WHERE org_id = $1 AND id = $2 AND trashed_at IS NULL AND visibility <> 'backup' RETURNING id`,
         [orgId, req.params.assetId]
     );
     if (!result.rowCount) return res.status(404).json({ ok: false, message: 'Item não encontrado.' });
@@ -470,7 +496,7 @@ export const restoreItem = async (req, res) => {
     const orgId = orgIdOf(req);
     const result = await query(
         `UPDATE media_items SET trashed_at = NULL, purge_after = NULL
-         WHERE org_id = $1 AND id = $2 AND trashed_at IS NOT NULL RETURNING id`,
+         WHERE org_id = $1 AND id = $2 AND trashed_at IS NOT NULL AND visibility <> 'backup' RETURNING id`,
         [orgId, req.params.assetId]
     );
     if (!result.rowCount) return res.status(404).json({ ok: false, message: 'Item não encontrado na lixeira.' });
@@ -480,13 +506,18 @@ export const restoreItem = async (req, res) => {
 export const purgeExpired = async () => {
     if (!s3) return;
     await query('DELETE FROM shared_drafts WHERE purge_after <= now()');
+    await query('DELETE FROM private_backup_projects WHERE purge_after <= now()');
     await query(
         `UPDATE media_items i
             SET purge_after = now()
-          WHERE i.visibility = 'project'
+          WHERE i.visibility IN ('project', 'backup')
             AND i.purge_after IS NULL
             AND NOT EXISTS (
                 SELECT 1 FROM shared_draft_assets da WHERE da.asset_item_id = i.id
+            ) AND NOT EXISTS (
+                SELECT 1 FROM private_backup_project_assets pa WHERE pa.asset_item_id = i.id
+            ) AND NOT EXISTS (
+                SELECT 1 FROM private_backup_files pf WHERE pf.asset_item_id = i.id
             )`
     );
     const expired = (
@@ -495,6 +526,10 @@ export const purgeExpired = async () => {
               WHERE i.purge_after <= now()
                 AND NOT EXISTS (
                     SELECT 1 FROM shared_draft_assets da WHERE da.asset_item_id = i.id
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM private_backup_project_assets pa WHERE pa.asset_item_id = i.id
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM private_backup_files pf WHERE pf.asset_item_id = i.id
                 )
               RETURNING blob_id`
         )
@@ -548,6 +583,15 @@ export const saveDraft = async (req, res) => {
         return res.status(400).json({ ok: false, message: 'Conteúdo do rascunho inválido.' });
     }
     const assetIds = collectSharedDraftAssetIds(data);
+    if (assetIds.length) {
+        const privateAssets = await query(
+            `SELECT id FROM media_items WHERE org_id = $1 AND id = ANY($2::uuid[]) AND visibility = 'backup' LIMIT 1`,
+            [orgId, assetIds]
+        );
+        if (privateAssets.rowCount) {
+            return res.status(409).json({ ok: false, message: 'Publique a mídia do backup pessoal antes de compartilhar este projeto.' });
+        }
+    }
 
     const client = await pool.connect();
     try {
