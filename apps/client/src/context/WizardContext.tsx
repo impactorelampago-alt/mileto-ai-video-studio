@@ -11,6 +11,7 @@ import { DEFAULT_VIDEO_ENHANCEMENT, normalizeVideoEnhancement } from '../lib/vid
 import { gatewayApi, type SharedAsset } from '../lib/gateway';
 import { useAuth } from './AuthContext';
 import { readProjectBackupVersion, syncPersonalFiles, writeProjectBackupVersion } from '../lib/privateBackup';
+import { sameBackupOwner } from '../lib/backupOwner';
 import { localAuthHeaders } from '../lib/serverAuth';
 import { API_BASE_URL } from '../lib/apiBase';
 import { HACKER_MATRIX_PRESET_REVISION, normalizeHydratedCaptionStyle } from '../lib/captionStyleMigration';
@@ -447,7 +448,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                 if (!response.ok || !result.ok) throw new Error(result.message || 'Não foi possível ativar o backup.');
                 owner = result.owner;
             }
-            if (Number(owner?.userId) !== user.id || Number(owner?.orgId) !== user.orgId) {
+            if (!sameBackupOwner(owner, user)) {
                 throw new Error('Este computador tem dados locais vinculados a outra conta. O backup foi bloqueado.');
             }
             const cloudProjects = await gatewayApi.privateBackupProjects();
@@ -1372,7 +1373,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             if (user?.id) {
                 const ownerResponse = await fetch(`${API_BASE_URL}/api/private-backup/owner`);
                 const owner = (await ownerResponse.json() as { owner?: { userId: number; orgId: number } | null }).owner;
-                if (owner && (owner.userId !== user.id || owner.orgId !== user.orgId)) return;
+                if (owner && !sameBackupOwner(owner, user)) return;
             }
             const res = await fetch(`${((window as any).API_BASE_URL || 'http://localhost:3301')}/api/projects/${projectId}`);
             if (res.status === 404) {
@@ -1410,7 +1411,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
             if (scope === 'local' && user?.id) {
                 const ownerResponse = await fetch(`${API_BASE_URL}/api/private-backup/owner`);
                 const owner = (await ownerResponse.json() as { owner?: { userId: number; orgId: number } | null }).owner;
-                if (owner && (owner.userId !== user.id || owner.orgId !== user.orgId)) {
+                if (owner && !sameBackupOwner(owner, user)) {
                     initialDraftLoadCompleteRef.current = true;
                     return null;
                 }

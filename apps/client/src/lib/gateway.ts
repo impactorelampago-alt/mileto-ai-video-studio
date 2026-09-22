@@ -1,5 +1,6 @@
 import { gatewayUrl } from './apiBase';
 import { authStorage } from './authStorage';
+import { accountId } from './backupOwner';
 import type { BrandPalette } from '../types';
 import type { ExportResultDiagnostics } from './exportIntegrity';
 import {
@@ -150,6 +151,15 @@ export interface SharedDraftSummary {
     authorName?: string | null;
     authorEmail?: string | null;
 }
+
+const normalizeUserIdentity = (user: MiletoUser): MiletoUser => {
+    const id = accountId(user?.id);
+    const orgId = user?.orgId == null ? null : accountId(user.orgId);
+    if (id === null || (user?.orgId != null && orgId === null)) {
+        throw new Error('O gateway retornou uma identidade de conta inválida.');
+    }
+    return { ...user, id, orgId };
+};
 
 export interface PrivateBackupProject {
     projectId: string;
@@ -511,11 +521,14 @@ export async function gatewayFetch<T = unknown>(
 
 export const gatewayApi = {
     async login(email: string, password: string): Promise<{ token: string; user: MiletoUser }> {
-        return gatewayFetch('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+        const result = await gatewayFetch<{ token: string; user: MiletoUser }>('/auth/login',
+            { method: 'POST', body: JSON.stringify({ email, password }) });
+        return { ...result, user: normalizeUserIdentity(result.user) };
     },
 
     async me(): Promise<{ user: MiletoUser; balance: number | null }> {
-        return gatewayFetch('/auth/me');
+        const result = await gatewayFetch<{ user: MiletoUser; balance: number | null }>('/auth/me');
+        return { ...result, user: normalizeUserIdentity(result.user) };
     },
 
     async logout(): Promise<void> {

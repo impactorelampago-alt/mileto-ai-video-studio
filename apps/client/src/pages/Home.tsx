@@ -9,6 +9,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { refreshOpsTakeUrl } from '../lib/opsMediaRecovery';
 import type { MediaTake } from '../types';
 import { restoreMissingPersonalFiles } from '../lib/privateBackup';
+import { sameBackupOwner } from '../lib/backupOwner';
 import { useAuth } from '../context/AuthContext';
 
 interface DraftSummary {
@@ -195,8 +196,7 @@ export const Home = () => {
                 const ownerResult = await ownerResponse.json() as {
                     owner?: { orgId: number; userId: number } | null;
                 };
-                const otherOwner = user && ownerResult.owner
-                    && (ownerResult.owner.userId !== user?.id || ownerResult.owner.orgId !== user?.orgId);
+                const otherOwner = !!ownerResult.owner && !sameBackupOwner(ownerResult.owner, user);
                 const localDrafts = otherOwner ? [] : json.drafts as DraftSummary[];
                 let remoteProjects: Awaited<ReturnType<typeof gatewayApi.privateBackupProjects>> = [];
                 try {

@@ -48,11 +48,11 @@ export const login = async (req, res) => {
         ok: true,
         token,
         user: {
-            id: user.id,
+            id: Number(user.id),
             email: user.email,
             name: user.name,
             role: user.role,
-            orgId: user.org_id,
+            orgId: user.org_id == null ? null : Number(user.org_id),
             orgName: user.org_name,
             orgPlan: user.org_plan,
         },

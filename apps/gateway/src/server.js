@@ -155,11 +155,11 @@ app.get(
         res.json({
             ok: true,
             user: {
-                id: u.id,
+                id: Number(u.id),
                 email: u.email,
                 name: u.name,
                 role: u.role,
-                orgId: u.org_id,
+                orgId: u.org_id == null ? null : Number(u.org_id),
                 orgName: u.org_name,
                 orgPlan: u.org_plan,
                 maxSeats: u.max_seats,
