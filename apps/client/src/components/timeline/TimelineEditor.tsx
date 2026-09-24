@@ -9,6 +9,8 @@ import { useAudioEngine } from '../../hooks/useAudioEngine';
 import { timeToX } from './timelineUtils';
 import { toast } from 'sonner';
 import { resolveEffectiveNarrationAudio } from '../../lib/audioIsolation';
+import { audioConfigFromTimeline } from '../../lib/audioTimelineMix';
+import { reconcileAudioTimelineSources } from '../../lib/audioTimelineSources';
 import {
     createNarrationTimingContract,
     hasCurrentCustomNarrationTiming,
@@ -49,6 +51,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
     const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
     const [dragTime, setDragTime] = useState<number | null>(null);
     const narrationTimingEditedRef = React.useRef(false);
+    const editorOpenedRef = React.useRef(false);
 
     // Audio Engine - Moved up to be available for Zoom logic
     const { isPlaying, currentTime, play, pause, seek, isReady, audioBuffers, buffersVersion, loadError } = useAudioEngine(
@@ -113,18 +116,19 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
 
     // Init or Migrate
     useEffect(() => {
-        if (!isOpen) return;
+        if (!isOpen) {
+            editorOpenedRef.current = false;
+            return;
+        }
 
+        const firstOpen = !editorOpenedRef.current;
+        editorOpenedRef.current = true;
         const customNarrationTiming = hasCurrentCustomNarrationTiming(adData);
         const normalizedAudioConfig = narrationAudioConfigForProject(adData);
-        narrationTimingEditedRef.current = customNarrationTiming;
-        let initialTimeline: AudioTimeline;
-
-        if (adData.audioTimeline) {
-            initialTimeline = JSON.parse(JSON.stringify(adData.audioTimeline)); // Deep copy to avoid mutation
-        } else {
-            // Migration / Default
-            initialTimeline = {
+        if (firstOpen) narrationTimingEditedRef.current = customNarrationTiming;
+        const initialTimeline: AudioTimeline = adData.audioTimeline
+            ? JSON.parse(JSON.stringify(adData.audioTimeline)) as AudioTimeline
+            : {
                 durationSec: DEFAULT_DURATION,
                 tracks: [
                     {
@@ -149,76 +153,27 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                     },
                 ],
             };
+        if (firstOpen) {
+            const hydrated = reconcileAudioTimelineSources(
+                initialTimeline, effectiveNarrationUrl, adData.musicAudioUrl || null,
+                normalizedAudioConfig, !customNarrationTiming, uuidv4,
+            );
+            setTimeline(hydrated);
+            setHistory([]);
+            const initialTrack = initialTrackId
+                ? hydrated.tracks.find((track) => track.id === initialTrackId)
+                : null;
+            setSelectedClipId(initialTrack?.clips[0]?.id ?? null);
+            setSelectedTrackId(initialTrack?.id ?? null);
+        } else {
+            // Uma URL assinada da música pode mudar enquanto o modal está aberto.
+            // Atualize as fontes no estado editado, sem re-hidratar o rascunho e
+            // apagar divisões/recortes ainda não salvos.
+            setTimeline((current) => current && reconcileAudioTimelineSources(
+                current, effectiveNarrationUrl, adData.musicAudioUrl || null,
+                normalizedAudioConfig, false, uuidv4,
+            ));
         }
-
-        // --- Synchronization Logic ---
-        // Ensure Timeline tracks match the current adData URLs (Source of Truth)
-
-        // 1. Sync Narration
-        const narrTrack = initialTimeline.tracks.find((t) => t.id === 'narration');
-        if (narrTrack) {
-            if (effectiveNarrationUrl) {
-                const currentClip = narrTrack.clips[0];
-                // If no clip, or different URL, replace it
-                if (!currentClip || currentClip.sourceUrl !== effectiveNarrationUrl || !customNarrationTiming) {
-                    narrTrack.clips = [
-                        {
-                            id: currentClip?.id || uuidv4(),
-                            sourceUrl: effectiveNarrationUrl,
-                            name: 'Narração Gerada',
-                            startSec: normalizedAudioConfig.narration.offsetSec,
-                            inSec: normalizedAudioConfig.narration.trimStart,
-                            outSec: normalizedAudioConfig.narration.trimEnd || 0,
-                            fadeInSec: normalizedAudioConfig.narration.fadeInSec,
-                            fadeOutSec: normalizedAudioConfig.narration.fadeOutSec,
-                            volume: 1,
-                        },
-                    ];
-                }
-            } else {
-                // If no narration URL in adData, remove clip
-                narrTrack.clips = [];
-            }
-        }
-
-        // 2. Sync Background Music
-        const bgmTrack = initialTimeline.tracks.find((t) => t.id === 'bgm');
-        if (bgmTrack) {
-            if (adData.musicAudioUrl) {
-                const currentClip = bgmTrack.clips[0];
-                if (!currentClip) {
-                    bgmTrack.clips = [
-                        {
-                            id: uuidv4(),
-                            sourceUrl: adData.musicAudioUrl,
-                            name: 'Música de Fundo',
-                            startSec: adData.audioConfig.background.offsetSec,
-                            inSec: adData.audioConfig.background.trimStart,
-                            outSec: adData.audioConfig.background.trimEnd || 0,
-                            fadeInSec: adData.audioConfig.background.fadeInSec,
-                            fadeOutSec: adData.audioConfig.background.fadeOutSec,
-                            volume: 1,
-                        },
-                    ];
-                } else if (currentClip.sourceUrl !== adData.musicAudioUrl) {
-                    // URL assinada renovada (faixas de biblioteca/Ops): mantém o
-                    // recorte salvo (inSec/outSec/startSec) e só atualiza a fonte,
-                    // em vez de descartar o trim que o usuário acabou de fazer.
-                    bgmTrack.clips = [{ ...currentClip, sourceUrl: adData.musicAudioUrl }];
-                }
-            } else {
-                // User deleted music -> Remove from timeline
-                bgmTrack.clips = [];
-            }
-        }
-
-        setTimeline(initialTimeline);
-        setHistory([]);
-        const initialTrack = initialTrackId
-            ? initialTimeline.tracks.find((track) => track.id === initialTrackId)
-            : null;
-        setSelectedClipId(initialTrack?.clips[0]?.id ?? null);
-        setSelectedTrackId(initialTrack?.id ?? null);
     }, [isOpen, effectiveNarrationUrl, adData.musicAudioUrl, initialTrackId]); // Re-run if URLs change while open
 
     const cloneTimeline = React.useCallback(
@@ -239,9 +194,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
 
     const timelinePersistencePatch = React.useCallback((value: AudioTimeline) => {
         const narrTrack = value.tracks.find((track) => track.id === 'narration');
-        const bgmTrack = value.tracks.find((track) => track.id === 'bgm');
         const narrClip = narrTrack?.clips[0];
-        const bgmClip = bgmTrack?.clips[0];
 
         return {
             audioTimeline: value,
@@ -250,26 +203,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                 : undefined,
             masterAudioUrl: undefined,
             sharedMasterAssetId: undefined,
-            audioConfig: {
-                narration: {
-                    enabled: Boolean(narrClip) && (narrTrack?.enabled ?? true),
-                    volume: narrTrack?.volume ?? 1,
-                    offsetSec: narrClip?.startSec ?? 0,
-                    trimStart: narrClip?.inSec ?? 0,
-                    trimEnd: narrClip?.outSec || undefined,
-                    fadeInSec: narrClip?.fadeInSec ?? 0,
-                    fadeOutSec: narrClip?.fadeOutSec ?? 0,
-                },
-                background: {
-                    enabled: Boolean(bgmClip) && (bgmTrack?.enabled ?? true),
-                    volume: (bgmTrack?.volume ?? 1) * (bgmClip?.volume ?? 1),
-                    offsetSec: bgmClip?.startSec ?? 0,
-                    trimStart: bgmClip?.inSec ?? 0,
-                    trimEnd: bgmClip?.outSec || undefined,
-                    fadeInSec: bgmClip?.fadeInSec ?? 0,
-                    fadeOutSec: bgmClip?.fadeOutSec ?? 0,
-                },
-            },
+            audioConfig: audioConfigFromTimeline(value),
         };
     }, [
         adData.narrationAudioPath,
@@ -361,13 +295,6 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
             handleAutoZoom();
         }
     }, [viewportWidth, zoomPercent, isOpen, handleAutoZoom]);
-
-    // Autosave & Sync to AudioConfig (Legacy Support)
-    useEffect(() => {
-        if (timeline) {
-            updateAdData(timelinePersistencePatch(timeline));
-        }
-    }, [timeline, timelinePersistencePatch, updateAdData]);
 
     // Lock Body Scroll
     useEffect(() => {
@@ -509,20 +436,22 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
         if (!timeline) return;
         const narrationTrack = timeline.tracks.find((track) => track.id === 'narration');
         const backgroundTrack = timeline.tracks.find((track) => track.id === 'bgm');
-        const narrationClip = narrationTrack?.clips[0];
+        const narrationClips = narrationTrack?.clips || [];
         const backgroundClip = backgroundTrack?.clips[0];
 
-        if (!narrationClip || !backgroundClip) {
+        if (!narrationClips.length || !backgroundClip) {
             handleAutoZoom();
             toast.info('Adicione narração e música para fazer o ajuste automático.');
             return;
         }
 
-        const narrationBuffer = audioBuffers.get(narrationClip.sourceUrl);
-        const narrationOut = narrationClip.outSec > narrationClip.inSec
-            ? narrationClip.outSec
-            : narrationBuffer?.duration || Number(adData.narrationDuration || 0);
-        const narrationEnd = narrationClip.startSec + Math.max(0, narrationOut - narrationClip.inSec);
+        const narrationEnd = Math.max(...narrationClips.map((clip) => {
+            const buffer = audioBuffers.get(clip.sourceUrl);
+            const sourceEnd = clip.outSec > clip.inSec
+                ? clip.outSec
+                : buffer?.duration || Number(adData.narrationDuration || 0);
+            return clip.startSec + Math.max(0, sourceEnd - clip.inSec);
+        }));
         const availableMusicTime = narrationEnd - backgroundClip.startSec;
         if (availableMusicTime <= 0) {
             toast.error('A música começa depois do fim da narração.');
@@ -927,9 +856,12 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                         <button
                             onClick={() => {
                                 pause();
-                                // Force save timeline state one last time before closing
-                                if (timeline) {
+                                if (!timeline) return;
+                                try {
                                     updateAdData(timelinePersistencePatch(timeline));
+                                } catch (error) {
+                                    toast.error(error instanceof Error ? error.message : 'Não foi possível salvar o recorte.');
+                                    return;
                                 }
                                 onClose();
                             }}

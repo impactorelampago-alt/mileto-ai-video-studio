@@ -183,8 +183,11 @@ export const Step1 = () => {
                     }),
                 });
                 const data = await response.json();
-                if (!response.ok || !data.ok || !data.masterAudioUrl) {
+                if (!response.ok || !data.ok) {
                     throw new Error(data.message || 'A trilha não pôde ser preparada.');
+                }
+                if (!data.masterAudioUrl) {
+                    throw new Error('Nenhuma faixa ativa foi encontrada. Reabra Ajuste Fino de Trilhas e salve as faixas visíveis.');
                 }
                 if (requestId !== automaticMixRequestRef.current) return;
                 const masterAudioUrl = /^https?:\/\//i.test(data.masterAudioUrl)
@@ -212,7 +215,7 @@ export const Step1 = () => {
                 if (controller.signal.aborted || requestId !== automaticMixRequestRef.current) return;
                 console.error('Automatic audio remix error:', error);
                 toast.warning(
-                    `A música foi trocada, mas a nova mixagem ainda precisa ser preparada: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
+                    `O áudio foi editado, mas a nova mixagem ainda precisa ser preparada: ${error instanceof Error ? error.message : 'erro desconhecido'}`,
                     { duration: 7000 },
                 );
             } finally {

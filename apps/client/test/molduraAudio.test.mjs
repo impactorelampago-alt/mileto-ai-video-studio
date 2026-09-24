@@ -16,6 +16,7 @@ import {
     masterAudioContractIsCurrent,
     molduraNarrationUsesFullSource,
     previewTimelineDuration,
+    previewMasterIsUnverified,
     projectAudioTimelineDuration,
     withCanonicalTimelineContract,
 } from '../src/lib/molduraAudio.ts';
@@ -251,6 +252,59 @@ test('hidratação limpa timeline e master herdados quando o trim não tem autor
     assert.equal(repaired.audioTimeline, undefined);
     assert.equal(repaired.timelineContract.durationSec, 15.83);
     assert.equal(repaired.masterAudioContract, undefined);
+});
+
+test('faixas com clips visíveis são reativadas e master silencioso é invalidado', () => {
+    const source = {
+        videoModel: 'takes',
+        narrationDuration: 14,
+        narrationAudioUrl: '/narrations/voice.mp3',
+        narrationAudioPath: null,
+        musicAudioUrl: '/music/track.mp3',
+        audioConfig: audioConfig({
+            narration: { enabled: false, trimEnd: 14 },
+            background: { enabled: false, trimEnd: 14 },
+        }),
+        audioTimeline: { durationSec: 14, tracks: [
+            { id: 'narration', enabled: false, muted: false, clips: [{ id: 'voice' }] },
+            { id: 'bgm', enabled: false, muted: false, clips: [{ id: 'music' }] },
+        ] },
+        masterAudioUrl: '/mixes/without-voice.mp3',
+        masterAudioContract: { version: 1, durationSec: 14, expectedDurationSec: 14,
+            mixIdentity: 'old', timelineFingerprint: 'old' },
+    };
+    const repaired = withCanonicalTimelineContract(source, 14);
+    assert.equal(repaired.audioConfig.narration.enabled, true);
+    assert.equal(repaired.audioConfig.background.enabled, true);
+    assert.equal(repaired.audioTimeline.tracks[0].enabled, true);
+    assert.equal(repaired.audioTimeline.tracks[1].enabled, true);
+    assert.equal(repaired.masterAudioUrl, undefined);
+    assert.equal(repaired.masterAudioContract, undefined);
+});
+
+test('faixa sem clip ou explicitamente mutada não é reativada', () => {
+    const source = {
+        videoModel: 'takes', narrationDuration: 14,
+        narrationAudioUrl: '/narrations/voice.mp3', musicAudioUrl: null,
+        audioConfig: audioConfig({ narration: { enabled: false, trimEnd: 14 } }),
+        audioTimeline: { durationSec: 14, tracks: [
+            { id: 'narration', enabled: false, muted: true, clips: [{ id: 'voice' }] },
+        ] },
+    };
+    const repaired = withCanonicalTimelineContract(source, 14);
+    assert.equal(repaired.audioConfig.narration.enabled, false);
+    assert.equal(repaired.audioTimeline.tracks[0].enabled, false);
+});
+
+test('prévia usa a narração se o master de áudio não tem contrato válido', () => {
+    const source = {
+        videoModel: 'takes', narrationDuration: 14,
+        narrationAudioUrl: '/narrations/voice.mp3', musicAudioUrl: null,
+        audioConfig: audioConfig({ narration: { trimEnd: 14 } }),
+    };
+    assert.equal(previewMasterIsUnverified(source, 14, '/mixes/legacy.mp3', source.narrationAudioUrl), true);
+    assert.equal(previewMasterIsUnverified(source, 14, source.narrationAudioUrl, source.narrationAudioUrl), false);
+    assert.equal(previewMasterIsUnverified(source, 14, '/mixes/music-only.mp3', null), false);
 });
 
 test('timeline sem áudio usa a soma visual sem permitir contrato antigo', () => {

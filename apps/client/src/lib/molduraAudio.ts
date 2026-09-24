@@ -370,12 +370,58 @@ export const withCanonicalTimelineContract = <T extends AdData>(
     adData: T,
     takesDuration: unknown = 0,
 ): T => {
-    const customTimingIsCurrent = hasCurrentCustomNarrationTiming(adData);
-    const normalizedAudioConfig = narrationAudioConfigForProject(adData);
-    const timingStateWasReset = normalizedAudioConfig !== adData.audioConfig
-        || Boolean(adData.narrationTimingContract && !customTimingIsCurrent);
-    const normalizedAdData = {
+    // Versões antigas do editor podiam salvar clips visíveis com a faixa
+    // desativada. O player Web Audio respeita `track.enabled`, enquanto o
+    // mixer/exportação respeita `audioConfig.*.enabled`: ambos ficavam mudos.
+    // A presença de clips (sem mute explícito) prevalece sobre esse estado
+    // inconsistente, e qualquer master produzido assim deixa de ser confiável.
+    const tracks = adData.audioTimeline?.tracks;
+    const narrationTrack = tracks?.find((track) => track.id === 'narration');
+    const backgroundTrack = tracks?.find((track) => track.id === 'bgm');
+    const hasNarrationSource = Boolean(
+        adData.narrationAudioUrl || adData.narrationAudioPath || adData.sharedNarrationAssetId
+        || adData.narrationIsolation?.isolatedAudioUrl || adData.narrationIsolation?.isolatedAudioPath,
+    );
+    const hasMusicSource = Boolean(adData.musicAudioUrl || adData.sharedMusicAssetId);
+    const restoreNarration = Boolean(hasNarrationSource && narrationTrack?.clips.length && !narrationTrack.muted);
+    const restoreBackground = Boolean(hasMusicSource && backgroundTrack?.clips.length && !backgroundTrack.muted);
+    const restoreNarrationConfig = restoreNarration && adData.audioConfig.narration.enabled === false;
+    const restoreBackgroundConfig = restoreBackground && adData.audioConfig.background.enabled === false;
+    const repairedConfig = restoreNarrationConfig || restoreBackgroundConfig
+        ? {
+            narration: restoreNarrationConfig
+                ? { ...adData.audioConfig.narration, enabled: true }
+                : adData.audioConfig.narration,
+            background: restoreBackgroundConfig
+                ? { ...adData.audioConfig.background, enabled: true }
+                : adData.audioConfig.background,
+        }
+        : adData.audioConfig;
+    const repairedTracks = tracks?.map((track) => {
+        if (track.id === 'narration' && restoreNarration && track.enabled === false) {
+            return { ...track, enabled: true };
+        }
+        if (track.id === 'bgm' && restoreBackground && track.enabled === false) {
+            return { ...track, enabled: true };
+        }
+        return track;
+    });
+    const repairedAdData = {
         ...adData,
+        audioConfig: repairedConfig,
+        ...(repairedTracks && repairedTracks.some((track, index) => track !== tracks?.[index])
+            ? { audioTimeline: { ...adData.audioTimeline!, tracks: repairedTracks } }
+            : {}),
+        ...(restoreNarrationConfig || restoreBackgroundConfig
+            ? { masterAudioUrl: undefined, sharedMasterAssetId: undefined, masterAudioContract: undefined }
+            : {}),
+    } as T;
+    const customTimingIsCurrent = hasCurrentCustomNarrationTiming(repairedAdData);
+    const normalizedAudioConfig = narrationAudioConfigForProject(repairedAdData);
+    const timingStateWasReset = normalizedAudioConfig !== repairedAdData.audioConfig
+        || Boolean(repairedAdData.narrationTimingContract && !customTimingIsCurrent);
+    const normalizedAdData = {
+        ...repairedAdData,
         audioConfig: normalizedAudioConfig,
         ...(!customTimingIsCurrent ? { narrationTimingContract: undefined } : {}),
         ...(timingStateWasReset ? { audioTimeline: undefined } : {}),
@@ -387,7 +433,7 @@ export const withCanonicalTimelineContract = <T extends AdData>(
         void _master;
         return rest as T;
     }
-    const masterIsCurrent = masterContractMatchesTimeline(nextContract, adData.masterAudioContract);
+    const masterIsCurrent = masterContractMatchesTimeline(nextContract, repairedAdData.masterAudioContract);
     return {
         ...normalizedAdData,
         timelineContract: nextContract,
@@ -402,6 +448,19 @@ export const masterAudioContractIsCurrent = (
     const timeline = projectTimelineContract(adData, takesDuration);
     return masterContractMatchesTimeline(timeline, adData.masterAudioContract);
 };
+
+/** Um master sem contrato verificável nunca deve ocultar uma narração disponível na prévia. */
+export const previewMasterIsUnverified = (
+    adData: AdData,
+    takesDuration: number,
+    masterAudioUrl?: string | null,
+    narrationUrl?: string | null,
+): boolean => Boolean(
+    masterAudioUrl
+    && narrationUrl
+    && masterAudioUrl !== narrationUrl
+    && !masterAudioContractIsCurrent(adData, takesDuration)
+);
 
 export const masterAudioContractFromMix = (
     adData: Parameters<typeof projectTimelineContract>[0],

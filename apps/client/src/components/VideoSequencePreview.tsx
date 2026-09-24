@@ -39,7 +39,7 @@ import { hasCurrentTakeIsolation, normalizeTakeAudio, resolveEffectiveNarrationA
 import {
     canonicalProjectTimelineDuration,
     isAudioSourceInvalidForTimeline,
-    masterAudioContractIsCurrent,
+    previewMasterIsUnverified,
 } from '../lib/molduraAudio';
 
 const OVERLAY_DESIGN_WIDTH = 360;
@@ -627,10 +627,8 @@ export const VideoSequencePreview = forwardRef<VideoSequencePreviewRef, VideoSeq
             ? `${masterAudioUrl}\u0000${expectedNarrationDuration.toFixed(3)}`
             : '';
         const [rejectedMasterKey, setRejectedMasterKey] = useState('');
-        const masterContractIsKnownStale = Boolean(
-            masterAudioUrl
-            && adData.masterAudioContract
-            && !masterAudioContractIsCurrent(adData, takesDuration),
+        const masterContractIsKnownStale = previewMasterIsUnverified(
+            adData, takesDuration, masterAudioUrl, effectiveNarrationUrl,
         );
         const playbackAudioUrl = masterAudioUrl
             && !masterContractIsKnownStale
