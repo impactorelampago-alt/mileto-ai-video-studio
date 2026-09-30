@@ -23,6 +23,11 @@ import {
 } from '../lib/titleWorkflowAsyncGuard';
 import { normalizeTakeAudio, resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
 import { captionTrackIsEnabled, withCaptionTrackEnabled } from '../lib/captionVisibility';
+import {
+    currentCaptionTrack,
+    videoCaptionMixTakes,
+    videoCaptionSourceKey,
+} from '../lib/videoCaptions';
 
 export const Step3 = () => {
     const { adData, updateAdData, mediaTakes, setMediaTakes, captionStyle, setCaptionStyle } = useWizard();
@@ -31,24 +36,33 @@ export const Step3 = () => {
     const [generationStatus, setGenerationStatus] = useState('');
     const latestAdDataRef = useRef(adData);
     latestAdDataRef.current = adData;
+    const latestMediaTakesRef = useRef(mediaTakes);
+    latestMediaTakesRef.current = mediaTakes;
     const captionGenerationRef = useRef<{
         controller: AbortController;
+        kind: 'narration';
         fingerprint: TitleWorkflowAsyncFingerprint;
+    } | {
+        controller: AbortController;
+        kind: 'takes';
+        sourceKey: string;
     } | null>(null);
-    const currentSourceKey = narrationSourceKey(adData);
     const effectiveNarration = resolveEffectiveNarrationAudio(adData);
-    const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
+    const currentCaptions = currentCaptionTrack(adData, mediaTakes);
     const captionsEnabled = captionTrackIsEnabled(currentCaptions);
     const currentWorkflowFingerprintKey = titleWorkflowAsyncFingerprintKey(
         captureTitleWorkflowAsyncFingerprint(adData),
     );
+    const currentVideoSourceKey = videoCaptionSourceKey(mediaTakes);
 
     useEffect(() => {
         const active = captionGenerationRef.current;
-        if (active && !isTitleWorkflowAsyncFingerprintCurrent(active.fingerprint, latestAdDataRef.current)) {
+        if (active && (active.kind === 'narration'
+            ? !isTitleWorkflowAsyncFingerprintCurrent(active.fingerprint, latestAdDataRef.current)
+            : active.sourceKey !== videoCaptionSourceKey(latestMediaTakesRef.current))) {
             active.controller.abort();
         }
-    }, [currentWorkflowFingerprintKey]);
+    }, [currentWorkflowFingerprintKey, currentVideoSourceKey]);
 
     useEffect(() => () => {
         const active = captionGenerationRef.current;
@@ -139,7 +153,7 @@ export const Step3 = () => {
 
         const controller = new AbortController();
         const operationFingerprint = captureTitleWorkflowAsyncFingerprint(operationAdData);
-        const operation = { controller, fingerprint: operationFingerprint };
+        const operation = { controller, kind: 'narration' as const, fingerprint: operationFingerprint };
         captionGenerationRef.current = operation;
         const operationSourceKey = narrationSourceKey(operationAdData);
         const operationIsCurrent = () => (
@@ -193,6 +207,7 @@ export const Step3 = () => {
                 language: 'pt-BR' as const,
                 presetId: 'karaoke-yellow', // Internal identifier for the backend rendering
                 segments: repairCaptionCurrencySegments(data.segments),
+                sourceKind: 'narration' as const,
                 sourceKey: operationSourceKey,
                 review: data.review,
             };
@@ -321,12 +336,113 @@ export const Step3 = () => {
         }
     };
 
+    const handleExtractCaptions = async () => {
+        if (captionGenerationRef.current) return;
+        let takesForExtraction: ReturnType<typeof videoCaptionMixTakes>;
+        try {
+            takesForExtraction = videoCaptionMixTakes(mediaTakes);
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Não foi possível preparar os takes.');
+            return;
+        }
+
+        const sourceKey = videoCaptionSourceKey(mediaTakes);
+        const controller = new AbortController();
+        const operation = { controller, kind: 'takes' as const, sourceKey };
+        captionGenerationRef.current = operation;
+        const assertOperationIsCurrent = () => {
+            if (captionGenerationRef.current === operation
+                && !controller.signal.aborted
+                && sourceKey === videoCaptionSourceKey(latestMediaTakesRef.current)) return;
+            const staleError = new Error('Os takes mudaram durante a extração.');
+            staleError.name = 'AbortError';
+            throw staleError;
+        };
+        setIsGenerating(true);
+        setGenerationStatus('Preparando áudio dos takes...');
+        const toastId = toast.loading('Preparando o áudio dos vídeos para extração...');
+        try {
+            const apiBaseUrl = (window as Window & { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
+            const mixResponse = await fetch(`${apiBaseUrl}/api/audio/mix-takes`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
+                signal: controller.signal,
+                body: JSON.stringify({ takes: takesForExtraction, skipSilentTakeAudio: true }),
+            });
+            const mixData = await mixResponse.json();
+            assertOperationIsCurrent();
+            if (!mixResponse.ok || !mixData.ok || !mixData.outputUrl) {
+                throw new Error(mixData.message || 'Não foi possível preparar o áudio dos takes.');
+            }
+
+            setGenerationStatus('Extraindo as falas...');
+            toast.loading('Reconhecendo as falas e sincronizando as palavras...', { id: toastId });
+            const response = await fetch(`${apiBaseUrl}/api/stt/generate-captions`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...(await localAuthHeaders()) },
+                signal: controller.signal,
+                body: JSON.stringify({ audioUrl: mixData.outputUrl, narrationText: '' }),
+            });
+            const data = await response.json();
+            assertOperationIsCurrent();
+            if (!response.ok || !data.ok) {
+                throw new Error(data.message || 'Não foi possível transcrever o áudio dos takes.');
+            }
+            if (!Array.isArray(data.segments) || !data.segments.length) {
+                throw new Error('Nenhuma fala foi identificada nos vídeos. As legendas anteriores foram preservadas.');
+            }
+
+            updateAdData({
+                captions: {
+                    enabled: true,
+                    language: 'pt-BR',
+                    presetId: 'karaoke-yellow',
+                    segments: repairCaptionCurrencySegments(data.segments),
+                    sourceKind: 'takes',
+                    sourceKey,
+                    review: data.review,
+                },
+                dynamicTitles: [],
+                dynamicTitlesSourceKey: undefined,
+                titleGenerationSummary: undefined,
+            });
+            const skipped = Array.isArray(mixData.silentTakeIds) ? mixData.silentTakeIds.length : 0;
+            const mutedVideoCount = mediaTakes.filter((take) => (
+                take.type === 'video' && normalizeTakeAudio(take.audio).mode === 'off'
+            )).length;
+            toast.success(
+                `Legendas extraídas de ${data.segments.length} bloco${data.segments.length === 1 ? '' : 's'}.`,
+                {
+                    id: toastId,
+                    description: skipped
+                        ? `${skipped} take${skipped === 1 ? '' : 's'} sem áudio foi${skipped === 1 ? '' : 'ram'} ignorado${skipped === 1 ? '' : 's'}.`
+                        : mutedVideoCount
+                            ? 'As legendas foram criadas, mas o áudio de alguns takes está desligado na prévia e exportação.'
+                            : 'Você pode desativá-las e reativá-las sem perder os blocos.',
+                },
+            );
+        } catch (error) {
+            if (error instanceof Error && error.name === 'AbortError') {
+                if (captionGenerationRef.current === operation) {
+                    toast.warning('Os takes mudaram durante a extração. O resultado antigo foi descartado.', { id: toastId });
+                } else {
+                    toast.dismiss(toastId);
+                }
+                return;
+            }
+            toast.error(error instanceof Error ? error.message : 'Falha ao extrair legendas.', { id: toastId });
+        } finally {
+            if (captionGenerationRef.current === operation) {
+                captionGenerationRef.current = null;
+                setIsGenerating(false);
+                setGenerationStatus('');
+            }
+        }
+    };
+
     const handleToggleCaptions = () => {
         const latestAdData = latestAdDataRef.current;
-        const latestSourceKey = narrationSourceKey(latestAdData);
-        const latestCaptions = latestAdData.captions?.sourceKey === latestSourceKey
-            ? latestAdData.captions
-            : undefined;
+        const latestCaptions = currentCaptionTrack(latestAdData, latestMediaTakesRef.current);
 
         if (!latestCaptions?.segments?.length) {
             toast.error('Gere as legendas antes de alterar a exibição.');
@@ -357,8 +473,7 @@ export const Step3 = () => {
                     </span>
                 </h2>
                 <p className="mx-auto mt-1.5 max-w-2xl text-xs font-medium text-brand-muted">
-                    Gere legendas automáticas perfeitamente sincronizadas com a sua voz para aumentar o engajamento do
-                    seu vídeo.
+                    Gere legendas pela narração ou extraia as falas diretamente dos vídeos usados nos takes.
                 </p>
             </header>
 
@@ -429,8 +544,7 @@ export const Step3 = () => {
                                 Criação de Legendas
                             </h3>
                             <p className="text-xs leading-relaxed text-brand-muted">
-                                O sistema escutará sua narração e marcará os tempos exatos para criar legendas
-                                automáticas perfeitamente alinhadas com o vídeo.
+                                Gere pela narração de IA ou extraia do áudio original dos takes, sem precisar criar uma voz de IA.
                             </p>
                         </div>
 
@@ -447,10 +561,22 @@ export const Step3 = () => {
                         >
                             {isGenerating
                                 ? (generationStatus || 'Processando Áudio...')
-                                : currentCaptions?.segments?.length
-                                    ? 'Gerar legendas novamente'
+                                : currentCaptions?.segments?.length && currentCaptions.sourceKind !== 'takes'
+                                    ? 'Gerar legendas da narração novamente'
                                     : 'Gerar Legendas Automáticas'}
                         </button>
+
+                        <button
+                            type="button"
+                            onClick={handleExtractCaptions}
+                            disabled={isGenerating || !mediaTakes.some((take) => take.type === 'video')}
+                            className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-brand-accent/40 bg-brand-accent/10 py-3 text-[11px] font-bold uppercase tracking-wider text-brand-accent transition-all hover:border-brand-accent/70 hover:bg-brand-accent/15 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            Extrair legenda
+                        </button>
+                        <p className="mt-2 text-center text-[10px] leading-relaxed text-brand-muted">
+                            Usa as falas dos vídeos nos takes, respeitando seus recortes. Não altera o áudio ligado ou desligado dos takes.
+                        </p>
 
                         {currentCaptions?.segments?.length ? (
                             <>
@@ -530,6 +656,11 @@ export const Step3 = () => {
                                                 <p className="text-xs text-brand-muted mt-1 font-medium">
                                                     Foram gerados {currentCaptions.segments.length} blocos de legenda.
                                                 </p>
+                                                {currentCaptions.sourceKind === 'takes' && (
+                                                    <p className="mt-2 text-xs font-semibold text-brand-lime">
+                                                        Extraídas do áudio original dos vídeos nos takes.
+                                                    </p>
+                                                )}
                                                 {currentCaptions.review?.sourceApplied && (
                                                     <p className="text-xs text-brand-lime mt-2 font-semibold">
                                                         Roteiro da etapa 1 revisado antes de exibir as legendas
@@ -570,7 +701,9 @@ export const Step3 = () => {
                                             </p>
                                             <p className="text-xs text-brand-muted mt-1 font-medium">
                                                 {adData.captions?.segments?.length
-                                                    ? 'A narração mudou. Gere novamente para não usar textos do áudio anterior.'
+                                                    ? adData.captions.sourceKind === 'takes'
+                                                        ? 'Os takes mudaram. Extraia novamente para sincronizar as legendas com os vídeos atuais.'
+                                                        : 'A narração mudou. Gere novamente para não usar textos do áudio anterior.'
                                                     : 'As legendas ainda não foram extraídas do áudio.'}
                                             </p>
                                         </div>

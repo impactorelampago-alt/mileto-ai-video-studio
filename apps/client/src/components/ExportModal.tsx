@@ -16,7 +16,7 @@ import {
     opsViewContextIdentity,
     resolveOpsProjectBrand,
 } from '../lib/opsProjectBrand';
-import { narrationSourceKey } from '../lib/narrationState';
+import { currentCaptionTrack } from '../lib/videoCaptions';
 import {
     findDefaultOpsExportFolder,
     findProjectOpsExportCompany,
@@ -203,8 +203,8 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
     const totalDuration = canonicalProjectTimelineDuration(adData, takesDuration);
     const projectRequiresAudio = Boolean(timelineContract && timelineContract.source !== 'takes');
     const finalNarrationText = useMemo(() => {
-        const captions = adData.captions;
-        if (captions?.sourceKey === narrationSourceKey(adData) && captions.segments.length) {
+        const captions = currentCaptionTrack(adData, mediaTakes);
+        if (captions?.segments.length) {
             return captions.segments
                 .slice()
                 .sort((left, right) => left.start - right.start)
@@ -215,7 +215,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
         const audioIdentity = `${adData.narrationAudioPath || ''} ${adData.narrationAudioUrl || ''}`;
         const isUntranscribedRecording = adData.narrationSource === 'recording' || /narration-rec-/i.test(audioIdentity);
         return isUntranscribedRecording ? '' : (adData.narrationText || '');
-    }, [adData]);
+    }, [adData, mediaTakes]);
 
     const formatDuration = (seconds: number) => {
         const minutes = Math.floor(seconds / 60);
@@ -520,6 +520,7 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             return;
         }
 
+        const captionsForExport = currentCaptionTrack(exportAdData, mediaTakes);
         const jobId = startExport({
             fileName: exportFileName,
             outputFolder: destinationKind === 'local' ? `Biblioteca local › ${destinationFolder}` : destinationKind === 'shared' ? `Compartilhado › ${destinationFolder}` : 'Mileto Ops',
@@ -533,7 +534,9 @@ export const ExportModal = ({ onClose, mediaTakes, masterAudioUrl, transitionPat
             adData: {
                 ...exportAdData,
                 dynamicTitles: [...(exportAdData.dynamicTitles || [])],
-                captions: exportAdData.captions ? { ...exportAdData.captions, segments: [...exportAdData.captions.segments] } : undefined,
+                captions: captionsForExport
+                    ? { ...captionsForExport, segments: [...captionsForExport.segments] }
+                    : undefined,
             },
             captionStyle: captionStyle ? { ...captionStyle } : null,
             projectId,

@@ -71,6 +71,7 @@ import {
     type TitleWorkflowAsyncFingerprint,
 } from '../lib/titleWorkflowAsyncGuard';
 import { resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
+import { currentCaptionTrack } from '../lib/videoCaptions';
 
 const EMPTY_TITLES: TitleHook[] = [];
 
@@ -258,7 +259,7 @@ export const Step4 = () => {
 
     const currentSourceKey = narrationSourceKey(adData);
     const effectiveNarration = resolveEffectiveNarrationAudio(adData);
-    const currentCaptions = adData.captions?.sourceKey === currentSourceKey ? adData.captions : undefined;
+    const currentCaptions = currentCaptionTrack(adData, mediaTakes);
     const currentWorkflowFingerprintKey = titleWorkflowAsyncFingerprintKey(
         captureTitleWorkflowAsyncFingerprint(adData),
     );

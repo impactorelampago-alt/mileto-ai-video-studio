@@ -33,6 +33,7 @@ import {
     type ServerRenderDiagnostics,
 } from '../lib/exportIntegrity';
 import { buildTakeAudioMixItems, resolveEffectiveNarrationAudio } from '../lib/audioIsolation';
+import { currentCaptionTrack } from '../lib/videoCaptions';
 
 export interface OpsExportMetadata {
     title: string;
@@ -161,6 +162,7 @@ export const ExportJobsProvider = ({ children }: { children: React.ReactNode }) 
                 titleIntegrity,
                 adData: {
                     ...request.adData,
+                    captions: currentCaptionTrack(request.adData, request.mediaTakes),
                     dynamicTitles: titleIntegrity.titles,
                     ...(titleSourceIsStale ? {
                         dynamicTitlesSourceKey: undefined,

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { narrationSourceKey } from '../src/lib/narrationState.ts';
 import { missingInStep } from '../src/lib/workflowWarnings.ts';
+import { videoCaptionSourceKey } from '../src/lib/videoCaptions.ts';
 
 const narration = (overrides = {}) => ({
     narrationText: 'Narração atual.',
@@ -71,4 +72,19 @@ test('títulos só satisfazem a etapa 4 quando são atuais e ao menos um está a
         ...current,
         dynamicTitles: [title(true)],
     }, []), ['títulos ou chamadas visuais']);
+});
+
+test('legenda extraída do vídeo dispensa narração de IA e fica obsoleta após novo recorte', () => {
+    const takes = [{
+        id: 'take-1', type: 'video', fileName: 'take.mp4', url: '/uploads/take.mp4',
+        backendPath: '/data/uploads/take.mp4', trim: { start: 0, end: 5 },
+    }];
+    const adData = {
+        title: 'Vídeo com fala original', narrationText: '', narrationAudioUrl: null, masterAudioUrl: null,
+        captions: { ...captionTrack(videoCaptionSourceKey(takes)), sourceKind: 'takes' },
+    };
+    assert.deepEqual(missingInStep(1, adData, takes), []);
+    assert.deepEqual(missingInStep(3, adData, takes), []);
+    const recut = [{ ...takes[0], trim: { start: 1, end: 5 } }];
+    assert.deepEqual(missingInStep(3, adData, recut), ['legendas']);
 });

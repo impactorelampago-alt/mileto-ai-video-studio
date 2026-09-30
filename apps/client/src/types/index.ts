@@ -354,7 +354,9 @@ export interface CaptionTrack {
     language: string; // e.g., 'pt-BR'
     presetId: string | null;
     segments: CaptionSegment[];
-    /** Assinatura do áudio+roteiro que originou estas legendas. */
+    /** Ausente em projetos antigos: legenda derivada da narração. */
+    sourceKind?: 'narration' | 'takes';
+    /** Assinatura da narração ou da sequência de takes que originou as legendas. */
     sourceKey?: string;
     review?: {
         sourceApplied: boolean;

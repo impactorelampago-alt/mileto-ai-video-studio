@@ -1,5 +1,6 @@
 import type { AdData, MediaTake } from '../types';
 import { narrationSourceKey } from './narrationState.ts';
+import { currentCaptionTrack } from './videoCaptions.ts';
 
 const unique = (items: string[]) => [...new Set(items)];
 
@@ -7,15 +8,19 @@ export const missingInStep = (step: number, adData: AdData, mediaTakes: MediaTak
     if (step === 1) {
         const missing: string[] = [];
         if (!adData.title?.trim()) missing.push('título do projeto');
-        if (!adData.narrationText?.trim()) missing.push('texto da narração');
-        if (!adData.narrationAudioUrl && !adData.masterAudioUrl) missing.push('narração ou gravação de voz');
+        const videoCaptionsReady = Boolean(
+            adData.captions?.sourceKind === 'takes'
+            && currentCaptionTrack(adData, mediaTakes)?.segments.length,
+        );
+        if (!videoCaptionsReady) {
+            if (!adData.narrationText?.trim()) missing.push('texto da narração');
+            if (!adData.narrationAudioUrl && !adData.masterAudioUrl) missing.push('narração ou gravação de voz');
+        }
         return missing;
     }
     if (step === 2) return mediaTakes.length ? [] : ['takes visuais'];
     if (step === 3) {
-        const currentSourceKey = narrationSourceKey(adData);
-        const captionsAreCurrent = adData.captions?.sourceKey === currentSourceKey
-            && Boolean(adData.captions.segments?.length);
+        const captionsAreCurrent = Boolean(currentCaptionTrack(adData, mediaTakes)?.segments.length);
         return captionsAreCurrent ? [] : ['legendas'];
     }
     if (step === 4) {

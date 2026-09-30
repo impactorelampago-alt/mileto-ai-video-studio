@@ -3,6 +3,8 @@ import test from 'node:test';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { execFileSync } from 'child_process';
+import ffmpeg from 'fluent-ffmpeg';
 import {
     ISOLATION_MIN_CORRELATION_CONFIDENCE,
     assertNonDestructiveAudioTarget,
@@ -281,4 +283,47 @@ test('endpoints novos exigem Bearer antes de ler qualquer fonte local', async ()
     responseState.body = null;
     await mixTakeAudio({ headers: {}, body: {} } as never, response as never);
     assert.equal(responseState.status, 401);
+});
+
+test('extração de legendas ignora vídeo sem faixa de áudio sem mudar o mix padrão', async () => {
+    const base = process.env.USER_DATA_PATH || path.resolve(__dirname, '..');
+    const tempRoot = path.join(base, 'temp');
+    fs.mkdirSync(tempRoot, { recursive: true });
+    const scratch = fs.mkdtempSync(path.join(tempRoot, 'caption-silent-test-'));
+    const sourcePath = path.join(scratch, 'silent.mp4');
+    const bundledFfmpeg = path.resolve(__dirname, '../../client/resources/bin/ffmpeg.exe');
+    const bundledFfprobe = path.resolve(__dirname, '../../client/resources/bin/ffprobe.exe');
+    const executable = process.platform === 'win32' && fs.existsSync(bundledFfmpeg)
+        ? bundledFfmpeg : 'ffmpeg';
+    try {
+        ffmpeg.setFfmpegPath(executable);
+        ffmpeg.setFfprobePath(process.platform === 'win32' && fs.existsSync(bundledFfprobe)
+            ? bundledFfprobe : 'ffprobe');
+        execFileSync(executable, [
+            '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+            '-i', 'color=c=black:s=16x16:r=10', '-t', '1', '-an', '-c:v', 'mpeg4', sourcePath,
+        ]);
+        const state = { status: 200, body: null as Record<string, unknown> | null };
+        const response = {
+            status(code: number) { state.status = code; return this; },
+            json(body: Record<string, unknown>) { state.body = body; return this; },
+        };
+        const responseMessage = () => String((state.body as { message?: unknown } | null)?.message);
+        const request = {
+            headers: { authorization: 'Bearer test-token' },
+            body: { takes: [{ id: 'silent', audioMode: 'original', sourcePath,
+                trim: { start: 0, end: 1 }, timelineStartSec: 0 }] },
+        };
+        await mixTakeAudio(request as never, response as never);
+        assert.equal(state.status, 400);
+        assert.match(responseMessage(), /não contém faixa de áudio/);
+
+        state.status = 200;
+        state.body = null;
+        await mixTakeAudio({ ...request, body: { ...request.body, skipSilentTakeAudio: true } } as never, response as never);
+        assert.equal(state.status, 422);
+        assert.match(responseMessage(), /não contêm áudio utilizável/);
+    } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
+    }
 });

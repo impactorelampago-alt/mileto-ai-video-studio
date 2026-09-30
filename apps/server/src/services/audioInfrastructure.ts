@@ -11,6 +11,16 @@ import {
     type GatewayAudioIsolationResult,
 } from './gatewayClient';
 
+// Este módulo também é usado pela extração de legendas, sem passar pelo
+// renderizador de vídeo. Não dependa da ordem de imports para localizar os
+// binários incluídos no aplicativo desktop.
+if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
+    ffmpeg.setFfmpegPath(process.env.FFMPEG_PATH);
+}
+if (process.env.FFPROBE_PATH && fs.existsSync(process.env.FFPROBE_PATH)) {
+    ffmpeg.setFfprobePath(process.env.FFPROBE_PATH);
+}
+
 export const AUDIO_ISOLATION_PIPELINE_VERSION = 'voice-isolation-pcm16k-mono-envelope-align-v2';
 export const TAKE_AUDIO_MIX_PIPELINE_VERSION = 'take-audio-opt-in-mix-v1';
 export const MAX_ISOLATION_SECONDS = 10 * 60;

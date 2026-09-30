@@ -314,6 +314,8 @@ export const mixTakeAudio = async (req: Request, res: Response) => {
     try {
         const normalized = normalizeTakeAudioRequests(req.body?.takes);
         const optedIn = normalized.takes.filter((take) => take.audioMode !== null);
+        const skipSilentTakeAudio = req.body?.skipSilentTakeAudio === true;
+        const silentTakeIds: string[] = [];
         const masterReference: AudioSourceReference = {
             sourceUrl: String(req.body?.masterUrl || req.body?.masterAudioUrl || '').trim() || null,
             sourcePath: String(req.body?.masterPath || req.body?.masterAudioPath || '').trim() || null,
@@ -376,11 +378,19 @@ export const mixTakeAudio = async (req: Request, res: Response) => {
             const sourcePath = await materializeSource(take.source!, workDirectory, remoteCache);
             const sourceProbe = await probeAudioFile(sourcePath);
             if (!sourceProbe.hasAudio || sourceProbe.duration <= 0) {
+                if (skipSilentTakeAudio) {
+                    silentTakeIds.push(take.id);
+                    continue;
+                }
                 throw new Error(
                     `take_audio_stream_missing: O take ${take.id} optou por áudio, mas a fonte não contém faixa de áudio.`,
                 );
             }
             if (take.trimStart >= sourceProbe.duration - 0.001) {
+                if (skipSilentTakeAudio) {
+                    silentTakeIds.push(take.id);
+                    continue;
+                }
                 throw new Error(
                     `take_audio_trim_outside_source: O corte de áudio do take ${take.id} começa depois do fim da faixa.`,
                 );
@@ -395,6 +405,9 @@ export const mixTakeAudio = async (req: Request, res: Response) => {
                 hasAudio: sourceProbe.hasAudio,
                 sourceAudioDuration: sourceProbe.duration,
             });
+        }
+        if (skipSilentTakeAudio && !prepared.length) {
+            return res.status(422).json({ ok: false, message: 'Os takes de vídeo não contêm áudio utilizável para extrair legendas.' });
         }
 
         const requestedDuration = numberOrNull(req.body?.duration);
@@ -467,7 +480,7 @@ export const mixTakeAudio = async (req: Request, res: Response) => {
             cacheHit,
             passthrough: false,
             includedTakeIds: prepared.map((take) => take.id),
-            silentTakeIds: [],
+            silentTakeIds,
         });
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Falha ao montar o áudio dos takes.';
