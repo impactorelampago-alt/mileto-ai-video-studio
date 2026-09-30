@@ -12,6 +12,7 @@ import {
     detectPcmEnvelopeAlignment,
     hasSevereIsolationDurationDrift,
     isolateAudioSource,
+    resolveAudioSourceReference,
     type AudioProbe,
 } from '../src/services/audioInfrastructure';
 import {
@@ -22,6 +23,31 @@ import {
 } from '../src/controllers/audioInfrastructureController';
 
 const temporaryDirectory = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-audio-infra-'));
+
+test('mixer aceita a cópia local do Ops sem ampliar as URLs locais permitidas', () => {
+    const root = temporaryDirectory();
+    try {
+        const cacheDirectory = path.join(root, 'ops-cache', 'abcdef');
+        fs.mkdirSync(cacheDirectory, { recursive: true });
+        const sourcePath = path.join(cacheDirectory, 'take.mp4');
+        fs.writeFileSync(sourcePath, 'conteúdo-do-take');
+        const capabilityUrl = 'http://localhost:3301/api/ops/cache/file/abcdef/take.mp4?cap=temporary';
+        assert.deepEqual(resolveAudioSourceReference({ sourceUrl: capabilityUrl, sourcePath }, root), {
+            kind: 'local',
+            value: fs.realpathSync(sourcePath),
+        });
+        assert.throws(
+            () => resolveAudioSourceReference({ sourceUrl: capabilityUrl }, root),
+            /diretório de mídia permitido/,
+        );
+        assert.throws(
+            () => resolveAudioSourceReference({ sourcePath: path.join(os.tmpdir(), 'outside.mp4') }, root),
+            /fora dos diretórios locais permitidos/,
+        );
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
 
 const patternedPcm = (windowCount = 150, samplesPerWindow = 320): Buffer => {
     const pcm = Buffer.alloc(windowCount * samplesPerWindow * 2);

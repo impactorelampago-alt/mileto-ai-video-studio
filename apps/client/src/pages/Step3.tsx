@@ -10,7 +10,8 @@ import { localAuthHeaders } from '../lib/serverAuth';
 import { missingBeforeStep, pendingWarningText } from '../lib/workflowWarnings';
 import { narrationSourceKey } from '../lib/narrationState';
 import { repairCaptionCurrencySegments } from '../lib/captionCurrency';
-import { materializeSharedAudioForCaptions } from '../lib/sharedMediaRecovery';
+import { materializeSharedAudioForCaptions, refreshSharedTakeForExport } from '../lib/sharedMediaRecovery';
+import { prepareOpsTakeForExport } from '../lib/opsMediaRecovery';
 import {
     materializeCurrentTitlePlan,
     titlePlanMaterializationDecision,
@@ -362,6 +363,31 @@ export const Step3 = () => {
         setGenerationStatus('Preparando áudio dos takes...');
         const toastId = toast.loading('Preparando o áudio dos vídeos para extração...');
         try {
+            // Links compartilhados expiram; a URL-capability do cache Ops não é
+            // uma fonte direta para o mixer. Reuse o mesmo preparo autorizado da
+            // exportação antes de entregar as fontes ao servidor de áudio.
+            const preparedTakes: typeof mediaTakes = [];
+            for (const take of mediaTakes) {
+                assertOperationIsCurrent();
+                if (take.type !== 'video') {
+                    preparedTakes.push(take);
+                } else if (take.sharedAssetId) {
+                    preparedTakes.push(await refreshSharedTakeForExport(take));
+                } else if (take.externalMedia?.source === 'mileto_ops') {
+                    const prepared = await prepareOpsTakeForExport(take);
+                    if (!prepared.backendPath) {
+                        throw new Error(`A cópia local do take ${take.fileName || take.id} não está disponível.`);
+                    }
+                    preparedTakes.push(prepared);
+                } else {
+                    preparedTakes.push(take);
+                }
+            }
+            assertOperationIsCurrent();
+            if (videoCaptionSourceKey(preparedTakes) !== sourceKey) {
+                throw new Error('A origem de um take mudou durante o preparo. Reabra o projeto e tente novamente.');
+            }
+            takesForExtraction = videoCaptionMixTakes(preparedTakes);
             const apiBaseUrl = (window as Window & { API_BASE_URL?: string }).API_BASE_URL || 'http://localhost:3301';
             const mixResponse = await fetch(`${apiBaseUrl}/api/audio/mix-takes`, {
                 method: 'POST',

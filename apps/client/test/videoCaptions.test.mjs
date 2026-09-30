@@ -30,6 +30,20 @@ test('extração usa áudio original mesmo se o take estiver mudo, sem alterar o
     assert.equal(takes[0].audio.mode, 'off');
 });
 
+test('take do Ops usa a cópia local autorizada em vez da URL-capability do cache', () => {
+    const take = {
+        ...video('ops'),
+        sharedAssetId: undefined,
+        externalMedia: { source: 'mileto_ops', assetId: 'asset-ops' },
+        url: 'http://localhost:3301/api/ops/cache/file/abcdef/video.mp4?cap=temporary',
+        fileUrl: 'http://localhost:3301/api/ops/cache/file/abcdef/video.mp4?cap=temporary',
+        backendPath: 'C:\\Mileto\\ops-cache\\abcdef\\video.mp4',
+    };
+    const [payload] = videoCaptionMixTakes([take]);
+    assert.equal(payload.sourcePath, take.backendPath);
+    assert.equal(payload.sourceUrl, take.fileUrl);
+});
+
 test('legenda dos takes sobrevive à URL assinada renovada, mas invalida corte e ordem diferentes', () => {
     const takes = [video('one'), video('two')];
     const key = videoCaptionSourceKey(takes);

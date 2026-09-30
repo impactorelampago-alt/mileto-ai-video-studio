@@ -57,7 +57,10 @@ export const videoCaptionMixTakes = (takes: MediaTake[]) => {
             throw new Error(`O take ${take.fileName || take.id} usa velocidade variável; normalize-o antes de extrair legendas sincronizadas.`);
         }
         const sourceUrl = take.fileUrl || take.url;
-        const sourcePath = take.externalMedia || take.sharedAssetId ? undefined : take.backendPath;
+        // O cache do Mileto Ops usa /api/ops/cache/file?... (URL-capability),
+        // não uma rota estática de mídia. Após revalidar a cópia autorizada,
+        // o servidor local deve ler o caminho contido em USER_DATA_PATH.
+        const sourcePath = take.sharedAssetId ? undefined : take.backendPath;
         if (!sourceUrl && !sourcePath) {
             throw new Error(`O arquivo do take ${take.fileName || take.id} não está disponível para extração.`);
         }
