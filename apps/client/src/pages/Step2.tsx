@@ -65,6 +65,7 @@ import { prepareOpsTakeForExport } from '../lib/opsMediaRecovery';
 import { refreshSharedAudioSourceUrl, refreshSharedTakeForExport } from '../lib/sharedMediaRecovery';
 import { applyQuickEdit } from '../lib/quickEdit';
 import { automaticCutTakes, canApplyQuickEdit } from '../lib/automaticCuts';
+import { configuredAudioTrackDuration } from '../lib/audioTimelineMix';
 import {
     hasCurrentTakeIsolation,
     normalizeTakeAudio,
@@ -889,12 +890,7 @@ export const Step2 = () => {
 
         if (audioConfig?.narration?.enabled !== false) {
             const narration = audioConfig?.narration;
-            const narrationStart = narration?.trimStart || 0;
-            const narrationEnd = narration?.trimEnd || narrationDuration;
-            const narrationOffset = narration?.offsetSec || 0;
-            if (narrationEnd > narrationStart) {
-                effectiveAudioDuration = narrationOffset + (narrationEnd - narrationStart);
-            }
+            if (narration) effectiveAudioDuration = configuredAudioTrackDuration(narration, narrationDuration);
         }
 
         if (effectiveAudioDuration === 0) effectiveAudioDuration = narrationDuration;
@@ -902,10 +898,7 @@ export const Step2 = () => {
         if (effectiveAudioDuration === 0 && audioConfig?.background?.enabled !== false) {
             const background = audioConfig?.background;
             const selectedMusic = musicLibrary.find((music) => music.id === selectedMusicId);
-            const musicStart = background?.trimStart || 0;
-            const musicEnd = background?.trimEnd || selectedMusic?.durationSec || 0;
-            const musicOffset = background?.offsetSec || 0;
-            if (musicEnd > musicStart) effectiveAudioDuration = musicOffset + (musicEnd - musicStart);
+            if (background) effectiveAudioDuration = configuredAudioTrackDuration(background, selectedMusic?.durationSec);
         }
 
         if (mediaTakes.length === 0 || effectiveAudioDuration === 0) {

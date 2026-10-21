@@ -1,49 +1,48 @@
-import type { AudioClip, AudioConfig, AudioTimeline, TimelineTrack } from '../types';
+import type { AudioConfig, AudioTimeline, AudioTrackConfig, TimelineTrack } from '../types';
 
-const EPSILON = 0.02;
-
-const mixableClip = (track: TimelineTrack | undefined, label: string): AudioClip | null => {
-    if (!track?.clips.length) return null;
-    const clips = [...track.clips].sort((a, b) => a.startSec - b.startSec);
+const trackConfig = (track: TimelineTrack | undefined, label: string): AudioTrackConfig => {
+    const clips = [...(track?.clips ?? [])].sort((a, b) => a.startSec - b.startSec);
     const first = clips[0];
-    let last = first;
-    for (const next of clips.slice(1)) {
-        const previousEnd = last.startSec + (last.outSec - last.inSec);
-        if (next.sourceUrl !== first.sourceUrl
-            || Math.abs(next.startSec - previousEnd) > EPSILON
-            || Math.abs(next.inSec - last.outSec) > EPSILON
-            || Math.abs((next.volume ?? 1) - (first.volume ?? 1)) > EPSILON) {
-            throw new Error(`${label}: há blocos separados ou movidos. Use as bordas para um recorte contínuo antes de salvar.`);
-        }
-        last = next;
+    if (clips.some((clip) => clip.sourceUrl !== first.sourceUrl)) {
+        throw new Error(`${label}: todos os blocos devem usar a fonte atual da faixa.`);
     }
-    return clips.length === 1 ? first : { ...first, outSec: last.outSec, fadeOutSec: last.fadeOutSec };
+    if (clips.some((clip) => ![clip.startSec, clip.inSec, clip.outSec].every(Number.isFinite)
+        || clip.startSec < 0 || clip.inSec < 0 || clip.outSec <= clip.inSec)) {
+        throw new Error(`${label}: aguarde o áudio carregar e confira os limites do recorte.`);
+    }
+
+    return {
+        enabled: clips.length > 0 && !track?.muted,
+        volume: (track?.volume ?? 1) * (clips.length === 1 ? first.volume ?? 1 : 1),
+        offsetSec: first?.startSec ?? 0,
+        trimStart: first?.inSec ?? 0,
+        trimEnd: clips.length ? Math.max(...clips.map((clip) => clip.outSec)) : undefined,
+        fadeInSec: first?.fadeInSec ?? 0,
+        fadeOutSec: clips[clips.length - 1]?.fadeOutSec ?? 0,
+        ...(clips.length > 1 ? { segments: clips.map((clip) => ({
+            offsetSec: clip.startSec,
+            trimStart: clip.inSec,
+            trimEnd: clip.outSec,
+            volume: clip.volume ?? 1,
+            fadeInSec: clip.fadeInSec,
+            fadeOutSec: clip.fadeOutSec,
+        })) } : {}),
+    };
 };
 
-/** O mixer atual recebe um intervalo contínuo por faixa; nunca descarte blocos extras silenciosamente. */
-export const audioConfigFromTimeline = (timeline: AudioTimeline): AudioConfig => {
-    const narrationTrack = timeline.tracks.find((track) => track.id === 'narration');
-    const backgroundTrack = timeline.tracks.find((track) => track.id === 'bgm');
-    const narration = mixableClip(narrationTrack, 'Narração');
-    const background = mixableClip(backgroundTrack, 'Música');
-    return {
-        narration: {
-            enabled: !!narration,
-            volume: (narrationTrack?.volume ?? 1) * (narration?.volume ?? 1),
-            offsetSec: narration?.startSec ?? 0,
-            trimStart: narration?.inSec ?? 0,
-            trimEnd: narration?.outSec || undefined,
-            fadeInSec: narration?.fadeInSec ?? 0,
-            fadeOutSec: narration?.fadeOutSec ?? 0,
-        },
-        background: {
-            enabled: !!background,
-            volume: (backgroundTrack?.volume ?? 1) * (background?.volume ?? 1),
-            offsetSec: background?.startSec ?? 0,
-            trimStart: background?.inSec ?? 0,
-            trimEnd: background?.outSec || undefined,
-            fadeInSec: background?.fadeInSec ?? 0,
-            fadeOutSec: background?.fadeOutSec ?? 0,
-        },
-    };
+/** Preserva cada bloco; excluir ou mover um trecho não pode restaurar o áudio removido. */
+export const audioConfigFromTimeline = (timeline: AudioTimeline): AudioConfig => ({
+    narration: trackConfig(timeline.tracks.find((track) => track.id === 'narration'), 'Narração'),
+    background: trackConfig(timeline.tracks.find((track) => track.id === 'bgm'), 'Música'),
+});
+
+export const configuredAudioTrackDuration = (config: AudioTrackConfig, sourceDuration = 0): number => {
+    const segments = config.segments ?? [config];
+    return segments.reduce((max, segment) => {
+        const sourceEnd = segment.trimEnd || sourceDuration;
+        const end = sourceDuration > 0 ? Math.min(sourceEnd, sourceDuration) : sourceEnd;
+        return end > segment.trimStart
+            ? Math.max(max, segment.offsetSec + end - segment.trimStart)
+            : max;
+    }, 0);
 };

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { audioConfigFromTimeline } from '../src/lib/audioTimelineMix.ts';
 import {
     audioConfigForProjectTimeline,
     canonicalProjectTimelineDuration,
@@ -42,6 +43,31 @@ const audioConfig = (overrides = {}) => ({
         fadeOutSec: 0,
         ...(overrides.background || {}),
     },
+});
+
+test('corte em vários blocos preserva relógio, contrato e invalidação ao editar novamente', () => {
+    const clips = [
+        { id: 'a', sourceUrl: '/voice.mp3', name: 'a', startSec: 0, inSec: 0, outSec: 4, volume: 1, fadeInSec: 0, fadeOutSec: 0 },
+        { id: 'b', sourceUrl: '/voice.mp3', name: 'b', startSec: 4, inSec: 10, outSec: 14, volume: 1, fadeInSec: 0, fadeOutSec: 0 },
+    ];
+    const audioTimeline = { durationSec: 8, tracks: [
+        { id: 'narration', label: 'Narração', type: 'audio', enabled: true, volume: 1, muted: false, solo: false, clips },
+    ] };
+    const base = { videoModel: 'takes', narrationDuration: 14, narrationText: 'atual', narrationAudioUrl: '/voice.mp3',
+        audioTimeline, audioConfig: audioConfigFromTimeline(audioTimeline) };
+    const saved = withCanonicalTimelineContract({ ...base, narrationTimingContract: createNarrationTimingContract(base) });
+    assert.equal(saved.timelineContract.durationSec, 8);
+    assert.equal(saved.audioConfig.narration.segments.length, 2);
+    assert.equal(saved.audioTimeline.tracks[0].clips.length, 2);
+    const reopened = withCanonicalTimelineContract(JSON.parse(JSON.stringify(saved)));
+    assert.equal(reopened.timelineContract.fingerprint, saved.timelineContract.fingerprint);
+    const moved = structuredClone(saved);
+    moved.audioConfig.narration.segments[1].offsetSec = 5;
+    assert.equal(deriveTimelineContract(moved).durationSec, 9);
+    assert.notEqual(deriveTimelineContract(moved).fingerprint, saved.timelineContract.fingerprint);
+    const replaced = narrationAudioConfigForProject({ ...saved, narrationAudioUrl: '/new-voice.mp3' });
+    assert.equal(replaced.narration.segments, undefined);
+    assert.equal(replaced.narration.trimEnd, 14);
 });
 
 test('Moldura usa a narração inteira mesmo quando o recorte legado termina antes', () => {

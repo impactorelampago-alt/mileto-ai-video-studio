@@ -1,4 +1,16 @@
-import type { AudioConfig, AudioTimeline } from '../types';
+import type { AudioClip, AudioConfig, AudioTimeline, AudioTrackConfig } from '../types';
+
+const clipsFromConfig = (
+    config: AudioTrackConfig, sourceUrl: string, name: string, newId: () => string,
+): AudioClip[] => (config.segments ?? [{ ...config, volume: 1 }]).map((segment) => ({
+    id: newId(), sourceUrl, name,
+    startSec: segment.offsetSec,
+    inSec: segment.trimStart,
+    outSec: segment.trimEnd || 0,
+    fadeInSec: segment.fadeInSec,
+    fadeOutSec: segment.fadeOutSec,
+    volume: segment.volume,
+}));
 
 export const reconcileAudioTimelineSources = (
     timeline: AudioTimeline,
@@ -17,23 +29,15 @@ export const reconcileAudioTimelineSources = (
                 changed = true;
                 return { ...track, clips: [] };
             }
+            if (!first && !config.narration.enabled) return track;
             if (first && first.sourceUrl === narrationUrl && !resetLegacyNarration) {
                 if (track.enabled) return track;
                 changed = true;
                 return { ...track, enabled: true };
             }
             changed = true;
-            return { ...track, enabled: true, clips: [{
-                id: first?.id || newId(),
-                sourceUrl: narrationUrl,
-                name: 'Narração Gerada',
-                startSec: config.narration.offsetSec,
-                inSec: config.narration.trimStart,
-                outSec: config.narration.trimEnd || 0,
-                fadeInSec: config.narration.fadeInSec,
-                fadeOutSec: config.narration.fadeOutSec,
-                volume: 1,
-            }] };
+            return { ...track, enabled: true,
+                clips: clipsFromConfig(config.narration, narrationUrl, 'Narração Gerada', newId) };
         }
         if (track.id === 'bgm') {
             if (!musicUrl) {
@@ -42,16 +46,10 @@ export const reconcileAudioTimelineSources = (
                 return { ...track, clips: [] };
             }
             if (!track.clips.length) {
+                if (!config.background.enabled) return track;
                 changed = true;
-                return { ...track, enabled: true, clips: [{
-                    id: newId(), sourceUrl: musicUrl, name: 'Música de Fundo',
-                    startSec: config.background.offsetSec,
-                    inSec: config.background.trimStart,
-                    outSec: config.background.trimEnd || 0,
-                    fadeInSec: config.background.fadeInSec,
-                    fadeOutSec: config.background.fadeOutSec,
-                    volume: 1,
-                }] };
+                return { ...track, enabled: true,
+                    clips: clipsFromConfig(config.background, musicUrl, 'Música de Fundo', newId) };
             }
             if (track.clips.every((clip) => clip.sourceUrl === musicUrl)) {
                 if (track.enabled) return track;

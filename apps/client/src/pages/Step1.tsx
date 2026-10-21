@@ -449,8 +449,10 @@ export const Step1 = () => {
             const nextAudioConfig = {
                 narration: {
                     ...latestAdData.audioConfig.narration,
+                    enabled: true,
                     trimStart: 0,
                     trimEnd: narrationDuration > 0 ? narrationDuration : undefined,
+                    segments: undefined,
                 },
                 background: {
                     ...latestAdData.audioConfig.background,
@@ -624,8 +626,10 @@ export const Step1 = () => {
                 audioConfig: {
                     narration: {
                         ...latestAdData.audioConfig.narration,
+                        enabled: true,
                         trimStart: 0,
                         trimEnd: narrationDuration,
+                        segments: undefined,
                     },
                     background: {
                         ...latestAdData.audioConfig.background,

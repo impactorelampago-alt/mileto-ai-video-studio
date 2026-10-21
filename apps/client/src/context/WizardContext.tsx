@@ -40,6 +40,7 @@ import {
     normalizeNarrationContract,
 } from '../lib/narrationContract';
 import { withCanonicalTimelineContract } from '../lib/molduraAudio';
+import { configuredAudioTrackDuration } from '../lib/audioTimelineMix';
 
 export const SHOW_DEBUG_FEATURES = false;
 
@@ -1788,10 +1789,7 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
         const applySelection = (resolvedTrack: MusicTrack | null, nextUrl: string | null) => setAdData((ad) => {
             const narration = ad.audioConfig.narration;
             const narrationDuration = Number(ad.narrationDuration || 0);
-            const narrationSourceEnd = Number(narration.trimEnd || narrationDuration);
-            const narrationTimelineEnd = narrationSourceEnd > narration.trimStart
-                ? narration.offsetSec + (narrationSourceEnd - narration.trimStart)
-                : 0;
+            const narrationTimelineEnd = configuredAudioTrackDuration(narration, narrationDuration);
             const musicDuration = Number(resolvedTrack?.durationSec || 0);
             const automaticTrimEnd = narrationTimelineEnd > 0
                 ? (musicDuration > 0 ? Math.min(narrationTimelineEnd, musicDuration) : narrationTimelineEnd)
@@ -1810,9 +1808,11 @@ export const WizardProvider = ({ children }: { children: ReactNode }) => {
                     ...ad.audioConfig,
                     background: {
                         ...ad.audioConfig.background,
+                        enabled: Boolean(resolvedTrack),
                         offsetSec: 0,
                         trimStart: 0,
                         trimEnd: automaticTrimEnd,
+                        segments: undefined,
                     },
                 },
                 audioTimeline: ad.audioTimeline

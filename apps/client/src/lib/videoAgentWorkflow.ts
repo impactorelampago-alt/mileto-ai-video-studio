@@ -108,8 +108,10 @@ export const generateNarrationAndMix = async (input: AdData): Promise<AdData> =>
     const audioConfig = {
         narration: {
             ...input.audioConfig.narration,
+            enabled: true,
             trimStart: 0,
             trimEnd: narrationDuration,
+            segments: undefined,
         },
         background: {
             ...input.audioConfig.background,

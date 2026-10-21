@@ -10,6 +10,7 @@ import { timeToX } from './timelineUtils';
 import { toast } from 'sonner';
 import { resolveEffectiveNarrationAudio } from '../../lib/audioIsolation';
 import { audioConfigFromTimeline } from '../../lib/audioTimelineMix';
+import { dragAudioClip } from '../../lib/audioTimelineEditing';
 import { reconcileAudioTimelineSources } from '../../lib/audioTimelineSources';
 import {
     createNarrationTimingContract,
@@ -193,12 +194,9 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
     );
 
     const timelinePersistencePatch = React.useCallback((value: AudioTimeline) => {
-        const narrTrack = value.tracks.find((track) => track.id === 'narration');
-        const narrClip = narrTrack?.clips[0];
-
         return {
             audioTimeline: value,
-            narrationTimingContract: narrationTimingEditedRef.current && narrClip
+            narrationTimingContract: narrationTimingEditedRef.current
                 ? createNarrationTimingContract(adData)
                 : undefined,
             masterAudioUrl: undefined,
@@ -340,20 +338,13 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                         clips: track.clips.map((clip) => {
                             if (clip.id !== dragState.clipId) return clip;
 
-                            const newClip = { ...clip };
-
-                            if (dragState.type === 'move') {
-                                newClip.startSec = Math.max(0, dragState.initialStart + deltaSec);
-                            } else if (dragState.type === 'trim-start') {
-                                const change = deltaSec;
-                                newClip.startSec = Math.max(0, dragState.initialStart + change);
-                                newClip.inSec = Math.max(0, dragState.initialIn + change);
-                            } else if (dragState.type === 'trim-end') {
-                                const change = deltaSec;
-                                newClip.outSec = Math.max(newClip.inSec + 0.1, dragState.initialOut + change);
-                            }
-
-                            return newClip;
+                            return dragAudioClip({
+                                ...clip,
+                                startSec: dragState.initialStart,
+                                inSec: dragState.initialIn,
+                                outSec: dragState.initialOut,
+                            }, dragState.type, deltaSec,
+                            audioBuffers.get(clip.sourceUrl)?.duration ?? dragState.initialOut);
                         }),
                     };
                 });
@@ -383,7 +374,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
         };
-    }, [dragState, zoom, timeline]);
+    }, [dragState, zoom, timeline, audioBuffers]);
 
     const handleClipMouseDown = React.useCallback(
         (e: React.MouseEvent, clipId: string, trackId: string, type: 'move' | 'trim-start' | 'trim-end') => {
@@ -594,7 +585,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                                         // Split!
                                         // Clip 1: Keep same start, modify outSec
                                         // New OutSec = Clip.inSec + relativeTime
-                                        const clip1 = { ...clip, outSec: clip.inSec + relativeTime };
+                                        const clip1 = { ...clip, outSec: clip.inSec + relativeTime, fadeOutSec: 0 };
 
                                         // Clip 2: New start, new inSec, same outSec (original)
                                         // New Start = currentTime
@@ -604,6 +595,7 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                                             id: uuidv4(),
                                             startSec: currentTime,
                                             inSec: clip.inSec + relativeTime,
+                                            fadeInSec: 0,
                                             name: `${clip.name} (Part 2)`,
                                         };
 
@@ -865,7 +857,8 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
                                 }
                                 onClose();
                             }}
-                            className="px-6 py-2 bg-primary text-slate-900 font-semibold rounded-lg hover:bg-primary/90 transition-colors"
+                            disabled={!isReady}
+                            className="px-6 py-2 bg-primary text-slate-900 font-semibold rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             Salvar
                         </button>

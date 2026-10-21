@@ -29,8 +29,7 @@ if (!fs.existsSync(AUDIO_MIXES_DIR)) {
 
 const MAX_AUDIO_SECONDS = 6 * 60 * 60;
 
-interface NormalizedAudioTrackConfig {
-    enabled: boolean;
+interface NormalizedAudioSegmentConfig {
     volume: number;
     offsetSec: number;
     trimStart: number;
@@ -39,15 +38,20 @@ interface NormalizedAudioTrackConfig {
     fadeOutSec: number;
 }
 
+interface NormalizedAudioTrackConfig extends NormalizedAudioSegmentConfig {
+    enabled: boolean;
+    segments?: NormalizedAudioSegmentConfig[];
+}
+
 const boundedNumber = (value: unknown, fallback: number, min: number, max: number): number => {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
 };
 
-export const normalizeAudioTrackConfig = (
+const normalizeAudioSegmentConfig = (
     value: Record<string, unknown> | undefined,
     defaultVolume: number,
-): NormalizedAudioTrackConfig => {
+): NormalizedAudioSegmentConfig => {
     const trimStart = boundedNumber(value?.trimStart, 0, 0, MAX_AUDIO_SECONDS);
     const parsedTrimEnd = Number(value?.trimEnd);
     const trimEnd = Number.isFinite(parsedTrimEnd) && parsedTrimEnd > 0
@@ -59,7 +63,6 @@ export const normalizeAudioTrackConfig = (
     }
 
     return {
-        enabled: value?.enabled !== false,
         volume: boundedNumber(value?.volume, defaultVolume, 0, 2),
         offsetSec: boundedNumber(value?.offsetSec, 0, 0, MAX_AUDIO_SECONDS),
         trimStart,
@@ -67,6 +70,28 @@ export const normalizeAudioTrackConfig = (
         fadeInSec: boundedNumber(value?.fadeInSec, 0, 0, 60),
         fadeOutSec: boundedNumber(value?.fadeOutSec, 0, 0, 60),
     };
+};
+
+export const normalizeAudioTrackConfig = (
+    value: Record<string, unknown> | undefined,
+    defaultVolume: number,
+): NormalizedAudioTrackConfig => {
+    const config: NormalizedAudioTrackConfig = {
+        ...normalizeAudioSegmentConfig(value, defaultVolume),
+        enabled: value?.enabled !== false,
+    };
+    if (value?.segments !== undefined) {
+        if (!Array.isArray(value.segments) || !value.segments.length || value.segments.length > 256) {
+            throw new Error('A faixa deve conter de 1 a 256 trechos de áudio.');
+        }
+        config.segments = value.segments.map((segment: unknown) => {
+            if (!segment || typeof segment !== 'object' || Array.isArray(segment)) {
+                throw new Error('Trecho de áudio inválido.');
+            }
+            return normalizeAudioSegmentConfig(segment as Record<string, unknown>, 1);
+        });
+    }
+    return config;
 };
 
 const probeAudioDuration = (inputPath: string): Promise<number> => new Promise((resolve, reject) => {
@@ -139,7 +164,7 @@ export const buildAudioMixCacheHash = async (input: AudioMixCacheHashInput): Pro
         input.musicPath ? sha256File(input.musicPath) : Promise.resolve(null),
     ]);
     const identity = JSON.stringify({
-        version: 4,
+        version: 5,
         narration: input.narrationPath ? {
             url: input.narrationUrl || null,
             sha256: narrationSha256,
@@ -329,6 +354,11 @@ const fitConfigToSource = (
     config: NormalizedAudioTrackConfig,
     sourceDuration: number,
 ): NormalizedAudioTrackConfig => {
+    if (config.segments) {
+        return { ...config, segments: config.segments.map((segment) => (
+            fitConfigToSource({ ...segment, enabled: true }, sourceDuration)
+        )) };
+    }
     if (config.trimStart >= sourceDuration - 0.01) {
         throw new Error('O início do corte ultrapassa a duração da faixa.');
     }
@@ -344,6 +374,11 @@ const filterNumber = (value: number): string => Number(value.toFixed(3)).toStrin
 export const AUDIO_MIX_DURATION_TOLERANCE_SEC = 0.12;
 
 export const audioTrackTimelineDuration = (config: NormalizedAudioTrackConfig): number => {
+    if (config.segments) {
+        return Math.max(...config.segments.map((segment) => audioTrackTimelineDuration({
+            ...segment, enabled: true,
+        })));
+    }
     if (config.trimEnd === undefined) return 0;
     return Math.max(0, config.offsetSec + (config.trimEnd - config.trimStart));
 };
@@ -358,7 +393,7 @@ export const audioMixDurationMatches = (expected: unknown, measured: unknown): b
         && Math.abs(measuredDuration - expectedDuration) <= AUDIO_MIX_DURATION_TOLERANCE_SEC;
 };
 
-export const buildAudioFilterChain = (config: NormalizedAudioTrackConfig): string => {
+export const buildAudioFilterChain = (config: NormalizedAudioSegmentConfig): string => {
     const trimEnd = config.trimEnd;
     if (trimEnd === undefined) throw new Error('Não foi possível determinar o fim da faixa.');
 
@@ -378,6 +413,34 @@ export const buildAudioFilterChain = (config: NormalizedAudioTrackConfig): strin
         filters.push(`adelay=${Math.round(config.offsetSec * 1000)}:all=1`);
     }
     return filters.join(',');
+};
+
+/** Reconstrói a faixa inteira antes de usá-la como relógio da mixagem final. */
+export const buildAudioTrackFilterGraph = (
+    config: NormalizedAudioTrackConfig,
+    inputIndex: number,
+    output: string,
+): string[] => {
+    if (!config.segments) return [`[${inputIndex}:a]${buildAudioFilterChain(config)}[${output}]`];
+    const segments = config.segments;
+    const duration = audioTrackTimelineDuration(config);
+    const inputLabels = segments.map((_, index) => `${output}src${index}`);
+    const clipLabels = segments.map((_, index) => `${output}clip${index}`);
+    const filters = segments.length > 1
+        ? [`[${inputIndex}:a]asplit=${segments.length}${inputLabels.map((label) => `[${label}]`).join('')}`]
+        : [];
+    segments.forEach((segment, index) => {
+        const input = segments.length > 1 ? inputLabels[index] : `${inputIndex}:a`;
+        // Um EOF antecipado no asplit/amix pode descartar amostras de outro
+        // bloco sobreposto. Todas as entradas devem alcançar o fim da faixa.
+        filters.push(`[${input}]${buildAudioFilterChain({
+            ...segment, volume: config.volume * segment.volume,
+        })},apad=whole_dur=${filterNumber(duration)}[${clipLabels[index]}]`);
+    });
+    filters.push(segments.length > 1
+        ? `${clipLabels.map((label) => `[${label}]`).join('')}amix=inputs=${segments.length}:duration=longest:dropout_transition=0:normalize=0[${output}]`
+        : `[${clipLabels[0]}]anull[${output}]`);
+    return filters;
 };
 
 export const mixAudio = async (req: Request, res: Response) => {
@@ -530,7 +593,7 @@ export const mixAudio = async (req: Request, res: Response) => {
             const command = ffmpeg();
             readyInputs.forEach((input) => command.input(input.inputPath));
 
-            if (readyInputs.length === 1) {
+            if (readyInputs.length === 1 && !readyInputs[0].config.segments) {
                 const singleInput = readyInputs[0];
                 await new Promise<void>((resolve, reject) => {
                     command
@@ -542,15 +605,17 @@ export const mixAudio = async (req: Request, res: Response) => {
                 return;
             }
 
-            const filteredInputs = readyInputs.map((input, index) => (
-                `[${index}:a]${buildAudioFilterChain(input.config)}[a${index}]`
+            const filteredInputs = readyInputs.flatMap((input, index) => (
+                buildAudioTrackFilterGraph(input.config, index, `a${index}`)
             ));
             const mixInputs = readyInputs.map((_, index) => `[a${index}]`).join('');
             await new Promise<void>((resolve, reject) => {
                 command
                     .complexFilter([
                         ...filteredInputs,
-                        `${mixInputs}amix=inputs=${readyInputs.length}:duration=first:dropout_transition=2:normalize=0[aout]`,
+                        readyInputs.length > 1
+                            ? `${mixInputs}amix=inputs=${readyInputs.length}:duration=first:dropout_transition=2:normalize=0[aout]`
+                            : '[a0]anull[aout]',
                     ])
                     .map('[aout]')
                     .save(temporaryPath)

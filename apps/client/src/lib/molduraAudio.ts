@@ -6,6 +6,7 @@ import type {
     TimelineDurationContract,
 } from '../types';
 import { narrationSourceKey } from './narrationState.ts';
+import { configuredAudioTrackDuration } from './audioTimelineMix.ts';
 
 export const MOLDURA_AUDIO_DURATION_TOLERANCE_SEC = 0.12;
 const NARRATION_TIMING_NORMALIZATION_EPSILON_SEC = 0.001;
@@ -22,6 +23,7 @@ const stableStringify = (value: unknown): string => {
     if (value && typeof value === 'object') {
         const record = value as Record<string, unknown>;
         return `{${Object.keys(record)
+            .filter((key) => record[key] !== undefined)
             .sort()
             .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
             .join(',')}}`;
@@ -91,7 +93,7 @@ export const narrationAudioConfigForProject = (
     const alreadyFull = Math.abs(Number(narration.offsetSec) || 0) <= NARRATION_TIMING_NORMALIZATION_EPSILON_SEC
         && Math.abs(Number(narration.trimStart) || 0) <= NARRATION_TIMING_NORMALIZATION_EPSILON_SEC
         && Math.abs(positiveDuration(narration.trimEnd) - duration) <= NARRATION_TIMING_NORMALIZATION_EPSILON_SEC;
-    if (alreadyFull) return adData.audioConfig;
+    if (alreadyFull && !narration.segments) return adData.audioConfig;
 
     return {
         ...adData.audioConfig,
@@ -100,6 +102,7 @@ export const narrationAudioConfigForProject = (
             offsetSec: 0,
             trimStart: 0,
             trimEnd: duration,
+            segments: undefined,
         },
     };
 };
@@ -126,6 +129,7 @@ export const fullMolduraAudioConfig = (
             ...adData.audioConfig.narration,
             trimStart: 0,
             trimEnd: duration,
+            segments: undefined,
         },
     };
 };
@@ -184,6 +188,7 @@ export const configuredNarrationTimelineDuration = (
         return narrationDuration;
     }
 
+    if (narration.segments) return configuredAudioTrackDuration(narration, narrationDuration);
     const trimStart = Math.max(0, Number(narration.trimStart) || 0);
     const configuredTrimEnd = positiveDuration(narration.trimEnd) || narrationDuration;
     const trimEnd = narrationDuration > 0
@@ -202,6 +207,7 @@ export const configuredBackgroundTimelineDuration = (
     if (Number.isFinite(volume) && volume <= 0) return 0;
     if (!adData.musicAudioUrl && !adData.sharedMusicAssetId) return 0;
 
+    if (background.segments) return configuredAudioTrackDuration(background);
     const trimStart = Math.max(0, Number(background.trimStart) || 0);
     const trimEnd = positiveDuration(background.trimEnd);
     if (!(trimEnd > trimStart)) return 0;

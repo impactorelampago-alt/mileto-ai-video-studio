@@ -258,6 +258,16 @@ export interface VoicePreset {
     audioConfig: AudioConfig;
 }
 
+/** Trecho da fonte da faixa, com posição própria na timeline. */
+export interface AudioSegmentConfig {
+    offsetSec: number;
+    trimStart: number;
+    trimEnd?: number;
+    volume: number;
+    fadeInSec: number;
+    fadeOutSec: number;
+}
+
 export interface AudioTrackConfig {
     enabled: boolean;
     volume: number; // 0 to 2 (200%)
@@ -268,6 +278,7 @@ export interface AudioTrackConfig {
     fadeOutSec: number;
     url?: string | null; // For background music
     trackId?: string | null; // For background music ID reference
+    segments?: AudioSegmentConfig[]; // Quando presente, substitui o intervalo único da faixa
 }
 
 export interface AudioConfig {
