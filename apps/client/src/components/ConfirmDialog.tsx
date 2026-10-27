@@ -9,6 +9,7 @@ interface BaseProps {
     title: string;
     message?: string;
     onClose: () => void;
+    zIndex?: number;
 }
 
 interface ConfirmProps extends BaseProps {
@@ -50,16 +51,17 @@ export const ConfirmDialog = (props: Props) => {
     // ESC fecha; Enter confirma.
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') onClose();
-            if (e.key === 'Enter' && mode === 'confirm') {
-                (props as ConfirmProps).onConfirm();
-            }
-            if (e.key === 'Enter' && mode === 'prompt' && value.trim()) {
-                (props as PromptProps).onConfirm(value.trim());
+            if (e.key === 'Escape' || e.key === 'Enter') {
+                // O diálogo em primeiro plano consome o atalho antes da janela pai.
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                if (e.key === 'Escape') onClose();
+                else if (mode === 'confirm') (props as ConfirmProps).onConfirm();
+                else if (value.trim()) (props as PromptProps).onConfirm(value.trim());
             }
         };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
     }, [mode, onClose, props, value]);
 
     const variant: Variant = mode === 'confirm' ? (props as ConfirmProps).variant ?? 'danger' : 'accent';
@@ -71,7 +73,7 @@ export const ConfirmDialog = (props: Props) => {
     };
 
     return createPortal(
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+        <div role="dialog" aria-modal="true" aria-label={title} style={{ zIndex: props.zIndex ?? 200 }} className="fixed inset-0 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
             <div className="bg-brand-dark/95 border border-brand-accent/30 rounded-3xl w-full max-w-md shadow-[0_0_50px_rgba(0,230,118,0.15)] flex flex-col overflow-hidden relative z-[201] ring-1 ring-white/5 animate-[fadeIn_0.15s_ease-out]">
                 {/* Scanlines HUD */}
                 <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-size-[20px_20px] opacity-20"></div>
@@ -120,6 +122,7 @@ export const ConfirmDialog = (props: Props) => {
                             value={value}
                             onChange={(e) => setValue(e.target.value)}
                             placeholder={(props as PromptProps).placeholder}
+                            aria-label={(props as PromptProps).placeholder || title}
                             className="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-3 text-sm text-foreground placeholder:text-brand-muted/50 outline-none focus:border-brand-accent/50 focus:bg-black/40 transition-all"
                         />
                     )}

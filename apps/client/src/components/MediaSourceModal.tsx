@@ -264,6 +264,7 @@ const LibrarySource = ({
     const [opsFolderId, setOpsFolderId] = useState('');
     const [opsViewContextId, setOpsViewContextId] = useState<string | null>(null);
     const [folderTree, setFolderTree] = useState<FolderNode | null>(null);
+    const [folderTreeVersion, setFolderTreeVersion] = useState(0);
 
     const load = useCallback(async (nextPath: string) => {
         setLoading(true);
@@ -303,7 +304,7 @@ const LibrarySource = ({
             }
         })();
         return () => { active = false; };
-    }, [category, scope]);
+    }, [category, scope, folderTreeVersion]);
 
     const breadcrumbs = useMemo(() => path.split('/').filter(Boolean), [path]);
     const homeParts = useMemo(() => homePath.split('/').filter(Boolean), [homePath]);
@@ -460,6 +461,7 @@ const LibrarySource = ({
             const result = await response.json().catch(() => ({}));
             if (!response.ok || !result.ok) throw new Error(result.message || 'Não foi possível criar a pasta.');
             toast.success(`Pasta “${name}” criada.`);
+            setFolderTreeVersion((version) => version + 1);
             await load(path);
         } catch (error) {
             toast.error(error instanceof Error ? error.message : 'Não foi possível criar a pasta.');
@@ -907,6 +909,7 @@ const LibrarySource = ({
             </div>
             {confirmDelete && (
                 <ConfirmDialog
+                    zIndex={10010}
                     mode="confirm"
                     title={`Apagar ${selectedFiles.length} ${selectedFiles.length === 1 ? 'arquivo' : 'arquivos'}?`}
                     message={scope === 'shared'
@@ -919,6 +922,7 @@ const LibrarySource = ({
             )}
             {createFolderOpen && (
                 <ConfirmDialog
+                    zIndex={10010}
                     mode="prompt"
                     title="Nova pasta"
                     message={`Crie uma pasta dentro de ${path || homeLabel}.`}
