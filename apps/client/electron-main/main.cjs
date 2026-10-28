@@ -6,7 +6,9 @@ const https = require('https');
 const { randomBytes } = require('crypto');
 const { spawn } = require('child_process');
 const os = require('os');
+const { pathToFileURL } = require('url');
 const { checkForUpdatesResilient } = require('./update-check.cjs');
+const { localServerRequestHeaders } = require('./local-server-access.cjs');
 
 let serverProcess = null;
 let mainWindowRef = null;
@@ -186,6 +188,7 @@ function startServer() {
             BUILTIN_TRANSITIONS_PATH: builtInTransitionsPath,
             BUILTIN_MUSIC_PATH: builtInMusicPath,
             LOCAL_FILE_IMPORT_TOKEN: localFileImportToken,
+            LOCAL_API_TOKEN: localFileImportToken,
             NODE_ENV: process.env.NODE_ENV || 'production',
         },
         shell: false,
@@ -340,6 +343,24 @@ function createWindow() {
 
     mainWindowRef = mainWindow;
 
+    // Inclui a capacidade também em <video>/<img>/<audio>, sem colocá-la em
+    // URLs ou no armazenamento do renderer. Frames externos não a recebem.
+    const entryUrl = pathToFileURL(path.join(__dirname, '../dist/index.html')).href;
+    mainWindow.webContents.session.webRequest.onBeforeSendHeaders(
+        // Também remove a capacidade se houver redirecionamento para outro host.
+        { urls: ['<all_urls>'] },
+        (details, callback) => {
+            const alive = !mainWindow.isDestroyed();
+            callback({ requestHeaders: localServerRequestHeaders(details, {
+                token: localFileImportToken,
+                webContentsId: alive ? mainWindow.webContents.id : -1,
+                rendererUrl: alive ? mainWindow.webContents.getURL() : '',
+                entryUrl,
+                isDev,
+            }) });
+        }
+    );
+
     mainWindow.on('show', publishExecutorMode);
     mainWindow.on('focus', () => {
         publishExecutorMode();
@@ -455,8 +476,11 @@ app.whenReady().then(() => {
             return false;
         }
     });
-    ipcMain.handle('auth:clear', () => {
+    ipcMain.handle('auth:clear', (_event, expectedToken) => {
         try {
+            if (typeof expectedToken === 'string' && readAuthToken() !== expectedToken) {
+                return { cleared: false, reason: 'session-changed' };
+            }
             return writeAuthToken(null);
         } catch {
             return false;

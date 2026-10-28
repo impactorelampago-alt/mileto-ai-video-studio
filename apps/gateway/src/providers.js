@@ -91,6 +91,23 @@ export const proxyTts = async ({ provider, voiceId, text, voiceSettings, model }
  * timestamps (o server local agrupa em blocos). A chave da OpenAI fica aqui.
  * Sem chave → modo demo (sem palavras, legendas ficam vazias mas o fluxo roda).
  */
+export class SttProviderError extends Error {
+    constructor(status, payload) {
+        const upstream = payload?.error;
+        const quotaCodes = ['insufficient_quota', 'credit_balance_exhausted',
+            'billing_hard_limit_reached', 'spend_limit_exceeded', 'organization_usage_limit_exceeded'];
+        const quotaExhausted = status === 429 &&
+            (quotaCodes.includes(upstream?.code) || quotaCodes.includes(upstream?.type));
+        super(quotaExhausted
+            ? 'O serviço de legendas está sem saldo na OpenAI. O responsável pelo Mileto precisa regularizar a chave ou o saldo do serviço.'
+            : 'O serviço de transcrição está temporariamente indisponível. Tente novamente mais tarde.');
+        this.name = 'SttProviderError';
+        this.status = quotaExhausted ? 503 : 502;
+        this.code = quotaExhausted ? 'STT_PROVIDER_QUOTA_EXHAUSTED' : 'STT_PROVIDER_UNAVAILABLE';
+        this.providerStatus = status;
+    }
+}
+
 export const proxyStt = async ({ audio, filename = 'audio.mp3', language = 'pt' }) => {
     const apiKey = await getKey('openai');
     if (!apiKey) return { words: [], durationSec: 0, demo: true };
@@ -107,7 +124,12 @@ export const proxyStt = async ({ audio, filename = 'audio.mp3', language = 'pt' 
         headers: { Authorization: `Bearer ${apiKey}` },
         body: fd,
     });
-    if (!res.ok) throw new Error(`Whisper ${res.status}: ${await res.text()}`);
+    if (!res.ok) {
+        const body = await res.text();
+        let payload;
+        try { payload = JSON.parse(body); } catch { /* O corpo do provedor não é exibido ao usuário. */ }
+        throw new SttProviderError(res.status, payload);
+    }
     const data = await res.json();
     const words = (data.words || []).map((w) => ({ word: w.word, start: w.start, end: w.end }));
     const durationSec = data.duration

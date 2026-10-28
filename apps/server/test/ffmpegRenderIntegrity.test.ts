@@ -163,64 +163,71 @@ const frameAt = (filePath: string, at: number): Buffer => runFfmpeg([
     'pipe:1',
 ]);
 
-test('zoom-in-out preserva duração com fontes 24, 25, 30 e 60 fps', {
-    skip: !hasBundledBinaries,
-    timeout: 120_000,
-}, async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-render-fps-'));
-
-    try {
-        // O serviço lê os caminhos dos binários na carga do módulo; o require
-        // deliberadamente tardio mantém o teste preso aos binários distribuídos.
-        const { buildHybridVideo, probeMediaDurations } = require('../src/services/ffmpeg');
-        const duration = 1;
-        const audioPath = makeAudio(directory, duration);
-        const overlayPath = makeOverlay(directory, 'transparent-overlay.mov', duration);
-
-        for (const sourceFps of [24, 25, 30, 60]) {
-            const sourcePath = makeVideo(directory, `source-${sourceFps}.mp4`, sourceFps, duration);
-            for (const outputFps of [24, 25, 30, 60]) {
-                const outputPath = path.join(directory, `render-${sourceFps}-to-${outputFps}.mp4`);
-                await buildHybridVideo({
-                    takes: [{
-                        id: `take-${sourceFps}`,
-                        type: 'video',
-                        file_path: sourcePath,
-                        start: 0,
-                        end: duration,
-                        speed: 1,
-                        motionEffect: {
-                            type: 'zoom-in-out',
-                            intensity: 0.2,
-                            focalX: 50,
-                            focalY: 50,
-                            easing: 'smooth',
-                        },
-                    }],
-                    audioPath,
-                    overlayPath,
-                    outputPath,
-                    duration,
-                    targetW: 160,
-                    targetH: 90,
-                    outputFps,
-                });
-
-                const probe = await probeMediaDurations(outputPath);
-                const diagnostics = validateRenderedOutput({ expectedDurationSec: duration, media: probe, outputFps });
-                assert.equal(
-                    diagnostics.status,
-                    'passed',
-                    `${sourceFps}→${outputFps} fps: ${JSON.stringify(diagnostics.issues)}`,
-                );
-                assert.ok(Math.abs(Number(probe.videoFps) - outputFps) <= 0.01);
-                assert.equal(probe.videoFrameCount, outputFps);
-            }
-        }
-    } finally {
-        fs.rmSync(directory, { recursive: true, force: true });
-    }
+// Os 16 renders têm prazos independentes. Os arquivos de entrada são imutáveis
+// e compartilhados para não repetir a preparação a cada combinação de FPS.
+let fpsDirectory: string | undefined;
+let fpsAudioPath: string | undefined;
+let fpsOverlayPath: string | undefined;
+const fpsSources = new Map<number, string>();
+after(() => {
+    if (fpsDirectory) fs.rmSync(fpsDirectory, { recursive: true, force: true });
 });
+
+for (const sourceFps of [24, 25, 30, 60]) {
+    for (const outputFps of [24, 25, 30, 60]) {
+        test(`zoom-in-out preserva duração: ${sourceFps}→${outputFps} fps`, {
+            skip: !hasBundledBinaries,
+            timeout: 120_000,
+        }, async () => {
+            // O serviço lê os caminhos dos binários na carga do módulo; o require
+            // deliberadamente tardio mantém o teste preso aos binários distribuídos.
+            const { buildHybridVideo, probeMediaDurations } = require('../src/services/ffmpeg');
+            const duration = 1;
+            const directory = fpsDirectory ??= fs.mkdtempSync(path.join(os.tmpdir(), 'mileto-render-fps-'));
+            const audioPath = fpsAudioPath ??= makeAudio(directory, duration);
+            const overlayPath = fpsOverlayPath ??= makeOverlay(directory, 'transparent-overlay.mov', duration);
+            if (!fpsSources.has(sourceFps)) {
+                fpsSources.set(sourceFps, makeVideo(directory, `source-${sourceFps}.mp4`, sourceFps, duration));
+            }
+            const sourcePath = fpsSources.get(sourceFps)!;
+            const outputPath = path.join(directory, `render-${sourceFps}-to-${outputFps}.mp4`);
+            await buildHybridVideo({
+                takes: [{
+                    id: `take-${sourceFps}`,
+                    type: 'video',
+                    file_path: sourcePath,
+                    start: 0,
+                    end: duration,
+                    speed: 1,
+                    motionEffect: {
+                        type: 'zoom-in-out',
+                        intensity: 0.2,
+                        focalX: 50,
+                        focalY: 50,
+                        easing: 'smooth',
+                    },
+                }],
+                audioPath,
+                overlayPath,
+                outputPath,
+                duration,
+                targetW: 160,
+                targetH: 90,
+                outputFps,
+            });
+
+            const probe = await probeMediaDurations(outputPath);
+            const diagnostics = validateRenderedOutput({ expectedDurationSec: duration, media: probe, outputFps });
+            assert.equal(
+                diagnostics.status,
+                'passed',
+                `${sourceFps}→${outputFps} fps: ${JSON.stringify(diagnostics.issues)}`,
+            );
+            assert.ok(Math.abs(Number(probe.videoFps) - outputFps) <= 0.01);
+            assert.equal(probe.videoFrameCount, outputFps);
+        });
+    }
+}
 
 test('exporta corte cujo início quase zero veio de cálculo da timeline', {
     skip: !hasBundledBinaries,

@@ -22,54 +22,96 @@ function getIpc(): any | null {
 }
 
 const SESSION_KEY = 'mileto_auth_token';
+let temporaryToken: string | null | undefined;
+let revision = 0;
+
+function temporary(): string | null | undefined {
+    if (temporaryToken !== undefined) return temporaryToken;
+    try {
+        const value = sessionStorage.getItem(SESSION_KEY);
+        if (value !== null) return value || null;
+    } catch { /* a memória ainda funciona sem sessionStorage */ }
+    return undefined;
+}
+
+function keepTemporary(token: string | null, persist = true): void {
+    temporaryToken = token;
+    // Vazio é uma marca de logout: não recuperar um token antigo se a remoção
+    // do arquivo cifrado falhar e esta janela for recarregada.
+    if (persist) {
+        try { sessionStorage.setItem(SESSION_KEY, token || ''); } catch { /* só memória */ }
+    }
+}
+
+function forgetTemporary(): void {
+    temporaryToken = undefined;
+    try { sessionStorage.removeItem(SESSION_KEY); } catch { /* sem armazenamento */ }
+}
 
 export const authStorage = {
     async get(): Promise<string | null> {
+        const fallback = temporary();
+        if (fallback !== undefined) return fallback;
+        const currentRevision = revision;
         const ipc = getIpc();
         if (ipc) {
             try {
-                return (await ipc.invoke('auth:get')) as string | null;
+                const value: unknown = await ipc.invoke('auth:get');
+                if (revision !== currentRevision) return authStorage.get();
+                return typeof value === 'string' && value ? value : null;
             } catch {
                 /* cai para sessionStorage */
             }
         }
-        try {
-            return sessionStorage.getItem(SESSION_KEY);
-        } catch {
-            return null;
-        }
+        return temporary() ?? null;
     },
 
     async set(token: string): Promise<void> {
+        const currentRevision = ++revision;
+        // Enquanto o IPC trabalha, use somente memória. O caminho normal com
+        // safeStorage não precisa gravar uma cópia em sessionStorage.
+        keepTemporary(token, false);
         const ipc = getIpc();
         if (ipc) {
             try {
-                await ipc.invoke('auth:set', token);
-                return;
+                const saved: unknown = await ipc.invoke('auth:set', token);
+                if (saved === true && revision === currentRevision) {
+                    forgetTemporary();
+                    return;
+                }
             } catch {
-                /* cai para sessionStorage */
+                /* preserva o fallback temporário, inclusive quando o IPC retorna false */
             }
         }
-        try {
-            sessionStorage.setItem(SESSION_KEY, token);
-        } catch {
-            /* sem persistência disponível */
-        }
+        if (revision === currentRevision) keepTemporary(token);
     },
 
-    async clear(): Promise<void> {
+    async clear(expectedToken?: string): Promise<boolean> {
+        const usedTemporary = temporary() !== undefined;
+        if (expectedToken !== undefined) {
+            const beforeRead = revision;
+            const token = await authStorage.get();
+            if (revision !== beforeRead || token !== expectedToken) return false;
+        }
+        const currentRevision = ++revision;
+        keepTemporary(null);
         const ipc = getIpc();
         if (ipc) {
             try {
-                await ipc.invoke('auth:clear');
+                const result: unknown = await ipc.invoke('auth:clear', expectedToken);
+                if (revision !== currentRevision) return false;
+                if (result === true) forgetTemporary();
+                else if (result && typeof result === 'object' && 'reason' in result && result.reason === 'session-changed') {
+                    if (usedTemporary) return true;
+                    forgetTemporary();
+                    return false;
+                }
             } catch {
-                /* ignora */
+                /* a marca temporária impede recuperar a sessão encerrada */
             }
+        } else {
+            forgetTemporary();
         }
-        try {
-            sessionStorage.removeItem(SESSION_KEY);
-        } catch {
-            /* ignora */
-        }
+        return revision === currentRevision;
     },
 };

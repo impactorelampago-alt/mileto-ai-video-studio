@@ -2,12 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import vm from 'node:vm';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { compileClientModule, evaluateClientModule } from './helpers/clientModule.js';
 
-const require = createRequire(import.meta.url);
-const ts = require('typescript');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const clientPath = (relative) => path.resolve(__dirname, '../../client/src', relative);
 const defaultDependencyMocks = {
@@ -23,46 +20,11 @@ const defaultDependencyMocks = {
     },
 };
 
-const compileClientModule = (relative) => {
-    const sourcePath = clientPath(relative);
-    return {
-        sourcePath,
-        source: fs.readFileSync(sourcePath, 'utf8'),
-        compiled: ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
-            compilerOptions: {
-                module: ts.ModuleKind.CommonJS,
-                target: ts.ScriptTarget.ES2020,
-                esModuleInterop: true,
-            },
-            fileName: sourcePath,
-        }).outputText,
-    };
-};
-
-const evaluateCommonJs = ({ compiled }, dependencyMocks, sandboxPatch = {}) => {
-    const runtimeModule = { exports: {} };
-    const runtimeRequire = (specifier) => {
-        if (Object.hasOwn(dependencyMocks, specifier)) return dependencyMocks[specifier];
-        if (Object.hasOwn(defaultDependencyMocks, specifier)) return defaultDependencyMocks[specifier];
-        return require(specifier);
-    };
-    const sandbox = {
-        console: { log() {}, info() {}, warn() {}, error() {} },
-        Date,
-        Promise,
-        AbortController,
-        AbortSignal,
-        setTimeout,
-        clearTimeout,
-        ...sandboxPatch,
-    };
-    const factory = vm.runInNewContext(
-        `(function(exports,module,require){${compiled}\n})`,
-        sandbox,
-    );
-    factory(runtimeModule.exports, runtimeModule, runtimeRequire);
-    return runtimeModule.exports;
-};
+const evaluateCommonJs = (module, dependencyMocks, sandboxPatch = {}) => evaluateClientModule(
+    module,
+    { ...defaultDependencyMocks, ...dependencyMocks },
+    sandboxPatch,
+);
 
 const response = (body, status = 200) => ({
     ok: status >= 200 && status < 300,

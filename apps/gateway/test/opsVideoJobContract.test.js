@@ -326,9 +326,8 @@ test('contexto do histórico muda para o job atual antes do preflight', () => {
     assert.match(execute, /jobId: queued\.job\.id/);
 });
 
-test('quantidade de takes vem da narracao real, usa TAKES recentes e varia por lote de forma estavel', () => {
-    assert.match(coordinator, /selectOpsTakesForNarration/);
-    assert.match(coordinator, /Number\(adData\.narrationDuration \|\| 0\)/);
+test('quantidade de takes segue a duração canônica, usa TAKES recentes e varia por lote de forma estavel', () => {
+    assert.match(coordinator, /selectOpsTakesForNarration\(\s*poolForSelection,\s*canonicalProjectTimelineDuration\(adData\),\s*job,?\s*\)/);
     assert.match(takeSelection, /DEFAULT_TARGET_SECONDS = 2\.5/);
     assert.match(takeSelection, /minimumForMaximumCut/);
     assert.match(takeSelection, /index % batchSize === batchIndex/);

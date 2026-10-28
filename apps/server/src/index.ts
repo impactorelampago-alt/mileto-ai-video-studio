@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
+import { localAccess, LOCAL_ACCESS_HEADER } from './middleware/localAccess';
 
 dotenv.config();
 
@@ -80,6 +81,8 @@ app.use(
             'X-Runway-Token',
             'X-Replicate-Token',
             'X-Ops-View-Context',
+            LOCAL_ACCESS_HEADER,
+            'X-Local-File-Import',
         ],
         credentials: true,
     })
@@ -91,6 +94,13 @@ app.use((_req, res, next) => {
     next();
 });
 
+// O health não contém dados do usuário e permite diagnosticar o boot. Todo o
+// restante, inclusive mídia estática e /debug, exige a autorização local.
+app.get('/health', (_req, res) => {
+    res.json({ ok: true, status: 'online', timestamp: new Date().toISOString() });
+});
+const localToken = process.env.LOCAL_API_TOKEN || process.env.LOCAL_FILE_IMPORT_TOKEN || '';
+app.use(localAccess({ token: localToken, allowDevBrowser: process.env.NODE_ENV !== 'production' }));
 app.use(express.json({ limit: '50mb' }));
 
 // Static Routes pointing to persistent data
@@ -112,11 +122,6 @@ app.get('/', (_req, res) => {
     res.send('Mileto Video Generator API');
 });
 
-// Health Check
-app.get('/health', (_req, res) => {
-    res.json({ ok: true, status: 'online', timestamp: new Date().toISOString() });
-});
-
 // Debug endpoint - exposes runtime paths
 app.get('/debug', (_req, res) => {
     res.json({
@@ -132,7 +137,7 @@ import apiRoutes from './routes/api';
 
 app.use('/api', apiRoutes);
 
-app.listen(PORT, () => {
+app.listen(Number(PORT), '127.0.0.1', () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`Health check available at http://localhost:${PORT}/health`);
 });

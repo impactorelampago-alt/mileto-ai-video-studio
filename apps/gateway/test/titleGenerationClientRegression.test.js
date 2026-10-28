@@ -2,27 +2,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import vm from 'node:vm';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { compileClientModule, evaluateClientModule } from './helpers/clientModule.js';
 
-const require = createRequire(import.meta.url);
-const ts = require('typescript');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const clientPath = (relative) => path.resolve(__dirname, '../../client/src', relative);
 const readClient = (relative) => fs.readFileSync(clientPath(relative), 'utf8');
 
-const workflowSourcePath = clientPath('lib/videoAgentWorkflow.ts');
-const workflowSource = fs.readFileSync(workflowSourcePath, 'utf8');
-const workflowCompiled = ts.transpileModule(workflowSource, {
-    compilerOptions: {
-        module: ts.ModuleKind.CommonJS,
-        target: ts.ScriptTarget.ES2020,
-        esModuleInterop: true,
-    },
-    fileName: workflowSourcePath,
-}).outputText;
+const workflow = compileClientModule('lib/videoAgentWorkflow.ts');
 
 const response = (body, status = 200) => ({
     ok: status >= 200 && status < 300,
@@ -31,7 +19,6 @@ const response = (body, status = 200) => ({
 });
 
 const loadWorkflow = (fetchImpl) => {
-    const runtimeModule = { exports: {} };
     const dependencyMocks = {
         './apiBase': { API_BASE_URL: 'http://local.test' },
         './audioAutoFit': { backgroundTrimEndForNarration: () => undefined },
@@ -61,10 +48,6 @@ const loadWorkflow = (fetchImpl) => {
         './opsTakeSelection': { deterministicShuffle: (items) => items },
         './serverAuth': { localAuthHeaders: async () => ({}) },
     };
-    const runtimeRequire = (specifier) => {
-        if (Object.hasOwn(dependencyMocks, specifier)) return dependencyMocks[specifier];
-        return require(specifier);
-    };
     const sandbox = {
         console: { log() {}, info() {}, warn() {}, error() {} },
         Date,
@@ -76,12 +59,7 @@ const loadWorkflow = (fetchImpl) => {
         fetch: fetchImpl,
         window: { setTimeout: (callback) => { callback(); return 0; } },
     };
-    const factory = vm.runInNewContext(
-        `(function(exports,module,require){${workflowCompiled}\n})`,
-        sandbox,
-    );
-    factory(runtimeModule.exports, runtimeModule, runtimeRequire);
-    return runtimeModule.exports;
+    return evaluateClientModule(workflow, dependencyMocks, sandbox);
 };
 
 const baseAdData = () => ({

@@ -12,20 +12,22 @@ const previewPath = path.resolve(
 const previewSource = fs.readFileSync(previewPath, 'utf8');
 
 const advanceStart = previewSource.indexOf('            const advanceTrack = () => {');
+const tailStart = previewSource.indexOf('            const advanceContractTail = () => {');
 const advanceEnd = previewSource.indexOf(
     '\n            const intervalId = setInterval(tick, checkInterval);',
     advanceStart,
 );
 
 assert.ok(advanceStart >= 0 && advanceEnd > advanceStart, 'advanceTrack não foi encontrado no preview');
+assert.ok(tailStart >= 0 && tailStart < advanceStart, 'helper da cauda contratual não foi encontrado');
 
-const advanceTrackSource = previewSource.slice(advanceStart, advanceEnd);
+const advanceTrackSource = previewSource.slice(tailStart, advanceEnd);
 const buildAdvanceTrack = new Function(
     'dependencies',
     `with (dependencies) { ${advanceTrackSource}\nreturn advanceTrack; }`,
 );
 
-const runLastTakeEnd = (audioEnded) => {
+const runLastTakeEnd = (audioEnded, masterTime = audioEnded ? 24 : 20) => {
     const calls = {
         stopAll: 0,
         takeIndexes: [],
@@ -33,7 +35,7 @@ const runLastTakeEnd = (audioEnded) => {
         audioTimes: [],
     };
     const audio = {
-        currentTime: audioEnded ? 24 : 20,
+        currentTime: masterTime,
         duration: 24,
         ended: audioEnded,
         paused: audioEnded,
@@ -49,6 +51,8 @@ const runLastTakeEnd = (audioEnded) => {
         advancingRef: { current: false },
         audioDuration: 24,
         audioMasterRef: { current: audio },
+        audioTimeRef: { current: masterTime },
+        checkInterval: 30,
         beginBuffering() {},
         currentTake: take,
         currentTakeIndex: 0,
@@ -63,6 +67,7 @@ const runLastTakeEnd = (audioEnded) => {
         setCurrentTimeInTake: (value) => calls.takeTimes.push(value),
         stopAll: () => { calls.stopAll += 1; },
         takes: [take],
+        takesDuration: 20,
         toast: { error() {} },
         totalDuration: 24,
         videoRef1: { current: { pause() {} } },
@@ -90,12 +95,21 @@ test('preview não reinicia no fim dos takes enquanto a narração ainda é aud�
         20,
         'o relógio do áudio não pode voltar a zero antes da última fala',
     );
-    assert.deepEqual(beforeNarrationEnd.calls.audioTimes, []);
+    assert.deepEqual(beforeNarrationEnd.calls.audioTimes, [20.03], 'o relógio avança pela cauda, sem voltar a zero');
+    assert.deepEqual(beforeNarrationEnd.calls.takeTimes, [20], 'o último quadro continua sustentado');
 
     const afterNarrationEnd = runLastTakeEnd(true);
     assert.equal(afterNarrationEnd.calls.stopAll, 1);
     assert.equal(afterNarrationEnd.audio.currentTime, 0);
     assert.deepEqual(afterNarrationEnd.calls.audioTimes, [0]);
+});
+
+test('áudio legado terminado cedo não encerra a duração canônica do preview', () => {
+    const { audio, calls } = runLastTakeEnd(true, 20);
+    assert.equal(calls.stopAll, 0);
+    assert.equal(audio.currentTime, 20);
+    assert.deepEqual(calls.audioTimes, [20.03]);
+    assert.deepEqual(calls.takeTimes, [20]);
 });
 
 test('captura da cauda do audio cai no ultimo take, nao no primeiro', () => {

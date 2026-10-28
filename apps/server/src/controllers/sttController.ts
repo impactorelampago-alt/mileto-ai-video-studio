@@ -251,13 +251,24 @@ export const generateCaptions = async (req: Request, res: Response) => {
             words = result.words || [];
         } catch (err: unknown) {
             if (err instanceof GatewayHttpError) {
+                // Compatibilidade com gateways antigos que enviavam o JSON do
+                // Whisper como texto, sem diferenciar saldo do provedor e Mileto.
+                const providerQuotaExhausted = err.code === 'STT_PROVIDER_QUOTA_EXHAUSTED' ||
+                    ([429, 502, 503].includes(err.status) &&
+                        /credit_balance_exhausted|insufficient_quota|billing_hard_limit_reached|spend_limit_exceeded|organization_usage_limit_exceeded/i.test(err.message));
                 const userMsg =
-                    err.status === 402
+                    providerQuotaExhausted
+                        ? 'O serviço de legendas está sem saldo na OpenAI. O responsável pelo Mileto precisa regularizar a chave ou o saldo do serviço.'
+                        : err.status === 402
                         ? 'Seus créditos Mileto acabaram. Recarregue para gerar legendas.'
                         : err.status === 401
                           ? 'Sessão expirada. Entre novamente para gerar legendas.'
                           : `Falha na transcrição: ${err.message}`;
-                return res.status(err.status).json({ ok: false, message: userMsg });
+                return res.status(providerQuotaExhausted ? 503 : err.status).json({
+                    ok: false,
+                    message: userMsg,
+                    ...(providerQuotaExhausted ? { code: 'STT_PROVIDER_QUOTA_EXHAUSTED' } : err.code ? { code: err.code } : {}),
+                });
             }
             const message = err instanceof Error ? err.message : 'Erro desconhecido';
             console.error('[STT] Erro ao transcrever via gateway:', message);

@@ -353,7 +353,8 @@ export const gatewayStt = async (
         120000
     );
     const data = await parseBody(res);
-    if (!res.ok) throw new GatewayHttpError(res.status, data.message || `Gateway ${res.status}`);
+    if (!res.ok) throw new GatewayHttpError(res.status, data.message || `Gateway ${res.status}`,
+        typeof data.code === 'string' ? data.code : null);
     return data as GatewaySttResult;
 };
 

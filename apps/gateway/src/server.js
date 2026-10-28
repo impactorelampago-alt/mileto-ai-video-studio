@@ -6,7 +6,7 @@ import path from 'node:path';
 import { config } from './config.js';
 import { query } from './db.js';
 import { login, logout, requireAuth, requireSuperAdmin, requireOwner } from './auth.js';
-import { proxyTts, proxyChat, proxyStt, hasKey } from './providers.js';
+import { proxyTts, proxyChat, proxyStt, hasKey, SttProviderError } from './providers.js';
 import { prepareTtsRequest } from './narrationTtsContract.js';
 import { userRequestedCleanNarration } from './narrationDirection.js';
 import { estimateUnits, priceOf, reserve, settle, release, getBalance } from './meter.js';
@@ -470,7 +470,12 @@ app.post(
         } catch (e) {
             await release({ orgId: req.user.orgId, reserved, demo }).catch(() => {});
             console.error('[gateway] /v1/stt provedor', e.message);
-            return res.status(502).json({ ok: false, message: `Falha na transcrição: ${e.message}` });
+            return res.status(e instanceof SttProviderError ? e.status : 502).json({
+                ok: false,
+                code: e instanceof SttProviderError ? e.code : 'STT_PROVIDER_UNAVAILABLE',
+                message: e instanceof SttProviderError ? e.message
+                    : 'O serviço de transcrição está temporariamente indisponível. Tente novamente mais tarde.',
+            });
         }
 
         const meta = await settle({

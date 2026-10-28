@@ -1,4 +1,5 @@
 import path from 'path';
+import { isIP } from 'net';
 
 /**
  * Utilitários de segurança de caminho e host.
@@ -85,8 +86,9 @@ export function isSafeRemoteUrl(raw: string): boolean {
         host === '::1' ||
         host === '::'
     ) return false;
-    // IPv6 ULA (fc00::/7) e link-local (fe80::)
-    if (host.startsWith('fc') || host.startsWith('fd') || /^fe[89ab]/.test(host) || host.startsWith('::ffff:')) return false;
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) && isNonPublicV4(host)) return false;
+    // Prefixos de faixas IP só se aplicam a endereços literais, nunca a DNS.
+    const version = isIP(host);
+    if (version === 6 && (host.startsWith('fc') || host.startsWith('fd') || /^fe[89ab]/.test(host) || host.startsWith('::ffff:'))) return false;
+    if (version === 4 && isNonPublicV4(host)) return false;
     return true;
 }

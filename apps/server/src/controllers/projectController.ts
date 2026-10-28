@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import { safeResolve, isSafeSegment } from '../utils/safePath';
+import { resolveProjectCover } from '../utils/projectCoverAccess';
 
 const BASE_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, '..', '..');
 const PROJECTS_DIR = path.join(BASE_DATA_PATH, 'data/projects');
@@ -165,14 +166,15 @@ export const getProjectCover = async (req: Request, res: Response) => {
         }
 
         const data = JSON.parse(fs.readFileSync(dataPath, 'utf-8')) as SavedProjectData;
-        const source = mediaSource(firstVisualTake(data));
+        const take = firstVisualTake(data);
+        const source = mediaSource(take);
         const requestedPath = source ? localMediaPath(source) : null;
         if (!requestedPath) {
             return res.status(404).json({ ok: false, message: 'Capa local indisponível' });
         }
 
-        const resolvedPath = fs.realpathSync(requestedPath);
-        if (!fs.statSync(resolvedPath).isFile()) {
+        const resolvedPath = take?.type ? resolveProjectCover(BASE_DATA_PATH, requestedPath, take.type) : null;
+        if (!resolvedPath) {
             return res.status(404).json({ ok: false, message: 'Arquivo de capa indisponível' });
         }
 
